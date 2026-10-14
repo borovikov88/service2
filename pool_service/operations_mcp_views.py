@@ -12,7 +12,7 @@ from django.core import signing
 from django.contrib.auth.models import User
 from django.contrib.auth.views import redirect_to_login
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Max, Q
 from django.http import HttpResponse, HttpResponseBadRequest, HttpResponseNotFound, HttpResponseServerError, JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
@@ -22,7 +22,7 @@ from django.views.decorators.http import require_http_methods
 
 from pool_service import onec_diagnostic_mcp_views as transport
 from pool_service.communication_models import CallAnalysis, PhoneCall
-from pool_service.services.call_privacy import is_private_call, task_source_is_private
+from pool_service.services.call_privacy import is_private_call, private_source_task_ids, task_source_is_private
 from pool_service.models import (
     Client,
     FinanceMcpAuditEvent,
@@ -33,6 +33,7 @@ from pool_service.models import (
     ServiceTask,
     ServiceTaskChange,
 )
+from pool_service.operations_models import OperationsTaskEventCounter
 from pool_service.operations_mcp_auth import (
     OPERATIONS_SCOPE,
     OperationsMcpConfigurationError,
@@ -75,6 +76,7 @@ OPERATIONAL_STAFF_ROLES = frozenset({"owner", "admin", "manager", "service", "in
 
 TOOL_NAMES = (
     "list_control_tasks",
+    "list_task_events",
     "get_call_analysis",
     "create_task",
     "reschedule_task",
@@ -111,6 +113,16 @@ def _tool(name, description, properties, *, required=(), read_only=False, destru
 
 def _tool_definitions():
     return [
+        _tool(
+            "list_task_events",
+            "Read organization-scoped CRM task changes in stable feed order. Service2 assigns internal sequence metadata to committed events; no task or business data is changed. Use the opaque next_cursor unchanged to continue a snapshot; terminal task events are included. Private-call tasks are omitted.",
+            {
+                "cursor": {"type": "string", "maxLength": 500},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            },
+            read_only=False,
+            idempotent=True,
+        ),
         _tool(
             "list_control_tasks",
             "List active Service2 tasks in the authorized organization for execution control.",
@@ -772,6 +784,134 @@ def _list_control_tasks(organization, arguments):
     return {"tasks": tasks}
 
 
+TASK_EVENT_CURSOR_SALT = "service2.operations-mcp.task-events.v1"
+TASK_EVENT_CURSOR_MAX_AGE = 7 * 24 * 60 * 60
+TASK_EVENT_COUNTER_KEY = "crm_tasks"
+
+
+def _task_event_cursor(organization_id, after_sequence, through_sequence):
+    return signing.dumps(
+        {
+            "v": 2,
+            "organization_id": organization_id,
+            "after_sequence": after_sequence,
+            "through_sequence": through_sequence,
+        },
+        salt=TASK_EVENT_CURSOR_SALT,
+        compress=True,
+    )
+
+
+@transaction.atomic
+def _list_task_events(organization, arguments, counter):
+    """Assign and return committed CRM task changes in a serialized feed order."""
+    _reject_unknown(arguments, {"cursor", "limit"})
+    limit = _as_int(arguments.get("limit", 50), "limit", maximum=100)
+    # The global counter lock serializes sequence assignment. It is acquired
+    # before the organization and actor locks in _tool_dispatch.
+    raw_cursor = arguments.get("cursor")
+    if raw_cursor in (None, ""):
+        after_sequence = 0
+        through_sequence = 0
+    else:
+        if not isinstance(raw_cursor, str) or len(raw_cursor) > 500:
+            raise ValueError("cursor")
+        try:
+            payload = signing.loads(
+                raw_cursor,
+                salt=TASK_EVENT_CURSOR_SALT,
+                max_age=TASK_EVENT_CURSOR_MAX_AGE,
+            )
+            if (
+                not isinstance(payload, dict)
+                or payload.get("v") != 2
+                or payload.get("organization_id") != organization.pk
+                or type(payload.get("after_sequence")) is not int
+                or type(payload.get("through_sequence")) is not int
+                or payload["after_sequence"] < 0
+                or (payload["through_sequence"] != 0 and payload["through_sequence"] < payload["after_sequence"])
+            ):
+                raise ValueError("cursor")
+            after_sequence = payload["after_sequence"]
+            through_sequence = payload["through_sequence"]
+        except signing.BadSignature as exc:
+            raise ValueError("cursor") from exc
+
+        if through_sequence == 0 or after_sequence == through_sequence:
+            through_sequence = 0
+
+    unsequenced = list(
+        ServiceTaskChange.objects.filter(
+            operations_feed_sequence__isnull=True,
+            task__organization=organization,
+            task__task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+        ).order_by("id")[:500]
+    )
+    for change in unsequenced:
+        change.operations_feed_sequence = counter.next_sequence
+        counter.next_sequence += 1
+    if unsequenced:
+        ServiceTaskChange.objects.bulk_update(unsequenced, ["operations_feed_sequence"])
+        counter.save(update_fields=["next_sequence"])
+
+    if through_sequence == 0:
+        through_sequence = (
+            ServiceTaskChange.objects.filter(
+                task__organization=organization,
+                task__task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+                operations_feed_sequence__isnull=False,
+            ).aggregate(value=Max("operations_feed_sequence"))["value"]
+            or after_sequence
+        )
+
+    queryset = (
+        ServiceTaskChange.objects.filter(
+            operations_feed_sequence__gt=after_sequence,
+            operations_feed_sequence__lte=through_sequence,
+            task__organization=organization,
+            task__task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+        )
+        .select_related("task", "task__client", "task__primary_responsible", "changed_by")
+        .order_by("operations_feed_sequence")
+    )
+    events = []
+    scanned_to = after_sequence
+    scan_limit = min(max(limit * 5, limit), 500)
+    batch = list(queryset[:scan_limit])
+    private_task_ids = private_source_task_ids([change.task for change in batch])
+    for change in batch:
+        scanned_to = change.operations_feed_sequence
+        if change.task_id in private_task_ids:
+            continue
+        version_source = "|".join((
+            str(change.pk),
+            str(change.task_id),
+            change.created_at.isoformat(),
+            change.action,
+            change.field_name,
+        ))
+        events.append({
+            "event_id": change.pk,
+            "sequence": change.operations_feed_sequence,
+            "version": hashlib.sha256(version_source.encode("utf-8")).hexdigest(),
+            "created_at": change.created_at.isoformat(),
+            "action": change.action,
+            "field_name": change.field_name,
+            "changed_by_user_id": change.changed_by_id,
+            "task": _task_data(change.task),
+        })
+        if len(events) >= limit:
+            break
+
+    has_more = queryset.filter(operations_feed_sequence__gt=scanned_to).exists()
+    next_cursor = _task_event_cursor(
+        organization.pk,
+        scanned_to if has_more else through_sequence,
+        through_sequence if has_more else 0,
+    )
+    return {"events": events, "next_cursor": next_cursor}
+
+
 @transaction.atomic
 def _get_call_analysis(organization, arguments):
     _reject_unknown(arguments, {"call_id"})
@@ -1326,12 +1466,23 @@ def _send_employee_notification(authenticated, organization, arguments):
     return {"created_notifications": len(created), "employee_user_id": employee.id}
 
 
+@transaction.atomic
 def _tool_dispatch(authenticated, name, arguments):
     organization = target_organization()
+    if name == "list_task_events":
+        # Lock ordering is counter -> organization -> token/grant -> actor/access.
+        # Privacy-setting updates take organization -> user -> access, so taking
+        # the organization lock before authorization avoids an inversion.
+        counter = OperationsTaskEventCounter.objects.select_for_update().get(
+            pk=TASK_EVENT_COUNTER_KEY
+        )
+        organization = Organization.objects.select_for_update().get(pk=organization.pk)
     authenticated = revalidate_authenticated_request(authenticated)
     # Hold current actor/access rows for the entire tool transaction. This also
     # closes the revoke-after-auth race for read-only tools.
     _authorized_actor(authenticated, organization)
+    if name == "list_task_events":
+        return _list_task_events(organization, arguments, counter)
     if name == "list_control_tasks":
         return _list_control_tasks(organization, arguments)
     if name == "get_call_analysis":
