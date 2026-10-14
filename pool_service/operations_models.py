@@ -18,3 +18,10 @@ class OperationsPushQueue(models.Model):
         indexes = [
             models.Index(fields=["next_attempt_at", "task"], name="ops_push_due_task_idx"),
         ]
+
+
+class OperationsTaskEventCounter(models.Model):
+    """Serializes assignment of stable sequences to committed CRM task events."""
+
+    key = models.CharField(max_length=32, primary_key=True)
+    next_sequence = models.PositiveBigIntegerField(default=1)

@@ -1040,6 +1040,7 @@ class ServiceTaskChange(models.Model):
     changed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     action = models.CharField(max_length=16, choices=ACTION_CHOICES)
     field_name = models.CharField(max_length=80, blank=True)
+    operations_feed_sequence = models.PositiveBigIntegerField(null=True, blank=True, unique=True)
     old_value = models.TextField(blank=True)
     new_value = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

@@ -25,6 +25,7 @@ from pool_service.models import (
     OrganizationAccess,
     Profile,
     ServiceTask,
+    ServiceTaskChange,
 )
 from pool_service.operations_mcp_auth import (
     OPERATIONS_SCOPE,
@@ -251,6 +252,7 @@ class OperationsMcpTests(TestCase):
             names,
             {
                 "list_control_tasks",
+                "list_task_events",
                 "get_call_analysis",
                 "create_task",
                 "reschedule_task",
@@ -266,6 +268,163 @@ class OperationsMcpTests(TestCase):
         self.assertIn("commitment_proposal_id", create_schema["properties"])
         self.assertIn("commitment_actor_user_id", create_schema["properties"])
         self.assertNotIn("confirmed_by_user", create_schema["properties"])
+
+    def _create_event_task(
+        self,
+        *,
+        organization=None,
+        status=ServiceTask.STATUS_NEW,
+        archived=False,
+        payload=None,
+        change_id=None,
+    ):
+        task = ServiceTask.objects.create(
+            organization=organization or self.organization,
+            title="Проверить выполнение",
+            start_date=date(2026, 10, 14),
+            end_date=date(2026, 10, 14),
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            source_type=ServiceTask.SOURCE_MANAGER,
+            status=status,
+            visibility=ServiceTask.VISIBILITY_PRIVATE,
+            primary_responsible=self.manager if organization != self.other_org else self.other_user,
+            created_by=self.owner,
+            is_archived=archived,
+            payload_json=payload or {"source": "operations_mcp"},
+        )
+        change = ServiceTaskChange.objects.create(
+            **({"id": change_id} if change_id is not None else {}),
+            task=task,
+            changed_by=self.manager if organization != self.other_org else self.other_user,
+            action=ServiceTaskChange.ACTION_UPDATED,
+            field_name="status",
+            old_value=ServiceTask.STATUS_IN_PROGRESS,
+            new_value=status,
+        )
+        return task, change
+
+    def test_task_event_feed_has_stable_pages_includes_terminal_and_excludes_other_org(self):
+        raw = self._token(raw="task-event-feed-token")
+        terminal, terminal_change = self._create_event_task(
+            status=ServiceTask.STATUS_CANCELLED,
+            archived=True,
+        )
+        self._create_event_task(organization=self.other_org)
+        second, second_change = self._create_event_task()
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 733,
+            "method": "tools/call",
+            "params": {"name": "list_task_events", "arguments": {"limit": 1}},
+        }
+
+        with self._settings():
+            first_response = self._post(payload, token=raw)
+        first = first_response.json()["result"]["structuredContent"]
+        self.assertEqual([event["event_id"] for event in first["events"]], [terminal_change.id])
+        self.assertEqual(first["events"][0]["task"]["id"], terminal.id)
+        self.assertEqual(first["events"][0]["task"]["status"], ServiceTask.STATUS_CANCELLED)
+        self.assertTrue(first["events"][0]["task"]["archived"])
+        self.assertTrue(first["next_cursor"])
+
+        later, later_change = self._create_event_task()
+        payload["params"]["arguments"]["cursor"] = first["next_cursor"]
+        with self._settings():
+            second_response = self._post(payload, token=raw)
+        page = second_response.json()["result"]["structuredContent"]
+        self.assertEqual([event["event_id"] for event in page["events"]], [second_change.id])
+        self.assertEqual(page["events"][0]["task"]["id"], second.id)
+        self.assertNotEqual(second.id, later.id)
+        self.assertTrue(page["next_cursor"])
+
+        payload["params"]["arguments"]["cursor"] = page["next_cursor"]
+        payload["params"]["arguments"]["limit"] = 100
+        with self._settings():
+            third_response = self._post(payload, token=raw)
+        last = third_response.json()["result"]["structuredContent"]
+        last_ids = {event["event_id"] for event in last["events"]}
+        self.assertIn(later_change.id, last_ids)
+        self.assertTrue(any(event["task"]["id"] == later.id for event in last["events"]))
+
+    def test_task_event_feed_sequences_a_late_lower_id_commit_after_checkpoint(self):
+        raw = self._token(raw="task-event-late-commit-token")
+        high_task, _high_change = self._create_event_task(change_id=101)
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 736,
+            "method": "tools/call",
+            "params": {
+                "name": "list_task_events",
+                "arguments": {"limit": 100},
+            },
+        }
+        with self._settings():
+            first = self._post(payload, token=raw).json()["result"]["structuredContent"]
+        self.assertEqual([event["task"]["id"] for event in first["events"]], [high_task.id])
+
+        late_task, late_change = self._create_event_task(change_id=100)
+        payload["params"]["arguments"]["cursor"] = first["next_cursor"]
+        with self._settings():
+            followup = self._post(payload, token=raw).json()["result"]["structuredContent"]
+        sequenced = {event["event_id"]: event for event in followup["events"]}
+        self.assertIn(late_change.id, sequenced)
+        self.assertEqual(sequenced[late_change.id]["task"]["id"], late_task.id)
+        self.assertGreater(
+            sequenced[late_change.id]["sequence"],
+            first["events"][0]["sequence"],
+        )
+
+    def test_task_event_feed_rejects_invalid_cursor(self):
+        raw = self._token(raw="task-event-bad-cursor-token")
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 734,
+            "method": "tools/call",
+            "params": {
+                "name": "list_task_events",
+                "arguments": {"cursor": "not-a-signed-cursor"},
+            },
+        }
+        with self._settings():
+            response = self._post(payload, token=raw)
+        self.assertTrue(response.json()["result"]["isError"])
+        self.assertNotIn("structuredContent", response.json()["result"])
+
+    def test_task_event_feed_omits_tasks_from_private_calls(self):
+        raw = self._token(raw="task-event-private-call-token")
+        connection = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="Private event source",
+            external_id="private-event-source",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=connection,
+            external_id="private-event-source-1",
+            employee=self.manager,
+            phone_number="+7 900 000-00-11",
+            direction=PhoneCall.DIRECTION_OUT,
+            started_at=timezone.now(),
+            duration_seconds=30,
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        CallPrivateNumber.objects.create(
+            organization=self.organization,
+            owner=self.manager,
+            label="Personal",
+            phone_key="9000000011",
+        )
+        self._create_event_task(payload={"source_call_id": call.pk})
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 735,
+            "method": "tools/call",
+            "params": {"name": "list_task_events", "arguments": {}},
+        }
+        with self._settings():
+            response = self._post(payload, token=raw)
+        result = response.json()["result"]["structuredContent"]
+        self.assertEqual(result["events"], [])
 
     def test_finance_resource_token_is_rejected(self):
         raw = self._token(
