@@ -99,10 +99,52 @@ def feed_source_diagnostic(row):
     return projected
 
 
+def duplicate_report_diagnostics(value):
+    require(isinstance(value, dict) and value.get("complete") is False)
+    require(value.get("upload_status") in ("processing", "success", "success_warning", "error", ""))
+    result = {"complete": False, "upload_id": identifier(value.get("upload_id")),
+              "upload_status": value["upload_status"]}
+    started_at = value.get("started_at")
+    if started_at is not None:
+        require(isinstance(started_at, str) and len(started_at) <= 40)
+        require(datetime.fromisoformat(started_at).utcoffset() == timedelta(hours=7))
+    result["started_at"] = started_at
+    for key in ("read_rows", "unique_identity_pairs", "duplicate_extra_rows",
+                "same_page_duplicate_rows", "cross_page_duplicate_rows",
+                "identical_duplicate_rows", "different_duplicate_rows"):
+        result[key] = integer(value.get(key), 5000)
+    rows, extra = result["read_rows"], result["duplicate_extra_rows"]
+    require(0 < extra < rows and result["unique_identity_pairs"] + extra == rows)
+    require(result["same_page_duplicate_rows"] + result["cross_page_duplicate_rows"] == extra)
+    require(result["identical_duplicate_rows"] + result["different_duplicate_rows"] == extra)
+    pages = result["pages"] = integer(value.get("pages"), 100)
+    require(pages == max(1, (rows + 49) // 50))
+    def sample(row):
+        require(isinstance(row, dict) and type(row.get("identical_payload")) is bool)
+        first = integer(row.get("first_row"), rows)
+        repeated = integer(row.get("repeated_row"), rows)
+        require(1 <= first < repeated <= rows)
+        first_page = integer(row.get("first_page"), pages)
+        repeated_page = integer(row.get("repeated_page"), pages)
+        require(first_page == (first - 1) // 50 + 1 and repeated_page == (repeated - 1) // 50 + 1)
+        return {"first_row": first, "repeated_row": repeated, "first_page": first_page,
+                "repeated_page": repeated_page, "identical_payload": row["identical_payload"]}
+    samples = sequence(value.get("samples"), sample, 5)
+    require(len(samples) == min(extra, 5))
+    require(len({row["repeated_row"] for row in samples}) == len(samples))
+    require(sum(row["identical_payload"] for row in samples) <= result["identical_duplicate_rows"])
+    require(sum(not row["identical_payload"] for row in samples) <= result["different_duplicate_rows"])
+    result["samples"] = samples
+    return result
+
+
 def report(value):
     require(isinstance(value, dict))
     if "error" in value:
-        return {"error": code(value["error"])}
+        result = {"error": code(value["error"])}
+        if result["error"] == "autoload_report_duplicate_rows" and "duplicate_diagnostics" in value:
+            result["duplicate_diagnostics"] = duplicate_report_diagnostics(value["duplicate_diagnostics"])
+        return result
     require(value.get("complete") is True and type(value.get("finished")) is bool)
     require(value.get("upload_status") in ("processing", "success", "success_warning", "error", ""))
     result = {"upload_id": identifier(value.get("upload_id")), "upload_status": value["upload_status"],

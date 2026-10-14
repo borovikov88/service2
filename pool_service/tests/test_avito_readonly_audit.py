@@ -173,6 +173,26 @@ class ReadonlyAvitoOperatorTests(TestCase):
                 result = self.collect_connection(account=final_self)
                 self.assertEqual(result, {"connection_id": self.connection.pk, "error": "provider_account_mismatch"})
 
+    def test_duplicate_report_exposes_only_partial_metadata_without_reconciliation(self):
+        from pool_service.tests.test_avito_autoload_report import item, page, upload
+        with patch.object(audit.avito_workspace, "_get", side_effect=[
+            upload(), page([item(), item()]), upload()
+        ]), patch.object(audit.avito_workspace, "enforce_rate"):
+            with self.assertRaises(audit.avito_autoload_report.ReportDuplicateRows) as caught:
+                audit.avito_autoload_report.fetch_report("token", "123")
+        result = self.collect_connection(upload=[caught.exception])
+        raw = result["autoload_report"]
+        self.assertEqual("autoload_report_duplicate_rows", raw["error"])
+        self.assertEqual("2026-10-10T17:00:00+07:00", raw["duplicate_diagnostics"]["started_at"])
+        self.assertFalse(raw["duplicate_diagnostics"]["complete"])
+        self.assertEqual(1, raw["duplicate_diagnostics"]["duplicate_extra_rows"])
+        self.assertNotIn("counts", raw)
+        self.assertEqual({"error": "audit_report_unavailable"}, result["active_source_audit"])
+        self.assertEqual(raw, receipt.report(raw))
+        self.connection.refresh_from_db()
+        self.assertEqual({}, self.connection.settings)
+        self.assertFalse(Notification.objects.exists())
+
     def test_provider_denial_is_not_fabricated_no_link_or_successful_zero_report(self):
         result = self.collect_connection(detail=[AvitoError("provider_http_403"), {"status": "old", "autoload_item_id": ""}],
                                          upload=[AvitoError("provider_http_403")])
@@ -244,3 +264,48 @@ class FullListingProjectionTests(SimpleTestCase):
         projected["message_code_counts"][0]["rows"] = 31
         with self.assertRaises(ValueError):
             receipt.report(projected)
+
+
+class DuplicateReceiptProjectionTests(SimpleTestCase):
+    def diagnostic(self):
+        return {"complete": False, "upload_id": "123", "upload_status": "success_warning",
+                "started_at": "2026-10-10T17:00:00+07:00", "read_rows": 51, "pages": 2,
+                "unique_identity_pairs": 50, "duplicate_extra_rows": 1,
+                "same_page_duplicate_rows": 0, "cross_page_duplicate_rows": 1,
+                "identical_duplicate_rows": 1, "different_duplicate_rows": 0,
+                "samples": [{"first_row": 1, "repeated_row": 51, "first_page": 1,
+                             "repeated_page": 2, "identical_payload": True}]}
+
+    def test_private_fields_and_business_counts_are_not_projected(self):
+        diagnostic = self.diagnostic()
+        diagnostic["PRIVATE"] = "SECRET"
+        diagnostic["samples"][0]["PRIVATE"] = "SECRET"
+        projected = receipt.report({"error": "autoload_report_duplicate_rows",
+                                    "duplicate_diagnostics": diagnostic, "counts": {"error": 51},
+                                    "complete": True, "rows": ["SECRET"]})
+        self.assertNotIn("SECRET", json.dumps(projected))
+        self.assertNotIn("counts", projected)
+        self.assertNotIn("rows", projected)
+        self.assertFalse(projected["duplicate_diagnostics"]["complete"])
+        self.assertEqual({"error": "provider_http_403"}, receipt.report({
+            "error": "provider_http_403", "duplicate_diagnostics": diagnostic}))
+
+    def test_inconsistent_unbounded_or_non_numeric_diagnostics_fail_closed(self):
+        variants = [
+            {"complete": True}, {"upload_id": "PRIVATE"}, {"upload_status": "PRIVATE"},
+            {"started_at": "2026-10-10T17:00:00"}, {"read_rows": True},
+            {"read_rows": 5001}, {"unique_identity_pairs": 49}, {"duplicate_extra_rows": 0},
+            {"same_page_duplicate_rows": 1}, {"identical_duplicate_rows": 0},
+            {"identical_duplicate_rows": 0, "different_duplicate_rows": 1}, {"pages": 1},
+            {"samples": []}, {"samples": self.diagnostic()["samples"] * 6},
+            {"samples": [{"first_row": 51, "repeated_row": 51, "first_page": 2,
+                          "repeated_page": 2, "identical_payload": True}]},
+            {"samples": [{"first_row": 1, "repeated_row": 51, "first_page": 1,
+                          "repeated_page": 1, "identical_payload": True}]},
+            {"samples": [{"first_row": 1, "repeated_row": 51, "first_page": 1,
+                          "repeated_page": 2, "identical_payload": "SECRET"}]},
+        ]
+        for changes in variants:
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                receipt.report({"error": "autoload_report_duplicate_rows",
+                                "duplicate_diagnostics": self.diagnostic() | changes})
