@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from django.utils import timezone
 
 from pool_service import avito_autoload_report, avito_source_audit, avito_workspace, avito_status_monitor, avito_inventory
+from pool_service.avito_profile_source import fetch_profile_source
 from pool_service.communication_avito import AvitoError, access_token, authorized_account_id, _provider_root
 from pool_service.communication_models import ChannelConnection, CommunicationAccess
 from pool_service.models import OrganizationAccess
@@ -168,6 +169,10 @@ def collect_connection(connection, item_ids, index, stocks=None, stock_error=Non
         if account_id != connection.external_id:
             raise AvitoError("provider_account_mismatch")
         token = access_token(connection)
+        try:
+            configured_source, profile_fingerprint = fetch_profile_source(token, account_id)
+        except Exception as error:
+            configured_source, profile_fingerprint = {"error": safe_error(error)}, None
         items = []
         for item_id in item_ids:
             try:
@@ -194,11 +199,19 @@ def collect_connection(connection, item_ids, index, stocks=None, stock_error=Non
                              if "error" not in listing_scan else {"error": "audit_listing_scan_unavailable"})
         except Exception as error:
             active_source = {"error": safe_error(error)}
+        if profile_fingerprint is not None:
+            try:
+                final_source, final_fingerprint = fetch_profile_source(token, account_id)
+                if final_source != configured_source or final_fingerprint != profile_fingerprint:
+                    raise AvitoError("audit_profile_source_changed")
+            except Exception as error:
+                configured_source = {"error": safe_error(error)}
         final_account_id = authorized_account_id(connection)
         after = binding(connection)
         if before != after or final_account_id != account_id:
             raise AvitoError("provider_account_mismatch")
-        return identity | {"account_id": account_id, "items": items, "autoload_report": summary, "listing_scan": listing_scan, "active_source_audit": active_source}
+        return identity | {"account_id": account_id, "items": items, "autoload_report": summary, "listing_scan": listing_scan, "active_source_audit": active_source,
+                           "configured_feed_source": configured_source}
     except Exception as error:
         return identity | {"error": safe_error(error)}
 
@@ -224,7 +237,7 @@ def collect(item_ids):
         stocks, stock_error = None, safe_error(error)
     results = [collect_connection(connection, item_ids, index, stocks, stock_error) for connection in connections]
     complete = "error" not in source and all(
-        "error" not in row and "error" not in row["autoload_report"] and "error" not in row["listing_scan"] and all("error" not in item for item in row["items"])
+        "error" not in row and "error" not in row["autoload_report"] and "error" not in row["listing_scan"] and "error" not in row["configured_feed_source"] and all("error" not in item for item in row["items"])
         for row in results
     )
     return normalize({"schema_version": 1, "status": "read" if complete else "partial",

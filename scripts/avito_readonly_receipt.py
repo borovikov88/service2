@@ -83,6 +83,22 @@ def item(value):
                   report_xml_ids=sequence(value.get("report_xml_ids"), xml_id, 10))
     return result
 
+def feed_source_diagnostic(row):
+    require(isinstance(row, dict))
+    options = {"shape": {"object_url", "string", "unsupported"},
+               "scheme": {"http", "https", "unknown"},
+               "host_kind": {"shop", "shop_www", "shop_legacy", "service2", "info_site", "avito", "other", "unknown"},
+               "path_kind": {"aggregate_file", "profile_43_file", "index_route", "root", "other", "unknown"}}
+    projected = {}
+    for key, allowed in options.items():
+        require(row.get(key) in allowed)
+        projected[key] = row[key]
+    for key in ("query_present", "fragment_present", "credentials_present"):
+        require(type(row.get(key)) is bool)
+        projected[key] = row[key]
+    return projected
+
+
 def report(value):
     require(isinstance(value, dict))
     if "error" in value:
@@ -104,21 +120,7 @@ def report(value):
     source_kind = value.get("shop_feed_source", "other_or_unknown")
     require(source_kind in ("shop_aggregate_file", "shop_profile_43_file", "other_or_unknown"))
     result["shop_feed_source"] = source_kind
-    def feed_diagnostic(row):
-        require(isinstance(row, dict))
-        options = {"shape": {"object_url", "string", "unsupported"},
-                   "scheme": {"http", "https", "unknown"},
-                   "host_kind": {"shop", "shop_www", "shop_legacy", "other", "unknown"},
-                   "path_kind": {"aggregate_file", "profile_43_file", "index_route", "root", "other", "unknown"}}
-        projected = {}
-        for key, allowed in options.items():
-            require(row.get(key) in allowed)
-            projected[key] = row[key]
-        for key in ("query_present", "fragment_present", "credentials_present"):
-            require(type(row.get(key)) is bool)
-            projected[key] = row[key]
-        return projected
-    result["shop_feed_diagnostics"] = sequence(value.get("shop_feed_diagnostics", []), feed_diagnostic, 50)
+    result["shop_feed_diagnostics"] = sequence(value.get("shop_feed_diagnostics", []), feed_source_diagnostic, 50)
     if "message_code_counts" in value:
         def message_count(row):
             require(isinstance(row, dict) and row.get("type") in ("error", "warning", "alarm", "info"))
@@ -204,6 +206,16 @@ def inventory(value):
     result["account_feed_url_verified"] = False
     return result
 
+def configured_feed_source(value):
+    require(isinstance(value, dict))
+    if "error" in value:
+        return {"error": code(value["error"])}
+    require(value.get("complete") is True and type(value.get("autoload_enabled")) is bool)
+    require(value.get("shop_feed_source") in ("shop_aggregate_file", "shop_profile_43_file", "other_or_unknown"))
+    return {"complete": True, "autoload_enabled": value["autoload_enabled"],
+            "shop_feed_source": value["shop_feed_source"],
+            "shop_feed_diagnostics": sequence(value.get("shop_feed_diagnostics"), feed_source_diagnostic, 50)}
+
 def connection(value):
     require(isinstance(value, dict))
     result = {"connection_id": integer(value.get("connection_id"))}
@@ -212,7 +224,8 @@ def connection(value):
     result.update(account_id=identifier(value.get("account_id")),
                   items=sequence(value.get("items"), item, 10), autoload_report=report(value.get("autoload_report")),
                   listing_scan=listing_scan(value.get("listing_scan", {"error": "audit_listing_scan_not_requested"})),
-                  active_source_audit=inventory(value.get("active_source_audit", {"error": "audit_inventory_not_requested"})))
+                  active_source_audit=inventory(value.get("active_source_audit", {"error": "audit_inventory_not_requested"})),
+                  configured_feed_source=configured_feed_source(value.get("configured_feed_source", {"error": "audit_profile_source_not_requested"})))
     return result
 
 def normalize(value):

@@ -123,9 +123,15 @@ def feed_source_diagnostics(feeds):
         if isinstance(value, str) and len(value) <= 2000:
             try:
                 part = urlsplit(value)
+                known_host = {"shop.aqualine22.ru": "shop", "www.shop.aqualine22.ru": "shop_www",
+                              "shop.borovidz.beget.tech": "shop_legacy", "service2.aqualine22.ru": "service2",
+                              "aqualine22.ru": "info_site"}.get(part.hostname)
+                if known_host is None and part.hostname and (
+                        part.hostname == "avito.ru" or part.hostname.endswith(".avito.ru")
+                        or part.hostname == "avito.st" or part.hostname.endswith(".avito.st")):
+                    known_host = "avito"
                 row.update(scheme=part.scheme if part.scheme in ("http", "https") else "unknown",
-                           host_kind={"shop.aqualine22.ru": "shop", "www.shop.aqualine22.ru": "shop_www",
-                                      "shop.borovidz.beget.tech": "shop_legacy"}.get(part.hostname, "other"),
+                           host_kind=known_host or "other",
                            path_kind={"/avito/avitofeed.xml": "aggregate_file",
                                       "/avito/avitofeed_43.xml": "profile_43_file",
                                       "/index.php": "index_route", "/": "root"}.get(part.path, "other"),
