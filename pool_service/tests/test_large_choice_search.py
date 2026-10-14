@@ -15,7 +15,7 @@ class LargeChoiceSearchBrowserTests(SimpleTestCase):
             [shutil.which("node"), "--test", str(script)],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=80,
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

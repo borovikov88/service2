@@ -28,6 +28,7 @@ ERRORS = {
     "autoload_report_changed": "Загрузка изменилась во время чтения. Согласованный снимок не сохранён; повторите проверку.",
     "autoload_report_limit": "Отчёт не получен целиком в пределах размера, количества или времени. Предыдущий снимок сохранён, если был.",
     "autoload_report_pagination": "Пагинация отчёта неполная или противоречивая. Полнота данных не подтверждена.",
+    "autoload_report_duplicate_rows": "В отчёте Авито повторяются строки одного объявления. Полнота данных и счётчики не подтверждены; повторите проверку.",
 }
 
 
@@ -109,6 +110,40 @@ def shop_feed_source(feeds):
     return kinds[0] if len(set(kinds)) == 1 else "other_or_unknown"
 
 
+def feed_source_diagnostics(feeds):
+    """Fixed structural facts only; URLs, names and parameter values stay private."""
+    if not isinstance(feeds, list) or len(feeds) > 50:
+        _invalid()
+    result = []
+    for feed in feeds:
+        value = feed.get("url") if isinstance(feed, dict) else feed if isinstance(feed, str) else None
+        shape = "object_url" if isinstance(feed, dict) and isinstance(value, str) else "string" if isinstance(feed, str) else "unsupported"
+        row = {"shape": shape, "scheme": "unknown", "host_kind": "unknown",
+               "path_kind": "unknown", "query_present": False,
+               "fragment_present": False, "credentials_present": False}
+        if isinstance(value, str) and len(value) <= 2000:
+            try:
+                part = urlsplit(value)
+                known_host = {"shop.aqualine22.ru": "shop", "www.shop.aqualine22.ru": "shop_www",
+                              "shop.borovidz.beget.tech": "shop_legacy", "service2.aqualine22.ru": "service2",
+                              "aqualine22.ru": "info_site"}.get(part.hostname)
+                if known_host is None and part.hostname and (
+                        part.hostname == "avito.ru" or part.hostname.endswith(".avito.ru")
+                        or part.hostname == "avito.st" or part.hostname.endswith(".avito.st")):
+                    known_host = "avito"
+                row.update(scheme=part.scheme if part.scheme in ("http", "https") else "unknown",
+                           host_kind=known_host or "other",
+                           path_kind={"/avito/avitofeed.xml": "aggregate_file",
+                                      "/avito/avitofeed_43.xml": "profile_43_file",
+                                      "/index.php": "index_route", "/": "root"}.get(part.path, "other"),
+                           query_present=bool(part.query), fragment_present=bool(part.fragment),
+                           credentials_present=part.username is not None or part.password is not None)
+            except ValueError:
+                pass
+        result.append(row)
+    return result
+
+
 def summary_data(raw):
     if not isinstance(raw, dict):
         _invalid()
@@ -127,7 +162,8 @@ def summary_data(raw):
                                   "description": _text(event.get("description"), 3000)})
     return {"id": str(identifier), "status": status or "", "started_at": _date(raw.get("started_at"), nullable=True),
             "stats": _tree(raw.get("stats")), "events": normalized_events,
-            "shop_feed_source": shop_feed_source(raw["feed_urls"])}
+            "shop_feed_source": shop_feed_source(raw["feed_urls"]),
+            "shop_feed_diagnostics": feed_source_diagnostics(raw["feed_urls"])}
 
 
 def summary_for_workspace(raw):
@@ -195,6 +231,26 @@ def _page(raw, page, expected=None):
     return [_item(row) for row in rows], (total, pages)
 
 
+def require_unique_rows(rows):
+    """Repeated XML/Avito identity pairs cannot prove a complete item scan."""
+    if not isinstance(rows, list) or len(rows) > MAX_ITEMS:
+        _invalid()
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            _invalid()
+        identifier, avito_id = row.get("ad_id"), row.get("avito_id")
+        if (not isinstance(identifier, str) or not 1 <= len(identifier) <= 100
+                or identifier != identifier.strip()
+                or any(char < " " or char == "\x7f" for char in identifier)
+                or (avito_id is not None and (type(avito_id) is not int or not 0 <= avito_id < 10**32))):
+            _invalid()
+        identity = (identifier, avito_id)
+        if identity in seen:
+            raise AvitoError("autoload_report_duplicate_rows")
+        seen.add(identity)
+
+
 def fetch_report(token, account_id, *, kind="last_successful"):
     from pool_service import avito_workspace
     if kind not in KINDS:
@@ -229,6 +285,7 @@ def fetch_report(token, account_id, *, kind="last_successful"):
     after = summary_data(get(base))
     if before != after:
         raise AvitoError("autoload_report_changed")
+    require_unique_rows(rows)
     counts = Counter()
     for row in rows:
         for message_type in MESSAGE_TYPES:
@@ -238,6 +295,7 @@ def fetch_report(token, account_id, *, kind="last_successful"):
               "upload_status": before["status"], "upload_finished": before["status"] in {"success", "success_warning", "error"},
               "started_at": before["started_at"], "stats": before["stats"], "events": before["events"],
               "shop_feed_source": before["shop_feed_source"],
+              "shop_feed_diagnostics": before["shop_feed_diagnostics"],
               "total": len(rows), "pages": page, "counts": dict(counts), "rows": rows}
     if len(json.dumps(result, ensure_ascii=False).encode()) > MAX_BYTES:
         raise AvitoError("autoload_report_limit")
@@ -250,6 +308,7 @@ def csv_text(report, snapshot_time):
             or not isinstance(report.get("rows"), list) or len(report["rows"]) > MAX_ITEMS):
         _invalid()
     rows = [_item(row) for row in report["rows"]]
+    require_unique_rows(rows)
     def cell(value):
         text = "" if value is None else str(value)
         return "'" + text if text.lstrip().startswith(("=", "+", "-", "@")) else text

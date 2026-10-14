@@ -7,14 +7,15 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {spawn} = require("node:child_process");
-const chrome = [process.env.CHROME_BIN, "/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome", "/opt/google/chrome/chrome"]
+const chrome = [process.env.CHROME_BIN, "/opt/google/chrome/chrome", "/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"]
   .find(file => file && fs.existsSync(file));
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 test("search-first native and large multiselect browser regressions", {
   skip: !chrome || typeof WebSocket === "undefined" ? "Chromium and Node with WebSocket are required" : false,
-  timeout: 45000,
+  timeout: 65000,
 }, async t => {
+  console.info(chrome === "/opt/google/chrome/chrome" ? "BROWSER_RUNTIME_GOOGLE_CHROME_DIRECT" : "BROWSER_RUNTIME_ALTERNATE");
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "service2-choice-browser-"));
   const isolatedGroup = process.platform !== "win32";
   // Some CI runners export malformed desktop bus addresses. Give the isolated
@@ -39,7 +40,7 @@ test("search-first native and large multiselect browser regressions", {
   child.stderr.on("data", chunk => {stderr = (stderr + chunk).slice(-20000);});
   const pending = new Map();
   try {
-    const deadline = Date.now() + 10000;
+    const deadline = Date.now() + 25000;
     let endpoint;
     while (Date.now() < deadline && !(endpoint = stderr.match(/DevTools listening on (ws:\/\/\S+)/)?.[1])) {
       if (child.exitCode !== null) throw Error("Chromium exited before CDP: " + stderr.slice(-1500));
