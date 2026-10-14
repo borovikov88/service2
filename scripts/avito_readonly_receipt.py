@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 FRAME = "AVITO_READONLY_AUDIT_RECEIPT "
 MAX_BYTES = 262144
 STATES = {"active", "removed", "old", "blocked", "rejected"}
-CODE_PATTERN = re.compile(r"(?:monitor_(?:scan_limit|pagination_invalid|status_invalid)|provider_http_[1-5][0-9]{2}|audit_[a-z_]{1,60}|autoload_report_[a-z_]{1,60}|source_[a-z_]{1,60}|provider_[a-z_]{1,60})\Z")
+CODE_PATTERN = re.compile(r"(?:monitor_(?:scan_limit|pagination_invalid|status_invalid)|(?:provider|source)_http_[1-5][0-9]{2}|audit_[a-z_]{1,60}|autoload_report_[a-z_]{1,60}|source_[a-z_]{1,60}|provider_[a-z_]{1,60})\Z")
 
 def require(value):
     if not value:
@@ -104,6 +104,21 @@ def report(value):
     source_kind = value.get("shop_feed_source", "other_or_unknown")
     require(source_kind in ("shop_aggregate_file", "shop_profile_43_file", "other_or_unknown"))
     result["shop_feed_source"] = source_kind
+    def feed_diagnostic(row):
+        require(isinstance(row, dict))
+        options = {"shape": {"object_url", "string", "unsupported"},
+                   "scheme": {"http", "https", "unknown"},
+                   "host_kind": {"shop", "shop_www", "shop_legacy", "other", "unknown"},
+                   "path_kind": {"aggregate_file", "profile_43_file", "index_route", "root", "other", "unknown"}}
+        projected = {}
+        for key, allowed in options.items():
+            require(row.get(key) in allowed)
+            projected[key] = row[key]
+        for key in ("query_present", "fragment_present", "credentials_present"):
+            require(type(row.get(key)) is bool)
+            projected[key] = row[key]
+        return projected
+    result["shop_feed_diagnostics"] = sequence(value.get("shop_feed_diagnostics", []), feed_diagnostic, 50)
     if "message_code_counts" in value:
         def message_count(row):
             require(isinstance(row, dict) and row.get("type") in ("error", "warning", "alarm", "info"))

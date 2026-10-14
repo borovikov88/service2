@@ -116,6 +116,17 @@ class AvitoSourceTransportTests(SimpleTestCase):
                 source._read_xml(source.FEED_PATH)
             https.assert_not_called()
 
+    def test_stock_http_status_is_precise_and_redirect_location_is_withheld(self):
+        response = self.response(status=301, headers={"Location": "https://example.invalid/?token=PRIVATE"})
+        connection = self.connection(response)
+        with patch.object(source.socket, "getaddrinfo", return_value=self.public_dns()), patch.object(
+                source, "_PinnedHTTPS", return_value=connection), self.assertRaises(AvitoError) as raised:
+            source._read_xml(source.STOCK_PATH)
+        self.assertEqual("source_http_301", str(raised.exception))
+        self.assertEqual("/index.php?route=extension/module/avitofeed&stock=1", connection.request.call_args.args[1])
+        response.read1.assert_not_called()
+        self.assertNotIn("PRIVATE", source.failure_detail(str(raised.exception)))
+
     def test_redirect_error_and_compressed_payloads_are_not_read(self):
         for status, headers in ((302, {"Location": "http://127.0.0.1"}), (404, {}), (200, {"Content-Encoding": "gzip"})):
             connection, response = self.response(status, headers)

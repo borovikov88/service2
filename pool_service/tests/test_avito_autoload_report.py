@@ -278,3 +278,27 @@ class ShopFeedSourceTests(SimpleTestCase):
         self.assertEqual("other_or_unknown", report_api.shop_feed_source([
             {"url": "https://shop.aqualine22.ru/avito/avitofeed.xml"},
             {"url": "https://shop.aqualine22.ru/avito/avitofeed_43.xml"}]))
+
+
+class FeedSourceDiagnosticsTests(SimpleTestCase):
+    def test_structural_facts_never_expose_urls_names_or_values(self):
+        feed = {"name": "PRIVATE_NAME", "url": "https://shop.aqualine22.ru/avito/avitofeed.xml?token=PRIVATE_VALUE"}
+        result = report_api.feed_source_diagnostics([feed])
+        self.assertEqual("aggregate_file", result[0]["path_kind"])
+        self.assertTrue(result[0]["query_present"])
+        self.assertEqual("shop", result[0]["host_kind"])
+        self.assertNotIn("PRIVATE", str(result))
+        self.assertNotIn("https://", str(result))
+        self.assertEqual("other_or_unknown", report_api.shop_feed_source([feed]))
+        self.assertEqual("string", report_api.feed_source_diagnostics(["https://example.invalid/PRIVATE"])[0]["shape"])
+        self.assertEqual("unsupported", report_api.feed_source_diagnostics([{"private": "SECRET"}])[0]["shape"])
+    def test_receipt_projection_rejects_untrusted_diagnostic_fields(self):
+        from scripts.avito_readonly_receipt import report
+        value = {"upload_id": "1", "upload_status": "success", "complete": True,
+                 "finished": True, "total": 0, "critical_samples": [],
+                 "shop_feed_diagnostics": report_api.feed_source_diagnostics(
+                     [{"url": "https://shop.aqualine22.ru/avito/avitofeed.xml"}])}
+        self.assertEqual("aggregate_file", report(value)["shop_feed_diagnostics"][0]["path_kind"])
+        value["shop_feed_diagnostics"][0]["host_kind"] = "PRIVATE_URL"
+        with self.assertRaises(ValueError):
+            report(value)
