@@ -249,6 +249,18 @@ def avito_dashboard(request):
         if isinstance(saved, dict) and saved.get("account_id") == str(connection.external_id):
             workspace = {key: value for key, value in saved.get("sections", {}).items()
                          if key in avito_workspace.SECTIONS and isinstance(value, dict)} if isinstance(saved.get("sections"), dict) else {}
+    report_state = workspace.get("autoload_report", {})
+    report_data = report_state.get("data")
+    if isinstance(report_data, dict) and report_data.get("complete") is True:
+        try:
+            avito_autoload_report.require_unique_rows(report_data.get("rows"))
+        except AvitoError as error:
+            # Hide unverifiable cached counters without altering saved data on GET.
+            code = str(error)
+            workspace["autoload_report"] = {
+                **report_state, "data": {}, "status": "warning", "stale": True,
+                "code": code, "detail": avito_autoload_report.ERRORS[code],
+            }
     for key, normalizer in (("item_detail", avito_workspace.item_detail_for_display), ("prices", avito_workspace.prices_for_display)):
         if key in workspace:
             workspace[key] = {**workspace[key], "data": normalizer(workspace[key].get("data"))}

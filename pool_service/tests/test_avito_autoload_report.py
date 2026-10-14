@@ -53,6 +53,37 @@ class AutoloadReportTests(SimpleTestCase):
         self.assertNotIn("private", str(data))
         self.assertEqual(rate.call_count, 4)
 
+    def test_repeated_identity_within_or_across_pages_blocks_complete_report(self):
+        rows = [item(str(i)) for i in range(50)]
+        variants = [
+            [page([item(), item()])],
+            [page(rows, total=51), page([rows[0]], 2, 51)],
+            [page([item(messages=[]), item()])],
+        ]
+        for pages in variants:
+            with self.subTest(pages=len(pages)), patch.object(
+                avito_workspace, "_get", side_effect=[upload(), *pages, upload()]
+            ), patch.object(avito_workspace, "enforce_rate"), self.assertRaisesMessage(
+                AvitoError, "autoload_report_duplicate_rows"
+            ):
+                report_api.fetch_report("token", "123")
+
+    def test_distinct_avito_ids_are_retained_as_separate_records(self):
+        first, second = item(), item()
+        second["avito_id"] = 778
+        with patch.object(avito_workspace, "_get", side_effect=[
+            upload(), page([first, second]), upload()
+        ]), patch.object(avito_workspace, "enforce_rate"):
+            data = report_api.fetch_report("token", "123")
+        self.assertEqual(data["counts"]["error"], 2)
+        self.assertEqual([row["avito_id"] for row in data["rows"]], [777, 778])
+
+    def test_cached_duplicate_report_is_not_exported_as_complete(self):
+        data = saved_report()
+        data["rows"].append(dict(data["rows"][0]))
+        with self.assertRaisesMessage(AvitoError, "autoload_report_duplicate_rows"):
+            report_api.csv_text(data, "2026-10-10T11:00:00Z")
+
     def test_processing_snapshot_is_provisional_and_errors_are_not_upload_failure(self):
         with patch.object(avito_workspace, "_get", side_effect=[upload(status="processing"), page([item()]), upload(status="processing")]), patch.object(avito_workspace, "enforce_rate"):
             data = report_api.fetch_report("token", "123", kind="current")
@@ -190,6 +221,24 @@ class AutoloadReportViewTests(TestCase):
         self.assertIn("no-store", csv_response["Cache-Control"])
         self.assertFalse(Notification.objects.exists())
 
+    def test_cached_duplicate_report_has_no_counters_or_download_and_get_is_readonly(self):
+        data = self.sample()
+        data["rows"].append(dict(data["rows"][0]))
+        data["total"] = 2
+        self.connection.settings = {"avito_workspace": {"account_id": "123", "sections": {
+            "autoload_report": {"data": data, "success_at": "2026-10-10T11:00:00Z", "status": "ok"}
+        }}}
+        self.connection.save(update_fields=["settings"])
+        previous = self.connection.settings
+        with patch.object(report_api, "fetch_report") as fetch:
+            response = self.client.get(reverse("avito_dashboard"))
+            self.assertEqual(self.client.get(self.download).status_code, 404)
+        fetch.assert_not_called()
+        self.assertContains(response, "В отчёте Авито повторяются строки")
+        self.assertNotContains(response, "Весь доступный список загрузки:")
+        self.connection.refresh_from_db()
+        self.assertEqual(self.connection.settings, previous)
+
     def test_kind_is_sent_even_when_submit_handler_disables_buttons(self):
         class Forms(HTMLParser):
             def __init__(self):
@@ -224,12 +273,13 @@ class AutoloadReportViewTests(TestCase):
         with patch.object(report_api, "fetch_report", return_value=self.sample()):
             self.client.post(self.refresh, {"section": "autoload_report"})
         old = self.state()
-        with patch.object(report_api, "fetch_report", side_effect=AvitoError("autoload_report_changed")):
-            self.client.post(self.refresh, {"section": "autoload_report"})
-        new = self.state()
-        self.assertEqual(new["data"], old["data"])
-        self.assertEqual(new["success_at"], old["success_at"])
-        self.assertTrue(new["stale"])
+        for code in ("autoload_report_changed", "autoload_report_duplicate_rows"):
+            with self.subTest(code=code), patch.object(report_api, "fetch_report", side_effect=AvitoError(code)):
+                self.client.post(self.refresh, {"section": "autoload_report"})
+            new = self.state()
+            self.assertEqual(new["data"], old["data"])
+            self.assertEqual(new["success_at"], old["success_at"])
+            self.assertTrue(new["stale"])
 
     def test_csrf_permissions_organization_account_binding_and_download_methods(self):
         csrf = Client(enforce_csrf_checks=True)

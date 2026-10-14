@@ -25,6 +25,7 @@ SAFE_ERRORS = {
     "provider_account_mismatch", "provider_data_invalid", "provider_unavailable",
     "provider_response_too_large", "provider_invalid_json", "provider_invalid_response",
     "autoload_report_invalid", "autoload_report_changed", "autoload_report_limit", "autoload_report_pagination",
+    "autoload_report_duplicate_rows",
     *avito_source_audit.ERRORS,
 }
 
