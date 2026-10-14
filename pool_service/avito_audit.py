@@ -42,7 +42,24 @@ def fetch_report(connection):
     # The web refresh lease lasts three minutes. A shorter scan budget leaves
     # room for authentication and the final HTTP request (15-second timeout).
     items, pages = avito_status_monitor.full_scan(connection, scan_seconds=SCAN_SECONDS)
-    return build_report(items, pages)
+    result = build_report(items, pages)
+    result["active_source_audit"] = fetch_inventory(connection, items)
+    return result
+
+
+def fetch_inventory(connection, items):
+    from pool_service import avito_inventory, avito_autoload_report
+    from pool_service.communication_avito import access_token
+    from pool_service.avito_readonly_audit import safe_error
+    if not any(row["status"] == "active" for row in items.values()):
+        return avito_inventory.build_inventory(items, {"complete": True, "rows": []}, {}, {})
+    try:
+        token = access_token(connection)
+        upload = avito_autoload_report.fetch_report(token, str(connection.external_id), kind="last_successful")
+        index, stocks, stock_error = avito_inventory.source_inputs()
+        return avito_inventory.build_inventory(items, upload, index, stocks, stock_error)
+    except Exception as error:
+        return {"error": safe_error(error)}
 
 
 def failure_detail(code):

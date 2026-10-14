@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 from django.utils import timezone
 
-from pool_service import avito_autoload_report, avito_source_audit, avito_workspace, avito_status_monitor
+from pool_service import avito_autoload_report, avito_source_audit, avito_workspace, avito_status_monitor, avito_inventory
 from pool_service.communication_avito import AvitoError, access_token, authorized_account_id, _provider_root
 from pool_service.communication_models import ChannelConnection, CommunicationAccess
 from pool_service.models import OrganizationAccess
@@ -155,7 +155,7 @@ def fetch_detail(token, account_id, item_id):
             time.sleep(min(wait, 3))
     return avito_workspace.fetch_item_detail(token, account_id, item_id)
 
-def collect_connection(connection, item_ids, index):
+def collect_connection(connection, item_ids, index, stocks=None, stock_error=None):
     identity = {"connection_id": connection.pk}
     try:
         before = binding(connection)
@@ -172,6 +172,7 @@ def collect_connection(connection, item_ids, index):
                 items.append(item_link(item_id, fetch_detail(token, account_id, item_id), index))
             except Exception as error:
                 items.append({"item_id": item_id, "error": safe_error(error)})
+        report = None
         try:
             report = avito_autoload_report.fetch_report(token, account_id, kind="last_successful")
             summary = report_summary(report)
@@ -186,11 +187,16 @@ def collect_connection(connection, item_ids, index):
             listing_scan = listing_summary(all_items, pages)
         except Exception as error:
             listing_scan = {"error": safe_error(error)}
+        try:
+            active_source = (avito_inventory.build_inventory(all_items, report, index, stocks, stock_error)
+                             if "error" not in listing_scan else {"error": "audit_listing_scan_unavailable"})
+        except Exception as error:
+            active_source = {"error": safe_error(error)}
         final_account_id = authorized_account_id(connection)
         after = binding(connection)
         if before != after or final_account_id != account_id:
             raise AvitoError("provider_account_mismatch")
-        return identity | {"account_id": account_id, "items": items, "autoload_report": summary, "listing_scan": listing_scan}
+        return identity | {"account_id": account_id, "items": items, "autoload_report": summary, "listing_scan": listing_scan, "active_source_audit": active_source}
     except Exception as error:
         return identity | {"error": safe_error(error)}
 
@@ -209,7 +215,12 @@ def collect(item_ids):
         index, source = feed_index(avito_source_audit._read_xml(avito_source_audit.FEED_PATH))
     except Exception as error:
         index, source = None, {"error": safe_error(error)}
-    results = [collect_connection(connection, item_ids, index) for connection in connections]
+    try:
+        stocks, _, _ = avito_source_audit.stock_values(avito_source_audit._read_xml(avito_source_audit.STOCK_PATH))
+        stock_error = None
+    except Exception as error:
+        stocks, stock_error = None, safe_error(error)
+    results = [collect_connection(connection, item_ids, index, stocks, stock_error) for connection in connections]
     complete = "error" not in source and all(
         "error" not in row and "error" not in row["autoload_report"] and "error" not in row["listing_scan"] and all("error" not in item for item in row["items"])
         for row in results
