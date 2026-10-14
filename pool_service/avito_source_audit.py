@@ -3,6 +3,7 @@ from collections import Counter
 from html.parser import HTMLParser
 import http.client
 import ipaddress
+import math
 import re
 import socket
 import ssl
@@ -51,11 +52,16 @@ class _PinnedHTTPS(http.client.HTTPSConnection):
             raise
 
 
-def _read_xml(path):
+def _read_xml(path, *, deadline=None):
     # Callers cannot supply a host, URL, port or alternative generator route.
     if path not in {FEED_PATH, STOCK_PATH}:
         raise AvitoError("source_address_invalid")
-    deadline = time.monotonic() + REQUEST_SECONDS
+    started = time.monotonic()
+    if deadline is not None and (type(deadline) not in (int, float) or not math.isfinite(deadline)):
+        raise AvitoError("source_limit")
+    deadline = min(started + REQUEST_SECONDS, deadline) if deadline is not None else started + REQUEST_SECONDS
+    if started >= deadline:
+        raise AvitoError("source_limit")
     try:
         addresses = list(dict.fromkeys(row[4][0] for row in socket.getaddrinfo(
             HOST, 443, type=socket.SOCK_STREAM,
@@ -66,10 +72,11 @@ def _read_xml(path):
             for value in addresses
         ):
             raise AvitoError("source_address_invalid")
-        connection = _PinnedHTTPS(addresses[0], timeout=min(5, REQUEST_SECONDS))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AvitoError("source_limit")
+        connection = _PinnedHTTPS(addresses[0], timeout=min(5, remaining))
         try:
-            if time.monotonic() >= deadline:
-                raise AvitoError("source_limit")
             connection.request("GET", path, headers={
                 "Accept": "application/xml", "Accept-Encoding": "identity",
                 "User-Agent": "Service2-Avito-source-audit/1",

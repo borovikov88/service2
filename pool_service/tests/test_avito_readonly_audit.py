@@ -329,3 +329,14 @@ class DuplicateReceiptProjectionTests(SimpleTestCase):
         diagnostic["samples"].reverse()
         with self.assertRaises(ValueError):
             receipt.report(value)
+
+
+class ReportReadStrategyProjectionTests(SimpleTestCase):
+    def test_only_fixed_read_strategies_are_projected_without_query_or_source_ids(self):
+        raw = report()
+        raw["read_strategy"] = "shop_xml_id_queries"
+        projected = receipt.report(audit.report_summary(raw))
+        self.assertEqual("shop_xml_id_queries", projected["read_strategy"])
+        raw["read_strategy"] = "PRIVATE_URL"
+        with self.assertRaises(ValueError):
+            receipt.report(audit.report_summary(raw))

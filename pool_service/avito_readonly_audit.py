@@ -103,6 +103,7 @@ def report_summary(report):
                             "messages": [{"type": m["type"], "code": m["code"], "title": safe_text(m["title"], 200),
                                           "description": safe_text(m["description"], 700)} for m in critical[:3]]})
     return {"upload_id": report["upload_id"], "upload_status": report["upload_status"],
+            "read_strategy": report.get("read_strategy", "provider_pages"),
             "complete": report["complete"], "finished": report["upload_finished"], "total": report["total"],
             "counts": report["counts"], "critical_samples": samples,
             "shop_feed_source": report.get("shop_feed_source", "other_or_unknown"),
