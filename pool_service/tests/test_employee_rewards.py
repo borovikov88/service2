@@ -156,7 +156,7 @@ class EmployeeRewardCalculationTests(TestCase):
         )
 
 
-    def test_rewards_page_get_tolerates_irregular_persisted_source_metadata(self):
+    def test_rewards_page_get_tolerates_irregular_metadata_and_calculates_month_once(self):
         OrganizationAccess.objects.create(
             user=self.user,
             organization=self.org,
@@ -167,11 +167,20 @@ class EmployeeRewardCalculationTests(TestCase):
         row.save(update_fields=["source_data"])
         self.client.force_login(self.user)
 
-        response = self.client.get(
-            reverse("finance_employee_rewards"),
-            {"month": "2026-09"},
-        )
+        with (
+            patch("pool_service.reward_views.calculate_month") as page_calculation,
+            patch(
+                "pool_service.services.rewards.calculate_month",
+                wraps=calculate_month,
+            ) as workspace_calculation,
+        ):
+            response = self.client.get(
+                reverse("finance_employee_rewards"),
+                {"month": "2026-09"},
+            )
 
+        self.assertEqual(page_calculation.call_count, 0)
+        self.assertEqual(workspace_calculation.call_count, 1)
         self.assertEqual(response.status_code, 200)
 
     def test_rewards_page_keeps_orders_for_live_search_and_restores_details_structure(self):
@@ -230,6 +239,16 @@ class EmployeeRewardCalculationTests(TestCase):
         self.assertContains(response, "window.resetButtonLoading")
         self.assertContains(response, "rewardStoreScroll(form)")
         self.assertContains(response, 'data-ajax-save="1"')
+        self.assertContains(response, "document.addEventListener('submit', event => {")
+        self.assertContains(
+            response,
+            "form.matches('.reward-participant-editor[data-ajax-save=\"1\"]')",
+        )
+        self.assertContains(
+            response,
+            "event.stopImmediatePropagation();\n  rewardSubmitParticipantEditor(form);",
+        )
+        self.assertContains(response, "async function rewardSubmitParticipantEditor(form)")
         self.assertContains(response, "'X-Requested-With': 'XMLHttpRequest'")
         self.assertContains(response, "function rewardCreateRoleCard(order, update)")
         self.assertContains(response, "function rewardEnsureRoleEditors(roleCard, update)")
@@ -250,21 +269,32 @@ class EmployeeRewardCalculationTests(TestCase):
         line_identity = reward_document_options(self.org, self.month)[0]["lines"][0]["identity"]
         self.client.force_login(self.user)
 
-        response = self.client.post(
-            reverse("finance_employee_rewards"),
-            {
-                "month": "2026-09",
-                "action": "edit_participation",
-                "participation_id": str(participation.pk),
-                "employee_id": str(self.e1.pk),
-                "role": RewardParticipation.ROLE_WORK,
-                "share_percent": "100",
-                "line_identity": [line_identity],
-            },
-            HTTP_ACCEPT="application/json",
-            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
-        )
+        with (
+            patch(
+                "pool_service.services.rewards.calculate_month",
+                wraps=calculate_month,
+            ) as full_calculation,
+            patch("pool_service.reward_views.calculate_month") as view_calculation,
+            patch("pool_service.reward_views.reward_order_workspace") as workspace,
+        ):
+            response = self.client.post(
+                reverse("finance_employee_rewards"),
+                {
+                    "month": "2026-09",
+                    "action": "edit_participation",
+                    "participation_id": str(participation.pk),
+                    "employee_id": str(self.e1.pk),
+                    "role": RewardParticipation.ROLE_WORK,
+                    "share_percent": "100",
+                    "line_identity": [line_identity],
+                },
+                HTTP_ACCEPT="application/json",
+                HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+            )
 
+        full_calculation.assert_not_called()
+        view_calculation.assert_not_called()
+        workspace.assert_not_called()
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["ok"])
         self.assertEqual(response.json()["participation"]["role"], RewardParticipation.ROLE_WORK)

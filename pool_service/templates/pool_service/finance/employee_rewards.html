@@ -375,6 +375,15 @@
 </div>
 
 <script>
+document.addEventListener('submit', event => {
+  const form = event.target;
+  if (!(form instanceof HTMLFormElement)
+    || !form.matches('.reward-participant-editor[data-ajax-save="1"]')) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  rewardSubmitParticipantEditor(form);
+}, true);
+
 (function () {
   const input = document.getElementById('reward-live-search');
   const list = document.getElementById('orders-list');
@@ -742,6 +751,130 @@ function rewardMarkOrderStale(order) {
   body.prepend(notice);
 }
 
+async function rewardSubmitParticipantEditor(form) {
+  const feedback = form.querySelector('.reward-form-error');
+  const button = form.querySelector('.reward-submit-button');
+  const order = form.closest('.reward-order');
+  const existing = order
+    ? [...order.querySelectorAll('.reward-existing-participant')]
+    : [];
+  const originalText = button?.textContent || '';
+  const showFeedback = (message, success = false) => {
+    if (!feedback) return;
+    feedback.classList.toggle('alert-success', success);
+    feedback.classList.toggle('alert-danger', !success);
+    feedback.textContent = message;
+    feedback.style.display = 'block';
+  };
+
+  if (feedback) {
+    feedback.style.display = 'none';
+    feedback.classList.remove('alert-success');
+    feedback.classList.add('alert-danger');
+  }
+  if (!feedback || !button || !order) {
+    showFeedback('Не удалось подготовить сохранение. Обновите страницу и повторите попытку.');
+    return;
+  }
+
+  try {
+    rewardBindRow(form);
+    if (!rewardValidateContainer(form, existing, form.dataset.participationId)) return;
+
+    button.disabled = true;
+    button.textContent = 'Сохраняю…';
+    form.setAttribute('aria-busy', 'true');
+    const response = await fetch(form.action || window.location.href, {
+      method: form.method || 'POST',
+      body: new FormData(form),
+      headers: {
+        'Accept': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+      credentials: 'same-origin',
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload || !payload.ok) {
+      showFeedback(payload?.message
+        || 'Сервер не подтвердил сохранение. Проверьте изменение перед повторной отправкой.');
+      return;
+    }
+
+    const update = payload.participation || {};
+    const participant = existing.find(item =>
+      String(item.dataset.participationId) === String(update.id)
+    );
+    if (participant) {
+      participant.dataset.role = update.role || '';
+      participant.dataset.scopeKey = update.scope_key || '';
+      participant.dataset.share = String(update.share_percent || 0);
+      const lineInputs = [...form.querySelectorAll('.reward-line-options input[type="checkbox"]')];
+      if (update.role === 'client_manager') {
+        lineInputs.forEach(input => { input.checked = false; });
+      }
+      const selectedLines = update.role === 'client_manager'
+        ? []
+        : lineInputs.filter(input => input.checked).map(input => input.value);
+      participant.dataset.scopeLines = selectedLines.join(',');
+      const label = participant.children[0];
+      if (label) {
+        const roleBadge = document.createElement('span');
+        roleBadge.className = 'badge text-bg-light border';
+        roleBadge.textContent = update.role_label || 'Роль сохранена';
+        const share = document.createElement('strong');
+        share.textContent = rewardFormatPercent(update.share_percent) + '%';
+        label.replaceChildren(
+          document.createTextNode((update.employee || '') + ' — '),
+          roleBadge,
+          document.createTextNode(' '),
+          share
+        );
+      }
+      const amount = participant.children[1];
+      if (amount) {
+        amount.textContent = 'не пересчитано';
+        amount.classList.add('text-warning');
+        amount.title = 'Сумма обновится после пересчёта карточки';
+      }
+
+      const sourceRole = form.closest('.reward-role');
+      let targetRole = [...order.querySelectorAll('.reward-role')].find(roleCard =>
+        roleCard.dataset.role === update.role
+        && roleCard.dataset.scopeKey === update.scope_key
+      );
+      if (!targetRole) targetRole = rewardCreateRoleCard(order, update);
+      if (targetRole && targetRole !== sourceRole) {
+        const targetParticipants = targetRole.querySelector('.reward-role-participants');
+        const targetEditors = rewardEnsureRoleEditors(targetRole, update);
+        if (targetParticipants && targetEditors) {
+          targetParticipants.appendChild(participant);
+          targetEditors.appendChild(form);
+          targetEditors.classList.remove('d-none');
+          const sourceEditors = sourceRole?.querySelector('.reward-role-editors');
+          if (sourceEditors && !sourceEditors.querySelector('.reward-participant-editor')) {
+            sourceEditors.classList.add('d-none');
+            const sourceToggle = [...order.querySelectorAll('.reward-role-edit-toggle')]
+              .find(toggle => toggle.dataset.roleEditorId === sourceEditors.id);
+            sourceToggle?.remove();
+          }
+        }
+      }
+      rewardRefreshRoleShares(sourceRole);
+      rewardRefreshRoleShares(form.closest('.reward-role'));
+    }
+    form.dataset.scopeKey = update.scope_key || '';
+    form.dataset.currentLines = (update.scope_line_identities || []).join(',');
+    rewardMarkOrderStale(order);
+    showFeedback(payload.message || 'Участник обновлён.', true);
+  } catch (_error) {
+    showFeedback('Не удалось получить ответ сервера. Проверьте, сохранилось ли изменение, прежде чем отправлять его повторно.');
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
+    form.removeAttribute('aria-busy');
+  }
+}
+
 document.querySelectorAll('.reward-order').forEach(order => {
   const existing = [...order.querySelectorAll('.reward-existing-participant')];
 
@@ -754,125 +887,6 @@ document.querySelectorAll('.reward-order').forEach(order => {
       panel.classList.toggle('d-none');
       if (!panel.classList.contains('d-none')) {
         panel.querySelectorAll('.reward-participant-editor').forEach(rewardBindRow);
-      }
-    });
-  });
-
-  order.querySelectorAll('.reward-participant-editor').forEach(form => {
-    form.addEventListener('submit', async event => {
-      const feedback = form.querySelector('.reward-form-error');
-      feedback.classList.remove('alert-success');
-      feedback.classList.add('alert-danger');
-      feedback.style.display = 'none';
-      rewardBindRow(form);
-      if (!rewardValidateContainer(form, existing, form.dataset.participationId)) {
-        event.preventDefault();
-        if (event.submitter && window.resetButtonLoading) {
-          window.resetButtonLoading(event.submitter);
-        }
-        return;
-      }
-      event.preventDefault();
-      const button = form.querySelector('.reward-submit-button');
-      if (!button) return;
-      const originalText = button.textContent;
-      button.disabled = true;
-      button.textContent = 'Сохраняю…';
-      form.setAttribute('aria-busy', 'true');
-      try {
-        const response = await fetch(form.action || window.location.href, {
-          method: form.method || 'POST',
-          body: new FormData(form),
-          headers: {
-            'Accept': 'application/json',
-            'X-Requested-With': 'XMLHttpRequest',
-          },
-          credentials: 'same-origin',
-        });
-        const payload = await response.json().catch(() => null);
-        if (!response.ok || !payload || !payload.ok) {
-          feedback.textContent = payload?.message
-            || 'Сервер не подтвердил сохранение. Проверьте изменение перед повторной отправкой.';
-          feedback.style.display = 'block';
-          return;
-        }
-
-        const update = payload.participation || {};
-        const participant = existing.find(item =>
-          String(item.dataset.participationId) === String(update.id)
-        );
-        if (participant) {
-          participant.dataset.role = update.role || '';
-          participant.dataset.scopeKey = update.scope_key || '';
-          participant.dataset.share = String(update.share_percent || 0);
-          const lineInputs = [...form.querySelectorAll('.reward-line-options input[type="checkbox"]')];
-          if (update.role === 'client_manager') {
-            lineInputs.forEach(input => { input.checked = false; });
-          }
-          const selectedLines = update.role === 'client_manager'
-            ? []
-            : lineInputs.filter(input => input.checked).map(input => input.value);
-          participant.dataset.scopeLines = selectedLines.join(',');
-          const label = participant.children[0];
-          if (label) {
-            const roleBadge = document.createElement('span');
-            roleBadge.className = 'badge text-bg-light border';
-            roleBadge.textContent = update.role_label || 'Роль сохранена';
-            const share = document.createElement('strong');
-            share.textContent = rewardFormatPercent(update.share_percent) + '%';
-            label.replaceChildren(
-              document.createTextNode((update.employee || '') + ' — '),
-              roleBadge,
-              document.createTextNode(' '),
-              share
-            );
-          }
-          const amount = participant.children[1];
-          if (amount) {
-            amount.textContent = 'не пересчитано';
-            amount.classList.add('text-warning');
-            amount.title = 'Сумма обновится после пересчёта карточки';
-          }
-
-          const sourceRole = form.closest('.reward-role');
-          let targetRole = [...order.querySelectorAll('.reward-role')].find(roleCard =>
-            roleCard.dataset.role === update.role
-            && roleCard.dataset.scopeKey === update.scope_key
-          );
-          if (!targetRole) targetRole = rewardCreateRoleCard(order, update);
-          if (targetRole && targetRole !== sourceRole) {
-            const targetParticipants = targetRole.querySelector('.reward-role-participants');
-            const targetEditors = rewardEnsureRoleEditors(targetRole, update);
-            if (targetParticipants && targetEditors) {
-              targetParticipants.appendChild(participant);
-              targetEditors.appendChild(form);
-              targetEditors.classList.remove('d-none');
-              const sourceEditors = sourceRole?.querySelector('.reward-role-editors');
-              if (sourceEditors && !sourceEditors.querySelector('.reward-participant-editor')) {
-                sourceEditors.classList.add('d-none');
-                const sourceToggle = [...order.querySelectorAll('.reward-role-edit-toggle')]
-                  .find(toggle => toggle.dataset.roleEditorId === sourceEditors.id);
-                sourceToggle?.remove();
-              }
-            }
-          }
-          rewardRefreshRoleShares(sourceRole);
-          rewardRefreshRoleShares(form.closest('.reward-role'));
-        }
-        form.dataset.scopeKey = update.scope_key || '';
-        form.dataset.currentLines = (update.scope_line_identities || []).join(',');
-        rewardMarkOrderStale(order);
-        feedback.classList.remove('alert-danger');
-        feedback.classList.add('alert-success');
-        feedback.textContent = payload.message || 'Участник обновлён.';
-        feedback.style.display = 'block';
-      } catch (_error) {
-        feedback.textContent = 'Не удалось получить ответ сервера. Проверьте, сохранилось ли изменение, прежде чем отправлять его повторно.';
-        feedback.style.display = 'block';
-      } finally {
-        button.disabled = false;
-        button.textContent = originalText;
-        form.removeAttribute('aria-busy');
       }
     });
   });
