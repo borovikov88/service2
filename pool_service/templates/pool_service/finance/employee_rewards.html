@@ -821,6 +821,198 @@ function rewardEnsureRoleEditors(roleCard, update) {
   return editors;
 }
 
+function rewardSetFormFeedback(form, message, success = false) {
+  const feedback = form.querySelector('.reward-form-error');
+  if (!feedback) return;
+  feedback.classList.toggle('alert-success', success);
+  feedback.classList.toggle('alert-danger', !success);
+  feedback.textContent = message;
+  feedback.style.display = 'block';
+}
+
+function rewardCreateParticipantSummary(update) {
+  const row = document.createElement('div');
+  row.className = 'd-flex flex-wrap gap-2 justify-content-between align-items-center py-1 reward-existing-participant';
+  row.dataset.participationId = String(update.id || '');
+  row.dataset.scopeKey = update.scope_key || '';
+  row.dataset.role = update.role || '';
+  row.dataset.share = String(update.share_percent || 0);
+  row.dataset.scopeLines = (update.scope_line_identities || []).join(',');
+
+  const label = document.createElement('span');
+  const roleBadge = document.createElement('span');
+  roleBadge.className = 'badge text-bg-light border';
+  roleBadge.textContent = update.role_label || 'Роль сохранена';
+  const share = document.createElement('strong');
+  share.textContent = rewardFormatPercent(update.share_percent) + '%';
+  label.append(
+    document.createTextNode((update.employee || '') + ' — '),
+    roleBadge,
+    document.createTextNode(' '),
+    share
+  );
+
+  const amount = document.createElement('span');
+  amount.textContent = 'не пересчитано';
+  amount.classList.add('text-warning');
+  amount.title = 'Сумма обновится после пересчёта карточки';
+  row.append(label, amount);
+  return row;
+}
+
+function rewardCreateParticipantEditor(order, update) {
+  const prototype = order.querySelector('.reward-participant-editor-prototype');
+  const source = prototype?.content?.querySelector('form');
+  if (!source) return null;
+  const form = source.cloneNode(true);
+  form.dataset.participationId = String(update.id || '');
+  form.dataset.scopeKey = update.scope_key || '';
+  form.dataset.currentLines = (update.scope_line_identities || []).join(',');
+
+  const idInput = form.querySelector('input[name="participation_id"]');
+  if (idInput) idInput.value = String(update.id || '');
+  const employee = form.querySelector('select[name="employee_id"]');
+  if (employee) employee.value = String(update.employee_id || '');
+  const role = form.querySelector('.reward-role-select');
+  if (role) role.value = update.role || 'client_manager';
+  const share = form.querySelector('.reward-share-input');
+  if (share) share.value = rewardFormatPercent(update.share_percent);
+  const query = document.getElementById('reward-live-search');
+  const returnQuery = form.querySelector('input[name="return_q"]');
+  if (returnQuery && query) returnQuery.value = query.value.trim();
+
+  rewardBindRow(form);
+  return form;
+}
+
+function rewardApplyBatchParticipants(form, updates) {
+  const order = form.closest('.reward-order');
+  if (!order) return;
+  for (const update of updates) {
+    let roleCard = [...order.querySelectorAll('.reward-role')].find(card =>
+      card.dataset.role === update.role
+      && card.dataset.scopeKey === update.scope_key
+    );
+    if (!roleCard) roleCard = rewardCreateRoleCard(order, update);
+    if (!roleCard) continue;
+    const participants = roleCard.querySelector('.reward-role-participants');
+    const editors = rewardEnsureRoleEditors(roleCard, update);
+    if (participants) participants.appendChild(rewardCreateParticipantSummary(update));
+    const editor = rewardCreateParticipantEditor(order, update);
+    if (editors && editor) editors.appendChild(editor);
+    rewardRefreshRoleShares(roleCard);
+  }
+  rewardMarkOrderStale(order);
+}
+
+function rewardValidateBatchForm(form) {
+  const error = form.querySelector('.reward-form-error');
+  if (error) error.style.display = 'none';
+  const order = form.closest('.reward-order');
+  const existing = order
+    ? [...order.querySelectorAll('.reward-existing-participant')]
+    : [];
+  const rows = [...form.querySelectorAll('.reward-batch-row')];
+  const staged = new Map();
+
+  for (const row of rows) {
+    rewardBindRow(row);
+    if (!rewardValidateContainer(row, existing)) return false;
+    const {role, scope} = rewardScopeKey(row);
+    const share = Number(row.querySelector('.reward-share-input')?.value || 0);
+    const key = role + '|' + scope;
+    const prior = staged.get(key) || 0;
+    const already = existing
+      .filter(item => item.dataset.role === role
+        && (item.dataset.scopeLines || '').split(',').filter(Boolean).sort().join(',') === scope)
+      .reduce((sum, item) => sum + Number(item.dataset.share || 0), 0);
+    if (already + prior + share > 100.000001) {
+      if (error) {
+        error.textContent = 'В добавляемых строках суммарная доля по одной роли и одному объёму превышает 100%.';
+        error.style.display = 'block';
+      }
+      return false;
+    }
+    staged.set(key, prior + share);
+  }
+  return rows.length > 0;
+}
+
+function rewardResetBatchForm(form) {
+  form.querySelectorAll('.reward-batch-row').forEach(row => {
+    const employee = row.querySelector('.reward-employee-select');
+    const role = row.querySelector('.reward-role-select');
+    const share = row.querySelector('.reward-share-input');
+    if (employee) employee.value = '';
+    if (role) role.value = 'client_manager';
+    if (share) share.value = '100';
+    row.dataset.currentLines = '';
+    row.querySelectorAll('input[type="checkbox"]').forEach(input => {
+      input.checked = false;
+    });
+    rewardConfigureRole(row);
+  });
+}
+
+async function rewardSubmitBatchForm(form) {
+  if (form.dataset.submitting === '1') return;
+  if (!rewardValidateBatchForm(form)) return;
+  const button = form.querySelector('.reward-submit-button');
+  const originalText = button?.textContent || '';
+  if (!button) {
+    rewardSetFormFeedback(form, 'Не удалось подготовить сохранение. Обновите страницу и повторите попытку.');
+    return;
+  }
+
+  const scrollLeft = window.scrollX;
+  const scrollTop = window.scrollY;
+  form.dataset.submitting = '1';
+  button.disabled = true;
+  button.textContent = 'Сохраняю…';
+  form.setAttribute('aria-busy', 'true');
+
+  try {
+    const response = await fetch(form.action || window.location.href, {
+      method: form.method || 'POST',
+      body: new FormData(form),
+      headers: {
+        'Accept': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+      credentials: 'same-origin',
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload || !payload.ok) {
+      rewardSetFormFeedback(form, payload?.message
+        || 'Сервер не подтвердил сохранение. Проверьте назначение перед повторной отправкой.');
+      return;
+    }
+
+    const updates = Array.isArray(payload.participations)
+      ? payload.participations
+      : [];
+    if (!updates.length) {
+      rewardSetFormFeedback(form, 'Сервер подтвердил запрос, но не вернул список назначений. Обновите страницу перед продолжением.');
+      return;
+    }
+    rewardApplyBatchParticipants(form, updates);
+    rewardResetBatchForm(form);
+    rewardSetFormFeedback(form, payload.message || 'Участники сохранены.', true);
+    window.requestAnimationFrame(() => {
+      if (window.scrollX !== scrollLeft || window.scrollY !== scrollTop) {
+        window.scrollTo(scrollLeft, scrollTop);
+      }
+    });
+  } catch (_error) {
+    rewardSetFormFeedback(form, 'Не удалось получить ответ сервера. Проверьте, сохранились ли назначения, прежде чем отправлять их повторно.');
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
+    form.removeAttribute('aria-busy');
+    delete form.dataset.submitting;
+  }
+}
+
 function rewardMarkOrderStale(order) {
   const body = order?.querySelector('.reward-order-body');
   if (!body || body.querySelector('.reward-refresh-notice')) return;
