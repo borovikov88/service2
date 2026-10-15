@@ -2127,23 +2127,32 @@ class EmployeeRewardCalculationTests(TestCase):
         key = (
             f"odata-source:{self.org.id}:Document_ЧекККМ:{check_guid}"
         )
-        RewardParticipation.objects.create(
+        third_employee = Employee.objects.create(
             organization=self.org,
-            employee=self.e1,
-            role=RewardParticipation.ROLE_DOCUMENTATION,
-            status=RewardParticipation.STATUS_CONFIRMED,
-            share=Decimal("1.000000"),
-            period_month=self.month,
-            scope_key=key,
-            source_document_key=key,
-            source_document_type="Document_ЧекККМ",
-            source_document_guid=check_guid,
-            source_document_number="НФНФ-001057",
-            source_document_date=date(2026, 9, 9),
-            assignment_source=RewardParticipation.SOURCE_ONEC_AUTHOR,
-            created_by=self.user,
-            confirmed_by=self.user,
+            display_name="Третий",
         )
+        for employee_obj, share in (
+            (self.e1, Decimal("0.333333")),
+            (self.e2, Decimal("0.333333")),
+            (third_employee, Decimal("0.333334")),
+        ):
+            RewardParticipation.objects.create(
+                organization=self.org,
+                employee=employee_obj,
+                role=RewardParticipation.ROLE_DOCUMENTATION,
+                status=RewardParticipation.STATUS_CONFIRMED,
+                share=share,
+                period_month=self.month,
+                scope_key=key,
+                source_document_key=key,
+                source_document_type="Document_ЧекККМ",
+                source_document_guid=check_guid,
+                source_document_number="НФНФ-001057",
+                source_document_date=date(2026, 9, 9),
+                assignment_source=RewardParticipation.SOURCE_ONEC_AUTHOR,
+                created_by=self.user,
+                confirmed_by=self.user,
+            )
 
         data = calculate_month(self.org, self.month)
         employee = next(
@@ -2151,10 +2160,14 @@ class EmployeeRewardCalculationTests(TestCase):
             if item["employee_id"] == self.e1.id
         )
         self.assertTrue(data["retail_revenue_available"])
-        self.assertEqual(employee["documentation_reward"], "50.00")
-        self.assertEqual(employee["retail_reward"], "11.49")
-        self.assertEqual(employee["retail_revenue"], "2800.00")
-        self.assertEqual(employee["total"], "61.49")
+        self.assertEqual(employee["documentation_reward"], "16.67")
+        self.assertEqual(employee["retail_reward"], "3.83")
+        self.assertEqual(employee["retail_revenue"], "933.33")
+        self.assertEqual(employee["total"], "20.50")
+        self.assertEqual(
+            sum(Decimal(item["retail_revenue"]) for item in data["employees"]),
+            Decimal("2800.00"),
+        )
         self.assertFalse(any(
             issue["kind"] == "missing_sale_role"
             for issue in data["issues"]
