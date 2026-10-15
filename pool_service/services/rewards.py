@@ -1249,6 +1249,7 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
 
     employee_totals = defaultdict(lambda: {
         "documentation_count": 0, "seller_revenue": Decimal("0"), "seller_gp": Decimal("0"),
+        "retail_revenue": Decimal("0"),
         "documentation_reward": Decimal("0"), "retail_reward": Decimal("0"),
         "sale_reward": Decimal("0"), "project_reward": Decimal("0"),
         "work_reward": Decimal("0"),
@@ -1441,6 +1442,8 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
                 totals["documentation_reward"] += fixed_amount
                 totals["retail_reward"] += retail_amount
                 if document_type == RETAIL_CHECK:
+                    totals["retail_revenue"] += money(revenue * item.share)
+
                     rate_label = (
                         f"{_fixed_for(document_type, scheme):.2f} ₽ + "
                         f"{(scheme.retail_check_rate * 100):.2f}% ВП"
