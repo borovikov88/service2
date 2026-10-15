@@ -246,8 +246,12 @@ class EmployeeRewardCalculationTests(TestCase):
         )
         self.assertContains(
             response,
-            "event.stopImmediatePropagation();\n  rewardSubmitParticipantEditor(form);",
+            "event.stopImmediatePropagation();\n  rewardSubmitRoleForm(form);",
         )
+        self.assertContains(response, "rewardSubmitBatchForm(form)")
+        self.assertContains(response, "function rewardPreservePickerViewport(event)")
+        self.assertContains(response, 'class="mt-2 reward-batch-form" data-ajax-save="1"')
+        self.assertContains(response, "data-reward-ajax-submit")
         self.assertContains(response, "async function rewardSubmitParticipantEditor(form)")
         self.assertContains(response, "'X-Requested-With': 'XMLHttpRequest'")
         self.assertContains(response, "function rewardCreateRoleCard(order, update)")
@@ -302,6 +306,88 @@ class EmployeeRewardCalculationTests(TestCase):
         participation.refresh_from_db()
         self.assertEqual(participation.role, RewardParticipation.ROLE_WORK)
         self.assertEqual(participation.share, Decimal("1.000000"))
+
+    def test_batch_participation_post_returns_json_without_reloading_rewards_page(self):
+        OrganizationAccess.objects.create(
+            user=self.user,
+            organization=self.org,
+            role="owner",
+        )
+        row = self.add_row(1, "10000.00", kind="Работа")
+        document = reward_document_options(self.org, self.month)[0]
+        line_identity = document["lines"][0]["identity"]
+        self.client.force_login(self.user)
+
+        with (
+            patch(
+                "pool_service.services.rewards.calculate_month",
+                wraps=calculate_month,
+            ) as service_calculation,
+            patch("pool_service.reward_views.calculate_month") as view_calculation,
+            patch("pool_service.reward_views.reward_order_workspace") as workspace,
+        ):
+            response = self.client.post(
+                reverse("finance_employee_rewards"),
+                {
+                    "month": "2026-09",
+                    "action": "add_participations_batch",
+                    "document_key": document["scope_key"],
+                    "participants_total": "1",
+                    "participant_0_employee_id": str(self.e1.pk),
+                    "participant_0_role": RewardParticipation.ROLE_WORK,
+                    "participant_0_share_percent": "100",
+                    "participant_0_line_identity": [line_identity],
+                },
+                HTTP_ACCEPT="application/json",
+                HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+            )
+
+        service_calculation.assert_not_called()
+        view_calculation.assert_not_called()
+        workspace.assert_not_called()
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response["Content-Type"].startswith("application/json"))
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["participations"][0]["role"], RewardParticipation.ROLE_WORK)
+        self.assertEqual(
+            payload["participations"][0]["scope_line_identities"],
+            [line_identity],
+        )
+        self.assertTrue(
+            RewardParticipation.objects.filter(
+                organization=self.org,
+                period_month=self.month,
+                employee=self.e1,
+                role=RewardParticipation.ROLE_WORK,
+                status=RewardParticipation.STATUS_CONFIRMED,
+            ).exists()
+        )
+
+    def test_employee_summary_separates_turnover_from_reward(self):
+        OrganizationAccess.objects.create(
+            user=self.user,
+            organization=self.org,
+            role="owner",
+        )
+        row = self.add_row(1, "1000.00", revenue="1200.00")
+        self.participation(
+            self.e1,
+            RewardParticipation.ROLE_SALE,
+            "1.000000",
+            lines=[row.source_identity],
+        )
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse("finance_employee_rewards"),
+            {"month": "2026-09", "tab": "employees"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Оборот чеков")
+        self.assertContains(response, "Оборот по ролям")
+        self.assertContains(response, "Вознаграждение за продажи")
 
     def test_reward_employee_selector_excludes_not_current_workers(self):
         current = Employee.objects.create(
@@ -670,6 +756,7 @@ class EmployeeRewardCalculationTests(TestCase):
         data = calculate_month(self.org, self.month)
         totals = data["employees"][0]
         self.assertEqual(Decimal(totals["sale_reward"]), Decimal("1000.00"))
+        self.assertEqual(Decimal(totals["seller_revenue"]), Decimal("10000.00"))
         self.assertEqual(Decimal(totals["project_reward"]), Decimal("500.00"))
         self.assertEqual(Decimal(totals["total"]), Decimal("1500.00"))
 
@@ -1854,6 +1941,7 @@ class EmployeeRewardCalculationTests(TestCase):
         )
         self.assertEqual(employee["documentation_reward"], "50.00")
         self.assertEqual(employee["retail_reward"], "11.49")
+        self.assertEqual(employee["retail_revenue"], "2800.00")
         self.assertEqual(employee["total"], "61.49")
         self.assertFalse(any(
             issue["kind"] == "missing_sale_role"
