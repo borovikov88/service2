@@ -1148,9 +1148,11 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
     period_month = month_start(period_month)
     closed = RewardMonthClose.objects.filter(organization=organization, period_month=period_month).first()
     if closed and use_closed:
-        snapshot = closed.snapshot
+        snapshot = dict(closed.snapshot)
+        snapshot["retail_revenue_available"] = all(
+            "retail_revenue" in item for item in snapshot.get("employees", [])
+        )
         if employee_id:
-            snapshot = dict(snapshot)
             snapshot["employees"] = [x for x in snapshot.get("employees", []) if x.get("employee_id") == employee_id]
             snapshot["details"] = [x for x in snapshot.get("details", []) if x.get("employee_id") == employee_id]
         return snapshot
@@ -1560,6 +1562,7 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
         "is_test": True,
         "closed": False,
         "scheme": _scheme_payload(scheme),
+        "retail_revenue_available": True,
         "month_gross_profit": None if month_gross_profit is None else str(month_gross_profit),
         "total_test_reward": str(total_test_reward),
         "reward_exceeds_gross_profit": reward_exceeds_gross_profit,
