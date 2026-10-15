@@ -26,8 +26,10 @@ from pool_service.services.rewards import (
     create_manual_participation,
     create_manual_participations_batch,
     create_scheme_version,
+    delete_participation_role,
     ensure_test_scheme,
     reward_document_options,
+    reward_order_workspace,
     reward_profit_rows,
     resolve_documentation_placeholder,
     scheme_for_month,
@@ -302,6 +304,278 @@ class EmployeeRewardCalculationTests(TestCase):
         participation.refresh_from_db()
         self.assertEqual(participation.role, RewardParticipation.ROLE_WORK)
         self.assertEqual(participation.share, Decimal("1.000000"))
+
+    def test_batch_ajax_saves_two_work_shares_and_a_sale_assignment_together(self):
+        OrganizationAccess.objects.create(
+            user=self.user,
+            organization=self.org,
+            role="owner",
+        )
+        self.add_row(1, "10000.00", kind="Работа")
+        document = reward_document_options(self.org, self.month)[0]
+        line_identity = document["lines"][0]["identity"]
+        self.client.force_login(self.user)
+
+        response = self.client.post(
+            reverse("finance_employee_rewards"),
+            {
+                "month": "2026-09",
+                "action": "add_participations_batch",
+                "document_key": document["scope_key"],
+                "participants_total": "3",
+                "participant_0_employee_id": str(self.e1.pk),
+                "participant_0_role": RewardParticipation.ROLE_WORK,
+                "participant_0_share_percent": "50",
+                "participant_0_line_identity": [line_identity],
+                "participant_1_employee_id": str(self.e2.pk),
+                "participant_1_role": RewardParticipation.ROLE_WORK,
+                "participant_1_share_percent": "50",
+                "participant_1_line_identity": [line_identity],
+                "participant_2_employee_id": str(self.e1.pk),
+                "participant_2_role": RewardParticipation.ROLE_SALE,
+                "participant_2_share_percent": "100",
+            },
+            HTTP_ACCEPT="application/json",
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response["Content-Type"].startswith("application/json"))
+        self.assertTrue(response.json()["ok"])
+        self.assertEqual(len(response.json()["participations"]), 3)
+        work = list(RewardParticipation.objects.filter(
+            organization=self.org,
+            period_month=self.month,
+            role=RewardParticipation.ROLE_WORK,
+        ))
+        sale = RewardParticipation.objects.get(
+            organization=self.org,
+            period_month=self.month,
+            role=RewardParticipation.ROLE_SALE,
+        )
+        self.assertEqual(len(work), 2)
+        self.assertEqual(sum((item.share for item in work), Decimal("0")), Decimal("1"))
+        self.assertEqual(sale.employee, self.e1)
+        self.assertEqual(sale.share, Decimal("1.000000"))
+
+    def test_batch_ajax_returns_validation_error_without_losing_form_context(self):
+        OrganizationAccess.objects.create(
+            user=self.user,
+            organization=self.org,
+            role="owner",
+        )
+        self.add_row(1, "10000.00", kind="Работа")
+        document = reward_document_options(self.org, self.month)[0]
+        self.client.force_login(self.user)
+
+        response = self.client.post(
+            reverse("finance_employee_rewards"),
+            {
+                "month": "2026-09",
+                "action": "add_participations_batch",
+                "document_key": document["scope_key"],
+                "participants_total": "1",
+                "participant_0_employee_id": str(self.e1.pk),
+                "participant_0_role": RewardParticipation.ROLE_WORK,
+                "participant_0_share_percent": "100",
+            },
+            HTTP_ACCEPT="application/json",
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("конкретные позиции", response.json()["message"])
+        self.assertFalse(RewardParticipation.objects.filter(
+            organization=self.org,
+            period_month=self.month,
+            role=RewardParticipation.ROLE_WORK,
+        ).exists())
+
+    def test_delete_role_scope_keeps_history_and_allows_reassignment(self):
+        self.add_row(1, "10000.00", kind="Работа")
+        document = reward_document_options(self.org, self.month)[0]
+        line_identity = document["lines"][0]["identity"]
+        first = create_manual_participation(
+            self.org, self.user, self.month,
+            document_key=document["scope_key"],
+            employee=self.e1,
+            role=RewardParticipation.ROLE_WORK,
+            share=Decimal("0.5"),
+            line_identities=[line_identity],
+        )
+        second = create_manual_participation(
+            self.org, self.user, self.month,
+            document_key=document["scope_key"],
+            employee=self.e2,
+            role=RewardParticipation.ROLE_WORK,
+            share=Decimal("0.5"),
+            line_identities=[line_identity],
+        )
+
+        deleted_ids = delete_participation_role(
+            self.org,
+            self.user,
+            self.month,
+            document_key=document["scope_key"],
+            role=RewardParticipation.ROLE_WORK,
+            scope_key=first.scope_key,
+        )
+
+        self.assertEqual(set(deleted_ids), {first.pk, second.pk})
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(first.status, RewardParticipation.STATUS_NOT_APPLICABLE)
+        self.assertEqual(second.status, RewardParticipation.STATUS_NOT_APPLICABLE)
+        self.assertTrue(first.changes.filter(reason="Назначение роли удалено руководителем.").exists())
+        replacement = create_manual_participation(
+            self.org, self.user, self.month,
+            document_key=document["scope_key"],
+            employee=self.e1,
+            role=RewardParticipation.ROLE_WORK,
+            share=Decimal("1"),
+            line_identities=[line_identity],
+        )
+        self.assertNotEqual(replacement.pk, first.pk)
+
+    def test_deleted_client_manager_is_not_recreated_by_default_rule_sync(self):
+        Employee.objects.create(
+            organization=self.org,
+            display_name="Боровиков Александр Юрьевич",
+        )
+        self.add_row(1, "1000.00")
+        document = reward_document_options(self.org, self.month)[0]
+        self.assertEqual(sync_reward_rules(self.org, self.user, self.month), 1)
+        manager = RewardParticipation.objects.get(
+            organization=self.org,
+            period_month=self.month,
+            role=RewardParticipation.ROLE_CLIENT_MANAGER,
+            status=RewardParticipation.STATUS_CONFIRMED,
+        )
+
+        delete_participation_role(
+            self.org,
+            self.user,
+            self.month,
+            document_key=document["scope_key"],
+            role=RewardParticipation.ROLE_CLIENT_MANAGER,
+            scope_key=manager.scope_key,
+        )
+
+        self.assertEqual(sync_reward_rules(self.org, self.user, self.month), 0)
+        self.assertFalse(RewardParticipation.objects.filter(
+            organization=self.org,
+            period_month=self.month,
+            role=RewardParticipation.ROLE_CLIENT_MANAGER,
+            status=RewardParticipation.STATUS_CONFIRMED,
+        ).exists())
+
+    def test_changed_full_order_scope_displays_not_calculated_amount(self):
+        row = self.add_row(1, "10000.00", kind="Работа")
+        document = reward_document_options(self.org, self.month)[0]
+        manager = create_manual_participation(
+            self.org, self.user, self.month,
+            document_key=document["scope_key"],
+            employee=self.e1,
+            role=RewardParticipation.ROLE_CLIENT_MANAGER,
+            share=Decimal("1"),
+            line_identities=[],
+        )
+        row.source_data = {
+            **row.source_data,
+            "resolved_order_guid": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        }
+        row.save(update_fields=["source_data"])
+
+        workspace = reward_order_workspace(self.org, self.month)
+        current_order = workspace["orders"][0]
+        stale_role = next(
+            item for item in current_order["roles"]
+            if item["role"] == RewardParticipation.ROLE_CLIENT_MANAGER
+            and item["scope_key"] == manager.scope_key
+        )
+
+        self.assertTrue(stale_role["calculation_blocked"])
+        self.assertIn("База и сумма по этому назначению не рассчитаны", stale_role["calculation_issues"][0])
+        OrganizationAccess.objects.create(
+            user=self.user,
+            organization=self.org,
+            role="owner",
+        )
+        self.client.force_login(self.user)
+        response = self.client.get(
+            reverse("finance_employee_rewards"),
+            {"month": "2026-09"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "не рассчитано")
+        self.assertContains(response, "удалите устаревшее назначение")
+
+    def test_rewards_page_has_back_refresh_and_delete_role_controls(self):
+        OrganizationAccess.objects.create(
+            user=self.user,
+            organization=self.org,
+            role="owner",
+        )
+        self.add_row(1, "1000.00")
+        document = reward_document_options(self.org, self.month)[0]
+        create_manual_participation(
+            self.org, self.user, self.month,
+            document_key=document["scope_key"],
+            employee=self.e1,
+            role=RewardParticipation.ROLE_CLIENT_MANAGER,
+            share=Decimal("1"),
+        )
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse("finance_employee_rewards"),
+            {"month": "2026-09"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "← Назад")
+        self.assertContains(response, 'id="reward-page-refresh"')
+        self.assertContains(response, 'class="reward-delete-role-form"')
+        self.assertContains(response, 'aria-label="Удалить роль «Менеджер клиента»"')
+        self.assertNotContains(response, "Не указано, кто продал")
+
+    def test_delete_role_ajax_endpoint_removes_confirmed_role_scope(self):
+        OrganizationAccess.objects.create(
+            user=self.user,
+            organization=self.org,
+            role="owner",
+        )
+        self.add_row(1, "1000.00")
+        document = reward_document_options(self.org, self.month)[0]
+        participation = create_manual_participation(
+            self.org, self.user, self.month,
+            document_key=document["scope_key"],
+            employee=self.e1,
+            role=RewardParticipation.ROLE_CLIENT_MANAGER,
+            share=Decimal("1"),
+        )
+        self.client.force_login(self.user)
+
+        response = self.client.post(
+            reverse("finance_employee_rewards"),
+            {
+                "month": "2026-09",
+                "action": "delete_participation_role",
+                "document_key": document["scope_key"],
+                "role": RewardParticipation.ROLE_CLIENT_MANAGER,
+                "scope_key": participation.scope_key,
+            },
+            HTTP_ACCEPT="application/json",
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["participation_ids"], [participation.pk])
+        participation.refresh_from_db()
+        self.assertEqual(
+            participation.status,
+            RewardParticipation.STATUS_NOT_APPLICABLE,
+        )
 
     def test_reward_employee_selector_excludes_not_current_workers(self):
         current = Employee.objects.create(
@@ -770,7 +1044,7 @@ class EmployeeRewardCalculationTests(TestCase):
         self.add_row(1, "1000.00", kind="Работа")
         data = calculate_month(self.org, self.month)
         kinds = {item["kind"] for item in data["issues"]}
-        self.assertIn("missing_sale_role", kinds)
+        self.assertNotIn("missing_sale_role", kinds)
         self.assertIn("missing_documentation_role", kinds)
         self.assertIn("missing_work_role", kinds)
 
