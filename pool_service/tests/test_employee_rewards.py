@@ -238,6 +238,11 @@ class EmployeeRewardCalculationTests(TestCase):
             response,
             'class="btn btn-primary reward-submit-button" data-no-loading',
         )
+        self.assertContains(response, "rewardPreservePickerViewport")
+        self.assertContains(
+            response,
+            "document.addEventListener('pointerdown', rewardPreservePickerViewport, true)",
+        )
         self.assertContains(response, "window.resetButtonLoading")
         self.assertContains(response, "rewardStoreScroll(form)")
         self.assertContains(response, 'data-ajax-save="1"')
@@ -576,6 +581,25 @@ class EmployeeRewardCalculationTests(TestCase):
             participation.status,
             RewardParticipation.STATUS_NOT_APPLICABLE,
         )
+
+    def test_employee_summary_distinguishes_turnover_from_reward(self):
+        OrganizationAccess.objects.create(
+            user=self.user,
+            organization=self.org,
+            role="owner",
+        )
+        self.add_row(1, "1000.00")
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse("finance_employee_rewards"),
+            {"month": "2026-09", "tab": "employees"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Оборот чеков")
+        self.assertContains(response, "Оборот по ролям")
+        self.assertContains(response, "Вознаграждение за продажи")
 
     def test_reward_employee_selector_excludes_not_current_workers(self):
         current = Employee.objects.create(
@@ -2126,8 +2150,10 @@ class EmployeeRewardCalculationTests(TestCase):
             item for item in data["employees"]
             if item["employee_id"] == self.e1.id
         )
+        self.assertTrue(data["retail_revenue_available"])
         self.assertEqual(employee["documentation_reward"], "50.00")
         self.assertEqual(employee["retail_reward"], "11.49")
+        self.assertEqual(employee["retail_revenue"], "2800.00")
         self.assertEqual(employee["total"], "61.49")
         self.assertFalse(any(
             issue["kind"] == "missing_sale_role"
