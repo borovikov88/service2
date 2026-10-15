@@ -673,6 +673,7 @@ function rewardCreateRoleCard(order, update) {
   editors.id = toggle.dataset.roleEditorId;
   card.append(head, participants, editors);
   host.appendChild(card);
+  toggle.dataset.rewardEditorBound = '1';
   toggle.addEventListener('click', () => {
     editors.classList.toggle('d-none');
     if (!editors.classList.contains('d-none')) {
@@ -720,12 +721,15 @@ function rewardEnsureRoleEditors(roleCard, update) {
     titleRow.appendChild(toggle);
   }
 
-  toggle.addEventListener('click', () => {
-    editors.classList.toggle('d-none');
-    if (!editors.classList.contains('d-none')) {
-      editors.querySelectorAll('.reward-participant-editor').forEach(rewardBindRow);
-    }
-  });
+  if (!toggle.dataset.rewardEditorBound) {
+    toggle.dataset.rewardEditorBound = '1';
+    toggle.addEventListener('click', () => {
+      editors.classList.toggle('d-none');
+      if (!editors.classList.contains('d-none')) {
+        editors.querySelectorAll('.reward-participant-editor').forEach(rewardBindRow);
+      }
+    });
+  }
   return editors;
 }
 
@@ -742,6 +746,8 @@ document.querySelectorAll('.reward-order').forEach(order => {
   const existing = [...order.querySelectorAll('.reward-existing-participant')];
 
   order.querySelectorAll('.reward-role-edit-toggle').forEach(toggle => {
+    if (toggle.dataset.rewardEditorBound) return;
+    toggle.dataset.rewardEditorBound = '1';
     toggle.addEventListener('click', () => {
       const panel = document.getElementById(toggle.dataset.roleEditorId);
       if (!panel) return;
