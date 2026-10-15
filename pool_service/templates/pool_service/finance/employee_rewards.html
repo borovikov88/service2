@@ -411,8 +411,10 @@ function rewardPreservePickerViewport(event) {
   const employeePicker = target.closest(
     '.reward-employee-select, .reward-participant-editor select[name="employee_id"]'
   );
-  const addSummary = target.closest('.reward-add-panel > summary');
-  if (!employeePicker && !addSummary) return;
+  const expandableControl = target.closest(
+    '.reward-add-panel > summary, .reward-order > summary, .reward-role-edit-toggle'
+  );
+  if (!employeePicker && !expandableControl) return;
   const left = window.scrollX;
   const top = window.scrollY;
   const restore = () => {
@@ -427,7 +429,9 @@ function rewardPreservePickerViewport(event) {
 document.addEventListener('pointerdown', rewardPreservePickerViewport, true);
 document.addEventListener('click', event => {
   const target = event.target instanceof Element ? event.target : null;
-  if (!target?.closest('.reward-add-panel > summary')) return;
+  if (!target?.closest(
+    '.reward-add-panel > summary, .reward-order > summary, .reward-role-edit-toggle'
+  )) return;
   const left = window.scrollX;
   const top = window.scrollY;
   window.requestAnimationFrame(() => {
