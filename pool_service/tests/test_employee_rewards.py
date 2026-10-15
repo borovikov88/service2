@@ -204,6 +204,11 @@ class EmployeeRewardCalculationTests(TestCase):
             role="owner",
         )
         self.add_row(1, "1000.00")
+        self.participation(
+            self.e1,
+            RewardParticipation.ROLE_SALE,
+            "1.000000",
+        )
         self.client.force_login(self.user)
 
         response = self.client.get(
@@ -224,6 +229,46 @@ class EmployeeRewardCalculationTests(TestCase):
         )
         self.assertContains(response, "window.resetButtonLoading")
         self.assertContains(response, "rewardStoreScroll(form)")
+        self.assertContains(response, 'data-ajax-save="1"')
+        self.assertContains(response, "'X-Requested-With': 'XMLHttpRequest'")
+
+    def test_edit_participation_returns_json_without_reloading_rewards_page(self):
+        OrganizationAccess.objects.create(
+            user=self.user,
+            organization=self.org,
+            role="owner",
+        )
+        row = self.add_row(1, "1000.00", kind="Услуга")
+        participation = self.participation(
+            self.e1,
+            RewardParticipation.ROLE_SALE,
+            "1.000000",
+        )
+        line_identity = reward_document_options(self.org, self.month)[0]["lines"][0]["identity"]
+        self.client.force_login(self.user)
+
+        response = self.client.post(
+            reverse("finance_employee_rewards"),
+            {
+                "month": "2026-09",
+                "action": "edit_participation",
+                "participation_id": str(participation.pk),
+                "employee_id": str(self.e1.pk),
+                "role": RewardParticipation.ROLE_WORK,
+                "share_percent": "100",
+                "line_identity": [line_identity],
+            },
+            HTTP_ACCEPT="application/json",
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+        self.assertEqual(response.json()["participation"]["role"], RewardParticipation.ROLE_WORK)
+        self.assertTrue(response["Content-Type"].startswith("application/json"))
+        participation.refresh_from_db()
+        self.assertEqual(participation.role, RewardParticipation.ROLE_WORK)
+        self.assertEqual(participation.share, Decimal("1.000000"))
 
     def test_reward_employee_selector_excludes_not_current_workers(self):
         current = Employee.objects.create(

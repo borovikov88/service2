@@ -6,6 +6,7 @@ from urllib.parse import urlencode
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.http import JsonResponse
 from django.db import models
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -219,6 +220,12 @@ def employee_rewards(request):
 
     if request.method == "POST":
         action = request.POST.get("action")
+        ajax_edit_request = (
+            action == "edit_participation"
+            and request.headers.get("X-Requested-With") == "XMLHttpRequest"
+            and request.headers.get("Accept", "").startswith("application/json")
+        )
+        edited_participation = None
         try:
             if action == "ensure_scheme":
                 ensure_test_scheme(organization, request.user, period_month)
@@ -426,7 +433,7 @@ def employee_rewards(request):
                     _reward_selectable_employees(organization),
                     pk=request.POST.get("employee_id"),
                 )
-                update_order_participation(
+                edited_participation = update_order_participation(
                     item,
                     request.user,
                     employee=employee,
@@ -437,7 +444,8 @@ def employee_rewards(request):
                     ),
                     line_identities=request.POST.getlist("line_identity"),
                 )
-                messages.success(request, "Участник обновлён.")
+                if not ajax_edit_request:
+                    messages.success(request, "Участник обновлён.")
             elif action == "mark_not_applicable":
                 create_manual_participation(
                     organization,
@@ -570,9 +578,29 @@ def employee_rewards(request):
                     f"Вознаграждения за {period_month:%m.%Y} зафиксированы.",
                 )
         except (ValidationError, ValueError, KeyError) as exc:
-            messages.error(
-                request, "; ".join(getattr(exc, "messages", [str(exc)]))
-            )
+            error_message = "; ".join(getattr(exc, "messages", [str(exc)]))
+            if ajax_edit_request:
+                return JsonResponse(
+                    {"ok": False, "message": error_message},
+                    status=400,
+                )
+            messages.error(request, error_message)
+        if ajax_edit_request and edited_participation is not None:
+            item = edited_participation
+            return JsonResponse({
+                "ok": True,
+                "message": "Участник обновлён без перезагрузки страницы.",
+                "participation": {
+                    "id": item.pk,
+                    "employee_id": item.employee_id,
+                    "employee": item.employee.display_name,
+                    "role": item.role,
+                    "role_label": item.get_role_display(),
+                    "share_percent": str(item.share * Decimal("100")),
+                    "scope_key": item.scope_key,
+                    "scope_line_identities": list(item.scope_line_identities or []),
+                },
+            })
         return _rewards_redirect(request, period_month)
 
     # Reconcile deterministic saved-data assignments on an open month. No live 1C
