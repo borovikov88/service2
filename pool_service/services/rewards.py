@@ -38,6 +38,7 @@ RETAIL_REPORT = "Document_ОтчетОРозничныхПродажах"
 MONTH_CLOSE = "Document_ЗакрытиеМесяца"
 REALIZATION = "Document_РасходнаяНакладная"
 DEFAULT_CLIENT_MANAGER_NAME = "Боровиков Александр Юрьевич"
+ROLE_REMOVED_MARKER = "Назначение роли удалено руководителем."
 
 
 def money(value):
@@ -1195,26 +1196,6 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
             and _source_mapping(row.source_data).get("recorder_type")
             not in {MONTH_CLOSE, RETAIL_REPORT}
         ]
-        is_retail_scope = any(
-            _source_mapping(row.source_data).get("recorder_type")
-            in {RETAIL_CHECK, RETAIL_RETURN}
-            for row in sale_rows
-        )
-        if (
-            sale_rows
-            and not is_retail_scope
-            and (business_key, RewardParticipation.ROLE_SALE)
-            not in participation_keys
-        ):
-            issues.append({
-                "kind": "missing_sale_role",
-                "label": (
-                    _source_mapping(sale_rows[0].source_data).get("resolved_order_display")
-                    or sale_rows[0].document_name
-                    or business_key
-                ),
-                "count": 1,
-            })
         has_service = any(
             classify_nomenclature_type(row.nomenclature_type) == "service"
             for row in sale_rows
@@ -1619,7 +1600,7 @@ def close_month(organization, user, period_month):
     blocking = {
         "missing_scheme", "missing_base", "missing_cost", "month_missing_cost",
         "share_overflow", "unmapped_author", "unconfirmed", "unallocated",
-        "partial_direct_cost_allocation", "missing_selected_lines", "moved_selected_lines", "moved_all_lines_scope", "author_sync_stale", "missing_sale_role",
+        "partial_direct_cost_allocation", "missing_selected_lines", "moved_selected_lines", "moved_all_lines_scope", "author_sync_stale",
         "missing_documentation_role", "missing_work_role",
     }
     if any(issue.get("kind") in blocking for issue in snapshot["issues"]):
@@ -2212,7 +2193,7 @@ def create_manual_participation(
         scope_key=scope_key,
         role=role,
         employee=employee,
-        status__in=[RewardParticipation.STATUS_PENDING, RewardParticipation.STATUS_CONFIRMED, RewardParticipation.STATUS_NOT_APPLICABLE],
+        status__in=[RewardParticipation.STATUS_PENDING, RewardParticipation.STATUS_CONFIRMED],
     ).first()
     if existing:
         raise ValidationError("Такое участие уже добавлено.")
@@ -2298,6 +2279,93 @@ def create_manual_participations_batch(
             )
         )
     return created
+
+
+@transaction.atomic
+def delete_participation_role(
+    organization,
+    user,
+    period_month,
+    *,
+    document_key,
+    role,
+    scope_key,
+):
+    """Remove a whole manually managed role scope while retaining its audit history."""
+    if not can_manage_participation(user, organization):
+        raise PermissionDenied
+    period_month = month_start(period_month)
+    _lock_reward_organization(organization)
+    if RewardMonthClose.objects.filter(
+        organization=organization,
+        period_month=period_month,
+    ).exists():
+        raise ValidationError("Закрытый месяц нельзя переписывать.")
+
+    allowed_roles = {
+        RewardParticipation.ROLE_CLIENT_MANAGER,
+        RewardParticipation.ROLE_SALE,
+        RewardParticipation.ROLE_PROJECT,
+        RewardParticipation.ROLE_WORK,
+    }
+    if role not in allowed_roles:
+        raise ValidationError("Эту роль нельзя удалить из карточки заказа.")
+    options = {
+        item["scope_key"]: item
+        for item in reward_document_options(organization, period_month)
+    }
+    document = options.get(document_key)
+    if document is None:
+        raise ValidationError(
+            "Документ не относится к активным подтверждённым данным месяца."
+        )
+    source_keys = {document["scope_key"], *document.get("source_document_keys", [])}
+    items = list(
+        RewardParticipation.objects.select_for_update()
+        .filter(
+            organization=organization,
+            period_month=period_month,
+            source_document_key__in=source_keys,
+            role=role,
+            scope_key=scope_key,
+        )
+        .exclude(status=RewardParticipation.STATUS_NOT_APPLICABLE)
+        .order_by("id")
+    )
+    if not items:
+        raise ValidationError("Активное назначение этой роли уже отсутствует.")
+    if any(
+        item.status != RewardParticipation.STATUS_CONFIRMED
+        or item.assignment_source not in {
+            RewardParticipation.SOURCE_MANUAL,
+            RewardParticipation.SOURCE_TEMPLATE,
+        }
+        or item.author_identity_id
+        for item in items
+    ):
+        raise ValidationError(
+            "Удалять можно только подтверждённые ручные назначения или назначения из шаблона."
+        )
+
+    item_ids = []
+    for item in items:
+        before = participation_snapshot(item)
+        item.status = RewardParticipation.STATUS_NOT_APPLICABLE
+        item.basis = ROLE_REMOVED_MARKER
+        item.confirmed_by = user
+        item.confirmed_at = timezone.now()
+        item.save(update_fields=[
+            "status", "basis", "confirmed_by", "confirmed_at", "updated_at",
+        ])
+        RewardParticipationChange.objects.create(
+            participation=item,
+            actor=user,
+            before=before,
+            after=participation_snapshot(item),
+            reason=ROLE_REMOVED_MARKER,
+        )
+        item_ids.append(item.pk)
+    return item_ids
 
 
 def _document_for_participation(organization, period_month, participation):
@@ -2814,6 +2882,18 @@ def sync_reward_rules(organization, user, period_month):
         else:
             continue
 
+        source_keys = {document["scope_key"], *document.get("source_document_keys", [])}
+        removed_by_manager = RewardParticipation.objects.filter(
+            organization=organization,
+            period_month=period_month,
+            source_document_key__in=source_keys,
+            role=RewardParticipation.ROLE_CLIENT_MANAGER,
+            status=RewardParticipation.STATUS_NOT_APPLICABLE,
+            basis__startswith=ROLE_REMOVED_MARKER,
+        ).exists()
+        if removed_by_manager:
+            continue
+
         manual_exists = RewardParticipation.objects.filter(
             organization=organization,
             period_month=period_month,
@@ -2951,7 +3031,6 @@ def reward_order_workspace(organization, period_month, *, employee_id=None):
 
     technical_by_scope = defaultdict(list)
     human_issue = {
-        "missing_sale_role": "Не указано, кто продал",
         "missing_work_role": "Есть работы, но не указаны исполнители",
         "missing_documentation_role": "Не определён оформитель",
         "unallocated": "Доли распределены не полностью",
@@ -2960,7 +3039,11 @@ def reward_order_workspace(organization, period_month, *, employee_id=None):
         "month_missing_cost": "Есть позиции без себестоимости",
         "missing_selected_lines": "Изменились строки заказа после назначения",
         "moved_selected_lines": "Выбранные позиции перенесены в другой заказ",
-        "moved_all_lines_scope": "Состав заказа изменился после назначения",
+        "moved_all_lines_scope": (
+            "В 1С изменился состав или привязка позиций после назначения роли на весь заказ. "
+            "База и сумма по этому назначению не рассчитаны, чтобы не начислить их по неверным позициям. "
+            "Сверьте роль с актуальным заказом; удалите устаревшее назначение или назначьте роль заново."
+        ),
         "partial_direct_cost_allocation": "Прямые затраты нельзя точно отнести к выбранной части заказа",
         "unconfirmed": "Автоматическое предложение требует решения",
         "author_sync_stale": "Данные об оформителе требуют обновления",
@@ -2980,6 +3063,16 @@ def reward_order_workspace(organization, period_month, *, employee_id=None):
     ]
     role_labels = dict(RewardParticipation.ROLE_CHOICES)
     scheme = data.get("scheme") or {}
+    calculation_issue_kinds = {
+        "missing_base",
+        "missing_cost",
+        "month_missing_cost",
+        "partial_direct_cost_allocation",
+        "missing_selected_lines",
+        "moved_selected_lines",
+        "moved_all_lines_scope",
+        "unconfirmed",
+    }
     rate_labels = {
         RewardParticipation.ROLE_CLIENT_MANAGER: f"{Decimal(scheme.get('client_manager_rate') or 0) * 100:.2f}%",
         RewardParticipation.ROLE_SALE: f"{Decimal(scheme.get('sale_rate') or 0) * 100:.2f}%",
@@ -2996,12 +3089,6 @@ def reward_order_workspace(organization, period_month, *, employee_id=None):
         role_rows = []
         problems = []
 
-        active_sale = [x for x in items if x.role == RewardParticipation.ROLE_SALE and x.status != RewardParticipation.STATUS_NOT_APPLICABLE]
-        if (
-            document.get("source_document_type") != RETAIL_CHECK
-            and not active_sale
-        ):
-            problems.append("Не указано, кто продал")
         active_work = [x for x in items if x.role == RewardParticipation.ROLE_WORK and x.status != RewardParticipation.STATUS_NOT_APPLICABLE]
         if document["has_work"] and not active_work:
             problems.append("Есть работы, но не указаны исполнители")
@@ -3044,6 +3131,16 @@ def reward_order_workspace(organization, period_month, *, employee_id=None):
                         fund = Decimal(detail["role_fund"])
                     if calculated_rate is None:
                         calculated_rate = detail.get("rate")
+                scope_issues = [
+                    message
+                    for message in technical_by_scope.get(scope_key, [])
+                    if message
+                ]
+                calculation_blocked = any(
+                    issue.get("label") == scope_key
+                    and issue.get("kind") in calculation_issue_kinds
+                    for issue in data.get("issues", [])
+                )
                 role_rows.append({
                     "role": role,
                     "label": role_labels[role],
@@ -3053,9 +3150,24 @@ def reward_order_workspace(organization, period_month, *, employee_id=None):
                     "share_total": str(share_total),
                     "remaining_share": str(max(Decimal("0"), ONE - share_total)),
                     "base": None if base is None else str(money(base)),
+                    "calculation_blocked": calculation_blocked,
+                    "calculation_issues": scope_issues,
                     "has_editable": any(
                         item.status == RewardParticipation.STATUS_CONFIRMED
                         for item in scoped_items
+                    ),
+                    "can_delete": (
+                        role != RewardParticipation.ROLE_DOCUMENTATION
+                        and bool(scoped_items)
+                        and all(
+                            item.status == RewardParticipation.STATUS_CONFIRMED
+                            and item.assignment_source in {
+                                RewardParticipation.SOURCE_MANUAL,
+                                RewardParticipation.SOURCE_TEMPLATE,
+                            }
+                            and not item.author_identity_id
+                            for item in scoped_items
+                        )
                     ),
                     "participants": [{
                         "id": item.id,
