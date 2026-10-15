@@ -232,6 +232,7 @@ class EmployeeRewardCalculationTests(TestCase):
         self.assertContains(response, 'data-ajax-save="1"')
         self.assertContains(response, "'X-Requested-With': 'XMLHttpRequest'")
         self.assertContains(response, "function rewardCreateRoleCard(order, update)")
+        self.assertContains(response, "function rewardEnsureRoleEditors(roleCard, update)")
 
     def test_edit_participation_returns_json_without_reloading_rewards_page(self):
         OrganizationAccess.objects.create(

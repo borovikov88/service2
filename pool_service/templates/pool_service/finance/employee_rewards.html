@@ -682,6 +682,53 @@ function rewardCreateRoleCard(order, update) {
   return card;
 }
 
+
+function rewardEnsureRoleEditors(roleCard, update) {
+  const titleRow = roleCard.querySelector('.reward-role-title');
+  if (!titleRow) return null;
+
+  let editors = roleCard.querySelector('.reward-role-editors');
+  if (!editors) {
+    editors = document.createElement('div');
+    editors.className = 'reward-role-editors d-none';
+    editors.id = 'reward-async-edit-' + update.id;
+    roleCard.appendChild(editors);
+  }
+
+  let toggle = [...roleCard.querySelectorAll('.reward-role-edit-toggle')].find(button =>
+    button.dataset.roleEditorId === editors.id
+  );
+  if (!toggle) {
+    toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'reward-edit-icon reward-role-edit-toggle';
+    toggle.dataset.roleEditorId = editors.id;
+    toggle.title = 'Редактировать ' + (update.role_label || 'участника');
+    toggle.setAttribute('aria-label', toggle.title);
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('aria-hidden', 'true');
+    const pathA = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    pathA.setAttribute('d', 'M12 20h9');
+    const pathB = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    pathB.setAttribute('d', 'M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z');
+    svg.append(pathA, pathB);
+    toggle.appendChild(svg);
+    titleRow.appendChild(toggle);
+  }
+
+  toggle.addEventListener('click', () => {
+    editors.classList.toggle('d-none');
+    if (!editors.classList.contains('d-none')) {
+      editors.querySelectorAll('.reward-participant-editor').forEach(rewardBindRow);
+    }
+  });
+  return editors;
+}
+
 function rewardMarkOrderStale(order) {
   const body = order?.querySelector('.reward-order-body');
   if (!body || body.querySelector('.reward-refresh-notice')) return;
@@ -789,7 +836,7 @@ document.querySelectorAll('.reward-order').forEach(order => {
           if (!targetRole) targetRole = rewardCreateRoleCard(order, update);
           if (targetRole && targetRole !== sourceRole) {
             const targetParticipants = targetRole.querySelector('.reward-role-participants');
-            const targetEditors = targetRole.querySelector('.reward-role-editors');
+            const targetEditors = rewardEnsureRoleEditors(targetRole, update);
             if (targetParticipants && targetEditors) {
               targetParticipants.appendChild(participant);
               targetEditors.appendChild(form);
