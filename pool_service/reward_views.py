@@ -16,6 +16,7 @@ from pool_service.client_queries import active_clients
 from pool_service.models import Client, Employee, Pool
 from pool_service.reward_models import (
     OneCAuthorIdentity,
+    RewardMonthClose,
     RewardParticipantTemplate,
     RewardParticipation,
     RewardSchemeVersion,
@@ -605,10 +606,13 @@ def employee_rewards(request):
 
     # Reconcile deterministic saved-data assignments on an open month. No live 1C
     # call is allowed here; author-name enrichment stays an explicit action.
-    initial = calculate_month(organization, period_month, employee_id=employee_id)
+    month_is_closed = RewardMonthClose.objects.filter(
+        organization=organization,
+        period_month=period_month,
+    ).exists()
     if (
         can_manage_participation(request.user, organization)
-        and not initial.get("closed")
+        and not month_is_closed
     ):
         sync_author_proposals(
             organization, request.user, period_month, enrich_names=False
