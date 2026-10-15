@@ -6,7 +6,7 @@ from urllib.parse import urlencode
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.http import JsonResponse
+from django.http import Http404, JsonResponse
 from django.db import models
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -36,6 +36,7 @@ from pool_service.services.rewards import (
     create_manual_participation,
     create_manual_participations_batch,
     create_scheme_version,
+    delete_participation_role,
     ensure_test_scheme,
     map_author,
     map_customer_identity,
@@ -64,7 +65,6 @@ BLOCKING_ISSUES = {
     "moved_selected_lines",
     "moved_all_lines_scope",
     "author_sync_stale",
-    "missing_sale_role",
     "missing_documentation_role",
     "missing_work_role",
 }
@@ -226,7 +226,19 @@ def employee_rewards(request):
             and request.headers.get("X-Requested-With") == "XMLHttpRequest"
             and request.headers.get("Accept", "").startswith("application/json")
         )
+        ajax_batch_request = (
+            action == "add_participations_batch"
+            and request.headers.get("X-Requested-With") == "XMLHttpRequest"
+            and request.headers.get("Accept", "").startswith("application/json")
+        )
+        ajax_delete_request = (
+            action == "delete_participation_role"
+            and request.headers.get("X-Requested-With") == "XMLHttpRequest"
+            and request.headers.get("Accept", "").startswith("application/json")
+        )
         edited_participation = None
+        created_participations = None
+        deleted_participation_ids = None
         try:
             if action == "ensure_scheme":
                 ensure_test_scheme(organization, request.user, period_month)
@@ -412,17 +424,18 @@ def employee_rewards(request):
                         ),
                         "line_identities": line_identities,
                     })
-                created = create_manual_participations_batch(
+                created_participations = create_manual_participations_batch(
                     organization,
                     request.user,
                     period_month,
                     document_key=request.POST.get("document_key", ""),
                     assignments=assignments,
                 )
-                messages.success(
-                    request,
-                    f"Сохранено участников: {len(created)}.",
-                )
+                if not ajax_batch_request:
+                    messages.success(
+                        request,
+                        f"Сохранено участников: {len(created_participations)}.",
+                    )
             elif action == "edit_participation":
                 item = get_object_or_404(
                     RewardParticipation,
@@ -447,6 +460,20 @@ def employee_rewards(request):
                 )
                 if not ajax_edit_request:
                     messages.success(request, "Участник обновлён.")
+            elif action == "delete_participation_role":
+                deleted_participation_ids = delete_participation_role(
+                    organization,
+                    request.user,
+                    period_month,
+                    document_key=(request.POST.get("document_key") or "").strip(),
+                    role=(request.POST.get("role") or "").strip(),
+                    scope_key=(request.POST.get("scope_key") or "").strip(),
+                )
+                if not ajax_delete_request:
+                    messages.success(
+                        request,
+                        f"Удалено участников из роли: {len(deleted_participation_ids)}.",
+                    )
             elif action == "mark_not_applicable":
                 create_manual_participation(
                     organization,
@@ -580,12 +607,19 @@ def employee_rewards(request):
                 )
         except (ValidationError, ValueError, KeyError) as exc:
             error_message = "; ".join(getattr(exc, "messages", [str(exc)]))
-            if ajax_edit_request:
+            if ajax_edit_request or ajax_batch_request or ajax_delete_request:
                 return JsonResponse(
                     {"ok": False, "message": error_message},
                     status=400,
                 )
             messages.error(request, error_message)
+        except Http404:
+            if ajax_batch_request or ajax_delete_request:
+                return JsonResponse(
+                    {"ok": False, "message": "Выбранный сотрудник или документ больше недоступен. Обновите страницу и повторите действие."},
+                    status=404,
+                )
+            raise
         if ajax_edit_request and edited_participation is not None:
             item = edited_participation
             return JsonResponse({
@@ -601,6 +635,27 @@ def employee_rewards(request):
                     "scope_key": item.scope_key,
                     "scope_line_identities": list(item.scope_line_identities or []),
                 },
+            })
+        if ajax_batch_request and created_participations is not None:
+            return JsonResponse({
+                "ok": True,
+                "message": "Назначения сохранены. Суммы по заказу и сотрудникам пока не пересчитаны.",
+                "participations": [{
+                    "id": item.pk,
+                    "employee_id": item.employee_id,
+                    "employee": item.employee.display_name,
+                    "role": item.role,
+                    "role_label": item.get_role_display(),
+                    "share_percent": str(item.share * Decimal("100")),
+                    "scope_key": item.scope_key,
+                    "scope_line_identities": list(item.scope_line_identities or []),
+                } for item in created_participations],
+            })
+        if ajax_delete_request and deleted_participation_ids is not None:
+            return JsonResponse({
+                "ok": True,
+                "message": "Назначение роли удалено. Итоги обновятся после обновления страницы.",
+                "participation_ids": deleted_participation_ids,
             })
         return _rewards_redirect(request, period_month)
 
