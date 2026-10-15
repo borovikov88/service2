@@ -612,6 +612,76 @@ function rewardRefreshRoleShares(roleCard) {
   }
 }
 
+function rewardCreateRoleCard(order, update) {
+  const host = order.querySelector('.reward-existing');
+  if (!host) return null;
+  const card = document.createElement('div');
+  card.className = 'reward-role';
+  card.dataset.role = update.role || '';
+  card.dataset.scopeKey = update.scope_key || '';
+
+  const head = document.createElement('div');
+  head.className = 'reward-role-head';
+  const titleBlock = document.createElement('div');
+  const titleRow = document.createElement('div');
+  titleRow.className = 'reward-role-title';
+  const title = document.createElement('div');
+  title.className = 'fw-semibold';
+  title.textContent = update.role_label || 'Новая роль';
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'reward-edit-icon reward-role-edit-toggle';
+  toggle.dataset.roleEditorId = 'reward-async-edit-' + update.id;
+  toggle.title = 'Редактировать ' + title.textContent;
+  toggle.setAttribute('aria-label', toggle.title);
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '2');
+  svg.setAttribute('aria-hidden', 'true');
+  const pathA = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  pathA.setAttribute('d', 'M12 20h9');
+  const pathB = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  pathB.setAttribute('d', 'M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z');
+  svg.append(pathA, pathB);
+  toggle.appendChild(svg);
+  titleRow.append(title, toggle);
+  const note = document.createElement('div');
+  note.className = 'small text-muted';
+  note.textContent = 'Расчётные показатели обновятся после пересчёта заказа.';
+  titleBlock.append(titleRow, note);
+
+  const shares = document.createElement('div');
+  shares.className = 'small';
+  const total = document.createElement('span');
+  total.dataset.roleShareTotal = '';
+  total.textContent = '0';
+  const totalLine = document.createElement('strong');
+  totalLine.append('Распределено: ', total, ' из 100%');
+  const remaining = document.createElement('span');
+  remaining.className = 'text-warning';
+  remaining.dataset.roleShareRemaining = '';
+  remaining.textContent = 'Осталось: 100%';
+  shares.append(totalLine, document.createElement('br'), remaining);
+  head.append(titleBlock, shares);
+
+  const participants = document.createElement('div');
+  participants.className = 'mt-2 reward-role-participants';
+  const editors = document.createElement('div');
+  editors.className = 'reward-role-editors d-none';
+  editors.id = toggle.dataset.roleEditorId;
+  card.append(head, participants, editors);
+  host.appendChild(card);
+  toggle.addEventListener('click', () => {
+    editors.classList.toggle('d-none');
+    if (!editors.classList.contains('d-none')) {
+      editors.querySelectorAll('.reward-participant-editor').forEach(rewardBindRow);
+    }
+  });
+  return card;
+}
+
 function rewardMarkOrderStale(order) {
   const body = order?.querySelector('.reward-order-body');
   if (!body || body.querySelector('.reward-refresh-notice')) return;
@@ -712,10 +782,11 @@ document.querySelectorAll('.reward-order').forEach(order => {
           }
 
           const sourceRole = form.closest('.reward-role');
-          const targetRole = [...order.querySelectorAll('.reward-role')].find(roleCard =>
+          let targetRole = [...order.querySelectorAll('.reward-role')].find(roleCard =>
             roleCard.dataset.role === update.role
             && roleCard.dataset.scopeKey === update.scope_key
           );
+          if (!targetRole) targetRole = rewardCreateRoleCard(order, update);
           if (targetRole && targetRole !== sourceRole) {
             const targetParticipants = targetRole.querySelector('.reward-role-participants');
             const targetEditors = targetRole.querySelector('.reward-role-editors');

@@ -231,6 +231,7 @@ class EmployeeRewardCalculationTests(TestCase):
         self.assertContains(response, "rewardStoreScroll(form)")
         self.assertContains(response, 'data-ajax-save="1"')
         self.assertContains(response, "'X-Requested-With': 'XMLHttpRequest'")
+        self.assertContains(response, "function rewardCreateRoleCard(order, update)")
 
     def test_edit_participation_returns_json_without_reloading_rewards_page(self):
         OrganizationAccess.objects.create(
