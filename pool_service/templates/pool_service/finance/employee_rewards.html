@@ -25,6 +25,7 @@
 .reward-role{border:1px solid var(--bs-border-color);border-radius:.6rem;padding:.75rem;margin-bottom:.6rem}
 .reward-role-head{display:flex;justify-content:space-between;gap:.75rem;align-items:flex-start}
 .reward-role-title{display:flex;align-items:center;gap:.35rem}
+.reward-delete-role-form{display:inline-flex;margin:0}
 .reward-edit-icon{display:inline-flex;align-items:center;justify-content:center;width:1.65rem;height:1.65rem;padding:0;border:0;background:transparent;color:var(--bs-secondary-color);border-radius:.35rem}
 .reward-edit-icon:hover{background:var(--bs-tertiary-bg);color:var(--bs-body-color)}
 .reward-edit-icon svg{width:.9rem;height:.9rem}
@@ -66,6 +67,10 @@
 <div class="container-fluid py-3 reward-page">
   <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between mb-3">
     <div>
+      <div class="d-flex gap-2 align-items-center mb-2">
+        <a class="btn btn-sm btn-outline-secondary" href="{% url 'finance_dashboard' %}">← Назад</a>
+        <button class="btn btn-sm btn-outline-primary" type="button" id="reward-page-refresh" data-no-loading title="Обновить страницу и пересчитать отображаемые суммы">↻ Обновить</button>
+      </div>
       <h1 class="h3 mb-1">Вознаграждения сотрудников</h1>
       <div class="text-muted small">Клиент → заказ → позиции → сотрудники → роль → доля → результат в рублях</div>
     </div>
@@ -217,8 +222,22 @@
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg>
                     </button>
                     {% endif %}
+                    {% if can_manage_participation and not data.closed and role.can_delete %}
+                    <form method="post" class="reward-delete-role-form" data-role-label="{{ role.label }}">
+                      {% csrf_token %}
+                      <input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}">
+                      <input type="hidden" name="action" value="delete_participation_role">
+                      <input type="hidden" name="document_key" value="{{ order.scope_key }}">
+                      <input type="hidden" name="role" value="{{ role.role }}">
+                      <input type="hidden" name="scope_key" value="{{ role.scope_key }}">
+                      <button type="submit" class="reward-edit-icon text-danger" data-no-loading title="Удалить роль «{{ role.label }}»" aria-label="Удалить роль «{{ role.label }}»">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>
+                      </button>
+                    </form>
+                    {% endif %}
                   </div>
                   <div class="small text-muted">База: {% if role.base == None %}—{% else %}{{ role.base|money }}{% endif %} · Ставка: {{ role.rate }}{% if role.fund != None %} · Фонд роли: {{ role.fund|money }}{% endif %}</div>
+                  {% if role.calculation_blocked %}<div class="small text-warning mt-1">Не рассчитано: {{ role.calculation_issues|join:"; " }}</div>{% endif %}
                 </div>
                 <div class="small"><strong>Распределено: <span data-role-share-total>{% widthratio role.share_total 0.01 1 %}</span> из 100%</strong><br><span class="text-warning" data-role-share-remaining {% if role.remaining_share == "0.000000" %}hidden{% endif %}>{% if role.remaining_share != "0.000000" %}Осталось: {% widthratio role.remaining_share 0.01 1 %}%{% endif %}</span></div>
               </div>
@@ -227,7 +246,7 @@
                 {% for p in role.participants %}
                   <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center py-1 reward-existing-participant" data-participation-id="{{ p.id }}" data-scope-key="{{ role.scope_key }}" data-role="{{ role.role }}" data-share="{% widthratio p.share 0.01 1 %}" data-scope-lines="{{ p.display_scope_lines|join:',' }}">
                     <span>{% if p.author_name and p.status == "required" %}{{ p.author_name }}{% else %}{{ p.employee }}{% endif %} — <strong>{% widthratio p.share 0.01 1 %}%</strong>{% if p.status == "pending" or p.status == "required" %} <span class="badge text-bg-warning">требует решения</span>{% endif %}{% if p.author_guid and p.status == "required" %}<span class="d-block small text-muted">ID 1С: {{ p.author_guid }}</span>{% endif %}</span>
-                    <span>{{ p.amount|money }}</span>
+                    <span>{% if role.calculation_blocked %}<span class="text-warning">не рассчитано</span>{% else %}{{ p.amount|money }}{% endif %}</span>
                   </div>
                   {% if can_manage_participation and not data.closed and p.status == "required" %}
                     {% if p.author_identity_id %}
@@ -270,7 +289,7 @@
           {% if can_manage_participation and not data.closed %}
           <details class="reward-add-panel mt-3">
             <summary class="fw-semibold">+ Добавить участников</summary>
-            <form method="post" class="mt-2 reward-batch-form">{% csrf_token %}
+            <form method="post" class="mt-2 reward-batch-form" data-ajax-save="1">{% csrf_token %}
               <input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="add_participations_batch"><input type="hidden" name="document_key" value="{{ order.scope_key }}"><input type="hidden" name="participants_total" value="1" class="reward-participants-total"><input type="hidden" name="return_open" value="{{ order.scope_key }}"><input type="hidden" name="return_anchor" value="reward-{{ order.source_document_guid|slugify }}"><input type="hidden" name="return_q" value="{{ search_query }}">
               <div class="reward-batch-rows d-grid gap-2">
                 <div class="reward-batch-row" data-index="0">
@@ -294,6 +313,7 @@
               {% if order.source_document_type == "Document_ЧекККМ" %}<div class="form-text mt-2">Продажа по чеку считается автоматически по отдельной ставке розницы.</div>{% endif %}
               {% if order.direct_expenses %}<div class="alert alert-secondary py-2 mt-2 mb-0 small">У заказа есть прямые затраты {{ order.direct_expense_total|money }}, относящиеся ко всему заказу. Если выбран только фрагмент позиций, система не распределит эти затраты молча и потребует отдельного решения.</div>{% endif %}
               <div class="alert alert-danger py-2 mt-2 reward-form-error"></div>
+              <div class="alert alert-success py-2 mt-2 reward-batch-success" aria-live="polite" style="display:none"></div>
             </form>
           </details>
           {% endif %}
@@ -321,8 +341,9 @@
   {% elif selected_tab == "employees" %}
     <div class="card card-soft p-3">
       <h2 class="h5">Итоги по сотрудникам · {{ period_month|date:"m.Y" }}</h2>
-      <div class="table-responsive"><table class="table table-sm align-middle" style="min-width:920px"><thead><tr><th>Сотрудник</th><th class="text-end">Оформление</th><th class="text-end">Розница, % ВП</th><th class="text-end">Продажи</th><th class="text-end">Проект / расчёт</th><th class="text-end">Выполнение работ</th><th class="text-end">Корректировки</th><th class="text-end">Всего</th></tr></thead><tbody>
-      {% for employee in data.employees %}<tr><td><a href="{% url 'finance_employee_reward_detail' employee.employee_id %}?month={{ period_month|date:'Y-m' }}">{{ employee.employee }}</a></td><td class="text-end">{{ employee.documentation_reward|money }}</td><td class="text-end">{{ employee.retail_reward|money }}</td><td class="text-end">{{ employee.sale_reward|money }}</td><td class="text-end">{{ employee.project_reward|money }}</td><td class="text-end">{{ employee.work_reward|money }}</td><td class="text-end">{{ employee.adjustments|money }}</td><td class="text-end fw-semibold">{{ employee.total|money }}</td></tr>{% empty %}<tr><td colspan="8" class="text-muted text-center py-3">Нет рассчитанных вознаграждений.</td></tr>{% endfor %}
+      <p class="small text-muted mb-2">Оборот чеков распределён по долям оформления. «Оборот по ролям „Продажа“» — выручка назначенных продаж; «Вознаграждение за продажи» — премия от валовой прибыли. Чеки ККМ начисляются в столбцах «Оформление» и «Розница, % ВП».</p>
+      <div class="table-responsive"><table class="table table-sm align-middle" style="min-width:1320px"><thead><tr><th>Сотрудник</th><th class="text-end">Оборот чеков</th><th class="text-end">Оборот по ролям «Продажа»</th><th class="text-end">Оформление</th><th class="text-end">Розница, % ВП</th><th class="text-end">Вознаграждение за продажи</th><th class="text-end">Проект / расчёт</th><th class="text-end">Выполнение работ</th><th class="text-end">Корректировки</th><th class="text-end">Всего</th></tr></thead><tbody>
+      {% for employee in data.employees %}<tr><td><a href="{% url 'finance_employee_reward_detail' employee.employee_id %}?month={{ period_month|date:'Y-m' }}">{{ employee.employee }}</a></td><td class="text-end">{% if data.retail_revenue_available %}{{ employee.retail_revenue|money }}{% else %}—{% endif %}</td><td class="text-end">{{ employee.seller_revenue|money }}</td><td class="text-end">{{ employee.documentation_reward|money }}</td><td class="text-end">{{ employee.retail_reward|money }}</td><td class="text-end">{{ employee.sale_reward|money }}</td><td class="text-end">{{ employee.project_reward|money }}</td><td class="text-end">{{ employee.work_reward|money }}</td><td class="text-end">{{ employee.adjustments|money }}</td><td class="text-end fw-semibold">{{ employee.total|money }}</td></tr>{% empty %}<tr><td colspan="10" class="text-muted text-center py-3">Нет рассчитанных вознаграждений.</td></tr>{% endfor %}
       </tbody></table></div>
       <details class="mt-2"><summary class="fw-semibold">Расшифровка начислений</summary><div class="table-responsive mt-2"><table class="table table-sm" style="min-width:900px"><thead><tr><th>Сотрудник</th><th>Клиент / заказ</th><th>Роль</th><th class="text-end">База</th><th>Ставка</th><th class="text-end">Доля</th><th class="text-end">Начислено</th></tr></thead><tbody>{% for row in data.details %}<tr><td>{{ row.employee }}</td><td>{{ row.customer|default:"—" }} · {{ row.document }}</td><td>{{ row.role }}</td><td class="text-end">{{ row.base|money }}</td><td>{{ row.rate }}</td><td class="text-end">{% widthratio row.share 0.01 1 %}%</td><td class="text-end">{{ row.amount|money }}</td></tr>{% empty %}<tr><td colspan="7" class="text-muted">Нет строк.</td></tr>{% endfor %}</tbody></table></div></details>
     </div>
@@ -383,6 +404,41 @@ document.addEventListener('submit', event => {
   event.stopImmediatePropagation();
   rewardSubmitParticipantEditor(form);
 }, true);
+
+function rewardPreservePickerViewport(event) {
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target) return;
+  const employeePicker = target.closest(
+    '.reward-employee-select, .reward-participant-editor select[name="employee_id"]'
+  );
+  const expandableControl = target.closest(
+    '.reward-add-panel > summary, .reward-order > summary, .reward-role-edit-toggle'
+  );
+  if (!employeePicker && !expandableControl) return;
+  const left = window.scrollX;
+  const top = window.scrollY;
+  const restore = () => {
+    if (window.scrollX !== left || window.scrollY !== top) {
+      window.scrollTo(left, top);
+    }
+  };
+  window.requestAnimationFrame(restore);
+  window.setTimeout(restore, 60);
+}
+
+document.addEventListener('pointerdown', rewardPreservePickerViewport, true);
+document.addEventListener('click', event => {
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target?.closest(
+    '.reward-add-panel > summary, .reward-order > summary, .reward-role-edit-toggle'
+  )) return;
+  const left = window.scrollX;
+  const top = window.scrollY;
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => window.scrollTo(left, top));
+  });
+}, true);
+
 
 (function () {
   const input = document.getElementById('reward-live-search');
@@ -742,12 +798,12 @@ function rewardEnsureRoleEditors(roleCard, update) {
   return editors;
 }
 
-function rewardMarkOrderStale(order) {
+function rewardMarkOrderStale(order, message) {
   const body = order?.querySelector('.reward-order-body');
   if (!body || body.querySelector('.reward-refresh-notice')) return;
   const notice = document.createElement('div');
   notice.className = 'alert alert-warning py-2 reward-refresh-notice';
-  notice.textContent = 'Изменение сохранено. Итоговые суммы и распределение в заказе не пересчитывались. Обновите страницу после завершения правок.';
+  notice.textContent = message || 'Назначение сохранено. База, суммы и предупреждения на этой странице не пересчитаны. Нажмите «Обновить» после того, как закончите менять роли.';
   body.prepend(notice);
 }
 
@@ -891,6 +947,63 @@ document.querySelectorAll('.reward-order').forEach(order => {
     });
   });
 
+  order.querySelectorAll('.reward-delete-role-form').forEach(form => {
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const roleLabel = form.dataset.roleLabel || 'эту роль';
+      if (!window.confirm('Удалить назначение «' + roleLabel + '» вместе со всеми участниками этой роли?')) return;
+      const button = form.querySelector('button[type="submit"]');
+      const roleCard = form.closest('.reward-role');
+      let feedback = roleCard?.querySelector('.reward-delete-error');
+      if (!feedback && roleCard) {
+        feedback = document.createElement('div');
+        feedback.className = 'alert alert-danger py-2 mt-2 reward-delete-error';
+        feedback.setAttribute('aria-live', 'polite');
+        roleCard.appendChild(feedback);
+      }
+      if (feedback) feedback.style.display = 'none';
+      button.disabled = true;
+      try {
+        const response = await fetch(form.action || window.location.href, {
+          method: form.method || 'POST',
+          body: new FormData(form),
+          headers: {
+            'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+          },
+          credentials: 'same-origin',
+        });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload || !payload.ok) {
+          if (feedback) {
+            feedback.textContent = payload?.message || 'Сервер не подтвердил удаление роли.';
+            feedback.style.display = 'block';
+          }
+          return;
+        }
+        const deletedIds = new Set((payload.participation_ids || []).map(String));
+        for (let index = existing.length - 1; index >= 0; index -= 1) {
+          if (deletedIds.has(String(existing[index].dataset.participationId))) {
+            existing.splice(index, 1);
+          }
+        }
+        roleCard?.remove();
+        rewardMarkOrderStale(
+          order,
+          'Назначение роли удалено с сохранением истории. Суммы и предупреждения пересчитаются после нажатия «Обновить».'
+        );
+      } catch (_error) {
+        if (feedback) {
+          feedback.textContent = 'Не удалось получить ответ сервера. Обновите страницу и проверьте, удалилось ли назначение.';
+          feedback.style.display = 'block';
+        }
+      } finally {
+        if (button) button.disabled = false;
+      }
+    });
+  });
+
+
   order.querySelectorAll('.reward-batch-form').forEach(form => {
     const rows = form.querySelector('.reward-batch-rows');
     const total = form.querySelector('.reward-participants-total');
@@ -945,9 +1058,11 @@ document.querySelectorAll('.reward-order').forEach(order => {
 
     updateRemoveButton();
 
-    form.addEventListener('submit', event => {
+    form.addEventListener('submit', async event => {
       const error = form.querySelector('.reward-form-error');
+      const success = form.querySelector('.reward-batch-success');
       error.style.display = 'none';
+      if (success) success.style.display = 'none';
       const batchRows = [...rows.querySelectorAll('.reward-batch-row')];
       const staged = [];
       let valid = true;
@@ -980,10 +1095,69 @@ document.querySelectorAll('.reward-order').forEach(order => {
         }
         return;
       }
-      rewardStoreScroll(form);
-      rewardMarkSubmitting(form);
+      event.preventDefault();
+      const button = form.querySelector('.reward-submit-button');
+      if (!button) return;
+      const originalText = button.textContent;
+      button.disabled = true;
+      button.textContent = 'Сохраняю…';
+      form.setAttribute('aria-busy', 'true');
+      try {
+        const response = await fetch(form.action || window.location.href, {
+          method: form.method || 'POST',
+          body: new FormData(form),
+          headers: {
+            'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+          },
+          credentials: 'same-origin',
+        });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload || !payload.ok) {
+          error.textContent = payload?.message
+            || 'Сервер не подтвердил сохранение. Проверьте данные и повторите попытку.';
+          error.style.display = 'block';
+          return;
+        }
+        const saved = (payload.participations || []).map(item =>
+          (item.role_label || 'Роль') + ': ' + (item.employee || 'Сотрудник')
+          + ' — ' + rewardFormatPercent(item.share_percent) + '%'
+        );
+        if (success) {
+          success.textContent = payload.message
+            + (saved.length ? ' ' + saved.join('; ') + '.' : '')
+            + ' Чтобы увидеть обновлённые суммы и базы, нажмите «Обновить».';
+          success.style.display = 'block';
+        }
+        rewardMarkOrderStale(form.closest('.reward-order'));
+        const firstRow = rows.querySelector('.reward-batch-row');
+        [...rows.querySelectorAll('.reward-batch-row')].slice(1).forEach(row => row.remove());
+        form.reset();
+        nextIndex = 1;
+        total.value = '1';
+        updateRemoveButton();
+        if (firstRow) {
+          firstRow.querySelector('.reward-employee-select').value = '';
+          firstRow.querySelector('.reward-role-select').value = 'client_manager';
+          firstRow.querySelector('.reward-share-input').value = '100';
+          firstRow.querySelector('.reward-line-options').innerHTML = '';
+          firstRow.querySelector('.reward-line-options').dataset.hydrated = '';
+          rewardConfigureRole(firstRow);
+        }
+      } catch (_error) {
+        error.textContent = 'Не удалось получить ответ сервера. Проверьте, сохранились ли назначения, прежде чем отправлять их повторно.';
+        error.style.display = 'block';
+      } finally {
+        button.disabled = false;
+        button.textContent = originalText;
+        form.removeAttribute('aria-busy');
+      }
     });
   });
+});
+
+document.getElementById('reward-page-refresh')?.addEventListener('click', () => {
+  window.location.reload();
 });
 </script>
 {% endblock %}
