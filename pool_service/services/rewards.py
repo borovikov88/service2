@@ -1366,6 +1366,14 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
         document_type = confirmed[0].source_document_type
         fixed_allocations = {}
         retail_allocations = {}
+        retail_revenue_allocations = {}
+        if role == RewardParticipation.ROLE_DOCUMENTATION and document_type == RETAIL_CHECK:
+            revenue_parts = _allocate(
+                revenue, confirmed, full=(share_total == ONE)
+            )
+            retail_revenue_allocations = {
+                item.id: amount for item, amount in revenue_parts
+            }
         if role == RewardParticipation.ROLE_DOCUMENTATION:
             fixed_fund = money(_fixed_for(document_type, scheme))
             retail_fund = Decimal("0")
@@ -1425,7 +1433,9 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
                 totals["documentation_reward"] += fixed_amount
                 totals["retail_reward"] += retail_amount
                 if document_type == RETAIL_CHECK:
-                    totals["retail_revenue"] += money(revenue * item.share)
+                    totals["retail_revenue"] += retail_revenue_allocations.get(
+                        item.id, Decimal("0")
+                    )
                     rate_label = (
                         f"{_fixed_for(document_type, scheme):.2f} ₽ + "
                         f"{(scheme.retail_check_rate * 100):.2f}% ВП"
