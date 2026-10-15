@@ -221,12 +221,13 @@ def employee_rewards(request):
 
     if request.method == "POST":
         action = request.POST.get("action")
-        ajax_edit_request = (
-            action == "edit_participation"
+        ajax_role_request = (
+            action in {"edit_participation", "add_participations_batch"}
             and request.headers.get("X-Requested-With") == "XMLHttpRequest"
             and request.headers.get("Accept", "").startswith("application/json")
         )
         edited_participation = None
+        created_participations = []
         try:
             if action == "ensure_scheme":
                 ensure_test_scheme(organization, request.user, period_month)
@@ -412,17 +413,18 @@ def employee_rewards(request):
                         ),
                         "line_identities": line_identities,
                     })
-                created = create_manual_participations_batch(
+                created_participations = create_manual_participations_batch(
                     organization,
                     request.user,
                     period_month,
                     document_key=request.POST.get("document_key", ""),
                     assignments=assignments,
                 )
-                messages.success(
-                    request,
-                    f"Сохранено участников: {len(created)}.",
-                )
+                if not ajax_role_request:
+                    messages.success(
+                        request,
+                        f"Сохранено участников: {len(created_participations)}.",
+                    )
             elif action == "edit_participation":
                 item = get_object_or_404(
                     RewardParticipation,
@@ -445,7 +447,7 @@ def employee_rewards(request):
                     ),
                     line_identities=request.POST.getlist("line_identity"),
                 )
-                if not ajax_edit_request:
+                if not ajax_role_request:
                     messages.success(request, "Участник обновлён.")
             elif action == "mark_not_applicable":
                 create_manual_participation(
@@ -580,13 +582,37 @@ def employee_rewards(request):
                 )
         except (ValidationError, ValueError, KeyError) as exc:
             error_message = "; ".join(getattr(exc, "messages", [str(exc)]))
-            if ajax_edit_request:
+            if ajax_role_request:
                 return JsonResponse(
                     {"ok": False, "message": error_message},
                     status=400,
                 )
             messages.error(request, error_message)
-        if ajax_edit_request and edited_participation is not None:
+        if ajax_role_request and action == "add_participations_batch":
+            return JsonResponse({
+                "ok": True,
+                "message": f"Сохранено участников: {len(created_participations)}.",
+                "participations": [
+                    {
+                        "id": item.pk,
+                        "employee_id": item.employee_id,
+                        "employee": item.employee.display_name,
+                        "role": item.role,
+                        "role_label": item.get_role_display(),
+                        "share_percent": str(item.share * Decimal("100")),
+                        "scope_key": item.scope_key,
+                        "scope_line_identities": list(
+                            item.scope_line_identities or []
+                        ),
+                    }
+                    for item in created_participations
+                ],
+            })
+        if (
+            ajax_role_request
+            and action == "edit_participation"
+            and edited_participation is not None
+        ):
             item = edited_participation
             return JsonResponse({
                 "ok": True,
