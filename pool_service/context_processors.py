@@ -217,7 +217,10 @@ def plan_status_context(request):
     # Managers can enter Communications and will still see only their own calls.
     show_communications_menu = can_access_communications
 
+    from pool_service.services.pool_estimates import allowed_organizations as estimate_organizations
+
     context = {
+        "can_access_estimates": bool(estimate_organizations(user)),
         "is_personal_user": personal_user,
         "is_personal_free": personal_free,
         "is_org_admin": is_org_admin,

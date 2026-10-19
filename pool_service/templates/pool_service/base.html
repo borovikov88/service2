@@ -214,6 +214,9 @@
       </a>
       {% endif %}
 
+      {% if can_access_estimates %}
+      <a href="{% url 'pool_estimate_page' %}" class="desktop-sidebar__link {% if active_tab == 'estimates' %}is-active{% endif %}"><i class="bi bi-calculator"></i><span>Сметы бассейнов</span></a>
+      {% endif %}
       {% if can_access_development %}
       <a href="{% url 'development_task_list' %}" class="desktop-sidebar__link {% if active_tab == 'development' %}is-active{% endif %}">
         <i class="bi bi-code-slash"></i><span>Разработка</span>
@@ -413,6 +416,9 @@
           {% endif %}
           {% if can_access_users %}
             <a class="text-decoration-none {% if active_tab == 'users' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'users' %}">&#1055;&#1086;&#1083;&#1100;&#1079;&#1086;&#1074;&#1072;&#1090;&#1077;&#1083;&#1080;</a>
+          {% endif %}
+          {% if can_access_estimates %}
+            <a class="text-decoration-none {% if active_tab == 'estimates' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'pool_estimate_page' %}">Сметы</a>
           {% endif %}
           {% if can_access_development %}
             <a class="text-decoration-none {% if active_tab == 'development' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'development_task_list' %}">Разработка</a>
@@ -628,6 +634,9 @@
           {% endif %}
           {% if can_access_users %}
             <a href="{% url 'users' %}" class="list-group-item list-group-item-action">&#1055;&#1086;&#1083;&#1100;&#1079;&#1086;&#1074;&#1072;&#1090;&#1077;&#1083;&#1080;</a>
+          {% endif %}
+          {% if can_access_estimates %}
+            <a href="{% url 'pool_estimate_page' %}" class="list-group-item list-group-item-action {% if active_tab == 'estimates' %}active{% endif %}">Сметы бассейнов</a>
           {% endif %}
           {% if can_access_development %}
             <a href="{% url 'development_task_list' %}" class="list-group-item list-group-item-action {% if active_tab == 'development' %}active{% endif %}">Разработка</a>
