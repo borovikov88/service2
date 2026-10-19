@@ -19,7 +19,7 @@ from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requ
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
-CACHE_KEY = "pool-estimate-shop-v1"
+CACHE_KEY = "pool-estimate-shop-v2"
 CACHE_SECONDS = 900
 MAX_BYTES = 20_000_000
 FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
@@ -61,7 +61,7 @@ def _specifications(name, description):
         kind, heater_type = "heater", "heatpump"
     elif text.startswith("теплообменник "):
         kind, heater_type = "heater", "exchanger"
-    elif text.startswith(("электронагреватель ", "электрический нагреватель ")):
+    elif (text.startswith(("электронагреватель ", "электрический нагреватель ")) and not re.search(r"воздух|осушител", text)) or re.match(r"^нагреватель для бассейн(?:а|ов)\b.*(?:квт|kw)\b", text):
         kind, heater_type = "heater", "electric"
     elif re.match(r"^(?:песочный )?фильтр\s", text) and not re.search(r"пруд|картридж|дисков|магистраль|осмос", text):
         kind = "filter"
@@ -70,7 +70,9 @@ def _specifications(name, description):
     flow = _one_number(FLOW, text) if kind in {"pump", "filter"} else None
     point = re.search(FLOW + r"\s*[*×x]\s*(\d+(?:[.,]\d+)?)\s*[мm]\b", text, re.I)
     head = _decimal(point.group(2), "100") if point and kind == "pump" else None
-    power_values = set(re.findall(r"\b(220|230|380|400)\s*[вv]\b", text, re.I))
+    # A slash in a heater title denotes explicitly supported supply options.
+    # Do not derive voltage from descriptions containing tables for other models.
+    power_values = set(re.findall(r"(?<!\d)(220|230|380|400)\s*(?:[вv]\b|/(?=\s*(?:220|230|380|400)\s*[вv]\b))", text, re.I))
     power_values = {"230" if p in {"220", "230"} else "400" for p in power_values}
     power = next(iter(power_values)) if len(power_values) == 1 else "unknown"
     # Positive evidence of filtration/pre-filter required; never choose a cheap
@@ -84,6 +86,8 @@ def _specifications(name, description):
             "head": head, "filter_flow": flow if kind == "filter" else None,
             "backwash_flow": None, "power": power, "filtration": filtration,
             "heater_type": heater_type,
+            "power_options": sorted(power_values) if kind == "heater" else ([power] if power != "unknown" else []),
+            "titanium": kind == "heater" and bool(re.search(r"\b(?:titan(?:ium)?|титан\w*)\b", text)),
             "heating_power": _one_number(r"(\d+(?:[.,]\d+)?)\s*(?:квт|kw)\b", text) if kind == "heater" else None}
 
 
@@ -207,7 +211,7 @@ def candidate_reason(product, inputs, required_flow, *, for_auto=False):
             return "Задайте мощность либо температуры, время прогрева и запас мощности."
         if not product["heating_power"] or Decimal(product["heating_power"]) < Decimal(required_power):
             return "Мощность ниже заданной либо не определена."
-        if product["heater_type"] != "exchanger" and inputs["power"] != "unknown" and product["power"] != inputs["power"]:
+        if product["heater_type"] != "exchanger" and inputs["power"] != "unknown" and inputs["power"] not in product["power_options"]:
             return "Питание не соответствует выбранному или не указано в карточке."
     return None
 
@@ -215,8 +219,29 @@ def candidate_reason(product, inputs, required_flow, *, for_auto=False):
 def apply_product(row, product, catalog, selection="manual"):
     row.update(name=product["name"], brand=product["brand"], model=product["model"], price=product["price"], kind=product["kind"])
     row["specs"] = {k: product[k] for k in ("flow", "head", "filter_flow", "backwash_flow")}
-    row["catalog"] = {k: product[k] for k in ("id", "url", "sku", "price", "available", "nominal_flow", "power", "heating_power", "heater_type")}
+    row["catalog"] = {k: product[k] for k in ("id", "url", "sku", "price", "available", "nominal_flow", "power", "power_options", "heating_power", "heater_type", "titanium")}
     row["catalog"].update(checked_at=catalog["checked_at"], feed_date=catalog["feed_date"], selection=selection, missing=False)
+
+
+def select_heater(choices, tier):
+    """Price levels at the smallest sufficient capacity, independent of pump brand.
+
+    Brand/material preferences operate within the lower/upper price halves so
+    an expensive Aquaviva or cheap titanium model cannot invert the three tiers.
+    """
+    if not choices:
+        return None
+    capacity = min(Decimal(p["heating_power"]) for p in choices)
+    comparable = sorted((p for p in choices if Decimal(p["heating_power"]) == capacity),
+                        key=lambda p: (Decimal(p["price"]), int(p["id"])))
+    middle = comparable[(len(comparable) - 1) // 2]
+    if tier == "economy":
+        preferred = [p for p in comparable if p["brand"] == "Aquaviva" and Decimal(p["price"]) <= Decimal(middle["price"])]
+        return (preferred or comparable)[0]
+    if tier == "premium":
+        preferred = [p for p in comparable if p["titanium"] and Decimal(p["price"]) >= Decimal(middle["price"])]
+        return (preferred or comparable)[-1]
+    return middle
 
 
 def auto_select(snapshot, catalog):
@@ -256,14 +281,11 @@ def auto_select(snapshot, catalog):
                             if not pump_flow:
                                 continue
                             flow = max(flow, Decimal(pump_flow))
-                    preferred = result["inputs"].get("heater_brand", "variant") if kind == "heater" else "variant"
-                    target_brand = brand if preferred == "variant" else preferred
-                    choices = [p for p in catalog["products"].values() if p["kind"] == kind and (target_brand == "any" or p["brand"] == target_brand) and not candidate_reason(p, result["inputs"], flow, for_auto=True)]
+                    choices = [p for p in catalog["products"].values() if p["kind"] == kind and (kind == "heater" or p["brand"] == brand) and not candidate_reason(p, result["inputs"], flow, for_auto=True)]
                     if choices:
                         # Minimum sufficient capacity first, then retail price
                         # within that capacity; never select a giant cheap pump.
-                        capacity = "heating_power" if kind == "heater" else "nominal_flow"
-                        product = min(choices, key=lambda p: (Decimal(p[capacity]), Decimal(p["price"]), int(p["id"])))
+                        product = select_heater(choices, key) if kind == "heater" else min(choices, key=lambda p: (Decimal(p["nominal_flow"]), Decimal(p["price"]), int(p["id"])))
                         if origin and product["id"] == origin["id"]:
                             continue  # same model keeps its frozen price
                         apply_product(row, product, catalog, "auto")

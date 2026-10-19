@@ -75,7 +75,6 @@ def normalize_inputs(raw):
     ):
         data[key] = _optional(number(raw.get(key), label, optional=True, minimum=low, maximum=high))
     data["finish"] = string(raw.get("finish", ""), "Отделка", 20)
-    data["heater_brand"] = string(raw.get("heater_brand", "variant"), "Бренд нагревателя", 80, required=True)
     if data["finish"] not in {"", *FINISHES}:
         raise EstimateInputError("Выберите отделку: плёнка, плитка или мозаика.")
     for key, choices in {"location": {"indoor", "outdoor"}, "heating": {"none", "exchanger", "electric", "heatpump"}, "power": {"230", "400", "unknown"}}.items():
@@ -210,6 +209,11 @@ def normalize_catalog(raw):
     if not url or raw.get("selection") not in ("auto", "manual") or raw.get("power") not in ("230", "400", "unknown") or raw.get("heater_type") not in ("", "exchanger", "electric", "heatpump"):
         raise EstimateInputError("Некорректные данные товара магазина.")
     result = {"id": str(raw["id"]), "url": url, "selection": raw["selection"], "power": raw["power"], "heater_type": raw["heater_type"]}
+    options = raw.get("power_options", [raw["power"]] if raw["power"] != "unknown" else [])
+    if not isinstance(options, list) or len(options) > 2 or any(p not in ("230", "400") for p in options) or len(set(options)) != len(options):
+        raise EstimateInputError("Некорректные варианты питания товара.")
+    result["power_options"] = options[:]
+    result["titanium"] = boolean(raw.get("titanium", False))
     for field, limit in (("checked_at", 50), ("feed_date", 50), ("sku", 80)):
         result[field] = string(raw.get(field, ""), field, limit)
     try:
@@ -304,23 +308,24 @@ def evaluate(raw):
             total += subtotal
         warnings = []
         for row in physical:
-            if row["kind"] == "heater" and row["model"] and result["inputs"]["heating"] != "none":
-                chosen_brand = result["inputs"]["heater_brand"]
-                expected_brand = VARIANTS[key][1] if chosen_brand == "variant" else chosen_brand
-                if expected_brand != "any" and row["brand"].casefold() != expected_brand.casefold():
-                    warnings.append(f"{row['name']}: бренд не соответствует выбранному для нагревателя ({expected_brand}). Сохранена прежняя модель; выберите подходящую замену в каталоге.")
             origin = row.get("catalog")
             if not origin:
                 continue
             label = row["name"]
+            if row["kind"] == "heater" and origin["selection"] == "auto":
+                if key == "economy" and row["brand"] != "Aquaviva":
+                    warnings.append(f"{label}: в экономе используется альтернатива Aquaviva. Приоритет Aquaviva действует среди недорогих моделей с минимальной достаточной мощностью; выбранный товар можно заменить вручную.")
+                if key == "premium" and not origin["titanium"]:
+                    warnings.append(f"{label}: для премиума титан не подтверждён названием товара. Материал уточните перед заказом; модель можно заменить вручную.")
             if origin["missing"]:
                 warnings.append(f"{label}: товар исчез из выгрузки магазина; сохранённая цена требует подтверждения.")
             elif not origin["available"]:
                 warnings.append(f"{label}: магазин не подтверждает доступность к заказу.")
             if row["kind"] in {"pump", "heater"} and origin["heater_type"] != "exchanger":
-                if result["inputs"]["power"] == "unknown" or origin["power"] == "unknown":
+                options = origin["power_options"] if row["kind"] == "heater" else ([origin["power"]] if origin["power"] != "unknown" else [])
+                if result["inputs"]["power"] == "unknown" or not options:
                     warnings.append(f"{label}: подтвердите напряжение питания.")
-                elif result["inputs"]["power"] != origin["power"]:
+                elif result["inputs"]["power"] not in options:
                     warnings.append(f"{label}: питание не соответствует выбранному для объекта.")
             if row["kind"] == "pump" and origin["nominal_flow"] and Decimal(origin["nominal_flow"]) < Decimal(result["geometry"]["required_flow"]):
                 warnings.append(f"{label}: производительность из каталога ниже требуемого расхода.")
@@ -354,7 +359,7 @@ def evaluate(raw):
             warnings.append("Несколько насосов/фильтров или неполный комплект: требуется расчёт гидравлической схемы.")
         if result["inputs"]["heating"] != "none":
             if equipment_in_scope and not any(r["kind"] == "heater" and r["model"] for r in physical):
-                warnings.append("Нагреватель не подобран: проверьте мощность, тип, бренд и питание либо выберите модель через каталог.")
+                warnings.append("Нагреватель не подобран: в каталоге не найдена доступная модель с подтверждёнными мощностью, типом и питанием. Проверьте параметры либо выберите модель через каталог.")
             if result["heating"]["mode"] == "incomplete":
                 warnings.append("Для подбора нагревателя задайте мощность либо температуры, время прогрева и запас.")
             elif result["heating"]["mode"] == "estimated":

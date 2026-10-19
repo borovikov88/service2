@@ -27,10 +27,7 @@ function showCatalogStatus(data) {
     ? `Товаров: ${s.count}. ${Object.entries(s.brands).filter(([,count]) => !count).map(([brand]) => `${brand}: нет товаров в каталоге.`).join(' ')}`
     : 'В расчёте зафиксированы модели и цены выбранной версии. Новые цены применяются отдельной кнопкой к текущей смете; ручные цены и исключённые строки сохраняются.');
   if (s?.heater_brands) {
-    const select = form.elements.heater_brand, value = select.value;
-    const brands = [...new Set([...s.heater_brands, ...(!['any', 'variant'].includes(value) ? [value] : [])])];
-    select.innerHTML = '<option value="any">Любой подходящий</option><option value="variant">По бренду комплектации</option>' + brands.map(b => `<option value="${esc(b)}">${esc(b)}</option>`).join('');
-    select.value = value;
+    const brands = s.heater_brands;
     const catalogBrand = $('#pe-catalog-brand'), previous = catalogBrand.value;
     catalogBrand.innerHTML = '<option value="">Все бренды</option>' + [...new Set(['Aquaviva', 'Hayward', 'IML', ...brands])].map(b => `<option>${esc(b)}</option>`).join('');
     catalogBrand.value = previous;
@@ -168,12 +165,8 @@ function renderHistory() {
 }
 function fillParameters() {
   // Historical snapshots must not inherit the inputs of a more recent estimate.
-  for (const [key, value] of Object.entries({heating_power: '', water_start: '', water_target: '', heating_hours: '', heating_reserve: '', finish: '', heater_brand: 'variant'})) {
+  for (const [key, value] of Object.entries({heating_power: '', water_start: '', water_target: '', heating_hours: '', heating_reserve: '', finish: ''})) {
     form.elements.namedItem(key).value = snapshot.inputs[key] ?? value;
-  }
-  const heaterBrand = snapshot.inputs.heater_brand;
-  if (heaterBrand && ![...form.elements.heater_brand.options].some(o => o.value === heaterBrand)) {
-    form.elements.heater_brand.add(new Option(heaterBrand, heaterBrand));
   }
   for (const [key, value] of Object.entries(snapshot.inputs)) {
     if (form.elements.namedItem(key)) form.elements.namedItem(key).value = value ?? '';
