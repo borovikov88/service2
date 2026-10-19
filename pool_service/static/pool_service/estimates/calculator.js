@@ -155,6 +155,8 @@ function renderHistory() {
   $('#pe-history-list').innerHTML = versions.map(v => `<div class="pe-history-row"><div><strong>Версия ${v.number}</strong> · ${stamp(v.created_at)}<small>${esc(v.note || 'Без комментария')}</small></div><div><button type="button" class="pe-link" data-version="${v.number}">Открыть копию</button><a class="pe-link" href="${location.pathname}${encodeURIComponent(projectId)}/versions/${v.number}/print/" target="_blank" rel="noopener">Печать / PDF</a></div></div>`).join('') || 'После первого сохранения здесь появится версия 1.';
 }
 function fillParameters() {
+  // Historical snapshots from before catalogue support have no heating_power.
+  form.elements.heating_power.value = snapshot.inputs.heating_power ?? '';
   for (const [key, value] of Object.entries(snapshot.inputs)) {
     if (form.elements.namedItem(key)) form.elements.namedItem(key).value = value ?? '';
   }
