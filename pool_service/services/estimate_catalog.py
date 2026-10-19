@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 
 from django.core.cache import cache
 
-from .pool_estimates import EstimateInputError, VARIANTS, evaluate, make_row, string
+from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requirement, make_row, string
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
@@ -180,6 +180,7 @@ def get_catalog():
 def catalog_status(catalog):
     products = list(catalog["products"].values())
     return {"checked_at": catalog["checked_at"], "feed_date": catalog["feed_date"], "count": len(products),
+            "heater_brands": sorted({p["brand"] for p in products if p["kind"] == "heater" and p["brand"]}),
             "brands": {brand: sum(p["brand"] == brand for p in products) for _, brand in VARIANTS.values()}}
 
 
@@ -201,9 +202,10 @@ def candidate_reason(product, inputs, required_flow, *, for_auto=False):
     if product["kind"] == "heater":
         if product["heater_type"] != inputs["heating"]:
             return "Другой тип подогрева."
-        if not inputs.get("heating_power"):
-            return "Укажите требуемую мощность после расчёта теплопотерь."
-        if not product["heating_power"] or Decimal(product["heating_power"]) < Decimal(inputs["heating_power"]):
+        required_power = heating_requirement(inputs)["power"]
+        if not required_power:
+            return "Задайте мощность либо температуры, время прогрева и запас мощности."
+        if not product["heating_power"] or Decimal(product["heating_power"]) < Decimal(required_power):
             return "Мощность ниже заданной либо не определена."
         if product["heater_type"] != "exchanger" and inputs["power"] != "unknown" and product["power"] != inputs["power"]:
             return "Питание не соответствует выбранному или не указано в карточке."
@@ -254,7 +256,9 @@ def auto_select(snapshot, catalog):
                             if not pump_flow:
                                 continue
                             flow = max(flow, Decimal(pump_flow))
-                    choices = [p for p in catalog["products"].values() if p["kind"] == kind and p["brand"] == brand and not candidate_reason(p, result["inputs"], flow, for_auto=True)]
+                    preferred = result["inputs"].get("heater_brand", "variant") if kind == "heater" else "variant"
+                    target_brand = brand if preferred == "variant" else preferred
+                    choices = [p for p in catalog["products"].values() if p["kind"] == kind and (target_brand == "any" or p["brand"] == target_brand) and not candidate_reason(p, result["inputs"], flow, for_auto=True)]
                     if choices:
                         # Minimum sufficient capacity first, then retail price
                         # within that capacity; never select a giant cheap pump.
@@ -268,12 +272,12 @@ def auto_select(snapshot, catalog):
 
 
 def search_catalog(catalog, query, kind, brand, inputs, required_flow):
-    query = string(query, "Поиск товара", 120).casefold().split()
+    query = string(query, "Поиск товара", 120).casefold().replace("ё", "е").split()
     kind = string(kind, "Тип товара", 20)
     brand = string(brand, "Бренд", 80)
     if kind not in {"", "other", "pump", "filter", "heater"}:
         raise EstimateInputError("Неизвестный тип товара.")
-    matches = [p for p in catalog["products"].values() if (not kind or p["kind"] == kind) and (not brand or p["brand"].casefold() == brand.casefold()) and all(q in (p["name"] + " " + p["sku"] + " " + p["id"]).casefold() for q in query)]
+    matches = [p for p in catalog["products"].values() if (not kind or p["kind"] == kind) and (not brand or p["brand"].casefold() == brand.casefold()) and all(q in (p["name"] + " " + p["sku"] + " " + p["id"]).casefold().replace("ё", "е") for q in query)]
     matches.sort(key=lambda p: (bool(candidate_reason(p, inputs, required_flow)), not p["available"], Decimal(p["price"]), int(p["id"])))
     return {"products": [{**p, "warning": candidate_reason(p, inputs, required_flow)} for p in matches[:40]], "total": len(matches), "status": catalog_status(catalog)}
 

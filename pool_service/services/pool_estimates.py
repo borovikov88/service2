@@ -1,5 +1,5 @@
 """Deterministic v1 worksheet. Unknown prices and engineering data stay unknown."""
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, ROUND_UP
 from datetime import datetime
 import re
 
@@ -8,6 +8,12 @@ from pool_service.services.permissions import organization_accesses_for_user
 VARIANTS = {"economy": ("Эконом", "Aquaviva"), "standard": ("Стандарт", "Hayward"), "premium": ("Премиум", "IML")}
 BLOCKS = {"construction": "Строительство чаши", "embedded": "Закладные элементы", "equipment": "Оборудование", "finish": "Отделка", "options": "Дополнительные работы"}
 KINDS = {"other", "pump", "filter", "heater"}
+FINISHES = {
+    "film": ("Плёнка ПВХ для бассейна (без запаса)", "Монтаж и сварка плёнки ПВХ"),
+    "tile": ("Плитка для бассейна (без запаса)", "Облицовка бассейна плиткой"),
+    "mosaic": ("Мозаика для бассейна (без запаса)", "Облицовка бассейна мозаикой"),
+}
+FINISH_CHANGED = "Заменён тип отделки"
 CENT = Decimal("0.01")
 
 
@@ -60,12 +66,26 @@ def normalize_inputs(raw):
         data[key] = str(number(raw.get(key), label, minimum=low, maximum=high))
     data["required_head"] = _optional(number(raw.get("required_head"), "Расчётный напор", optional=True, minimum=".1", maximum="100"))
     data["heating_power"] = _optional(number(raw.get("heating_power"), "Мощность подогрева", optional=True, minimum=".1", maximum="10000"))
+    # Missing fields in old saved versions stay missing; never inject new assumptions.
+    for key, label, low, high in (
+        ("water_start", "Начальная температура воды", "0", "45"),
+        ("water_target", "Нужная температура воды", "1", "45"),
+        ("heating_hours", "Время прогрева", "1", "336"),
+        ("heating_reserve", "Запас мощности", "0", "100"),
+    ):
+        data[key] = _optional(number(raw.get(key), label, optional=True, minimum=low, maximum=high))
+    data["finish"] = string(raw.get("finish", ""), "Отделка", 20)
+    data["heater_brand"] = string(raw.get("heater_brand", "variant"), "Бренд нагревателя", 80, required=True)
+    if data["finish"] not in {"", *FINISHES}:
+        raise EstimateInputError("Выберите отделку: плёнка, плитка или мозаика.")
     for key, choices in {"location": {"indoor", "outdoor"}, "heating": {"none", "exchanger", "electric", "heatpump"}, "power": {"230", "400", "unknown"}}.items():
         if not isinstance(raw.get(key), str) or raw[key] not in choices:
             raise EstimateInputError(f"Выберите значение поля {key}.")
         data[key] = raw[key]
     data["address"] = string(raw.get("address", ""), "Место установки", 300)
     data["notes"] = string(raw.get("notes", ""), "Примечание", 1000)
+    if data["heating"] != "none" and not data["heating_power"] and data["water_start"] is not None and data["water_target"] is not None and Decimal(data["water_target"]) <= Decimal(data["water_start"]):
+        raise EstimateInputError("Для прогрева нужная температура должна быть выше начальной.")
     return data
 
 
@@ -82,6 +102,76 @@ def geometry(data):
 
 def _optional(value):
     return str(value) if value is not None else None
+
+
+def heating_requirement(inputs):
+    """First-heating energy, with an explicit user reserve; not a heat-loss model.
+
+    P = 1.16 * V * delta-T / hours. Pahlen electric-heater sizing formula.
+    Nominal heat-pump/exchanger output still needs checking at the site conditions.
+    """
+    if inputs["heating"] == "none":
+        return {"mode": "none", "power": None}
+    if inputs.get("heating_power"):
+        return {"mode": "manual", "power": inputs["heating_power"]}
+    keys = ("water_start", "water_target", "heating_hours", "heating_reserve")
+    if any(inputs.get(k) is None for k in keys):
+        return {"mode": "incomplete", "power": None}
+    start, target, hours, reserve = (Decimal(inputs[k]) for k in keys)
+    volume = Decimal(inputs["length"]) * Decimal(inputs["width"]) * (Decimal(inputs["depth_start"]) + Decimal(inputs["depth_end"])) / 2
+    power = Decimal("1.16") * volume * (target - start) / hours * (1 + reserve / 100)
+    return {"mode": "estimated", "power": str(power.quantize(Decimal(".001"), rounding=ROUND_UP))}
+
+
+def price_summary(snapshot):
+    """Conservative date for active, unchanged catalogue prices in all three CPs.
+
+    Searching newer products must not relabel the prices of a saved estimate.
+    Also usable on legacy snapshots without re-evaluating historical totals.
+    """
+    dates, manual = [], False
+    for variant in snapshot["variants"].values():
+        for block in variant["blocks"]:
+            for row in block["rows"]:
+                if block["excluded"] or row["excluded"] or row["existing"] or row["price"] is None or Decimal(row["price"]) <= 0:
+                    continue
+                origin = row.get("catalog")
+                if not origin or Decimal(row["price"]) != Decimal(origin["price"]):
+                    manual = True
+                    continue
+                dates.append(datetime.fromisoformat(origin["checked_at"]))
+    return {"checked_at": min(dates).isoformat() if dates else None,
+            "mixed": len({d.date() for d in dates}) > 1, "manual": manual}
+
+
+def finish_rows(finish, area):
+    names = FINISHES.get(finish, ("Материал отделки (без запаса)", "Работы по отделке"))
+    rows = [make_row(key, name, "м²", area, "finish_area") for key, name in zip(("finish_material", "finish_work"), names)]
+    for row in rows:
+        row["finish_type"] = finish
+    return rows
+
+
+def change_finish(snapshot, finish):
+    """Keep previous material/rate as reversible excluded rows, never reuse its price."""
+    for variant in snapshot["variants"].values():
+        block = next(b for b in variant["blocks"] if b["id"] == "finish")
+        for row in block["rows"]:
+            managed = row.get("finish_type") or re.fullmatch(r"finish_(?:material|work)(?:_(?:film|tile|mosaic)?_\d+)?", row["id"])
+            if managed and row.get("finish_type", "") != finish and not row["excluded"] and not row["existing"]:
+                row.update(excluded=True, reason=FINISH_CHANGED)
+            elif row.get("finish_type") == finish and row["excluded"] and row["reason"] == FINISH_CHANGED:
+                row.update(excluded=False, reason="")
+        for original in finish_rows(finish, geometry(snapshot["inputs"])["finish_area"]):
+            base = original["id"]
+            # A manually excluded row of this type remains excluded, without a duplicate.
+            if any(r.get("finish_type") == finish and (r["id"] == base or r["id"].startswith(base + "_")) for r in block["rows"]):
+                continue
+            ids = {r["id"] for b in variant["blocks"] for r in b["rows"]}
+            original["id"] = next((f"{base}_{finish}_{n}" for n in range(100) if f"{base}_{finish}_{n}" not in ids), "")
+            if not original["id"] or len(block["rows"]) >= 100:
+                raise EstimateInputError("В блоке отделки недостаточно места для новых позиций.")
+            block["rows"].append(original)
 
 
 def make_row(key, name, unit="компл.", quantity="1", basis="", kind="other", brand=""):
@@ -101,8 +191,7 @@ def generate(raw):
             "embedded": [make_row("embedded_supply", "Закладные: подобрать состав и количество"), make_row("embedded_work", "Монтаж закладных")],
             "equipment": [make_row("pump", "Фильтрационный насос", kind="pump", brand=brand), make_row("filter", "Фильтр", kind="filter", brand=brand),
                           make_row("treatment", "Обеззараживание: подобрать комплект"), make_row("piping", "Обвязка и автоматика"), make_row("equipment_work", "Монтаж и пусконаладка")],
-            "finish": [make_row("finish_material", "Материал отделки (без запаса)", "м²", metrics["finish_area"], "finish_area"),
-                       make_row("finish_work", "Работы по отделке", "м²", metrics["finish_area"], "finish_area")],
+            "finish": finish_rows(inputs["finish"], metrics["finish_area"]),
             "options": [],
         }
         if inputs["heating"] != "none":
@@ -167,6 +256,9 @@ def normalize_snapshot(raw):
                 if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("basis", ""), str) or row.get("basis", "") not in {"", "finish_area", "surface", "perimeter", "volume"}:
                     raise EstimateInputError("Некорректный тип строки.")
                 item = {"id": rid, "kind": row["kind"], "basis": row.get("basis", "")}
+                item["finish_type"] = string(row.get("finish_type", ""), "Тип отделки", 20)
+                if item["finish_type"] not in {"", *FINISHES}:
+                    raise EstimateInputError("Некорректный тип отделки строки.")
                 for field, limit in (("name", 200), ("unit", 20), ("brand", 80), ("model", 120), ("reason", 300)):
                     item[field] = string(row.get(field, ""), field, limit, required=field in {"name", "unit"})
                 for field in ("excluded", "existing", "auto_quantity", "selection_locked"):
@@ -188,6 +280,8 @@ def evaluate(raw):
     """Recompute derived fields on the server; never trust client totals/warnings."""
     result = normalize_snapshot(raw)
     result["geometry"] = geometry(result["inputs"])
+    result["heating"] = heating_requirement(result["inputs"])
+    result["prices"] = price_summary(result)
     for key, variant in result["variants"].items():
         total, missing, models = Decimal(0), 0, 0
         physical = []
@@ -210,6 +304,11 @@ def evaluate(raw):
             total += subtotal
         warnings = []
         for row in physical:
+            if row["kind"] == "heater" and row["model"] and result["inputs"]["heating"] != "none":
+                chosen_brand = result["inputs"]["heater_brand"]
+                expected_brand = VARIANTS[key][1] if chosen_brand == "variant" else chosen_brand
+                if expected_brand != "any" and row["brand"].casefold() != expected_brand.casefold():
+                    warnings.append(f"{row['name']}: бренд не соответствует выбранному для нагревателя ({expected_brand}). Сохранена прежняя модель; выберите подходящую замену в каталоге.")
             origin = row.get("catalog")
             if not origin:
                 continue
@@ -227,7 +326,7 @@ def evaluate(raw):
                 warnings.append(f"{label}: производительность из каталога ниже требуемого расхода.")
             if row["kind"] == "heater" and origin["heater_type"] != result["inputs"]["heating"]:
                 warnings.append(f"{label}: тип подогрева не соответствует параметрам бассейна.")
-            if row["kind"] == "heater" and result["inputs"].get("heating_power") and origin["heating_power"] and Decimal(origin["heating_power"]) < Decimal(result["inputs"]["heating_power"]):
+            if row["kind"] == "heater" and result["heating"]["power"] and origin["heating_power"] and Decimal(origin["heating_power"]) < Decimal(result["heating"]["power"]):
                 warnings.append(f"{label}: мощность ниже заданной для подогрева.")
         if missing:
             warnings.append(f"Не указаны цены: {missing}. Показана только сумма заполненных строк.")
@@ -254,7 +353,22 @@ def evaluate(raw):
         elif pumps or filters:
             warnings.append("Несколько насосов/фильтров или неполный комплект: требуется расчёт гидравлической схемы.")
         if result["inputs"]["heating"] != "none":
-            warnings.append("Мощность подогрева и совместимость с источником тепла требуют отдельного расчёта.")
+            if equipment_in_scope and not any(r["kind"] == "heater" and r["model"] for r in physical):
+                warnings.append("Нагреватель не подобран: проверьте мощность, тип, бренд и питание либо выберите модель через каталог.")
+            if result["heating"]["mode"] == "incomplete":
+                warnings.append("Для подбора нагревателя задайте мощность либо температуры, время прогрева и запас.")
+            elif result["heating"]["mode"] == "estimated":
+                warnings.append("Мощность подогрева рассчитана предварительно по времени прогрева с заданным запасом. Теплопотери, особенно у открытого бассейна, рассчитываются отдельно; запас их не заменяет.")
+            if result["inputs"]["heating"] == "exchanger":
+                warnings.append("Для теплообменника подтвердите мощность при фактической температуре и расходе теплоносителя, а также мощность котла.")
+            elif result["inputs"]["heating"] == "heatpump":
+                warnings.append("Для теплового насоса подтвердите тепловую мощность при расчётной температуре воздуха и воды; номинальная мощность может быть выше фактической.")
+            else:
+                warnings.append("Для электронагревателя подтвердите выделенную электрическую мощность и минимальный расход воды.")
+        if any(r["kind"] == "heater" for r in physical) and result["inputs"]["heating"] == "none":
+            warnings.append("Выбран режим без подогрева, но нагреватель остался в составе. Исключите его, если он не нужен.")
+        if result["inputs"]["finish"] and any(b["id"] == "finish" and not b["excluded"] for b in variant["blocks"]):
+            warnings.append("Отделка: площадь без запаса и лестниц. Цена материала и работ за м², подготовка основания и расходные материалы уточняются отдельно.")
         variant.update(total=str(total.quantize(CENT)), missing_prices=missing, missing_models=models, warnings=warnings, title=VARIANTS[key][0], preferred_brand=VARIANTS[key][1])
     return result
 
@@ -262,11 +376,19 @@ def evaluate(raw):
 def recalculate(raw, inputs):
     """Keep exclusions and manual edits; update only explicitly automatic quantities."""
     result = normalize_snapshot(raw)
+    old_finish = result["inputs"]["finish"]
     result["inputs"] = normalize_inputs(inputs)
+    if result["inputs"]["finish"] != old_finish:
+        change_finish(result, result["inputs"]["finish"])
     metrics = geometry(result["inputs"])
     for variant in result["variants"].values():
         for block in variant["blocks"]:
             for row in block["rows"]:
+                if row["kind"] == "heater" and not row["existing"]:
+                    if result["inputs"]["heating"] == "none" and not row["excluded"]:
+                        row.update(excluded=True, reason="Подогрев отключён")
+                    elif result["inputs"]["heating"] != "none" and row["excluded"] and row["reason"] == "Подогрев отключён":
+                        row.update(excluded=False, reason="")
                 if row["auto_quantity"] and row["basis"]:
                     row["quantity"] = metrics[row["basis"]]
     return evaluate(result)
