@@ -8,6 +8,8 @@ from zoneinfo import ZoneInfo
 
 from django.utils import timezone
 
+from pool_service import avito_tariff_reminder
+from pool_service.models import Notification, Profile
 from pool_service import avito_advance, avito_autoload_report, avito_source_audit, avito_workspace, avito_status_monitor, avito_inventory
 from pool_service.avito_profile_source import fetch_profile_source
 from pool_service.communication_avito import AvitoError, access_token, authorized_account_id, _provider_root
@@ -162,6 +164,41 @@ def fetch_detail(token, account_id, item_id):
             time.sleep(min(wait, 3))
     return avito_workspace.fetch_item_detail(token, account_id, item_id)
 
+def monitoring_state(connection):
+    """Configuration/evidence flags only: no amount, dates, recipient or message."""
+    current = ChannelConnection.objects.select_related("channel").get(pk=connection.pk)
+    if (current.channel_id != connection.channel_id
+            or current.channel.organization_id != connection.channel.organization_id
+            or current.external_id != connection.external_id):
+        return {"error": "audit_monitoring_scope_changed"}
+    advance = avito_advance._state(current)
+    calendar = avito_tariff_reminder._state(current)
+    advance_valid = bool(advance and avito_advance._allowed(current, advance))
+    tariff_valid = bool(calendar and avito_tariff_reminder._allowed(current, calendar))
+    def in_app(state, valid):
+        if not valid:
+            return None
+        return Profile.objects.filter(user_id=state["actor_id"]).values_list(
+            "in_app_notifications_enabled", flat=True).first() is not False
+    recorded = None
+    generation = advance.get("generation")
+    if advance_valid and isinstance(generation, str) and re.fullmatch(r"[0-9a-f]{32}", generation):
+        recorded = Notification.objects.filter(
+            user_id=advance["actor_id"], organization_id=current.channel.organization_id,
+            kind="communication",
+            dedupe_key__startswith=f"avito-advance:{current.pk}:{generation}:",
+        ).exists()
+    return {
+        "advance_configured": bool(advance), "advance_enabled": advance.get("enabled") is True,
+        "advance_scope_valid": advance_valid,
+        "advance_in_app_enabled": in_app(advance, advance_valid),
+        "advance_notification_exists": recorded,
+        "tariff_configured": bool(calendar), "tariff_enabled": calendar.get("enabled") is True,
+        "tariff_scope_valid": tariff_valid, "tariff_in_app_enabled": in_app(calendar, tariff_valid),
+        "amount_logged": False, "recipient_logged": False,
+    }
+
+
 def collect_connection(connection, item_ids, index, stocks=None, stock_error=None):
     identity = {"connection_id": connection.pk}
     try:
@@ -226,8 +263,13 @@ def collect_connection(connection, item_ids, index, stocks=None, stock_error=Non
         after = binding(connection)
         if before != after or final_account_id != account_id:
             raise AvitoError("provider_account_mismatch")
+        try:
+            flags = monitoring_state(connection)
+        except Exception:
+            flags = {"error": "audit_monitoring_unavailable"}
         return identity | {"account_id": account_id, "items": items, "autoload_report": summary, "listing_scan": listing_scan, "active_source_audit": active_source,
-                           "configured_feed_source": configured_source, "advance_access": advance_access}
+                           "configured_feed_source": configured_source, "advance_access": advance_access,
+                           "monitoring": flags}
     except Exception as error:
         return identity | {"error": safe_error(error)}
 

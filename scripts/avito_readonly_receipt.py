@@ -279,6 +279,20 @@ def advance_access(value):
             and value.get("amount_logged") is False)
     return {"available": True, "source": "cpa_v3", "amount_logged": False}
 
+def monitoring(value):
+    require(isinstance(value, dict))
+    if "error" in value:
+        return {"error": code(value["error"])}
+    keys = ("advance_configured", "advance_enabled", "advance_scope_valid",
+            "tariff_configured", "tariff_enabled", "tariff_scope_valid")
+    nullable = ("advance_in_app_enabled", "advance_notification_exists", "tariff_in_app_enabled")
+    require(value.get("amount_logged") is False and value.get("recipient_logged") is False)
+    require(all(type(value.get(key)) is bool for key in keys))
+    require(all(value.get(key) is None or type(value.get(key)) is bool for key in nullable))
+    return {**{key: value[key] for key in keys},
+            **{key: value.get(key) for key in nullable},
+            "amount_logged": False, "recipient_logged": False}
+
 def connection(value):
     require(isinstance(value, dict))
     result = {"connection_id": integer(value.get("connection_id"))}
@@ -289,7 +303,8 @@ def connection(value):
                   listing_scan=listing_scan(value.get("listing_scan", {"error": "audit_listing_scan_not_requested"})),
                   active_source_audit=inventory(value.get("active_source_audit", {"error": "audit_inventory_not_requested"})),
                   configured_feed_source=configured_feed_source(value.get("configured_feed_source", {"error": "audit_profile_source_not_requested"})),
-                  advance_access=advance_access(value.get("advance_access", {"error": "audit_advance_not_requested"})))
+                  advance_access=advance_access(value.get("advance_access", {"error": "audit_advance_not_requested"})),
+                  monitoring=monitoring(value.get("monitoring", {"error": "audit_monitoring_not_requested"})))
     return result
 
 def normalize(value):
