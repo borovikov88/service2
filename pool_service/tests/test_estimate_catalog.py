@@ -65,12 +65,12 @@ class CatalogEngineTests(SimpleTestCase):
         for url in ("javascript:alert(1)", "https://shop.aqualine22.ru@evil.invalid/", "https://shop.aqualine22.ru:444/", "https://shop.aqualine22.ru/\nfoo"):
             self.assertEqual(catalog.safe_shop_url(url), "")
 
-    def test_three_brands_no_silent_premium_fallback(self):
+    def test_economy_standard_brands_and_premium_catalogue_selection(self):
         s, count = catalog.auto_select(generate(INPUTS), self.catalog)
-        self.assertEqual(count, 4)
+        self.assertEqual(count, 6)
         self.assertEqual(block(s)["rows"][0]["catalog"]["id"], "1")
         self.assertEqual(block(s, variant="standard")["rows"][0]["brand"], "Hayward")
-        self.assertIsNone(block(s, variant="premium")["rows"][0]["price"])
+        self.assertIsNotNone(block(s, variant="premium")["rows"][0]["price"])
         self.assertEqual(s["variants"]["economy"]["total"], "300.30")
 
     def test_spa_unavailable_wrong_voltage_and_wrong_head_not_auto_selected(self):
@@ -232,4 +232,22 @@ class CatalogViewsTests(TestCase):
         self.assertEqual(old["heating"]["power"], "2.784")
         printed = self.client.get(reverse("pool_estimate_print", args=[first["id"], 1]))
         self.assertContains(printed, "Дата цен: 19.10.2026", count=1)
+        self.fetch.assert_not_called()
+
+    def test_embedded_profile_is_per_quote_and_history_and_tenants_are_protected(self):
+        from pool_service.tests.test_estimate_skimmer import stock, fitting
+        self.fetch.return_value = stock()
+        s = self.post(action="generate", inputs={**INPUTS,"finish":"film"}).json()["snapshot"]
+        first = self.post(action="save", snapshot=s, expected_revision=0).json()
+        changed = self.post(action="embedded_profile", snapshot=s, variant="economy", profile="steel304")
+        self.assertEqual(changed.status_code,200)
+        changed = changed.json()["snapshot"]
+        self.assertEqual(fitting(changed,"skimmer")["catalog"]["id"],"106")
+        self.assertEqual(changed["variants"]["standard"],s["variants"]["standard"])
+        self.assertEqual(self.post(action="save",snapshot=changed,id=first["id"],expected_revision=1).status_code,201)
+        self.fetch.reset_mock()
+        old = self.client.get(self.url,{"organization":self.org.pk,"id":first["id"],"version":1}).json()["snapshot"]
+        self.assertEqual(fitting(old,"skimmer")["catalog"]["id"],"101")
+        self.assertEqual(old["variants"]["economy"]["embedded_profile"],"plastic_budget")
+        self.assertEqual(self.post(action="embedded_profile",snapshot=s,variant="economy",profile="steel304",organization=self.other.pk).status_code,403)
         self.fetch.assert_not_called()

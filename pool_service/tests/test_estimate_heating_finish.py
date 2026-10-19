@@ -128,8 +128,8 @@ class HeatingFinishTests(SimpleTestCase):
         film = recalculate(tile, {**INPUTS, 'finish': 'film'})
         self.assertFalse(block(film, 'finish')['rows'][0]['excluded'])
         self.assertTrue(block(film, 'finish')['rows'][1]['excluded'])
-        self.assertEqual(len(block(film, 'finish')['rows']), 4)
-        self.assertEqual(film['variants']['economy']['total'], '81600.00')
+        self.assertEqual(len(block(film, 'finish')['rows']), 5)
+        self.assertEqual(film['variants']['economy']['total'], '94800.00')
         self.assertFalse(original['excluded'])
 
     def test_finish_changes_preserve_block_scope_and_legacy_rows(self):
@@ -172,6 +172,7 @@ class HeatingFinishTests(SimpleTestCase):
         self.assertEqual(fresh['prices']['checked_at'], '2026-10-19T00:00:00+00:00')
         self.assertTrue(fresh['prices']['mixed'])
         block(fresh, variant='standard')['excluded'] = True
+        block(fresh, variant='premium')['excluded'] = True
         new = evaluate(fresh)
         self.assertEqual(new['prices']['checked_at'], newer['checked_at'])
         block(new)['rows'][0]['price'] = '77.77'

@@ -30,3 +30,15 @@ test('restore one row from an excluded block does not restore siblings', () => {
   assert.equal(b.rows[0].excluded, false);
   assert.equal(b.rows[1].excluded, true);
 });
+test('all-quote actions match embedded roles across different materials, without restoring old sets', () => {
+  const s = sample();
+  for (const [key,v] of Object.entries(s.variants)) {
+    v.embedded_profile = key;
+    v.blocks[0].id='embedded';
+    v.blocks[0].rows=[{...emptyRow('skimmer_'+key),embedded_role:'skimmer',embedded_profile:key}, {...emptyRow('old_'+key),embedded_role:'skimmer',embedded_profile:'old',excluded:true}];
+  }
+  setExcluded(s,'economy','embedded','skimmer_economy',true,true);
+  assert.ok(Object.values(s.variants).every(v=>v.blocks[0].rows[0].excluded));
+  setExcluded(s,'economy','embedded','skimmer_economy',false,true);
+  assert.ok(Object.values(s.variants).every(v=>!v.blocks[0].rows[0].excluded && v.blocks[0].rows[1].excluded));
+});

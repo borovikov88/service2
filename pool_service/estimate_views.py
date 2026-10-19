@@ -11,6 +11,7 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_http_methods
 
+from pool_service.services.estimate_embedded import change_profile
 from pool_service.estimate_models import PoolEstimate, PoolEstimateVersion
 from pool_service.services.pool_estimates import (
     EstimateInputError, allowed_organizations, evaluate, generate, geometry, normalize_inputs, price_summary, recalculate, string, VARIANTS,
@@ -133,6 +134,15 @@ def estimate_api(request):
                 return JsonResponse({"snapshot": snapshot, "catalog_status": catalog_status(catalog), "selected_count": count})
             except CatalogUnavailable as exc:
                 return JsonResponse({"snapshot": snapshot, "catalog_error": str(exc)})
+        if action == 'embedded_profile':
+            variant = string(data.get('variant'), 'Вариант', 20)
+            snapshot = change_profile(data.get('snapshot'), variant, data.get('profile'))
+            try:
+                catalog = get_catalog()
+                snapshot, count = auto_select(snapshot, catalog, only_variant=variant)
+                return JsonResponse({'snapshot': snapshot, 'selected_count': count, 'catalog_status': catalog_status(catalog)})
+            except CatalogUnavailable as exc:
+                return JsonResponse({'snapshot': snapshot, 'catalog_error': str(exc)})
         if action == "validate":
             return JsonResponse({"snapshot": evaluate(data.get("snapshot"))})
         if action != "save":
