@@ -14,17 +14,27 @@ let rowBeingEdited = null, copyOnSave = false;
 let currentOrg = org.value;
 let catalogTarget, catalogTimer, catalogAbort, catalogSequence = 0;
 
-function catalogOrigin(row) {
-  if (!row.catalog) return '';
-  const c = row.catalog;
-  const override = Number(row.price) !== Number(c.price) || row.price === null;
-  return `<span class="pe-row-detail" data-origin="${esc(row.id)}"><a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">Товар магазина${c.sku ? ' · ' + esc(c.sku) : ''}</a> · ${c.selection === 'auto' ? 'автоподбор' : 'выбран вручную'}<br>Цена сайта: ${money(c.price)} ₽ · ${esc(stamp(c.checked_at))}${override ? ' · цена сметы изменена вручную' : ''}${c.missing ? ' · отсутствует в выгрузке' : ''}</span>`;
+function heatingFields() {
+  $('#pe-heating-fields').hidden = form.elements.heating.value === 'none';
+  const heating = snapshot?.heating;
+  $('#pe-heating-result').textContent = parametersDirty ? 'Пересчитайте параметры для подбора нагревателя.' : heating?.power
+    ? `${heating.mode === 'manual' ? 'Заданная' : 'Предварительная'} мощность: ${money(heating.power)} кВт.`
+    : 'Заполните условия прогрева или задайте мощность вручную.';
 }
 function showCatalogStatus(data) {
   const s = data.catalog_status || data.status;
   $('#pe-catalog-status').textContent = data.catalog_error || (s
-    ? `Товаров: ${s.count}. Получено ${stamp(s.checked_at)}; выгрузка магазина ${s.feed_date}. Обновление кэша — до 15 минут. ${Object.entries(s.brands).filter(([,count]) => !count).map(([brand]) => `${brand}: нет товаров в выгрузке.`).join(' ')}`
+    ? `Товаров: ${s.count}. ${Object.entries(s.brands).filter(([,count]) => !count).map(([brand]) => `${brand}: нет товаров в каталоге.`).join(' ')}`
     : 'В расчёте зафиксированы модели и цены выбранной версии. Новые цены применяются отдельной кнопкой к текущей смете; ручные цены и исключённые строки сохраняются.');
+  if (s?.heater_brands) {
+    const select = form.elements.heater_brand, value = select.value;
+    const brands = [...new Set([...s.heater_brands, ...(!['any', 'variant'].includes(value) ? [value] : [])])];
+    select.innerHTML = '<option value="any">Любой подходящий</option><option value="variant">По бренду комплектации</option>' + brands.map(b => `<option value="${esc(b)}">${esc(b)}</option>`).join('');
+    select.value = value;
+    const catalogBrand = $('#pe-catalog-brand'), previous = catalogBrand.value;
+    catalogBrand.innerHTML = '<option value="">Все бренды</option>' + [...new Set(['Aquaviva', 'Hayward', 'IML', ...brands])].map(b => `<option>${esc(b)}</option>`).join('');
+    catalogBrand.value = previous;
+  }
 }
 function catalogInputsReady() {
   if (parametersDirty) { status('Сначала пересчитайте изменённые параметры бассейна.', true); return false; }
@@ -36,9 +46,10 @@ function openCatalog(block, row) {
   catalogTarget = {block, row, variant: selected};
   $('#pe-catalog-target').textContent = `${titles[selected]} · заменить «${item.name}». Количество и исключения сохранятся.`;
   const q = new URL(location.href).searchParams;
-  $('#pe-catalog-query').value = q.get('catalog_q') || '';
+  const finishQuery = item.id.startsWith('finish_material') ? {film: 'пленка', tile: 'плитка', mosaic: 'мозаика'}[item.finish_type] : '';
+  $('#pe-catalog-query').value = finishQuery || q.get('catalog_q') || '';
   $('#pe-catalog-kind').value = item.kind === 'other' ? '' : item.kind;
-  $('#pe-catalog-brand').value = ['Aquaviva','Hayward','IML'].includes(item.brand) ? item.brand : '';
+  $('#pe-catalog-brand').value = [...$('#pe-catalog-brand').options].some(o => o.value === item.brand) ? item.brand : '';
   $('#pe-catalog-dialog').showModal();
   searchCatalog();
 }
@@ -54,7 +65,7 @@ async function searchCatalog() {
     const data = await api({action: 'catalog_search', q: query, kind: $('#pe-catalog-kind').value, brand: $('#pe-catalog-brand').value, inputs: snapshot.inputs}, catalogAbort.signal);
     if (token !== catalogSequence || !$('#pe-catalog-dialog').open) return;
     showCatalogStatus(data);
-    $('#pe-catalog-results').innerHTML = `<p class="pe-help">Найдено: ${data.total}${data.total > 40 ? '. Показаны первые 40 — уточните поиск.' : ''}</p>` + data.products.map(p => `<article class="pe-catalog-item"><div><strong>${esc(p.name)}</strong><span class="pe-row-detail">${esc(p.brand)}${p.sku ? ' · арт. ' + esc(p.sku) : ''} · ${p.available ? 'Доступен к заказу' : 'Доступность не подтверждена'}</span><span class="pe-row-detail">${p.nominal_flow ? money(p.nominal_flow) + ' м³/ч по каталогу · ' : ''}${p.head ? 'при ' + money(p.head) + ' м · ' : ''}${p.power !== 'unknown' ? esc(p.power) + ' В' : ''}</span><p class="pe-help">${esc(p.warning || (p.kind === 'other' ? 'Назначение, единицу измерения и количество проверьте в карточке.' : 'Предварительный кандидат. Проверьте рабочий режим, совместимость и комплектацию.'))}</p><a class="pe-link" href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">Карточка товара ↗</a></div><div class="pe-catalog-price"><strong>${money(p.price)} ₽</strong><button class="pe-btn" type="button" data-catalog-product="${esc(p.id)}">Выбрать</button></div></article>`).join('') + (!data.total ? '<p>Товары не найдены. Измените бренд или запрос; строка сметы останется без замены.</p>' : '');
+    $('#pe-catalog-results').innerHTML = `<p class="pe-help">Найдено: ${data.total}${data.total > 40 ? '. Показаны первые 40 — уточните поиск.' : ''}</p>` + data.products.map(p => `<article class="pe-catalog-item"><div><strong>${esc(p.name)}</strong><span class="pe-row-detail">${esc(p.brand)}${p.sku ? ' · арт. ' + esc(p.sku) : ''} · ${p.available ? 'Доступен к заказу' : 'Доступность не подтверждена'}</span><span class="pe-row-detail">${p.nominal_flow ? money(p.nominal_flow) + ' м³/ч по каталогу · ' : ''}${p.head ? 'при ' + money(p.head) + ' м · ' : ''}${p.heating_power ? money(p.heating_power) + ' кВт · ' : ''}${p.power !== 'unknown' ? esc(p.power) + ' В' : ''}</span><p class="pe-help">${esc(p.warning || (p.kind === 'other' ? 'Назначение, единицу измерения и количество проверьте в карточке.' : 'Предварительный кандидат. Проверьте рабочий режим, совместимость и комплектацию.'))}</p><a class="pe-link" href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">Карточка товара ↗</a></div><div class="pe-catalog-price"><strong>${money(p.price)} ₽</strong><button class="pe-btn" type="button" data-catalog-product="${esc(p.id)}">Выбрать</button></div></article>`).join('') + (!data.total ? '<p>Товары не найдены. Измените бренд или запрос; строка сметы останется без замены.</p>' : '');
   } catch (error) { if (error.name !== 'AbortError' && token === catalogSequence) $('#pe-catalog-results').textContent = error.message; }
 }
 
@@ -122,6 +133,9 @@ function syncScope() {
 }
 function renderTotals() {
   const g = snapshot.geometry;
+  const prices = snapshot.prices;
+  $('#pe-price-date').textContent = `Дата цен: ${prices?.checked_at ? new Date(prices.checked_at).toLocaleDateString('ru-RU') : 'не указана'}${prices?.mixed ? ' · наиболее ранняя из использованных' : ''}${prices?.manual ? ' · ручные цены проверяются отдельно' : ''}`;
+  heatingFields();
   $('#pe-metrics').innerHTML = [['Объём воды', g.volume, 'м³'], ['Зеркало воды', g.surface, 'м²'], ['Площадь отделки', g.finish_area, 'м²'], ['Требуемый расход', g.required_flow, 'м³/ч']].map(([label, value, unit]) => `<div class="pe-metric"><span>${label}</span><strong>${money(value)}<small>${unit}</small></strong></div>`).join('');
   $('#pe-variants').innerHTML = Object.entries(snapshot.variants).map(([key, v]) => `<button type="button" class="pe-variant" role="tab" aria-selected="${key === selected}" data-variant="${key}"><strong>${titles[key]}</strong><span class="pe-brand">${esc(v.preferred_brand)} · предпочтение</span><span class="pe-total">${v.missing_prices && Number(v.total) === 0 ? 'Цена уточняется' : money(v.total) + ' ₽'}</span><span class="pe-price-note">${v.missing_prices ? `Без цены: ${v.missing_prices} · сумма неполная` : 'Сумма заполненных строк'}</span></button>`).join('');
   const variant = snapshot.variants[selected];
@@ -132,8 +146,6 @@ function renderTotals() {
     const subtotal = root.querySelector(`[data-subtotal="${block.id}"]`);
     if (subtotal) subtotal.textContent = `${money(block.subtotal)} ₽`;
     for (const row of block.rows) {
-      const origin = root.querySelector(`[data-origin="${row.id}"]`);
-      if (origin) origin.outerHTML = catalogOrigin(row);
       const amount = root.querySelector(`[data-amount="${row.id}"]`);
       if (amount) amount.textContent = row.existing ? 'Установлено' : row.amount === null ? '—' : money(row.amount);
     }
@@ -144,7 +156,7 @@ function renderEditor() {
   const variant = snapshot.variants[selected];
   $('#pe-blocks').innerHTML = variant.blocks.filter(b => !b.excluded).map(block => {
     const rows = block.rows.filter(r => !r.excluded);
-    return `<section class="pe-block"><div class="pe-block-head"><h3>${esc(block.title)}</h3><span class="pe-subtotal" data-subtotal="${block.id}">${money(block.subtotal)} ₽</span><button type="button" class="pe-link" data-exclude-block="${block.id}">Исключить</button></div>${rows.length ? `<div class="pe-table-wrap"><table><thead><tr><th>Позиция</th><th>Кол-во</th><th>Цена, ₽</th><th>Сумма, ₽</th><th><span class="visually-hidden">Действия</span></th></tr></thead><tbody>${rows.map(row => `<tr><td><span class="pe-row-name">${esc(row.name)}</span><span class="pe-row-detail">${esc([row.brand, row.model].filter(Boolean).join(' · '))}${row.auto_quantity ? ' · по геометрии' : ''}${row.existing ? ' · уже установлено' : ''}</span>${catalogOrigin(row)}</td><td><input class="pe-qty" data-field="quantity" data-block="${block.id}" data-row="${row.id}" type="number" min="0.001" max="1000000" step="0.001" value="${esc(row.quantity)}" aria-label="Количество: ${esc(row.name)}"><span class="pe-row-detail">${esc(row.unit)}</span></td><td><input class="pe-price" data-field="price" data-block="${block.id}" data-row="${row.id}" type="number" min="0" max="1000000000" step="0.01" value="${esc(row.price)}" placeholder="Уточнить" aria-label="Цена: ${esc(row.name)}"></td><td class="pe-row-amount" data-amount="${row.id}">${money(row.amount)}</td><td class="pe-row-actions"><button type="button" class="pe-link" data-shop="${row.id}" data-block="${block.id}" aria-label="Выбрать товар: ${esc(row.name)}">Каталог</button><button type="button" class="pe-link" data-edit="${row.id}" data-block="${block.id}" aria-label="Изменить: ${esc(row.name)}">✎</button><button type="button" class="pe-link" data-exclude-row="${row.id}" data-block="${block.id}" aria-label="Исключить: ${esc(row.name)}">×</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="pe-empty">В этом блоке пока нет активных позиций.</div>'}<button type="button" class="pe-link pe-add" data-add="${block.id}">+ Добавить позицию</button></section>`;
+    return `<section class="pe-block"><div class="pe-block-head"><h3>${esc(block.title)}</h3><span class="pe-subtotal" data-subtotal="${block.id}">${money(block.subtotal)} ₽</span><button type="button" class="pe-link" data-exclude-block="${block.id}">Исключить</button></div>${rows.length ? `<div class="pe-table-wrap"><table><thead><tr><th>Позиция</th><th>Кол-во</th><th>Цена, ₽</th><th>Сумма, ₽</th><th><span class="visually-hidden">Действия</span></th></tr></thead><tbody>${rows.map(row => `<tr><td><span class="pe-row-name">${esc(row.name)}</span><span class="pe-row-detail">${esc([row.brand, row.model].filter(Boolean).join(' · '))}${row.auto_quantity ? ' · по геометрии' : ''}${row.existing ? ' · уже установлено' : ''}</span></td><td><input class="pe-qty" data-field="quantity" data-block="${block.id}" data-row="${row.id}" type="number" min="0.001" max="1000000" step="0.001" value="${esc(row.quantity)}" aria-label="Количество: ${esc(row.name)}"><span class="pe-row-detail">${esc(row.unit)}</span></td><td><input class="pe-price" data-field="price" data-block="${block.id}" data-row="${row.id}" type="number" min="0" max="1000000000" step="0.01" value="${esc(row.price)}" placeholder="Уточнить" aria-label="Цена: ${esc(row.name)}"></td><td class="pe-row-amount" data-amount="${row.id}">${money(row.amount)}</td><td class="pe-row-actions"><button type="button" class="pe-link" data-shop="${row.id}" data-block="${block.id}" aria-label="Выбрать товар: ${esc(row.name)}">Каталог</button><button type="button" class="pe-link" data-edit="${row.id}" data-block="${block.id}" aria-label="Изменить: ${esc(row.name)}">✎</button><button type="button" class="pe-link" data-exclude-row="${row.id}" data-block="${block.id}" aria-label="Исключить: ${esc(row.name)}">×</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="pe-empty">В этом блоке пока нет активных позиций.</div>'}<button type="button" class="pe-link pe-add" data-add="${block.id}">+ Добавить позицию</button></section>`;
   }).join('');
   const excluded = variant.blocks.filter(b => b.excluded || b.rows.some(r => r.excluded));
   $('#pe-excluded-count').textContent = `(${excluded.reduce((sum, b) => sum + (b.excluded ? 1 : b.rows.filter(r => r.excluded).length), 0)})`;
@@ -155,12 +167,19 @@ function renderHistory() {
   $('#pe-history-list').innerHTML = versions.map(v => `<div class="pe-history-row"><div><strong>Версия ${v.number}</strong> · ${stamp(v.created_at)}<small>${esc(v.note || 'Без комментария')}</small></div><div><button type="button" class="pe-link" data-version="${v.number}">Открыть копию</button><a class="pe-link" href="${location.pathname}${encodeURIComponent(projectId)}/versions/${v.number}/print/" target="_blank" rel="noopener">Печать / PDF</a></div></div>`).join('') || 'После первого сохранения здесь появится версия 1.';
 }
 function fillParameters() {
-  // Historical snapshots from before catalogue support have no heating_power.
-  form.elements.heating_power.value = snapshot.inputs.heating_power ?? '';
+  // Historical snapshots must not inherit the inputs of a more recent estimate.
+  for (const [key, value] of Object.entries({heating_power: '', water_start: '', water_target: '', heating_hours: '', heating_reserve: '', finish: '', heater_brand: 'variant'})) {
+    form.elements.namedItem(key).value = snapshot.inputs[key] ?? value;
+  }
+  const heaterBrand = snapshot.inputs.heater_brand;
+  if (heaterBrand && ![...form.elements.heater_brand.options].some(o => o.value === heaterBrand)) {
+    form.elements.heater_brand.add(new Option(heaterBrand, heaterBrand));
+  }
   for (const [key, value] of Object.entries(snapshot.inputs)) {
     if (form.elements.namedItem(key)) form.elements.namedItem(key).value = value ?? '';
   }
   parametersDirty = false;
+  heatingFields();
 }
 function discardAllowed() {
   return !dirty || window.confirm('Есть несохранённые изменения. Перейти без их сохранения?');
@@ -192,6 +211,7 @@ async function generateNew() {
 form.addEventListener('input', event => {
   if (event.target === org) return;
   parametersDirty = true; changed();
+  heatingFields();
   status('Параметры изменены. Нажмите «Пересчитать параметры», чтобы обновить сметы.');
 });
 form.addEventListener('submit', async event => {

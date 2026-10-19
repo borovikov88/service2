@@ -1,7 +1,7 @@
 {% extends 'pool_service/base.html' %}
 {% load static %}
 {% block title %}Расчёт бассейна · {{ brand_name }}{% endblock %}
-{% block extra_head %}<link rel="stylesheet" href="{% static 'pool_service/estimates/calculator.css' %}?v=3">{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="{% static 'pool_service/estimates/calculator.css' %}?v=4">{% endblock %}
 {% block content %}
 <main class="pe" id="pool-estimator" data-api="{% url 'pool_estimate_api' %}">
   {% csrf_token %}
@@ -20,11 +20,23 @@
         <div class="pe-grid2"><label>Длина, м<input name="length" type="number" min="0.1" max="100" step="0.001" value="8" required></label><label>Ширина, м<input name="width" type="number" min="0.1" max="100" step="0.001" value="4" required></label><label>Глубина в начале, м<input name="depth_start" type="number" min="0.1" max="10" step="0.001" value="1.5" required></label><label>Глубина в конце, м<input name="depth_end" type="number" min="0.1" max="10" step="0.001" value="1.5" required></label></div>
         <p class="pe-help">Укажите глубину воды. Уклон дна — вдоль длины. Площадь отделки без лестниц и запаса.</p>
         <div class="pe-grid2"><label>Расположение<select name="location"><option value="indoor">В помещении</option><option value="outdoor">На улице</option></select></label><label>Питание<select name="power"><option value="unknown">Уточнить</option><option value="230">230 В</option><option value="400">400 В</option></select></label></div>
-        <label>Источник подогрева<select name="heating"><option value="none">Без подогрева</option><option value="exchanger">Теплообменник</option><option value="electric">Электронагреватель</option><option value="heatpump">Тепловой насос</option></select></label>
+        <fieldset class="pe-heating"><legend>Подбор нагревателя</legend>
+          <label>Тип подогрева<select name="heating"><option value="none">Без подогрева</option><option value="exchanger">Теплообменник</option><option value="electric">Электронагреватель</option><option value="heatpump">Тепловой насос</option></select></label>
+          <div id="pe-heating-fields" hidden>
+            <label>Бренд нагревателя<select name="heater_brand"><option value="any">Любой подходящий</option><option value="variant">По бренду комплектации</option></select></label>
+            <p class="pe-help">«Любой подходящий» допускает одну модель нагревателя во всех трёх КП. Её можно заменить в каждой смете.</p>
+            <div class="pe-grid2"><label>Вода сейчас, °C<input name="water_start" type="number" min="0" max="45" step="0.1" value="15"></label><label>Нужная вода, °C<input name="water_target" type="number" min="1" max="45" step="0.1" value="28"></label><label>Прогреть за, ч<input name="heating_hours" type="number" min="1" max="336" step="0.1" value="48"></label><label>Запас мощности, %<input name="heating_reserve" type="number" min="0" max="100" step="0.1" value="20"></label></div>
+            <p class="pe-help">15 → 28 °C за 48 ч и запас 20% — начальные допущения, их можно изменить. Запас не заменяет расчёт теплопотерь.</p>
+            <label>Мощность вручную, кВт<input name="heating_power" type="number" min="0.1" max="10000" step="0.001" placeholder="Необязательно — рассчитаем по прогреву"></label>
+            <p class="pe-heating-result" id="pe-heating-result" aria-live="polite"></p>
+          </div>
+        </fieldset>
+        <label>Отделка бассейна<select name="finish"><option value="">Не выбрана</option><option value="film" selected>Плёнка ПВХ</option><option value="tile">Плитка</option><option value="mosaic">Мозаика</option></select></label>
+        <p class="pe-help">Состав отделки меняется во всех трёх КП. Прежние позиции остаются в «Исключённых» с сохранёнными ценами. Материал и работы — за м²; запас, основание и расходные материалы уточняются отдельно.</p>
         <label>Место установки<input name="address" maxlength="300" placeholder="Город, объект"></label>
-        <details class="pe-advanced"><summary>Расчётные условия</summary><label>Оборот воды, ч<input name="turnover_hours" type="number" min="0.5" max="24" step="0.001" value="6" required></label><p class="pe-help">6 ч — исходное допущение. Значение подтверждает проектировщик.</p><label>Расчётный напор, м<input name="required_head" type="number" min="0.1" max="100" step="0.001" placeholder="По расчёту гидравлики"></label><label>Требуемая мощность подогрева, кВт<input name="heating_power" type="number" min="0.1" max="10000" step="0.001" placeholder="После расчёта теплопотерь"></label><p class="pe-help">Для автоподбора подогрева нужна мощность. Один объём бассейна её не определяет.</p><label>Примечание<textarea name="notes" maxlength="1000" rows="2"></textarea></label></details>
+        <details class="pe-advanced"><summary>Расчётные условия</summary><label>Оборот воды, ч<input name="turnover_hours" type="number" min="0.5" max="24" step="0.001" value="6" required></label><p class="pe-help">6 ч — исходное допущение. Значение подтверждает проектировщик.</p><label>Расчётный напор, м<input name="required_head" type="number" min="0.1" max="100" step="0.001" placeholder="По расчёту гидравлики"></label><label>Примечание<textarea name="notes" maxlength="1000" rows="2"></textarea></label></details>
         <button type="submit" data-no-loading class="pe-btn pe-primary pe-full">Пересчитать параметры</button>
-        <p class="pe-help">Обновятся объёмы, автоматические количества и автоподбор. Ручные замены, цены и исключения сохранятся. Подогрев подбирается при указанной мощности.</p>
+        <p class="pe-help">Обновятся объёмы, автоматические количества и автоподбор. Ручные замены, цены и исключения сохранятся. Нагреватель подбирается по расчётной или заданной мощности.</p>
       </form>
       <fieldset class="pe-scope"><legend>Состав работ для всех трёх смет</legend><label><input type="checkbox" data-scope="construction" checked> Строительство чаши</label><label><input type="checkbox" data-scope="embedded" checked> Закладные элементы</label><label><input type="checkbox" data-scope="equipment" checked> Оборудование</label><label><input type="checkbox" data-scope="finish" checked> Отделка</label><label><input type="checkbox" data-scope="options" checked> Дополнительные работы</label><p class="pe-help">Уже залитая чаша и установленные закладные отмечаются отдельно.</p></fieldset>
     </aside>
@@ -32,7 +44,7 @@
       <div class="pe-metrics" id="pe-metrics"></div>
       <div class="pe-section-label"><span>02</span><h2>Варианты комплектации</h2><small>Все суммы в рублях</small></div>
       <div id="pe-variants" class="pe-variants" role="tablist" aria-label="Выберите смету"></div>
-      <section class="pe-catalog-note"><strong>Товары и розничные цены вашего магазина</strong><p id="pe-catalog-status">Каталог загружается при подборе. Сохранённые версии сохраняют прежние цены.</p><p class="pe-help">Автоподбор: предпочитаемый бренд → назначение и параметры → минимальная достаточная производительность → цена. Подбор предварительный; рабочие точки и комплектацию подтверждает инженер. Если бренда нет, он не заменяется автоматически.</p><div class="pe-actions"><button type="button" id="pe-catalog-auto" class="pe-btn">Обновить автоподбор в 3 КП</button><button type="button" id="pe-catalog-prices" class="pe-btn">Обновить цены текущей сметы</button></div></section>
+      <section class="pe-catalog-note"><strong id="pe-price-date">Дата цен: не указана</strong><p id="pe-catalog-status">Каталог загружается при подборе. Сохранённые версии сохраняют прежние цены.</p><p class="pe-help">Автоподбор учитывает бренд, назначение, производительность и мощность. Бренд нагревателя задаётся отдельно. Подбор предварительный; рабочие условия и комплектацию подтверждает инженер.</p><div class="pe-actions"><button type="button" id="pe-catalog-auto" class="pe-btn">Обновить автоподбор в 3 КП</button><button type="button" id="pe-catalog-prices" class="pe-btn">Обновить цены текущей сметы</button></div></section>
       <div class="pe-panel pe-editor">
         <div class="pe-editor-header"><div><h2 id="pe-editor-title">Смета</h2><span id="pe-version-label" class="pe-help">Несохранённый расчёт</span></div><label class="pe-check"><input type="checkbox" id="pe-all"> Исключать / возвращать во всех трёх</label></div>
         <div id="pe-warnings" class="pe-warnings" aria-live="polite"></div>
@@ -47,5 +59,5 @@
   <dialog id="pe-catalog-dialog" class="pe-dialog pe-catalog-dialog"><div class="pe-dialog-header"><h2>Выбрать товар магазина</h2><button class="pe-link" type="button" data-close="pe-catalog-dialog" aria-label="Закрыть">✕</button></div><p class="pe-help" id="pe-catalog-target"></p><label>Название или артикул<input id="pe-catalog-query" type="search" maxlength="120" placeholder="Начните вводить название"></label><div class="pe-grid2"><label>Тип<select id="pe-catalog-kind"><option value="">Все товары</option><option value="pump">Насосы</option><option value="filter">Фильтры</option><option value="heater">Подогрев</option><option value="other">Другие товары</option></select></label><label>Бренд<select id="pe-catalog-brand"><option value="">Все бренды</option><option>Aquaviva</option><option>Hayward</option><option>IML</option></select></label></div><p class="pe-help">«Доступен к заказу» — статус выгрузки, не подтверждение наличия на вашем складе. Выбирается розничная цена магазина. Комплектность и единицу измерения проверьте в карточке.</p><div id="pe-catalog-results" aria-live="polite"></div></dialog>
   <dialog id="pe-projects-dialog" class="pe-dialog"><div class="pe-dialog-header"><h2>Сохранённые расчёты</h2><button class="pe-link" type="button" data-close="pe-projects-dialog" aria-label="Закрыть">✕</button></div><label>Поиск<input id="pe-project-search" type="search" placeholder="Название расчёта" maxlength="200"></label><p class="pe-help">Последние 50 совпадений в выбранной организации.</p><div id="pe-project-list"></div><button type="button" id="pe-new" class="pe-btn pe-full">Новый расчёт</button></dialog>
 </main>
-<script type="module" src="{% static 'pool_service/estimates/calculator.js' %}?v=4"></script>
+<script type="module" src="{% static 'pool_service/estimates/calculator.js' %}?v=5"></script>
 {% endblock %}

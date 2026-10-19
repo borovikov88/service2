@@ -216,3 +216,20 @@ class CatalogViewsTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["catalog_error"], "synthetic unavailable")
         self.assertIsNone(block(response.json()["snapshot"])["rows"][0]["price"])
+
+    def test_heating_finish_history_and_one_print_price_date(self):
+        from pool_service.tests.test_estimate_heating_finish import HEATING
+        inputs = {**HEATING, "finish": "film"}
+        s = self.post(action="generate", inputs=inputs).json()["snapshot"]
+        self.assertEqual(s["heating"]["power"], "2.784")
+        self.assertEqual(next(r for r in block(s)["rows"] if r["kind"] == "heater")["price"], "300.00")
+        first = self.post(action="save", snapshot=s, expected_revision=0).json()
+        tile = self.post(action="recalculate", snapshot=s, inputs={**inputs, "finish": "tile"}).json()["snapshot"]
+        self.assertEqual(self.post(action="save", snapshot=tile, id=first["id"], expected_revision=1).status_code, 201)
+        self.fetch.reset_mock()
+        old = self.client.get(self.url, {"organization": self.org.pk, "id": first["id"], "version": 1}).json()["snapshot"]
+        self.assertEqual(old["inputs"]["finish"], "film")
+        self.assertEqual(old["heating"]["power"], "2.784")
+        printed = self.client.get(reverse("pool_estimate_print", args=[first["id"], 1]))
+        self.assertContains(printed, "Дата цен: 19.10.2026", count=1)
+        self.fetch.assert_not_called()

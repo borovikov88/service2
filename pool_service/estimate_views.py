@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from uuid import UUID
 
 from django.contrib.auth.decorators import login_required
@@ -12,7 +13,7 @@ from django.views.decorators.http import require_http_methods
 
 from pool_service.estimate_models import PoolEstimate, PoolEstimateVersion
 from pool_service.services.pool_estimates import (
-    EstimateInputError, allowed_organizations, evaluate, generate, geometry, normalize_inputs, recalculate, string, VARIANTS,
+    EstimateInputError, allowed_organizations, evaluate, generate, geometry, normalize_inputs, price_summary, recalculate, string, VARIANTS,
 )
 from pool_service.services.estimate_catalog import (
     CatalogUnavailable, apply_product, auto_select, catalog_status, get_catalog,
@@ -53,7 +54,7 @@ def _load(organization, identifier):
 
 def _version_data(estimate, version):
     return {"id": str(estimate.pk), "revision": estimate.revision, "loaded_version": version.number,
-            "snapshot": version.snapshot, "versions": list(estimate.versions.values("number", "note", "created_at"))}
+            "snapshot": {**version.snapshot, "prices": price_summary(version.snapshot)}, "versions": list(estimate.versions.values("number", "note", "created_at"))}
 
 
 @login_required
@@ -166,4 +167,7 @@ def estimate_print(request, estimate_id, number):
     organizations = _organizations(request.user)
     estimate = get_object_or_404(PoolEstimate, pk=estimate_id, organization_id__in=organizations)
     version = get_object_or_404(estimate.versions, number=number)
-    return render(request, "pool_service/estimates/print.html", {"estimate": estimate, "version": version})
+    prices = price_summary(version.snapshot)
+    return render(request, "pool_service/estimates/print.html", {"estimate": estimate, "version": version,
+        "prices_date": datetime.fromisoformat(prices["checked_at"]) if prices["checked_at"] else None,
+        "prices_mixed": prices["mixed"], "prices_manual": prices["manual"]})
