@@ -1,0 +1,300 @@
+"""Read-only shop catalogue and conservative, explainable equipment selection.
+
+The public retail feed is the price source. No supplier credentials, checkout
+operations or inferred pump curves. Saved estimates never call this module.
+"""
+from copy import deepcopy
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
+import re
+import time
+from urllib.error import URLError
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
+import xml.etree.ElementTree as ET
+
+from django.core.cache import cache
+
+from .pool_estimates import EstimateInputError, VARIANTS, evaluate, make_row, string
+
+SHOP_HOST = "shop.aqualine22.ru"
+FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
+CACHE_KEY = "pool-estimate-shop-v1"
+CACHE_SECONDS = 900
+MAX_BYTES = 20_000_000
+FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
+
+
+class CatalogUnavailable(EstimateInputError):
+    pass
+
+
+def safe_shop_url(value):
+    if not isinstance(value, str) or len(value) > 2000 or any(ord(c) < 33 for c in value):
+        return ""
+    try:
+        u = urlsplit(value)
+        if u.scheme == "https" and u.hostname == SHOP_HOST and not u.username and not u.password and u.port in (None, 443) and not u.fragment:
+            return value
+    except ValueError:
+        pass
+    return ""
+
+
+def _decimal(text, maximum="1000000000"):
+    try:
+        value = Decimal(str(text).replace(",", "."))
+        return str(value) if value.is_finite() and 0 < value <= Decimal(maximum) else None
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
+def _one_number(pattern, text):
+    values = {_decimal(m, "100000") for m in re.findall(pattern, text, re.I)} - {None}
+    return next(iter(values)) if len(values) == 1 else None
+
+
+def _specifications(name, description):
+    text = name.casefold().replace("\xa0", " ")
+    kind, heater_type = "other", ""
+    if re.match(r"^(?:тепловой|тепловый|инверторный|тепловой инверторный)\s+.*насос", text):
+        kind, heater_type = "heater", "heatpump"
+    elif text.startswith("теплообменник "):
+        kind, heater_type = "heater", "exchanger"
+    elif text.startswith(("электронагреватель ", "электрический нагреватель ")):
+        kind, heater_type = "heater", "electric"
+    elif re.match(r"^(?:песочный )?фильтр\s", text) and not re.search(r"пруд|картридж|дисков|магистраль|осмос", text):
+        kind = "filter"
+    elif re.match(r"^насос\s", text) and not re.search(r"дозир|дренаж|канализац|теплов|циркуляцион|скважин|фонтан", text):
+        kind = "pump"
+    flow = _one_number(FLOW, text) if kind in {"pump", "filter"} else None
+    point = re.search(FLOW + r"\s*[*×x]\s*(\d+(?:[.,]\d+)?)\s*[мm]\b", text, re.I)
+    head = _decimal(point.group(2), "100") if point and kind == "pump" else None
+    power_values = set(re.findall(r"\b(220|230|380|400)\s*[вv]\b", text, re.I))
+    power_values = {"230" if p in {"220", "230"} else "400" for p in power_values}
+    power = next(iter(power_values)) if len(power_values) == 1 else "unknown"
+    # Positive evidence of filtration/pre-filter required; never choose a cheap
+    # spa/attraction pump merely because its nominal flow matches.
+    evidence = (name + " " + description).casefold()
+    filtration = bool(re.search(r"префильтр|предварительн\w* фильтр|систем\w* фильтрации|\bпф\b", evidence))
+    if re.search(r"без префильтр|без предварительн|гидромассаж|\bспа\b|\bspa\b|противоток", evidence):
+        filtration = False
+    return {"kind": kind, "nominal_flow": flow,
+            "flow": _decimal(point.group(1), "100000") if head else None,
+            "head": head, "filter_flow": flow if kind == "filter" else None,
+            "backwash_flow": None, "power": power, "filtration": filtration,
+            "heater_type": heater_type,
+            "heating_power": _one_number(r"(\d+(?:[.,]\d+)?)\s*(?:квт|kw)\b", text) if kind == "heater" else None}
+
+
+def parse_catalog(payload, checked_at=None):
+    if len(payload) > MAX_BYTES:
+        raise CatalogUnavailable("Каталог магазина имеет неподдерживаемый формат.")
+    try:
+        text = payload.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise CatalogUnavailable("Каталог магазина должен быть в кодировке UTF-8.") from None
+    if "\x00" in text or "<!DOCTYPE" in text.upper() or "<!ENTITY" in text.upper():
+        raise CatalogUnavailable("DTD и сущности в каталоге магазина не поддерживаются.")
+    try:
+        root = ET.fromstring(text)
+    except (ET.ParseError, LookupError):
+        raise CatalogUnavailable("Магазин вернул некорректную выгрузку.") from None
+    if root.tag != "yml_catalog":
+        raise CatalogUnavailable("Магазин вернул страницу вместо каталога.")
+    offers = root.findall("./shop/offers/offer")
+    if not offers or len(offers) > 15000:
+        raise CatalogUnavailable("В выгрузке магазина нет допустимого списка товаров.")
+    categories = {c.get("id"): (c.text or "")[:200] for c in root.findall("./shop/categories/category")}
+    products = {}
+    for offer in offers:
+        pid, url = offer.get("id", ""), safe_shop_url(offer.findtext("url", ""))
+        name = offer.findtext("name", "").strip()
+        price = _decimal(offer.findtext("price"))
+        if not re.fullmatch(r"\d{1,12}", pid) or not url or not name or len(name) > 200 or not price or offer.findtext("currencyId") not in {"RUB", "RUR"}:
+            continue
+        if pid in products:
+            raise CatalogUnavailable("В выгрузке магазина повторяются идентификаторы товаров.")
+        brand = offer.findtext("vendor", "").strip()[:80]
+        for _, canonical in VARIANTS.values():
+            if brand.casefold() == canonical.casefold() or (not brand and re.search(r"\b" + re.escape(canonical) + r"\b", name, re.I)):
+                brand = canonical
+                break
+        specs = _specifications(name, offer.findtext("description", "")[:12000])
+        model = re.sub(r"^(?:песочный )?(?:фильтр|насос)(?: для бассейна)?\s+", "", name, flags=re.I).split("(")[0].strip()[:120]
+        products[pid] = {"id": pid, "url": url, "name": name, "brand": brand, "model": model,
+                         "sku": offer.findtext("vendorCode", "")[:80],
+                         "price": str(Decimal(price).quantize(Decimal(".01"))),
+                         "available": offer.get("available") == "true",
+                         "category": categories.get(offer.findtext("categoryId"), ""), **specs}
+    if not products:
+        raise CatalogUnavailable("В каталоге не найдены товары с рублёвой ценой и ссылкой на магазин.")
+    return {"checked_at": checked_at or datetime.now(timezone.utc).isoformat(),
+            "feed_date": (root.get("date") or "")[:50], "products": products}
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _download():
+    started = time.monotonic()
+    request = Request(FEED_URL, headers={"User-Agent": "Aqualine-Service2-Estimates/1.0", "Accept": "application/xml"})
+    chunks, size = [], 0
+    with build_opener(_NoRedirect()).open(request, timeout=15) as response:
+        if response.status != 200:
+            raise CatalogUnavailable("Каталог магазина временно недоступен.")
+        while True:
+            chunk = response.read1(65536)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > MAX_BYTES or time.monotonic() - started > 25:
+                raise CatalogUnavailable("Магазин слишком долго передаёт каталог. Повторите позже.")
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def get_catalog():
+    existing = cache.get(CACHE_KEY)
+    if existing:
+        return existing
+    if cache.get(CACHE_KEY + "-failed"):
+        raise CatalogUnavailable("Каталог магазина временно недоступен. Повторите через минуту; сохранённые цены не меняются.")
+    if not cache.add(CACHE_KEY + "-loading", True, 45):
+        raise CatalogUnavailable("Каталог уже загружается. Повторите через несколько секунд.")
+    try:
+        result = parse_catalog(_download())
+        cache.set(CACHE_KEY, result, CACHE_SECONDS)
+        return result
+    except (URLError, OSError, TimeoutError, ValueError) as exc:
+        cache.set(CACHE_KEY + "-failed", True, 60)
+        if isinstance(exc, CatalogUnavailable):
+            raise
+        raise CatalogUnavailable("Не удалось загрузить каталог магазина. Сохранённые модели и цены не изменены.") from None
+    finally:
+        cache.delete(CACHE_KEY + "-loading")
+
+
+def catalog_status(catalog):
+    products = list(catalog["products"].values())
+    return {"checked_at": catalog["checked_at"], "feed_date": catalog["feed_date"], "count": len(products),
+            "brands": {brand: sum(p["brand"] == brand for p in products) for _, brand in VARIANTS.values()}}
+
+
+def candidate_reason(product, inputs, required_flow, *, for_auto=False):
+    """None means eligible for a preliminary proposal, never engineering signoff."""
+    if not product["available"]:
+        return "Выгрузка магазина не подтверждает доступность к заказу."
+    if product["kind"] == "pump":
+        if not product["filtration"]:
+            return "Назначение для фильтрации с префильтром не подтверждено."
+        if not product["nominal_flow"] or Decimal(product["nominal_flow"]) < required_flow:
+            return "Указанная производительность ниже требуемой либо не определена."
+        if inputs["power"] != "unknown" and product["power"] != inputs["power"]:
+            return "Питание не соответствует выбранному или не указано в карточке."
+        if inputs.get("required_head") and (not product["head"] or Decimal(product["head"]) != Decimal(inputs["required_head"])):
+            return "В каталоге нет рабочей точки при указанном расчётном напоре."
+    if product["kind"] == "filter" and (not product["filter_flow"] or Decimal(product["filter_flow"]) < required_flow):
+        return "Производительность фильтра ниже требуемой либо не определена."
+    if product["kind"] == "heater":
+        if product["heater_type"] != inputs["heating"]:
+            return "Другой тип подогрева."
+        if not inputs.get("heating_power"):
+            return "Укажите требуемую мощность после расчёта теплопотерь."
+        if not product["heating_power"] or Decimal(product["heating_power"]) < Decimal(inputs["heating_power"]):
+            return "Мощность ниже заданной либо не определена."
+        if product["heater_type"] != "exchanger" and inputs["power"] != "unknown" and product["power"] != inputs["power"]:
+            return "Питание не соответствует выбранному или не указано в карточке."
+    return None
+
+
+def apply_product(row, product, catalog, selection="manual"):
+    row.update(name=product["name"], brand=product["brand"], model=product["model"], price=product["price"], kind=product["kind"])
+    row["specs"] = {k: product[k] for k in ("flow", "head", "filter_flow", "backwash_flow")}
+    row["catalog"] = {k: product[k] for k in ("id", "url", "sku", "price", "available", "nominal_flow", "power", "heating_power", "heater_type")}
+    row["catalog"].update(checked_at=catalog["checked_at"], feed_date=catalog["feed_date"], selection=selection, missing=False)
+
+
+def auto_select(snapshot, catalog):
+    result = deepcopy(snapshot)
+    required = Decimal(result["geometry"]["required_flow"])
+    filled = 0
+    for key, variant in result["variants"].items():
+        brand = VARIANTS[key][1]
+        all_rows = [r for b in variant["blocks"] for r in b["rows"]]
+        equipment = next(b for b in variant["blocks"] if b["id"] == "equipment")
+        if result["inputs"]["heating"] != "none" and not equipment["excluded"] and not any(r["kind"] == "heater" for r in all_rows) and len(equipment["rows"]) < 100:
+            ids = {r["id"] for r in all_rows}
+            rid = next((f"heater_auto_{n}" for n in range(100) if f"heater_auto_{n}" not in ids), None)
+            if rid:
+                equipment["rows"].append(make_row(rid, "Подогрев: подобрать мощность и модель", kind="heater", brand=brand))
+        pumps = [r for b in variant["blocks"] for r in b["rows"] if (not b["excluded"] and not r["excluded"] or r["existing"]) and r["kind"] == "pump"]
+        for kind in ("pump", "filter", "heater"):
+            for block in variant["blocks"]:
+                if block["excluded"]:
+                    continue
+                for row in block["rows"]:
+                    origin = row.get("catalog")
+                    untouched_auto = origin and origin["selection"] == "auto" and row["price"] == origin["price"]
+                    template_name = {"pump": "Фильтрационный насос", "filter": "Фильтр", "heater": "Подогрев: подобрать мощность и модель"}[kind]
+                    placeholder = (not origin and not row["model"] and row["price"] is None
+                                   and row["name"] == template_name and row["brand"] in ({brand, ""} if kind == "heater" else {brand})
+                                   and row["unit"] == "компл." and not row["basis"] and not any(row["specs"].values()))
+                    if row["kind"] != kind or row["excluded"] or row["existing"] or row.get("selection_locked") or not (untouched_auto or placeholder) or Decimal(row["quantity"]) != 1:
+                        continue
+                    flow = required
+                    if kind == "filter":
+                        if len(pumps) > 1 or (pumps and Decimal(pumps[0]["quantity"]) != 1):
+                            continue
+                        if pumps:
+                            pump = pumps[0]
+                            pump_flow = pump["specs"].get("flow") or (pump.get("catalog") or {}).get("nominal_flow")
+                            if not pump_flow:
+                                continue
+                            flow = max(flow, Decimal(pump_flow))
+                    choices = [p for p in catalog["products"].values() if p["kind"] == kind and p["brand"] == brand and not candidate_reason(p, result["inputs"], flow, for_auto=True)]
+                    if choices:
+                        # Minimum sufficient capacity first, then retail price
+                        # within that capacity; never select a giant cheap pump.
+                        capacity = "heating_power" if kind == "heater" else "nominal_flow"
+                        product = min(choices, key=lambda p: (Decimal(p[capacity]), Decimal(p["price"]), int(p["id"])))
+                        if origin and product["id"] == origin["id"]:
+                            continue  # same model keeps its frozen price
+                        apply_product(row, product, catalog, "auto")
+                        filled += 1
+    return evaluate(result), filled
+
+
+def search_catalog(catalog, query, kind, brand, inputs, required_flow):
+    query = string(query, "Поиск товара", 120).casefold().split()
+    kind = string(kind, "Тип товара", 20)
+    brand = string(brand, "Бренд", 80)
+    if kind not in {"", "other", "pump", "filter", "heater"}:
+        raise EstimateInputError("Неизвестный тип товара.")
+    matches = [p for p in catalog["products"].values() if (not kind or p["kind"] == kind) and (not brand or p["brand"].casefold() == brand.casefold()) and all(q in (p["name"] + " " + p["sku"] + " " + p["id"]).casefold() for q in query)]
+    matches.sort(key=lambda p: (bool(candidate_reason(p, inputs, required_flow)), not p["available"], Decimal(p["price"]), int(p["id"])))
+    return {"products": [{**p, "warning": candidate_reason(p, inputs, required_flow)} for p in matches[:40]], "total": len(matches), "status": catalog_status(catalog)}
+
+
+def refresh_prices(snapshot, catalog, variant_key):
+    if not isinstance(variant_key, str) or variant_key not in VARIANTS:
+        raise EstimateInputError("Выберите смету.")
+    result, updated, skipped = deepcopy(snapshot), 0, 0
+    for block in result["variants"][variant_key]["blocks"]:
+        for row in block["rows"]:
+            origin = row.get("catalog")
+            if block["excluded"] or row["excluded"] or row["existing"] or not origin:
+                continue
+            if row["price"] != origin["price"]:
+                skipped += 1
+                continue
+            product = catalog["products"].get(origin["id"])
+            if not product:
+                origin["missing"] = True
+                continue
+            row["price"] = product["price"]
+            origin.update(price=product["price"], available=product["available"], missing=False, checked_at=catalog["checked_at"], feed_date=catalog["feed_date"])
+            updated += 1
+    return evaluate(result), updated, skipped
