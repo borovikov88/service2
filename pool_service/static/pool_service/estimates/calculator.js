@@ -1,4 +1,4 @@
-import {setExcluded, emptyRow} from './state.js';
+import {setExcluded, emptyRow} from './state.js?v=2';
 
 const root = document.querySelector('#pool-estimator');
 const $ = selector => root.querySelector(selector);
@@ -12,13 +12,15 @@ let snapshot, selected = 'economy', projectId = null, revision = 0, loadedVersio
 let dirty = false, parametersDirty = false, sequence = 0, busy = false, timer, searchTimer, searchAbort;
 let rowBeingEdited = null, copyOnSave = false;
 let currentOrg = org.value;
+let scopeTarget;
+const embeddedDefaults = {economy: "plastic_budget", standard: "plastic_europe", premium: "steel316"};
 let catalogTarget, catalogTimer, catalogAbort, catalogSequence = 0;
 
 function heatingFields() {
   $('#pe-heating-fields').hidden = form.elements.heating.value === 'none';
   const heating = snapshot?.heating;
   $('#pe-heating-result').textContent = parametersDirty ? 'Пересчитайте параметры для подбора нагревателя.' : heating?.power
-    ? `${heating.mode === 'manual' ? 'Заданная' : 'Предварительная'} мощность: ${money(heating.power)} кВт.`
+    ? `${heating.mode === 'manual' ? 'Заданная' : 'Предварительная'} мощность: ${money(heating.power)} кВт.${heating.mode === 'estimated' && snapshot.inputs.location === 'outdoor' ? ' Улица: учтён коэффициент ×1,5.' : ''}`
     : 'Заполните условия прогрева или задайте мощность вручную.';
 }
 function showCatalogStatus(data) {
@@ -29,7 +31,7 @@ function showCatalogStatus(data) {
   if (s?.heater_brands) {
     const brands = s.heater_brands;
     const catalogBrand = $('#pe-catalog-brand'), previous = catalogBrand.value;
-    catalogBrand.innerHTML = '<option value="">Все бренды</option>' + [...new Set(['Aquaviva', 'Hayward', 'IML', ...brands])].map(b => `<option>${esc(b)}</option>`).join('');
+    catalogBrand.innerHTML = '<option value="">Все бренды</option>' + [...new Set(['Aquaviva', 'Aquant', 'Hayward', 'Kripsol', 'AstralPool', 'IML', ...brands])].map(b => `<option>${esc(b)}</option>`).join('');
     catalogBrand.value = previous;
   }
 }
@@ -69,6 +71,7 @@ async function searchCatalog() {
 function status(message, error = false) {
   $('#pe-status').textContent = message;
   $('#pe-status').classList.toggle('pe-error', error);
+  $('#pe-new-error').textContent = error && $('#pe-new-dialog').open ? message : '';
 }
 function changed() {
   dirty = true;
@@ -123,9 +126,8 @@ function queueValidation() {
 }
 function syncScope() {
   root.querySelectorAll('[data-scope]').forEach(input => {
-    const values = Object.values(snapshot.variants).map(v => !v.blocks.find(b => b.id === input.dataset.scope).excluded);
-    input.checked = values.every(Boolean);
-    input.indeterminate = values.some(Boolean) && !values.every(Boolean);
+    input.checked = !snapshot.variants[selected].blocks.find(b => b.id === input.dataset.scope).excluded;
+    input.indeterminate = false;
   });
 }
 function renderTotals() {
@@ -134,8 +136,11 @@ function renderTotals() {
   $('#pe-price-date').textContent = `Дата цен: ${prices?.checked_at ? new Date(prices.checked_at).toLocaleDateString('ru-RU') : 'не указана'}${prices?.mixed ? ' · наиболее ранняя из использованных' : ''}${prices?.manual ? ' · ручные цены проверяются отдельно' : ''}`;
   heatingFields();
   $('#pe-metrics').innerHTML = [['Объём воды', g.volume, 'м³'], ['Зеркало воды', g.surface, 'м²'], ['Площадь отделки', g.finish_area, 'м²'], ['Требуемый расход', g.required_flow, 'м³/ч']].map(([label, value, unit]) => `<div class="pe-metric"><span>${label}</span><strong>${money(value)}<small>${unit}</small></strong></div>`).join('');
-  $('#pe-variants').innerHTML = Object.entries(snapshot.variants).map(([key, v]) => `<button type="button" class="pe-variant" role="tab" aria-selected="${key === selected}" data-variant="${key}"><strong>${titles[key]}</strong><span class="pe-brand">${esc(v.preferred_brand)} · предпочтение</span><span class="pe-total">${v.missing_prices && Number(v.total) === 0 ? 'Цена уточняется' : money(v.total) + ' ₽'}</span><span class="pe-price-note">${v.missing_prices ? `Без цены: ${v.missing_prices} · сумма неполная` : 'Сумма заполненных строк'}</span></button>`).join('');
+  $('#pe-variants').innerHTML = Object.entries(snapshot.variants).map(([key, v]) => `<button type="button" class="pe-variant" role="tab" aria-selected="${key === selected}" data-variant="${key}"><strong>${titles[key]}</strong><span class="pe-brand">${key === 'premium' ? 'Дорогие модели каталога' : esc(v.preferred_brand) + ' · предпочтение'}</span><span class="pe-total">${v.missing_prices && Number(v.total) === 0 ? 'Цена уточняется' : money(v.total) + ' ₽'}</span><span class="pe-price-note">${v.missing_prices ? `Без цены: ${v.missing_prices} · сумма неполная` : 'Сумма заполненных строк'}</span></button>`).join('');
   const variant = snapshot.variants[selected];
+  $('#pe-embedded-profile').value = variant.embedded_profile || embeddedDefaults[selected];
+  const q = variant.embedded_counts;
+  $('#pe-embedded-summary').textContent = q ? `Скиммеры: ${q.skimmer}, возвратные форсунки: ${q.inlet}, донные сливы: ${q.drain}, пылесос: ${q.vacuum}. Количества предварительные; их можно изменить в строках. При смене материала прежние позиции переносятся в исключённые.` : 'Выберите материал и пересчитайте закладные. Сохранённая версия не меняется.';
   $('#pe-editor-title').textContent = `${titles[selected]} · состав сметы`;
   $('#pe-version-label').textContent = projectId ? `Открыта версия ${loadedVersion} · последняя сохранённая ${revision}` : 'Несохранённый расчёт';
   $('#pe-warnings').innerHTML = `<details open><summary>Проверки и уточнения · ${variant.warnings.length}</summary><ul>${variant.warnings.map(text => `<li>${esc(text)}</li>`).join('')}${!variant.warnings.length ? '<li>Автоматические проверки пройдены. Полную проверку проекта выполняет инженер.</li>' : ''}</ul></details>`;
@@ -143,6 +148,8 @@ function renderTotals() {
     const subtotal = root.querySelector(`[data-subtotal="${block.id}"]`);
     if (subtotal) subtotal.textContent = `${money(block.subtotal)} ₽`;
     for (const row of block.rows) {
+      const quantity = root.querySelector(`[data-row="${row.id}"][data-field="quantity"]`);
+      if (row.auto_quantity && quantity && document.activeElement !== quantity) quantity.value = row.quantity;
       const amount = root.querySelector(`[data-amount="${row.id}"]`);
       if (amount) amount.textContent = row.existing ? 'Установлено' : row.amount === null ? '—' : money(row.amount);
     }
@@ -165,7 +172,7 @@ function renderHistory() {
 }
 function fillParameters() {
   // Historical snapshots must not inherit the inputs of a more recent estimate.
-  for (const [key, value] of Object.entries({heating_power: '', water_start: '', water_target: '', heating_hours: '', heating_reserve: '', finish: ''})) {
+  for (const [key, value] of Object.entries({heating_power: '', water_start: '', water_target: '', heating_hours: '', heating_reserve: '', finish: '', skimmer_area: '25', skimmer_flow: '5', inlet_flow: '3'})) {
     form.elements.namedItem(key).value = snapshot.inputs[key] ?? value;
   }
   for (const [key, value] of Object.entries(snapshot.inputs)) {
@@ -232,8 +239,8 @@ root.addEventListener('change', event => {
     changed(); queueValidation();
   }
   if (el.dataset.scope && snapshot) {
-    setExcluded(snapshot, selected, el.dataset.scope, null, !el.checked, true);
-    changed(); renderEditor(); queueValidation();
+    askScope(el.dataset.scope, null, !el.checked);
+    syncScope();
   }
 });
 root.addEventListener('click', event => {
@@ -246,8 +253,7 @@ root.addEventListener('click', event => {
   if (el.dataset.version) loadProject(projectId, el.dataset.version);
   const blockId = el.dataset.excludeBlock || el.dataset.restoreBlock || el.dataset.block;
   if (el.dataset.excludeBlock || el.dataset.restoreBlock || el.dataset.excludeRow || el.dataset.restoreRow) {
-    setExcluded(snapshot, selected, blockId, el.dataset.excludeRow || el.dataset.restoreRow || null, Boolean(el.dataset.excludeBlock || el.dataset.excludeRow), $('#pe-all').checked);
-    changed(); renderEditor(); queueValidation();
+    askScope(blockId, el.dataset.excludeRow || el.dataset.restoreRow || null, Boolean(el.dataset.excludeBlock || el.dataset.excludeRow));
   }
   if (el.dataset.shop) { openCatalog(el.dataset.block, el.dataset.shop); return; }
   if (el.dataset.edit || el.dataset.add) {
@@ -272,7 +278,7 @@ $('#pe-row-form').addEventListener('submit', event => {
   if (['name', 'brand', 'model', 'kind'].some(key => row[key] !== rowBeingEdited[key])) row.catalog = null;
   row.existing = f.elements.existing.checked;
   row.auto_quantity = Boolean(row.basis) && f.elements.auto_quantity.checked;
-  if (row.auto_quantity) row.quantity = snapshot.geometry[row.basis];
+  if (row.auto_quantity) row.quantity = String(Math.ceil(Number(snapshot.variants[selected].embedded_counts?.[row.basis] ?? snapshot.geometry[row.basis])));
   for (const key of ['flow', 'head', 'filter_flow', 'backwash_flow']) row.specs[key] = f.elements.namedItem(key).value || null;
   if (row.catalog && (row.quantity !== rowBeingEdited.quantity || ['flow','head','filter_flow','backwash_flow'].some(key => row.specs[key] !== rowBeingEdited.specs[key]))) row.catalog.selection = 'manual';
   const block = snapshot.variants[selected].blocks.find(b => b.id === f.elements.block_id.value);
@@ -313,12 +319,66 @@ async function searchProjects() {
 }
 $('#pe-open').addEventListener('click', () => { $('#pe-projects-dialog').showModal(); searchProjects(); });
 $('#pe-project-search').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(searchProjects, 300); });
-$('#pe-new').addEventListener('click', async () => {
-  if (!discardAllowed()) return;
+function askScope(blockId, rowId, excluded) {
+  const block = snapshot.variants[selected].blocks.find(b => b.id === blockId);
+  scopeTarget = {variant: selected, blockId, rowId, excluded};
+  $('#pe-scope-title').textContent = excluded ? 'Исключить из сметы?' : 'Восстановить в смете?';
+  $('#pe-scope-target').textContent = `${rowId ? block.rows.find(r => r.id === rowId).name : block.title} · ${titles[selected]}`;
+  $('#pe-scope-dialog').showModal();
+}
+root.addEventListener('click', event => {
+  const button = event.target.closest('[data-scope-choice]');
+  if (!button || busy || !scopeTarget) return;
+  const t = scopeTarget;
+  setExcluded(snapshot, t.variant, t.blockId, t.rowId, t.excluded, button.dataset.scopeChoice === 'all');
+  $('#pe-scope-dialog').close(); scopeTarget = null;
+  changed(); renderEditor(); queueValidation();
+});
+$('#pe-embedded-profile').addEventListener('change', async event => {
+  const profile = event.target.value;
+  if (!catalogInputsReady()) { renderTotals(); return; }
+  await run(async () => {
+    clearTimeout(timer); sequence++;
+    const data = await api({action: 'embedded_profile', snapshot, variant: selected, profile});
+    snapshot = data.snapshot; changed(); renderEditor(); showCatalogStatus(data);
+    status(data.catalog_error || 'Комплект закладных обновлён только в выбранном КП. Прежние позиции сохранены в исключённых.', Boolean(data.catalog_error));
+  });
+  renderTotals();
+});
+function askNew() {
+  if (busy) return;
+  $('#pe-projects-dialog').close();
+  $('#pe-new-error').textContent = '';
+  $('#pe-new-dialog').showModal();
+}
+for (const id of ['#pe-new', '#pe-new-from-list']) $(id).addEventListener('click', askNew);
+async function startNew() {
   const previousInputs = inputs();
   form.reset(); org.value = currentOrg;
-  $('#pe-projects-dialog').close();
-  if (!await generateNew()) for (const [key, value] of Object.entries(previousInputs)) form.elements.namedItem(key).value = value;
+  if (!await generateNew()) {
+    for (const [key, value] of Object.entries(previousInputs)) if (form.elements.namedItem(key)) form.elements.namedItem(key).value = value;
+    heatingFields();
+  }
+}
+root.addEventListener('click', async event => {
+  const button = event.target.closest('[data-new-action]');
+  if (!button || busy) return;
+  const choice = button.dataset.newAction;
+  if (choice === 'save') {
+    if (!form.reportValidity() || [...$('#pe-blocks').querySelectorAll('input')].some(el => !el.reportValidity())) return;
+    const values = inputs();
+    const saved = await run(async () => {
+      clearTimeout(timer); sequence++;
+      let current = snapshot;
+      if (parametersDirty || !current) current = (await api({action: current ? 'recalculate' : 'generate', snapshot: current, inputs: values})).snapshot;
+      const data = await api({action: 'save', snapshot: current, id: projectId, expected_revision: revision, note: 'Сохранено перед новым расчётом'});
+      snapshot = data.snapshot; projectId = data.id; revision = data.revision; loadedVersion = data.loaded_version; versions = data.versions;
+      dirty = false; parametersDirty = false; renderEditor(); renderHistory(); rememberLocation();
+    });
+    if (!saved) return;
+  }
+  $('#pe-new-dialog').close();
+  await startNew();
 });
 org.addEventListener('change', async () => {
   if (!discardAllowed()) { org.value = currentOrg; return; }

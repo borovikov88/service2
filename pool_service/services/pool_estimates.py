@@ -3,13 +3,15 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, ROUND_UP
 from datetime import datetime
 import re
 
+from . import estimate_embedded as embedded
+
 from pool_service.services.permissions import organization_accesses_for_user
 
 VARIANTS = {"economy": ("Эконом", "Aquaviva"), "standard": ("Стандарт", "Hayward"), "premium": ("Премиум", "IML")}
 BLOCKS = {"construction": "Строительство чаши", "embedded": "Закладные элементы", "equipment": "Оборудование", "finish": "Отделка", "options": "Дополнительные работы"}
-KINDS = {"other", "pump", "filter", "heater"}
+KINDS = {"other", "pump", "filter", "heater", *embedded.ROLES}
 FINISHES = {
-    "film": ("Плёнка ПВХ для бассейна (без запаса)", "Монтаж и сварка плёнки ПВХ"),
+    "film": ("Плёнка ПВХ для бассейна (+15% запас)", "Монтаж и сварка плёнки ПВХ"),
     "tile": ("Плитка для бассейна (без запаса)", "Облицовка бассейна плиткой"),
     "mosaic": ("Мозаика для бассейна (без запаса)", "Облицовка бассейна мозаикой"),
 }
@@ -74,6 +76,8 @@ def normalize_inputs(raw):
         ("heating_reserve", "Запас мощности", "0", "100"),
     ):
         data[key] = _optional(number(raw.get(key), label, optional=True, minimum=low, maximum=high))
+    for key, default, label in (('skimmer_area', '25', 'Площадь на скиммер'), ('skimmer_flow', '5', 'Расход на скиммер'), ('inlet_flow', '3', 'Расход на форсунку')):
+        data[key] = str(number(raw.get(key, default), label, minimum='.1', maximum='100'))
     data["finish"] = string(raw.get("finish", ""), "Отделка", 20)
     if data["finish"] not in {"", *FINISHES}:
         raise EstimateInputError("Выберите отделку: плёнка, плитка или мозаика.")
@@ -92,9 +96,12 @@ def geometry(data):
     length, width, d1, d2, hours = (Decimal(data[k]) for k in ("length", "width", "depth_start", "depth_end", "turnover_hours"))
     average = (d1 + d2) / 2
     floor = (length * length + (d2 - d1) ** 2).sqrt() * width
+    finish_area = floor + 2 * length * average + width * (d1 + d2)
     return {key: str(value.quantize(Decimal(".001"), rounding=ROUND_HALF_UP)) for key, value in {
         "volume": length * width * average, "surface": length * width,
-        "perimeter": 2 * (length + width), "finish_area": floor + 2 * length * average + width * (d1 + d2),
+        "perimeter": 2 * (length + width), "finish_area": finish_area,
+        "finish_net": Decimal(embedded.ceil_quantity(finish_area)),
+        "finish_stock": Decimal(embedded.ceil_quantity(finish_area * Decimal("1.15"))),
         "required_flow": length * width * average / hours,
     }.items()}
 
@@ -118,7 +125,8 @@ def heating_requirement(inputs):
         return {"mode": "incomplete", "power": None}
     start, target, hours, reserve = (Decimal(inputs[k]) for k in keys)
     volume = Decimal(inputs["length"]) * Decimal(inputs["width"]) * (Decimal(inputs["depth_start"]) + Decimal(inputs["depth_end"])) / 2
-    power = Decimal("1.16") * volume * (target - start) / hours * (1 + reserve / 100)
+    location_factor = Decimal("1.5") if inputs["location"] == "outdoor" else Decimal(1)
+    power = Decimal("1.16") * volume * (target - start) / hours * (1 + reserve / 100) * location_factor
     return {"mode": "estimated", "power": str(power.quantize(Decimal(".001"), rounding=ROUND_UP))}
 
 
@@ -143,25 +151,30 @@ def price_summary(snapshot):
             "mixed": len({d.date() for d in dates}) > 1, "manual": manual}
 
 
-def finish_rows(finish, area):
+def finish_rows(finish, metrics):
     names = FINISHES.get(finish, ("Материал отделки (без запаса)", "Работы по отделке"))
-    rows = [make_row(key, name, "м²", area, "finish_area") for key, name in zip(("finish_material", "finish_work"), names)]
+    rows = []
+    for key, name in zip(('finish_material', 'finish_work'), names):
+        basis = 'finish_stock' if finish == 'film' and key == 'finish_material' else 'finish_net'
+        rows.append(make_row(key, name, 'м²', embedded.ceil_quantity(metrics[basis]), basis))
+    if finish == 'film':
+        rows.append(make_row('finish_geotextile', 'Геотекстиль под плёнку (+15% запас)', 'м²', embedded.ceil_quantity(metrics['finish_stock']), 'finish_stock'))
     for row in rows:
         row["finish_type"] = finish
     return rows
 
 
-def change_finish(snapshot, finish):
+def change_finish(snapshot, finish, replace=True):
     """Keep previous material/rate as reversible excluded rows, never reuse its price."""
     for variant in snapshot["variants"].values():
         block = next(b for b in variant["blocks"] if b["id"] == "finish")
-        for row in block["rows"]:
-            managed = row.get("finish_type") or re.fullmatch(r"finish_(?:material|work)(?:_(?:film|tile|mosaic)?_\d+)?", row["id"])
+        for row in block["rows"] if replace else []:
+            managed = row.get("finish_type") or re.fullmatch(r"finish_(?:material|work|geotextile)(?:_(?:film|tile|mosaic)?_\d+)?", row["id"])
             if managed and row.get("finish_type", "") != finish and not row["excluded"] and not row["existing"]:
                 row.update(excluded=True, reason=FINISH_CHANGED)
             elif row.get("finish_type") == finish and row["excluded"] and row["reason"] == FINISH_CHANGED:
                 row.update(excluded=False, reason="")
-        for original in finish_rows(finish, geometry(snapshot["inputs"])["finish_area"]):
+        for original in finish_rows(finish, geometry(snapshot["inputs"])):
             base = original["id"]
             # A manually excluded row of this type remains excluded, without a duplicate.
             if any(r.get("finish_type") == finish and (r["id"] == base or r["id"].startswith(base + "_")) for r in block["rows"]):
@@ -187,16 +200,19 @@ def generate(raw):
     for key, (_, brand) in VARIANTS.items():
         rowsets = {
             "construction": [make_row("bowl_material", "Материалы для чаши"), make_row("bowl_work", "Строительство чаши")],
-            "embedded": [make_row("embedded_supply", "Закладные: подобрать состав и количество"), make_row("embedded_work", "Монтаж закладных")],
+            "embedded": [make_row("embedded_work", "Монтаж закладных", "шт.", "1", "embedded_work")],
             "equipment": [make_row("pump", "Фильтрационный насос", kind="pump", brand=brand), make_row("filter", "Фильтр", kind="filter", brand=brand),
                           make_row("treatment", "Обеззараживание: подобрать комплект"), make_row("piping", "Обвязка и автоматика"), make_row("equipment_work", "Монтаж и пусконаладка")],
-            "finish": finish_rows(inputs["finish"], metrics["finish_area"]),
+            "finish": finish_rows(inputs["finish"], metrics),
             "options": [],
         }
         if inputs["heating"] != "none":
             rowsets["equipment"].insert(2, make_row("heater", "Подогрев: подобрать мощность и модель", kind="heater"))
-        variants[key] = {"blocks": [{"id": bid, "title": title, "excluded": False, "reason": "", "rows": rowsets[bid]} for bid, title in BLOCKS.items()]}
-    return evaluate({"schema": 1, "inputs": inputs, "variants": variants})
+        variants[key] = {"embedded_profile": embedded.DEFAULTS[key], "blocks": [{"id": bid, "title": title, "excluded": False, "reason": "", "rows": rowsets[bid]} for bid, title in BLOCKS.items()]}
+    result = {"schema": 1, "inputs": inputs, "variants": variants, "geometry": metrics}
+    embedded.ensure_rows(result)
+    embedded.update_quantities(result)
+    return evaluate(result)
 
 
 def normalize_catalog(raw):
@@ -214,6 +230,12 @@ def normalize_catalog(raw):
         raise EstimateInputError("Некорректные варианты питания товара.")
     result["power_options"] = options[:]
     result["titanium"] = boolean(raw.get("titanium", False))
+    result['embedded_role'] = string(raw.get('embedded_role', ''), 'Тип закладной', 20)
+    result['material'] = string(raw.get('material', ''), 'Материал закладной', 20)
+    lining = raw.get('lining', [])
+    if result['embedded_role'] not in {'', *embedded.ROLES} or result['material'] not in {'', 'plastic', 'steel304', 'steel316'} or not isinstance(lining, list) or len(lining) > 2 or any(x not in ('film', 'concrete') for x in lining):
+        raise EstimateInputError('Некорректные характеристики закладной.')
+    result['lining'] = lining[:]
     for field, limit in (("checked_at", 50), ("feed_date", 50), ("sku", 80)):
         result[field] = string(raw.get(field, ""), field, limit)
     try:
@@ -257,9 +279,13 @@ def normalize_snapshot(raw):
                 if not isinstance(rid, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", rid) or rid in row_ids:
                     raise EstimateInputError("Строки должны иметь уникальные идентификаторы.")
                 row_ids.add(rid)
-                if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("basis", ""), str) or row.get("basis", "") not in {"", "finish_area", "surface", "perimeter", "volume"}:
+                if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("basis", ""), str) or row.get("basis", "") not in {"", "finish_area", "finish_net", "finish_stock", "surface", "perimeter", "volume", "embedded_work", *embedded.ROLES}:
                     raise EstimateInputError("Некорректный тип строки.")
                 item = {"id": rid, "kind": row["kind"], "basis": row.get("basis", "")}
+                item['embedded_role'] = string(row.get('embedded_role', ''), 'Тип закладной', 20)
+                item['embedded_profile'] = string(row.get('embedded_profile', ''), 'Комплектация закладной', 30)
+                if item['embedded_role'] not in {'', *embedded.ROLES} or item['embedded_profile'] not in {'', *embedded.PROFILES}:
+                    raise EstimateInputError('Некорректная комплектация закладной.')
                 item["finish_type"] = string(row.get("finish_type", ""), "Тип отделки", 20)
                 if item["finish_type"] not in {"", *FINISHES}:
                     raise EstimateInputError("Некорректный тип отделки строки.")
@@ -276,7 +302,10 @@ def normalize_snapshot(raw):
                 item["catalog"] = normalize_catalog(row.get("catalog"))
                 clean["rows"].append(item)
             cleaned.append(clean)
-        result["variants"][key] = {"blocks": cleaned}
+        profile = string(variant.get('embedded_profile', embedded.DEFAULTS[key]), 'Комплектация закладных', 30)
+        if profile not in embedded.PROFILES:
+            raise EstimateInputError('Выберите комплектацию закладных.')
+        result["variants"][key] = {"blocks": cleaned, 'embedded_profile': profile}
     return result
 
 
@@ -285,6 +314,7 @@ def evaluate(raw):
     result = normalize_snapshot(raw)
     result["geometry"] = geometry(result["inputs"])
     result["heating"] = heating_requirement(result["inputs"])
+    embedded.update_quantities(result)
     result["prices"] = price_summary(result)
     for key, variant in result["variants"].items():
         total, missing, models = Decimal(0), 0, 0
@@ -307,11 +337,21 @@ def evaluate(raw):
             block["subtotal"] = str(subtotal.quantize(CENT))
             total += subtotal
         warnings = []
+        embedded_block = next(b for b in variant['blocks'] if b['id'] == 'embedded')
+        if not embedded_block['excluded']:
+            unresolved = [embedded.ROLES[r['embedded_role']] for r in embedded_block['rows'] if not r['excluded'] and not r['existing'] and r.get('embedded_role') and not r['model']]
+            if unresolved:
+                warnings.append('Закладные: не найдены подходящие товары для ' + embedded.PROFILES[variant['embedded_profile']] + ' и выбранной отделки: ' + ', '.join(unresolved) + '. Количества рассчитаны, цены требуют уточнения.')
+            warnings.append('Количество закладных предварительное: по площади зеркала и расходу фильтрации. Проверьте пропускную способность конкретных моделей и размещение форсунок. Два донных слива не заменяют проверку безопасной схемы всасывания и расстояния между ними.')
+        variant['embedded_counts'] = embedded.counts(result['inputs'], result['geometry'], variant)
         for row in physical:
             origin = row.get("catalog")
             if not origin:
                 continue
             label = row["name"]
+            if row.get('embedded_role'):
+                if not embedded.matches({**origin, 'brand': row['brand']}, variant['embedded_profile'], result['inputs']['finish']):
+                    warnings.append(f'{label}: материал, отделка или доступность не соответствуют выбранному комплекту закладных либо не подтверждены. Сохранена прежняя позиция; проверьте замену.')
             if row["kind"] == "heater" and origin["selection"] == "auto":
                 if key == "economy" and row["brand"] != "Aquaviva":
                     warnings.append(f"{label}: в экономе используется альтернатива Aquaviva. Приоритет Aquaviva действует среди недорогих моделей с минимальной достаточной мощностью; выбранный товар можно заменить вручную.")
@@ -373,8 +413,8 @@ def evaluate(raw):
         if any(r["kind"] == "heater" for r in physical) and result["inputs"]["heating"] == "none":
             warnings.append("Выбран режим без подогрева, но нагреватель остался в составе. Исключите его, если он не нужен.")
         if result["inputs"]["finish"] and any(b["id"] == "finish" and not b["excluded"] for b in variant["blocks"]):
-            warnings.append("Отделка: площадь без запаса и лестниц. Цена материала и работ за м², подготовка основания и расходные материалы уточняются отдельно.")
-        variant.update(total=str(total.quantize(CENT)), missing_prices=missing, missing_models=models, warnings=warnings, title=VARIANTS[key][0], preferred_brand=VARIANTS[key][1])
+            warnings.append("Отделка: плёнка и геотекстиль с запасом 15%, работы без запаса; расчётные количества округляются вверх до целого м². Подготовка основания и расходники уточняются отдельно.")
+        variant.update(total=str(total.quantize(CENT)), missing_prices=missing, missing_models=models, warnings=warnings, title=VARIANTS[key][0], preferred_brand="Дорогие модели каталога" if key == "premium" else VARIANTS[key][1])
     return result
 
 
@@ -383,8 +423,8 @@ def recalculate(raw, inputs):
     result = normalize_snapshot(raw)
     old_finish = result["inputs"]["finish"]
     result["inputs"] = normalize_inputs(inputs)
-    if result["inputs"]["finish"] != old_finish:
-        change_finish(result, result["inputs"]["finish"])
+    # Also adds geotextile when recalculating a legacy film estimate.
+    change_finish(result, result["inputs"]["finish"], replace=old_finish != result["inputs"]["finish"])
     metrics = geometry(result["inputs"])
     for variant in result["variants"].values():
         for block in variant["blocks"]:
@@ -394,6 +434,13 @@ def recalculate(raw, inputs):
                         row.update(excluded=True, reason="Подогрев отключён")
                     elif result["inputs"]["heating"] != "none" and row["excluded"] and row["reason"] == "Подогрев отключён":
                         row.update(excluded=False, reason="")
-                if row["auto_quantity"] and row["basis"]:
-                    row["quantity"] = metrics[row["basis"]]
+                if row['auto_quantity'] and row['basis'] in metrics and not row['existing']:
+                    if row.get('finish_type') == 'film' and row['id'].startswith(('finish_material', 'finish_geotextile')):
+                        row['basis'] = 'finish_stock'
+                    elif row['id'].startswith(('finish_material', 'finish_work')):
+                        row['basis'] = 'finish_net'
+                    row['quantity'] = embedded.ceil_quantity(metrics[row['basis']])
+    result['geometry'] = metrics
+    embedded.ensure_rows(result)
+    embedded.update_quantities(result)
     return evaluate(result)

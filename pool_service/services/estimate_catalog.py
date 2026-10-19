@@ -15,11 +15,12 @@ import xml.etree.ElementTree as ET
 
 from django.core.cache import cache
 
+from . import estimate_embedded as embedded
 from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requirement, make_row, string
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
-CACHE_KEY = "pool-estimate-shop-v2"
+CACHE_KEY = "pool-estimate-shop-v3"
 CACHE_SECONDS = 900
 MAX_BYTES = 20_000_000
 FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
@@ -124,7 +125,10 @@ def parse_catalog(payload, checked_at=None):
             if brand.casefold() == canonical.casefold() or (not brand and re.search(r"\b" + re.escape(canonical) + r"\b", name, re.I)):
                 brand = canonical
                 break
-        specs = _specifications(name, offer.findtext("description", "")[:12000])
+        description = offer.findtext("description", "")[:12000]
+        specs = {**_specifications(name, description), **embedded.specifications(name, description, brand)}
+        if specs['embedded_role']:
+            specs['kind'] = specs['embedded_role']
         model = re.sub(r"^(?:песочный )?(?:фильтр|насос)(?: для бассейна)?\s+", "", name, flags=re.I).split("(")[0].strip()[:120]
         products[pid] = {"id": pid, "url": url, "name": name, "brand": brand, "model": model,
                          "sku": offer.findtext("vendorCode", "")[:80],
@@ -185,7 +189,7 @@ def catalog_status(catalog):
     products = list(catalog["products"].values())
     return {"checked_at": catalog["checked_at"], "feed_date": catalog["feed_date"], "count": len(products),
             "heater_brands": sorted({p["brand"] for p in products if p["kind"] == "heater" and p["brand"]}),
-            "brands": {brand: sum(p["brand"] == brand for p in products) for _, brand in VARIANTS.values()}}
+            "brands": {brand: sum(p["brand"] == brand for p in products) for key, (_, brand) in VARIANTS.items() if key != "premium"}}
 
 
 def candidate_reason(product, inputs, required_flow, *, for_auto=False):
@@ -213,13 +217,19 @@ def candidate_reason(product, inputs, required_flow, *, for_auto=False):
             return "Мощность ниже заданной либо не определена."
         if product["heater_type"] != "exchanger" and inputs["power"] != "unknown" and inputs["power"] not in product["power_options"]:
             return "Питание не соответствует выбранному или не указано в карточке."
+    if product.get('embedded_role'):
+        finish = 'film' if inputs['finish'] == 'film' else 'concrete' if inputs['finish'] in ('tile', 'mosaic') else ''
+        if not finish or finish not in product.get('lining', []):
+            return 'Совместимость с выбранной отделкой не подтверждена.'
+        if not product.get('material'):
+            return 'Материал или марка стали не подтверждены.'
     return None
 
 
 def apply_product(row, product, catalog, selection="manual"):
     row.update(name=product["name"], brand=product["brand"], model=product["model"], price=product["price"], kind=product["kind"])
     row["specs"] = {k: product[k] for k in ("flow", "head", "filter_flow", "backwash_flow")}
-    row["catalog"] = {k: product[k] for k in ("id", "url", "sku", "price", "available", "nominal_flow", "power", "power_options", "heating_power", "heater_type", "titanium")}
+    row["catalog"] = {k: product[k] for k in ("id", "url", "sku", "price", "available", "nominal_flow", "power", "power_options", "heating_power", "heater_type", "titanium", "embedded_role", "material", "lining")}
     row["catalog"].update(checked_at=catalog["checked_at"], feed_date=catalog["feed_date"], selection=selection, missing=False)
 
 
@@ -244,11 +254,14 @@ def select_heater(choices, tier):
     return middle
 
 
-def auto_select(snapshot, catalog):
+def auto_select(snapshot, catalog, only_variant=None):
     result = deepcopy(snapshot)
+    embedded.ensure_rows(result, only_variant)
     required = Decimal(result["geometry"]["required_flow"])
     filled = 0
     for key, variant in result["variants"].items():
+        if only_variant and key != only_variant:
+            continue
         brand = VARIANTS[key][1]
         all_rows = [r for b in variant["blocks"] for r in b["rows"]]
         equipment = next(b for b in variant["blocks"] if b["id"] == "equipment")
@@ -281,15 +294,37 @@ def auto_select(snapshot, catalog):
                             if not pump_flow:
                                 continue
                             flow = max(flow, Decimal(pump_flow))
-                    choices = [p for p in catalog["products"].values() if p["kind"] == kind and (kind == "heater" or p["brand"] == brand) and not candidate_reason(p, result["inputs"], flow, for_auto=True)]
+                    choices = [p for p in catalog["products"].values() if p["kind"] == kind and (kind == "heater" or key == "premium" or p["brand"] == brand) and not candidate_reason(p, result["inputs"], flow, for_auto=True)]
                     if choices:
                         # Minimum sufficient capacity first, then retail price
                         # within that capacity; never select a giant cheap pump.
                         product = select_heater(choices, key) if kind == "heater" else min(choices, key=lambda p: (Decimal(p["nominal_flow"]), Decimal(p["price"]), int(p["id"])))
+                        if key == 'premium' and kind in ('pump', 'filter'):
+                            # Compare nearby capacities; price is not a reason to buy an oversized commercial unit.
+                            minimum = min(Decimal(p['nominal_flow']) for p in choices)
+                            comparable = [p for p in choices if Decimal(p['nominal_flow']) <= minimum * Decimal('1.25')]
+                            product = min(comparable, key=lambda p: (-Decimal(p['price']), Decimal(p['nominal_flow']), int(p['id'])))
                         if origin and product["id"] == origin["id"]:
                             continue  # same model keeps its frozen price
                         apply_product(row, product, catalog, "auto")
                         filled += 1
+        block = next(b for b in variant['blocks'] if b['id'] == 'embedded')
+        if not block['excluded']:
+            for row in block['rows']:
+                role, origin = row.get('embedded_role'), row.get('catalog')
+                if not role or row['excluded'] or row['existing'] or row.get('selection_locked') or row.get('embedded_profile') != variant['embedded_profile']:
+                    continue
+                untouched = origin and origin['selection'] == 'auto' and row['price'] == origin['price']
+                placeholder = not origin and not row['model'] and row['price'] is None and row['name'] == embedded.ROLES[role] + ': подобрать модель'
+                if not (untouched or placeholder):
+                    continue
+                choices = [p for p in catalog['products'].values() if p.get('embedded_role') == role and embedded.matches(p, variant['embedded_profile'], result['inputs']['finish'])]
+                if choices:
+                    product = min(choices, key=lambda p: (Decimal(p['price']), int(p['id'])))
+                    if not origin or product['id'] != origin['id']:
+                        apply_product(row, product, catalog, 'auto')
+                        filled += 1
+    embedded.update_quantities(result, only_variant)
     return evaluate(result), filled
 
 
@@ -297,7 +332,7 @@ def search_catalog(catalog, query, kind, brand, inputs, required_flow):
     query = string(query, "Поиск товара", 120).casefold().replace("ё", "е").split()
     kind = string(kind, "Тип товара", 20)
     brand = string(brand, "Бренд", 80)
-    if kind not in {"", "other", "pump", "filter", "heater"}:
+    if kind not in {"", "other", "pump", "filter", "heater", *embedded.ROLES}:
         raise EstimateInputError("Неизвестный тип товара.")
     matches = [p for p in catalog["products"].values() if (not kind or p["kind"] == kind) and (not brand or p["brand"].casefold() == brand.casefold()) and all(q in (p["name"] + " " + p["sku"] + " " + p["id"]).casefold().replace("ё", "е") for q in query)]
     matches.sort(key=lambda p: (bool(candidate_reason(p, inputs, required_flow)), not p["available"], Decimal(p["price"]), int(p["id"])))
