@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {setExcluded, emptyRow} from '../static/pool_service/estimates/state.mjs';
+import {setExcluded, emptyRow} from '../static/pool_service/estimates/state.js';
 
 function sample() {
   return {variants: Object.fromEntries(['economy', 'standard', 'premium'].map(key => [key, {blocks: [{id: 'equipment', excluded: false, reason: '', rows: [emptyRow('pump'), {...emptyRow('filter'), excluded: true, price: '120'}]}]}]))};

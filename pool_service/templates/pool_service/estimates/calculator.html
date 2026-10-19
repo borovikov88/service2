@@ -46,5 +46,5 @@
   <dialog id="pe-save-dialog" class="pe-dialog"><form id="pe-save-form"><div class="pe-dialog-header"><h2>Сохранить версию</h2><button class="pe-link" type="button" data-close="pe-save-dialog" aria-label="Закрыть">✕</button></div><p>Сохранятся все три варианта. Предыдущие версии останутся доступны.</p><label>Комментарий<input name="note" maxlength="300" placeholder="Например: заменили насос, чаша уже готова"></label><button type="submit" data-no-loading class="pe-btn pe-primary pe-full">Сохранить</button></form></dialog>
   <dialog id="pe-projects-dialog" class="pe-dialog"><div class="pe-dialog-header"><h2>Сохранённые расчёты</h2><button class="pe-link" type="button" data-close="pe-projects-dialog" aria-label="Закрыть">✕</button></div><label>Поиск<input id="pe-project-search" type="search" placeholder="Название расчёта" maxlength="200"></label><p class="pe-help">Последние 50 совпадений в выбранной организации.</p><div id="pe-project-list"></div><button type="button" id="pe-new" class="pe-btn pe-full">Новый расчёт</button></dialog>
 </main>
-<script type="module" src="{% static 'pool_service/estimates/calculator.js' %}"></script>
+<script type="module" src="{% static 'pool_service/estimates/calculator.js' %}?v=2"></script>
 {% endblock %}
