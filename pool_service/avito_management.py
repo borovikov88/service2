@@ -36,7 +36,7 @@ from pool_service.communication_avito import (
 from pool_service.communication_models import (
     AvitoCredential, ChannelConnection, CommunicationChannel, Conversation, ConversationMessage,
 )
-from pool_service import avito_workspace, avito_status_monitor, avito_audit, avito_source_audit, avito_autoload_report, avito_autoload_auto, avito_advance
+from pool_service import avito_workspace, avito_status_monitor, avito_audit, avito_source_audit, avito_autoload_report, avito_autoload_auto, avito_advance, avito_tariff_reminder
 from pool_service.communication_services import conversation_capability, organization_access
 from pool_service.communication_views import _avito_subscription_token
 
@@ -301,6 +301,7 @@ def avito_dashboard(request):
         "status_monitor_state": avito_status_monitor.display_state(selected["connection"] if selected else None, request.user),
         "autoload_auto_state": avito_autoload_auto.display_state(selected["connection"] if selected else None, request.user),
         "advance_monitor_state": avito_advance.display_state(selected["connection"] if selected else None, request.user),
+        "tariff_reminder_state": avito_tariff_reminder.display_state(selected["connection"] if selected else None, request.user),
         "selected": selected,
         "workspace": workspace,
         "autoload_priority_rows": priority_rows,
@@ -344,9 +345,10 @@ def avito_check_api(request, connection_id):
 
 class WorkspaceRefreshForm(forms.Form):
     autoload_kind = forms.ChoiceField(choices=[(x, x) for x in avito_autoload_report.KINDS], required=False)
-    section = forms.ChoiceField(choices=[(x, x) for x in ("all", *avito_workspace.SECTIONS, "advance_enable", "advance_disable", "advance_retry")])
+    section = forms.ChoiceField(choices=[(x, x) for x in ("all", *avito_workspace.SECTIONS, "advance_enable", "advance_disable", "advance_retry", "tariff_enable", "tariff_disable", "tariff_retry")])
     page = forms.IntegerField(min_value=1, max_value=10000, required=False, initial=1)
     status = forms.ChoiceField(choices=[("", "Все"), *avito_workspace.ITEM_STATUSES.items()], required=False)
+    expires_on = forms.DateField(required=False)
     stats_date_from = forms.DateField(required=False)
     stats_date_to = forms.DateField(required=False)
     grouping = forms.ChoiceField(choices=[(x, x) for x in ("totals", "item", "day", "week", "month")], required=False)
@@ -463,6 +465,16 @@ def avito_refresh_data(request, connection_id):
         except ValueError as error:
             messages.error(request, str(error))
         return redirect(destination + "#avito-advance")
+    if section in {"tariff_enable", "tariff_disable", "tariff_retry"}:
+        try:
+            avito_tariff_reminder.configure(
+                connection, request.user, section.removeprefix("tariff_"),
+                expires_on=form.cleaned_data["expires_on"],
+            )
+            messages.info(request, "Настройки личных напоминаний о продлении сохранены.")
+        except ValueError as error:
+            messages.error(request, str(error))
+        return redirect(destination + "#avito-tariff")
     targets = avito_workspace.BASIC_SECTIONS if section == "all" else (section,)
     page = form.cleaned_data["page"] or 1
     status = form.cleaned_data["status"]

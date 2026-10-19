@@ -5,7 +5,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 from pool_service.avito_status_monitor import SCAN_SECONDS, scan_monitor
 from pool_service.communication_models import AvitoStatusMonitor
-from pool_service import avito_autoload_auto, avito_advance
+from pool_service import avito_autoload_auto, avito_advance, avito_tariff_reminder
 from pool_service.avito_scheduler import scheduler_state
 
 
@@ -41,6 +41,8 @@ class Command(BaseCommand):
         counts = Counter()
         # Reserve one full status scan before spending the shared budget on reports.
         report_deadline = deadline - (SCAN_SECONDS + 20 if ids else 0)
+        # Calendar reminders survive provider access loss at tariff expiry.
+        tariffs = avito_tariff_reminder.scan_due(deadline=report_deadline, limit=4)
         advances = avito_advance.scan_due(deadline=report_deadline, limit=2)
         reports = avito_autoload_auto.scan_due(deadline=report_deadline, limit=2)
         for monitor_id in ids:
@@ -61,7 +63,9 @@ class Command(BaseCommand):
             f"{key}={reports[key]}" for key in ("success", "failed", "skipped")))
         self.stdout.write("AVITO_ADVANCE_MONITOR " + " ".join(
             f"{key}={advances[key]}" for key in ("success", "failed", "skipped")))
-        if counts["failed"] or reports["failed"] or advances["failed"]:
+        self.stdout.write("AVITO_TARIFF_REMINDER " + " ".join(
+            f"{key}={tariffs[key]}" for key in ("success", "failed", "skipped")))
+        if counts["failed"] or reports["failed"] or advances["failed"] or tariffs["failed"]:
             # Distinguish a completed tick with scoped failures from a crash, timeout
             # or skipped/locked tick. Only the supervisor records the actual code.
             raise CommandError("Avito checks incomplete; inspect scoped state in Service2.", returncode=2)

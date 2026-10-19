@@ -13,7 +13,7 @@
         <div class="avito-money {% if workspace.advance.data.kopeks <= 0 %}text-danger{% elif workspace.advance.data.kopeks <= 10000 %}text-warning{% endif %}">{{ workspace.advance.data.amount }}<small>₽</small></div>
       {% else %}<div class="avito-money">—</div><p class="small text-muted">Остаток ещё не получен</p>{% endif %}
       {% if advance_monitor_state.allowed %}
-        <p class="small mt-2 mb-2">{% if advance_monitor_state.needs_reactivation %}Нужно повторное включение{% elif advance_monitor_state.enabled %}Уведомления включены{% else %}Уведомления выключены{% endif %} · 100 ₽ и 0 ₽</p>
+        <p class="small mt-2 mb-2">{% if advance_monitor_state.needs_reactivation %}Нужно повторное включение{% elif advance_monitor_state.enabled %}Уведомления об авансе включены{% else %}Уведомления об авансе выключены{% endif %} · 100 ₽ и 0 ₽</p>
         {% if advance_monitor_state.needs_reactivation %}<p class="small text-warning mb-2">Настройки или права изменились. Включите уведомления повторно.</p>{% endif %}
         {% if advance_monitor_state.last_error_detail %}<div class="small text-warning mb-2" role="status">{{ advance_monitor_state.last_error_detail }}</div>{% endif %}
         {% if not advance_monitor_state.scheduler.ready %}<div class="small text-warning mb-2" role="status">{{ advance_monitor_state.scheduler.detail }}{% if advance_monitor_state.enabled %} Подписка сохранена; свежая проверка не подтверждена.{% endif %}</div>{% endif %}
@@ -27,6 +27,7 @@
           {% endif %}
         </form>
       {% endif %}
+      <p class="small text-muted mt-2 mb-0">Контролируется сумма аванса. Срок тарифа — в блоке «Продление тарифа».</p>
       <details class="avito-help mt-2"><summary>Как работает контроль аванса</summary>
         <p class="small text-muted mt-2 mb-1">Остаток тарифа с оплатой за целевые действия. Кошелёк и бонусы учитываются отдельно.</p>
         <p class="small text-muted mb-1">Проверка раз в 15 минут и при ручном обновлении. Уведомления внутри Service2: при положительном остатке до 100 ₽ включительно и отдельно при нуле или отрицательном остатке. Повторы не отправляются; после пополнения предупреждения снова действуют. Ошибка API не означает нулевой остаток. Учитываются ваши настройки уведомлений.</p>
