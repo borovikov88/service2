@@ -12,8 +12,13 @@ from django.views.decorators.http import require_http_methods
 
 from pool_service.estimate_models import PoolEstimate, PoolEstimateVersion
 from pool_service.services.pool_estimates import (
-    EstimateInputError, allowed_organizations, evaluate, generate, recalculate, string,
+    EstimateInputError, allowed_organizations, evaluate, generate, geometry, normalize_inputs, recalculate, string, VARIANTS,
 )
+from pool_service.services.estimate_catalog import (
+    CatalogUnavailable, apply_product, auto_select, catalog_status, get_catalog,
+    refresh_prices, search_catalog,
+)
+from decimal import Decimal
 
 
 def _organizations(user):
@@ -86,9 +91,47 @@ def estimate_api(request):
             return JsonResponse({"projects": list(projects.values("id", "title", "revision", "updated_at")[:50]), "limit": 50})
         action = data.get("action")
         if action == "generate":
-            return JsonResponse({"snapshot": generate(data.get("inputs"))})
+            snapshot = generate(data.get("inputs"))
+            try:
+                catalog = get_catalog()
+                snapshot, count = auto_select(snapshot, catalog)
+                return JsonResponse({"snapshot": snapshot, "catalog_status": catalog_status(catalog), "selected_count": count})
+            except CatalogUnavailable as exc:
+                return JsonResponse({"snapshot": snapshot, "catalog_error": str(exc)})
+        if action == "catalog_search":
+            inputs = normalize_inputs(data.get("inputs"))
+            return JsonResponse(search_catalog(get_catalog(), data.get("q", ""), data.get("kind", ""), data.get("brand", ""), inputs, Decimal(geometry(inputs)["required_flow"])))
+        if action in ("catalog_auto", "catalog_apply", "catalog_prices"):
+            snapshot = evaluate(data.get("snapshot"))
+            catalog = get_catalog()
+            if action == "catalog_auto":
+                snapshot, count = auto_select(snapshot, catalog)
+                return JsonResponse({"snapshot": snapshot, "selected_count": count, "catalog_status": catalog_status(catalog)})
+            variant = string(data.get("variant"), "Вариант", 20)
+            if variant not in VARIANTS:
+                raise EstimateInputError("Выберите смету.")
+            if action == "catalog_prices":
+                snapshot, updated, skipped = refresh_prices(snapshot, catalog, variant)
+                return JsonResponse({"snapshot": snapshot, "updated": updated, "skipped": skipped, "catalog_status": catalog_status(catalog)})
+            product_id = string(data.get("product_id"), "Товар", 12)
+            product = catalog["products"].get(product_id)
+            if not product:
+                raise EstimateInputError("Товар отсутствует в текущей выгрузке магазина.")
+            bid = string(data.get("block"), "Блок", 30)
+            rid = string(data.get("row"), "Строка", 64)
+            row = next((r for b in snapshot["variants"][variant]["blocks"] if b["id"] == bid for r in b["rows"] if r["id"] == rid), None)
+            if row is None:
+                raise EstimateInputError("Сначала добавьте строку в смету.")
+            apply_product(row, product, catalog)
+            return JsonResponse({"snapshot": evaluate(snapshot), "catalog_status": catalog_status(catalog)})
         if action == "recalculate":
-            return JsonResponse({"snapshot": recalculate(data.get("snapshot"), data.get("inputs"))})
+            snapshot = recalculate(data.get("snapshot"), data.get("inputs"))
+            try:
+                catalog = get_catalog()
+                snapshot, count = auto_select(snapshot, catalog)
+                return JsonResponse({"snapshot": snapshot, "catalog_status": catalog_status(catalog), "selected_count": count})
+            except CatalogUnavailable as exc:
+                return JsonResponse({"snapshot": snapshot, "catalog_error": str(exc)})
         if action == "validate":
             return JsonResponse({"snapshot": evaluate(data.get("snapshot"))})
         if action != "save":

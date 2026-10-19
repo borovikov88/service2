@@ -1,5 +1,6 @@
 """Deterministic v1 worksheet. Unknown prices and engineering data stay unknown."""
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from datetime import datetime
 import re
 
 from pool_service.services.permissions import organization_accesses_for_user
@@ -58,6 +59,7 @@ def normalize_inputs(raw):
     ]:
         data[key] = str(number(raw.get(key), label, minimum=low, maximum=high))
     data["required_head"] = _optional(number(raw.get("required_head"), "Расчётный напор", optional=True, minimum=".1", maximum="100"))
+    data["heating_power"] = _optional(number(raw.get("heating_power"), "Мощность подогрева", optional=True, minimum=".1", maximum="10000"))
     for key, choices in {"location": {"indoor", "outdoor"}, "heating": {"none", "exchanger", "electric", "heatpump"}, "power": {"230", "400", "unknown"}}.items():
         if not isinstance(raw.get(key), str) or raw[key] not in choices:
             raise EstimateInputError(f"Выберите значение поля {key}.")
@@ -109,6 +111,31 @@ def generate(raw):
     return evaluate({"schema": 1, "inputs": inputs, "variants": variants})
 
 
+def normalize_catalog(raw):
+    if raw is None:
+        return None
+    from .estimate_catalog import safe_shop_url
+    if not isinstance(raw, dict) or not re.fullmatch(r"\d{1,12}", str(raw.get("id", ""))):
+        raise EstimateInputError("Некорректная ссылка на товар каталога.")
+    url = safe_shop_url(raw.get("url"))
+    if not url or raw.get("selection") not in ("auto", "manual") or raw.get("power") not in ("230", "400", "unknown") or raw.get("heater_type") not in ("", "exchanger", "electric", "heatpump"):
+        raise EstimateInputError("Некорректные данные товара магазина.")
+    result = {"id": str(raw["id"]), "url": url, "selection": raw["selection"], "power": raw["power"], "heater_type": raw["heater_type"]}
+    for field, limit in (("checked_at", 50), ("feed_date", 50), ("sku", 80)):
+        result[field] = string(raw.get(field, ""), field, limit)
+    try:
+        if datetime.fromisoformat(result["checked_at"]).tzinfo is None:
+            raise ValueError
+    except ValueError:
+        raise EstimateInputError("Некорректная дата получения цены магазина.") from None
+    result["price"] = str(number(raw.get("price"), "Цена магазина", minimum=".01", places=2))
+    for field in ("nominal_flow", "heating_power"):
+        result[field] = _optional(number(raw.get(field), "Характеристика магазина", minimum=".001", maximum="100000", optional=True))
+    for field in ("available", "missing"):
+        result[field] = boolean(raw.get(field, False))
+    return result
+
+
 def normalize_snapshot(raw):
     if not isinstance(raw, dict) or raw.get("schema") != 1:
         raise EstimateInputError("Неизвестный формат расчёта.")
@@ -142,7 +169,7 @@ def normalize_snapshot(raw):
                 item = {"id": rid, "kind": row["kind"], "basis": row.get("basis", "")}
                 for field, limit in (("name", 200), ("unit", 20), ("brand", 80), ("model", 120), ("reason", 300)):
                     item[field] = string(row.get(field, ""), field, limit, required=field in {"name", "unit"})
-                for field in ("excluded", "existing", "auto_quantity"):
+                for field in ("excluded", "existing", "auto_quantity", "selection_locked"):
                     item[field] = boolean(row.get(field, False))
                 item["quantity"] = str(number(row.get("quantity"), "Количество", minimum=".001", maximum="1000000"))
                 item["price"] = _optional(number(row.get("price"), "Цена", optional=True, places=2))
@@ -150,6 +177,7 @@ def normalize_snapshot(raw):
                 if not isinstance(specs, dict):
                     raise EstimateInputError("Некорректные характеристики.")
                 item["specs"] = {field: _optional(number(specs.get(field), "Характеристика оборудования", minimum=".001", maximum="100000", optional=True)) for field in ("flow", "head", "filter_flow", "backwash_flow")}
+                item["catalog"] = normalize_catalog(row.get("catalog"))
                 clean["rows"].append(item)
             cleaned.append(clean)
         result["variants"][key] = {"blocks": cleaned}
@@ -181,6 +209,26 @@ def evaluate(raw):
             block["subtotal"] = str(subtotal.quantize(CENT))
             total += subtotal
         warnings = []
+        for row in physical:
+            origin = row.get("catalog")
+            if not origin:
+                continue
+            label = row["name"]
+            if origin["missing"]:
+                warnings.append(f"{label}: товар исчез из выгрузки магазина; сохранённая цена требует подтверждения.")
+            elif not origin["available"]:
+                warnings.append(f"{label}: магазин не подтверждает доступность к заказу.")
+            if row["kind"] in {"pump", "heater"} and origin["heater_type"] != "exchanger":
+                if result["inputs"]["power"] == "unknown" or origin["power"] == "unknown":
+                    warnings.append(f"{label}: подтвердите напряжение питания.")
+                elif result["inputs"]["power"] != origin["power"]:
+                    warnings.append(f"{label}: питание не соответствует выбранному для объекта.")
+            if row["kind"] == "pump" and origin["nominal_flow"] and Decimal(origin["nominal_flow"]) < Decimal(result["geometry"]["required_flow"]):
+                warnings.append(f"{label}: производительность из каталога ниже требуемого расхода.")
+            if row["kind"] == "heater" and origin["heater_type"] != result["inputs"]["heating"]:
+                warnings.append(f"{label}: тип подогрева не соответствует параметрам бассейна.")
+            if row["kind"] == "heater" and result["inputs"].get("heating_power") and origin["heating_power"] and Decimal(origin["heating_power"]) < Decimal(result["inputs"]["heating_power"]):
+                warnings.append(f"{label}: мощность ниже заданной для подогрева.")
         if missing:
             warnings.append(f"Не указаны цены: {missing}. Показана только сумма заполненных строк.")
         if models:
@@ -194,6 +242,9 @@ def evaluate(raw):
             head = result["inputs"]["required_head"]
             if not all((pump["flow"], pump["head"], filt["filter_flow"], head)) or Decimal(pump["head"] or 0) != Decimal(head or 0):
                 warnings.append("Совместимость не подтверждена: укажите расход насоса при расчётном напоре и допустимый расход фильтра. Максимальный расход из названия модели не подходит.")
+                nominal = (pumps[0].get("catalog") or {}).get("nominal_flow")
+                if nominal and filt["filter_flow"] and Decimal(nominal) > Decimal(filt["filter_flow"]):
+                    warnings.append("Предварительно по каталогу: производительность насоса выше допустимого расхода фильтра. Рассмотрите больший фильтр и подтвердите рабочую точку насоса.")
             else:
                 if Decimal(pump["flow"]) > Decimal(filt["filter_flow"]):
                     warnings.append("Расход насоса выше допустимого для фильтра. Подберите больший фильтр либо пересчитайте режим насоса.")
