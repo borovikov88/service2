@@ -1,4 +1,4 @@
-import {setExcluded, emptyRow} from './state.mjs';
+import {setExcluded, emptyRow} from './state.js';
 
 const root = document.querySelector('#pool-estimator');
 const $ = selector => root.querySelector(selector);
