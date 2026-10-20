@@ -1,4 +1,4 @@
-import {setExcluded, emptyRow} from './state.js?v=2';
+import {setExcluded, emptyRow, isWork, samePrice, workPriceTargets, setWorkPrice} from './state.js?v=3';
 
 const root = document.querySelector('#pool-estimator');
 const $ = selector => root.querySelector(selector);
@@ -12,7 +12,7 @@ let snapshot, selected = 'economy', projectId = null, revision = 0, loadedVersio
 let dirty = false, parametersDirty = false, sequence = 0, busy = false, timer, searchTimer, searchAbort;
 let rowBeingEdited = null, copyOnSave = false;
 let currentOrg = org.value;
-let scopeTarget;
+let scopeTarget, priceTarget;
 const embeddedDefaults = {economy: "plastic_budget", standard: "plastic_europe", premium: "steel316"};
 let catalogTarget, catalogTimer, catalogAbort, catalogSequence = 0;
 
@@ -36,6 +36,7 @@ function showCatalogStatus(data) {
   }
 }
 function catalogInputsReady() {
+  if (priceTarget) return false;
   if (parametersDirty) { status('Сначала пересчитайте изменённые параметры бассейна.', true); return false; }
   return Boolean(snapshot);
 }
@@ -136,7 +137,7 @@ function renderTotals() {
   $('#pe-price-date').textContent = `Дата цен: ${prices?.checked_at ? new Date(prices.checked_at).toLocaleDateString('ru-RU') : 'не указана'}${prices?.mixed ? ' · наиболее ранняя из использованных' : ''}${prices?.manual ? ' · ручные цены проверяются отдельно' : ''}`;
   heatingFields();
   $('#pe-metrics').innerHTML = [['Объём воды', g.volume, 'м³'], ['Зеркало воды', g.surface, 'м²'], ['Площадь отделки', g.finish_area, 'м²'], ['Требуемый расход', g.required_flow, 'м³/ч']].map(([label, value, unit]) => `<div class="pe-metric"><span>${label}</span><strong>${money(value)}<small>${unit}</small></strong></div>`).join('');
-  $('#pe-variants').innerHTML = Object.entries(snapshot.variants).map(([key, v]) => `<button type="button" class="pe-variant" role="tab" aria-selected="${key === selected}" data-variant="${key}"><strong>${titles[key]}</strong><span class="pe-brand">${key === 'premium' ? 'Дорогие модели каталога' : esc(v.preferred_brand) + ' · предпочтение'}</span><span class="pe-total">${v.missing_prices && Number(v.total) === 0 ? 'Цена уточняется' : money(v.total) + ' ₽'}</span><span class="pe-price-note">${v.missing_prices ? `Без цены: ${v.missing_prices} · сумма неполная` : 'Сумма заполненных строк'}</span></button>`).join('');
+  $('#pe-variants').innerHTML = Object.entries(snapshot.variants).map(([key, v]) => `<button type="button" class="pe-variant" role="tab" aria-selected="${key === selected}" data-variant="${key}"><strong>${titles[key]}</strong><span class="pe-brand">${key === 'premium' ? 'Дорогие модели каталога' : esc(v.preferred_brand) + ' · предпочтение'}</span><span class="pe-total">${(v.missing_prices || v.missing_quantities) && Number(v.total) === 0 ? 'Цена уточняется' : money(v.total) + ' ₽'}</span><span class="pe-price-note">${v.missing_prices || v.missing_quantities ? `Без цены: ${v.missing_prices} · без объёма: ${v.missing_quantities || 0} · сумма неполная` : 'Сумма заполненных строк'}</span></button>`).join('');
   const variant = snapshot.variants[selected];
   $('#pe-embedded-profile').value = variant.embedded_profile || embeddedDefaults[selected];
   const q = variant.embedded_counts;
@@ -160,7 +161,7 @@ function renderEditor() {
   const variant = snapshot.variants[selected];
   $('#pe-blocks').innerHTML = variant.blocks.filter(b => !b.excluded).map(block => {
     const rows = block.rows.filter(r => !r.excluded);
-    return `<section class="pe-block"><div class="pe-block-head"><h3>${esc(block.title)}</h3><span class="pe-subtotal" data-subtotal="${block.id}">${money(block.subtotal)} ₽</span><button type="button" class="pe-link" data-exclude-block="${block.id}">Исключить</button></div>${rows.length ? `<div class="pe-table-wrap"><table><thead><tr><th>Позиция</th><th>Кол-во</th><th>Цена, ₽</th><th>Сумма, ₽</th><th><span class="visually-hidden">Действия</span></th></tr></thead><tbody>${rows.map(row => `<tr><td><span class="pe-row-name">${esc(row.name)}</span><span class="pe-row-detail">${esc([row.brand, row.model].filter(Boolean).join(' · '))}${row.auto_quantity ? ' · по геометрии' : ''}${row.existing ? ' · уже установлено' : ''}</span></td><td><input class="pe-qty" data-field="quantity" data-block="${block.id}" data-row="${row.id}" type="number" min="0.001" max="1000000" step="0.001" value="${esc(row.quantity)}" aria-label="Количество: ${esc(row.name)}"><span class="pe-row-detail">${esc(row.unit)}</span></td><td><input class="pe-price" data-field="price" data-block="${block.id}" data-row="${row.id}" type="number" min="0" max="1000000000" step="0.01" value="${esc(row.price)}" placeholder="Уточнить" aria-label="Цена: ${esc(row.name)}"></td><td class="pe-row-amount" data-amount="${row.id}">${money(row.amount)}</td><td class="pe-row-actions"><button type="button" class="pe-link" data-shop="${row.id}" data-block="${block.id}" aria-label="Выбрать товар: ${esc(row.name)}">Каталог</button><button type="button" class="pe-link" data-edit="${row.id}" data-block="${block.id}" aria-label="Изменить: ${esc(row.name)}">✎</button><button type="button" class="pe-link" data-exclude-row="${row.id}" data-block="${block.id}" aria-label="Исключить: ${esc(row.name)}">×</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="pe-empty">В этом блоке пока нет активных позиций.</div>'}<button type="button" class="pe-link pe-add" data-add="${block.id}">+ Добавить позицию</button></section>`;
+    return `<section class="pe-block"><div class="pe-block-head"><h3>${esc(block.title)}</h3><span class="pe-subtotal" data-subtotal="${block.id}">${money(block.subtotal)} ₽</span><button type="button" class="pe-link" data-exclude-block="${block.id}">Исключить</button></div>${rows.length ? `<div class="pe-table-wrap"><table><thead><tr><th>Позиция</th><th>Кол-во</th><th>Цена, ₽</th><th>Сумма, ₽</th><th><span class="visually-hidden">Действия</span></th></tr></thead><tbody>${rows.map(row => `<tr><td><span class="pe-row-name">${esc(row.name)}</span><span class="pe-row-detail">${esc([row.brand, row.model].filter(Boolean).join(' · '))}${row.auto_quantity ? ' · по геометрии' : isWork(row) && row.quantity === null ? ' · укажите объём работ' : ''}${row.existing ? ' · уже установлено' : ''}</span></td><td><input class="pe-qty" data-field="quantity" data-block="${block.id}" data-row="${row.id}" type="number" min="0.001" max="1000000" step="0.001" value="${esc(row.quantity)}" placeholder="Уточнить" aria-label="Количество: ${esc(row.name)}"><span class="pe-row-detail">${esc(row.unit)}</span></td><td><input class="pe-price" data-field="price" data-block="${block.id}" data-row="${row.id}" type="number" min="0" max="1000000000" step="0.01" value="${esc(row.price)}" placeholder="Уточнить" aria-label="Цена: ${esc(row.name)}"></td><td class="pe-row-amount" data-amount="${row.id}">${money(row.amount)}</td><td class="pe-row-actions">${!isWork(row) ? `<button type="button" class="pe-link" data-shop="${row.id}" data-block="${block.id}" aria-label="Выбрать товар: ${esc(row.name)}">Каталог</button>` : ''}<button type="button" class="pe-link" data-edit="${row.id}" data-block="${block.id}" aria-label="Изменить: ${esc(row.name)}">✎</button><button type="button" class="pe-link" data-exclude-row="${row.id}" data-block="${block.id}" aria-label="Исключить: ${esc(row.name)}">×</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="pe-empty">В этом блоке пока нет активных позиций.</div>'}<button type="button" class="pe-link pe-add" data-add="${block.id}">+ Добавить позицию</button></section>`;
   }).join('');
   const excluded = variant.blocks.filter(b => b.excluded || b.rows.some(r => r.excluded));
   $('#pe-excluded-count').textContent = `(${excluded.reduce((sum, b) => sum + (b.excluded ? 1 : b.rows.filter(r => r.excluded).length), 0)})`;
@@ -225,6 +226,12 @@ form.addEventListener('submit', async event => {
     status(data.catalog_error || `Параметры обновлены. Подобрано позиций: ${data.selected_count || 0}. Ручные замены, цены и исключения сохранены. Проверьте предупреждения.`, Boolean(data.catalog_error));
   });
 });
+// A blur may open the price dialog during the same click on another action.
+root.addEventListener('click', event => {
+  if (priceTarget && !event.target.closest('#pe-price-dialog')) {
+    event.preventDefault(); event.stopImmediatePropagation();
+  }
+}, true);
 root.addEventListener('input', event => {
   // Warn about loss even if the user closes the tab before the field blurs.
   if (event.target.dataset.field && snapshot) changed();
@@ -234,7 +241,11 @@ root.addEventListener('change', event => {
   if (el.dataset.field && snapshot) {
     if (!el.reportValidity()) return;
     const row = snapshot.variants[selected].blocks.find(b => b.id === el.dataset.block).rows.find(r => r.id === el.dataset.row);
-    row[el.dataset.field] = el.value === '' && el.dataset.field === 'price' ? null : el.value;
+    const value = el.value === '' && (el.dataset.field === 'price' || isWork(row)) ? null : el.value;
+    if (el.dataset.field === 'price' && isWork(row) && !samePrice(row.price, value)) {
+      askWorkPrice(el.dataset.block, row, value); return;
+    }
+    row[el.dataset.field] = value;
     if (el.dataset.field === 'quantity') { row.auto_quantity = false; row.selection_locked = true; if (row.catalog) row.catalog.selection = 'manual'; }
     changed(); queueValidation();
   }
@@ -245,7 +256,7 @@ root.addEventListener('change', event => {
 });
 root.addEventListener('click', event => {
   const el = event.target.closest('button');
-  if (!el || busy) return;
+  if (!el || busy || (priceTarget && !el.closest('#pe-price-dialog'))) return;
   if (el.dataset.close) { $('#' + el.dataset.close).close(); return; }
   if (el.dataset.project) { loadProject(el.dataset.project); return; }
   if (!snapshot) return;
@@ -264,6 +275,7 @@ root.addEventListener('click', event => {
     for (const key of ['name', 'unit', 'brand', 'model', 'kind', 'quantity', 'price']) edit.elements.namedItem(key).value = rowBeingEdited[key] ?? '';
     for (const key of ['existing', 'auto_quantity']) edit.elements.namedItem(key).checked = rowBeingEdited[key];
     for (const key of ['flow', 'head', 'filter_flow', 'backwash_flow']) edit.elements.namedItem(key).value = rowBeingEdited.specs[key] ?? '';
+    edit.elements.quantity.required = !isWork(rowBeingEdited);
     $('#pe-auto-label').hidden = !rowBeingEdited.basis;
     $('#pe-row-dialog').showModal();
   }
@@ -275,6 +287,7 @@ $('#pe-row-form').addEventListener('submit', event => {
   row.selection_locked = true;
   for (const key of ['name', 'unit', 'brand', 'model', 'kind', 'quantity']) row[key] = f.elements.namedItem(key).value;
   row.price = f.elements.price.value || null;
+  if (row.kind === 'work' && !row.quantity) row.quantity = null;
   if (['name', 'brand', 'model', 'kind'].some(key => row[key] !== rowBeingEdited[key])) row.catalog = null;
   row.existing = f.elements.existing.checked;
   row.auto_quantity = Boolean(row.basis) && f.elements.auto_quantity.checked;
@@ -284,11 +297,40 @@ $('#pe-row-form').addEventListener('submit', event => {
   const block = snapshot.variants[selected].blocks.find(b => b.id === f.elements.block_id.value);
   const index = block.rows.findIndex(r => r.id === row.id);
   if (index < 0 && block.rows.length >= 100) { status('В блоке допускается до 100 строк.', true); return; }
-  if (index < 0) block.rows.push(row); else block.rows[index] = row;
-  $('#pe-row-dialog').close(); changed(); renderEditor(); queueValidation();
+  const commit = () => { if (index < 0) block.rows.push(row); else block.rows[index] = row; $('#pe-row-dialog').close(); };
+  if (isWork(row) && !samePrice(rowBeingEdited.price, row.price)) {
+    askWorkPrice(block.id, row, row.price, commit); return;
+  }
+  commit(); changed(); renderEditor(); queueValidation();
+});
+function askWorkPrice(blockId, row, price, commit = null) {
+  clearTimeout(timer); sequence++;
+  priceTarget = {variant: selected, blockId, source: structuredClone(row), price, commit};
+  const matches = workPriceTargets(snapshot, selected, blockId, row);
+  const other = matches.filter(t => t.variant !== selected).map(t => titles[t.variant]);
+  $('#pe-price-target').textContent = `${row.name}: ${money(price)} ₽ / ${row.unit}. Где изменить расценку?`;
+  $('#pe-price-matches').textContent = other.length
+    ? `В других КП: ${other.join(', ')}. Меняется только цена такой же работы с той же единицей измерения. Объёмы и исключения сохраняются.`
+    : 'В других КП нет однозначно соответствующей работы с такой же единицей измерения. Будет изменено только текущее КП.';
+  $('#pe-price-dialog').showModal();
+}
+$('#pe-row-form').elements.kind.addEventListener('change', event => {
+  $('#pe-row-form').elements.quantity.required = event.target.value !== 'work';
+});
+root.addEventListener('click', event => {
+  const button = event.target.closest('[data-price-choice]');
+  if (!button || busy || !priceTarget) return;
+  const target = priceTarget;
+  target.commit?.();
+  setWorkPrice(snapshot, target.variant, target.blockId, target.source, target.price, button.dataset.priceChoice === 'all');
+  priceTarget = null; $('#pe-price-dialog').close();
+  changed(); renderEditor(); queueValidation();
+});
+$('#pe-price-dialog').addEventListener('close', () => {
+  if (priceTarget) { priceTarget = null; renderEditor(); queueValidation(); }
 });
 function openSave(copy) {
-  if (!snapshot || busy) return;
+  if (!snapshot || busy || priceTarget) return;
   if (parametersDirty) { status('Сначала пересчитайте изменённые параметры бассейна.', true); return; }
   if ([...$('#pe-blocks').querySelectorAll('input')].some(el => !el.reportValidity())) return;
   copyOnSave = copy;
@@ -346,7 +388,7 @@ $('#pe-embedded-profile').addEventListener('change', async event => {
   renderTotals();
 });
 function askNew() {
-  if (busy) return;
+  if (busy || priceTarget) return;
   $('#pe-projects-dialog').close();
   $('#pe-new-error').textContent = '';
   $('#pe-new-dialog').showModal();
@@ -423,6 +465,16 @@ $('#pe-catalog-prices').addEventListener('click', async () => {
     const data = await api({action: 'catalog_prices', snapshot, variant: selected});
     snapshot = data.snapshot; changed(); renderEditor(); showCatalogStatus(data);
     status(`Обновлено цен: ${data.updated}. Сохранено ручных цен: ${data.skipped}. Предыдущие версии и исключённые позиции не изменены. Для фиксации сохраните новую версию.`);
+  });
+});
+
+$('#pe-add-works').addEventListener('click', async () => {
+  if (!snapshot || priceTarget) return;
+  await run(async () => {
+    clearTimeout(timer); sequence++;
+    const data = await api({action: 'add_works', snapshot});
+    snapshot = data.snapshot; changed(); renderEditor();
+    status('Недостающие работы добавлены. Имеющиеся цены и сохранённые версии не изменены. Если в расчёте есть общая строка строительства, детализация добавлена в исключённые: замените общую строку при необходимости.');
   });
 });
 

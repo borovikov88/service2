@@ -23,6 +23,11 @@ def block(snapshot, key="equipment", variant="economy"):
 class PoolEstimateEngineTests(SimpleTestCase):
     def setUp(self):
         self.snapshot = generate(INPUTS)
+        # Isolate arithmetic tests from the default labor catalogue.
+        for v in self.snapshot["variants"].values():
+            for b in v["blocks"]:
+                for r in b["rows"]: r["price"] = None
+        self.snapshot = evaluate(self.snapshot)
 
     def test_geometry_and_three_preferences(self):
         self.assertEqual(self.snapshot["geometry"], {"volume": "48.000", "surface": "32.000", "perimeter": "24.000", "finish_area": "68.000", "finish_net": "68.000", "finish_stock": "79.000", "required_flow": "8.000"})
@@ -138,6 +143,19 @@ class PoolEstimateViewsTests(TestCase):
 
     def save(self, **overrides):
         return self.post(**{"action": "save", "snapshot": self.snapshot, "expected_revision": 0, **overrides})
+
+    def test_work_upgrade_and_rate_versions_keep_tenant_boundary(self):
+        first = self.save().json()
+        frozen = deepcopy(PoolEstimateVersion.objects.get(number=1).snapshot)
+        response = self.post(action='add_works', snapshot=self.snapshot)
+        self.assertEqual(response.status_code, 200)
+        self.snapshot = response.json()['snapshot']
+        for v in self.snapshot['variants'].values():
+            next(r for b in v['blocks'] for r in b['rows'] if r.get('work_code')=='equipment_work')['price']='123.45'
+        self.assertEqual(self.save(id=first['id'], expected_revision=1).status_code, 201)
+        self.assertEqual(PoolEstimateVersion.objects.get(number=1).snapshot, frozen)
+        self.client.force_login(self.outsider)
+        self.assertEqual(self.post(action='add_works', snapshot=self.snapshot).status_code, 403)
 
     def test_page_and_nav(self):
         response = self.client.get(reverse("pool_estimate_page"))

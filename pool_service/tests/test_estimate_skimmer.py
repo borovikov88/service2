@@ -35,7 +35,7 @@ class SkimmerEstimateTests(SimpleTestCase):
         self.assertEqual(s['variants']['economy']['embedded_counts'], {'skimmer':'2','inlet':'3','drain':'2','vacuum':'1','embedded_work':'8'})
         self.assertEqual([fitting(s,'skimmer',v)['catalog']['id'] for v in s['variants']], ['101','105','107'])
         self.assertEqual(fitting(s,'inlet')['quantity'],'3.000')
-        self.assertEqual(s['variants']['economy']['total'],'275.00')
+        self.assertEqual(block(s,'embedded')['subtotal'],'275.00')
         c = stock(); del c['products']['107']
         missing, _ = catalog.auto_select(generate({**INPUTS,'finish':'film'}), c)
         self.assertIsNone(fitting(missing,'skimmer','premium')['price'])
@@ -70,7 +70,7 @@ class SkimmerEstimateTests(SimpleTestCase):
     def test_finish_stock_ceiling_and_legacy_upgrade_preserve_manual_quantities(self):
         s=generate({**INPUTS,'length':'8.123','finish':'film'})
         g=s['geometry'];rows=block(s,'finish')['rows']
-        self.assertEqual([r['quantity'] for r in rows],['80.000','69.000','80.000'])
+        self.assertEqual([r['quantity'] for r in rows[:3]],['80.000','69.000','80.000'])
         self.assertEqual(g['volume'],'48.738')  # physical geometry is not rounded to whole units
         rows[0].update(auto_quantity=False,quantity='88.5',price='10')
         changed=recalculate(s,{**INPUTS,'length':'9','finish':'film'})
@@ -78,14 +78,14 @@ class SkimmerEstimateTests(SimpleTestCase):
         self.assertEqual(block(changed,'finish')['rows'][1]['quantity'],'75.000')
         self.assertEqual(block(changed,'finish')['rows'][2]['quantity'],'87.000')
         tile=recalculate(changed,{**INPUTS,'finish':'tile'})
-        active=[r for r in block(tile,'finish')['rows'] if not r['excluded']]
-        self.assertEqual(len(active),2);self.assertTrue(all(r['quantity']=='68.000' for r in active))
+        active=[r for r in block(tile,'finish')['rows'] if not r['excluded'] and r.get('finish_type')]
+        self.assertEqual(len(active),3);self.assertTrue(all(r['quantity']=='68.000' for r in active))
         legacy=generate({**INPUTS,'finish':'film'})
         for v in legacy['variants'].values():
             b=next(b for b in v['blocks'] if b['id']=='finish');b['rows']=b['rows'][:2]
             for r in b['rows']:r['basis']='finish_area';r['quantity']='68.000'
         upgraded=recalculate(legacy,{**INPUTS,'finish':'film'})
-        self.assertEqual([r['quantity'] for r in block(upgraded,'finish')['rows']],['79.000','68.000','79.000'])
+        self.assertEqual([r['quantity'] for r in block(upgraded,'finish')['rows'][:3]],['79.000','68.000','79.000'])
 
     def test_outdoor_factor_applies_once_only_to_automatic_heating(self):
         inside=generate(HEATING);outside=generate({**HEATING,'location':'outdoor'})
