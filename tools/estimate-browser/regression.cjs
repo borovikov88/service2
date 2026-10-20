@@ -71,7 +71,12 @@ if(await page.locator('[data-shop="circulation_pump"]').count()!==1)throw Error(
 await page.locator('[data-edit="circulation_pump"]').click();
 await page.locator('#pe-row-form [name=auto_quantity]').uncheck();
 await page.locator('#pe-row-form [name=quantity]').fill('0');
-const zeroValidated=page.waitForResponse(r=>r.request().method()==='POST' && r.request().postDataJSON()?.action==='validate');
+const zeroValidated=page.waitForResponse(r=>{
+  if(r.request().method()!=='POST')return false;
+  const data=r.request().postDataJSON();
+  const row=data?.snapshot?.variants?.economy?.blocks.flatMap(b=>b.rows).find(r=>r.id==='circulation_pump');
+  return data?.action==='validate' && Number(row?.quantity)===0 && row?.quantity!==null && row?.auto_quantity===false;
+});
 await page.locator('#pe-row-form button[type=submit]').click();
 await page.locator('#pe-row-dialog').waitFor({state:'hidden'});
 await page.waitForFunction(()=>document.querySelector('[data-row="circulation_pump"][data-field="quantity"]')?.value==='0');
