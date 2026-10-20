@@ -20,7 +20,7 @@ from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requ
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
-CACHE_KEY = "pool-estimate-shop-v6"
+CACHE_KEY = "pool-estimate-shop-v8"
 CACHE_SECONDS = 900
 MAX_BYTES = 20_000_000
 FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
@@ -141,6 +141,12 @@ def parse_catalog(payload, checked_at=None):
                 break
         description = offer.findtext("description", "")[:12000]
         specs = {**_specifications(name, description), **embedded.specifications(name, description, brand)}
+        from .estimate_fitting_facts import enrich
+        specs["level_control"] = "unknown"
+        specs.update(specification_note='', specification_source='')
+        enrich(specs, name, brand, offer.findtext('vendorCode', '')[:80], description)
+        from .estimate_level_control import classify
+        classify(specs, name, brand, offer.findtext('vendorCode', '')[:80])
         category = categories.get(offer.findtext("categoryId"), "")
         circulation_section = (bool(re.search(r"циркуляцион\w* насос", category, re.I))
                                or "/tsirkulyatsionnye-nasosy/" in url)
@@ -236,6 +242,8 @@ def candidate_reason(product, inputs, required_flow, *, for_auto=False):
             return "Питание не соответствует выбранному или не указано в карточке."
         if inputs.get("required_head") and (not product["head"] or Decimal(product["head"]) != Decimal(inputs["required_head"])):
             return "В каталоге нет рабочей точки при указанном расчётном напоре."
+    if product['kind'] == 'level_regulator':
+        return 'Комплект регулятора: подтвердите схему подключения к чаше, давление водоснабжения и совместимую отдельную форсунку. Автоподбор без этих данных не выполняется.'
     if product["kind"] == "filter" and (not product["filter_flow"] or Decimal(product["filter_flow"]) < required_flow):
         return "Производительность фильтра ниже требуемой либо не определена."
     if product["kind"] == "heater":
@@ -258,13 +266,28 @@ def candidate_reason(product, inputs, required_flow, *, for_auto=False):
 
 
 def apply_product(row, product, catalog, selection="manual"):
-    row.update(name=product["name"], brand=product["brand"], model=product["model"], price=product["price"], kind=product["kind"])
+    from .estimate_liner import validate_selection
+    validate_selection(row, product)
+    old_kind = row['kind']
+    row["selection_note"] = ""
+    row['level_status'], row['level_evidence'] = 'unknown', ''
+    # A successful product selection explicitly adopts its catalogue price.
+    row.update(name=product["name"], brand=product["brand"], model=product["model"], price=product["price"], kind=product["kind"], unit_price_manual=False)
+    if old_kind == 'level_inlet':
+        row['kind'] = old_kind
+        row['embedded_role'] = ''
     if product["kind"] == "heater":
         row["heating_type"] = product["heater_type"]
     row["specs"] = {k: product[k] for k in ("flow", "head", "filter_flow", "backwash_flow")}
     row["catalog"] = {k: product[k] for k in ("id", "url", "sku", "price", "available", "nominal_flow", "power", "power_options", "heating_power", "heater_type", "titanium", "embedded_role", "material", "lining")}
+    row["catalog"]["level_control"] = product.get("level_control", "unknown")
+    row["catalog"]["specification_note"] = product.get("specification_note", "")
+    row["catalog"]["specification_source"] = product.get("specification_source", "")
     row["catalog"]["image"] = safe_image_url(product.get("image", ""))
     row["catalog"].update(checked_at=catalog["checked_at"], feed_date=catalog["feed_date"], selection=selection, missing=False)
+
+    from .estimate_liner import set_conversion
+    set_conversion(row, product)
 
 
 def select_price_tier(choices, tier):
@@ -350,8 +373,12 @@ def auto_select(snapshot, catalog, only_variant=None):
                         filled += 1
     from .estimate_primary import fill as fill_primary
     filled += fill_primary(result, catalog, only_variant)
+    from .estimate_liner import fill as fill_liner
+    filled += fill_liner(result, catalog, only_variant)
     embedded.update_quantities(result, only_variant)
-    return evaluate(result), filled
+    result = evaluate(result)
+    explain_unfilled(result, catalog, only_variant)
+    return result, filled
 
 
 def search_text(value):
@@ -359,17 +386,39 @@ def search_text(value):
     return re.sub(r"(?:электромагнитн|соленоидн)\w*", "соленоидный", value)
 
 
-def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="economy"):
+def profile_reason(product, inputs, required_flow, profile):
+    issues = [candidate_reason(product, inputs, required_flow)]
+    if product.get('embedded_role'):
+        if not product.get('material'):
+            issues.append('Материал или марка стали не подтверждены.')
+        elif not embedded.profile_matches(product, profile):
+            issues.append('Материал/бренд не соответствует выбранному профилю КП: ' + embedded.PROFILES[profile] + '.')
+        lining = 'film' if inputs['finish'] == 'film' else 'concrete' if inputs['finish'] in ('tile', 'mosaic') else ''
+        if not lining or lining not in product.get('lining', []):
+            issues.append('Совместимость с выбранной отделкой не подтверждена.')
+    return ' '.join(dict.fromkeys(issue for issue in issues if issue)) or None
+
+
+def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="economy", profile=None):
     if variant not in VARIANTS:
         raise EstimateInputError("Выберите смету.")
+    profile = profile or embedded.DEFAULTS[variant]
+    if not isinstance(profile, str) or profile not in embedded.PROFILES:
+        raise EstimateInputError('Выберите комплектацию закладных.')
+    def reason(product):
+        issue = profile_reason(product, inputs, required_flow, profile)
+        if kind == 'level_inlet':
+            return 'Подключение этой форсунки к регулятору уровня не подтверждено. Требуется проверка схемы и размеров. ' + (issue or '')
+        return issue
     query = search_text(string(query, "Поиск товара", 120)).split()
     kind = string(kind, "Тип товара", 20)
     brand = string(brand, "Бренд", 80)
-    if kind not in {"", "other", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", *embedded.ROLES}:
+    if kind not in {"", "other", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "level_regulator", "level_inlet", *embedded.ROLES}:
         raise EstimateInputError("Неизвестный тип товара.")
-    matches = [p for p in catalog["products"].values() if (not kind or p["kind"] == kind) and (not brand or p["brand"].casefold() == brand.casefold()) and all(q in search_text(p["name"] + " " + p["sku"] + " " + p["id"]) for q in query)]
-    matches.sort(key=lambda p: (bool(candidate_reason(p, inputs, required_flow)), not p["available"], bool(kind == "circulation_pump" and variant != "economy" and p.get("frequency_control") is not True), Decimal(p["price"]), int(p["id"])))
-    return {"products": [{**p, "warning": candidate_reason(p, inputs, required_flow)} for p in matches[:40]], "total": len(matches), "status": catalog_status(catalog)}
+    matches = [p for p in catalog["products"].values() if (not kind or p["kind"] == ("inlet" if kind == "level_inlet" else kind)) and (not brand or p["brand"].casefold() == brand.casefold()) and all(q in search_text(p["name"] + " " + p["sku"] + " " + p["id"]) for q in query)]
+    matches.sort(key=lambda p: (bool(reason(p)), not p["available"], bool(kind == "circulation_pump" and variant != "economy" and p.get("frequency_control") is not True), Decimal(p["price"]), int(p["id"])))
+    from .estimate_liner import area
+    return {"products": [{**p, "warning": reason(p), "roll_area": area(p)} for p in matches[:40]], "total": len(matches), "status": catalog_status(catalog)}
 
 
 def refresh_prices(snapshot, catalog, variant_key):
@@ -381,14 +430,72 @@ def refresh_prices(snapshot, catalog, variant_key):
             origin = row.get("catalog")
             if block["excluded"] or row["excluded"] or row["existing"] or not origin:
                 continue
-            if row["price"] != origin["price"]:
+            if row.get("unit_price_manual") or row["price"] != origin["price"]:
                 skipped += 1
                 continue
             product = catalog["products"].get(origin["id"])
             if not product:
                 origin["missing"] = True
                 continue
+            if origin.get('roll_area'):
+                from .estimate_liner import area, set_conversion
+                if area(product) != origin['roll_area'] or row['unit'] != 'м²':
+                    skipped += 1
+                    continue
+                set_conversion(row, product)
+                origin.update(available=product['available'], missing=False, checked_at=catalog['checked_at'], feed_date=catalog['feed_date'])
+                updated += 1
+                continue
             row["price"] = product["price"]
             origin.update(price=product["price"], available=product["available"], missing=False, checked_at=catalog["checked_at"], feed_date=catalog["feed_date"])
             updated += 1
     return evaluate(result), updated, skipped
+
+
+def explain_unfilled(snapshot, catalog, only_variant=None):
+    """Explain skipped preliminary selection without relaxing technical filters."""
+    for tier, variant in snapshot['variants'].items():
+        if only_variant and tier != only_variant:
+            continue
+        for block in variant['blocks']:
+            for row in block['rows']:
+                if row['kind'] != 'heater' and not row.get('embedded_role'):
+                    continue
+                row['selection_note'] = ''
+                if block['excluded'] or row['excluded'] or row['existing']:
+                    continue
+                previous = ''
+                if row['model']:
+                    product = catalog['products'].get((row.get('catalog') or {}).get('id'))
+                    issue = profile_reason(product, snapshot['inputs'], Decimal(snapshot['geometry']['required_flow']), variant['embedded_profile']) if product else 'Модель отсутствует в текущей выгрузке; характеристики не подтверждены.'
+                    if product and product.get('embedded_role') and not issue and not embedded.matches(product, variant['embedded_profile'], snapshot['inputs']['finish']):
+                        issue = 'Материал/бренд не соответствует выбранному профилю КП.'
+                    if not issue:
+                        continue
+                    previous = 'Выбранная модель НЕ подтверждена для текущих параметров: ' + issue + ' Цена остаётся в сумме до явной замены/исключения. '
+                if row.get('selection_locked') or (row['price'] is not None and not row.get('catalog')) or (row.get('catalog') or {}).get('selection') == 'manual':
+                    row['selection_note'] = previous + 'Автоподбор не изменяет вручную отредактированную строку. Для замены модели откройте каталог.'
+                    continue
+                if row['kind'] == 'heater':
+                    source = row_heating_type(row, snapshot['inputs'])
+                    if Decimal(row['quantity']) != 1:
+                        row['selection_note'] = 'Автоподбор нагревателя рассчитан на одну единицу полной требуемой мощности. Количество изменено; состав нескольких приборов требует отдельного подбора.'
+                        continue
+                    products = [p for p in catalog['products'].values() if p['kind'] == 'heater' and p['heater_type'] == source]
+                    required = heating_requirement(snapshot['inputs'])['power']
+                    heading = previous + f'Требуемая мощность: не менее {required or "не задана"} кВт; питание: {snapshot["inputs"]["power"] if snapshot["inputs"]["power"] != "unknown" else "не задано"} В. '
+                    reason = lambda p: candidate_reason(p, snapshot['inputs'], Decimal(snapshot['geometry']['required_flow']), for_auto=True)
+                else:
+                    role = row['embedded_role']
+                    products = [p for p in catalog['products'].values() if p.get('embedded_role') == role]
+                    heading = previous + 'Профиль: ' + embedded.PROFILES[variant['embedded_profile']] + '. '
+                    def reason(p):
+                        return profile_reason(p, snapshot['inputs'], Decimal(snapshot['geometry']['required_flow']), variant['embedded_profile'])
+                if not products:
+                    row['selection_note'] = heading + 'В текущей выгрузке нет распознанных товаров этой категории.'
+                    continue
+                reasons = sorted({reason(p) for p in products if reason(p)})
+                candidates = sorted([p for p in products if p['available']], key=lambda p: (Decimal(p['price']), int(p['id'])))[:3]
+                candidate_text = '; '.join(p['name'][:100] + ' — ' + (reason(p) or 'проверьте ручные изменения строки') for p in candidates)
+                row['selection_note'] = (heading + 'Автоподбор не завершён: ' + (' '.join(reasons) or 'проверьте ручные изменения строки.')
+                    + (' Для ручной проверки в каталоге (не подтверждённые замены): ' + candidate_text if candidate_text else ' Доступных предварительных кандидатов нет.'))[:1000]

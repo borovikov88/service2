@@ -6,7 +6,7 @@ const source = fs.readFileSync(new URL('../static/pool_service/estimates/calcula
 function fn(name) { return source.match(new RegExp(`function ${name}\\([^]*?\\n}`))[0]; }
 test('multi-source controls serialize all checked values and restore legacy scalar', () => {
   const boxes = ['exchanger', 'electric', 'heatpump'].map(value => ({value, checked:false}));
-  const context = vm.createContext({form:{querySelectorAll:()=>boxes}, FormData:class {
+  const context = vm.createContext({form:{querySelectorAll:()=>boxes,elements:{tech_insulation_wall_height_mode:{value:'manual'}}}, FormData:class {
     constructor() { this.values = boxes.filter(x=>x.checked).map(x=>['heating_types',x.value]); }
     getAll() { return this.values.map(x=>x[1]); }
     [Symbol.iterator]() { return this.values[Symbol.iterator](); }
@@ -59,4 +59,13 @@ test('loading an old version clears technology dimensions and schemes from the n
   vm.runInContext(fn('fillParameters')+';fillParameters()',context);
   assert.equal(controls.tech_sand.value,'');
   assert.equal(controls.tech_sand_thickness.value,'');
+});
+
+test('automatic wall insulation height follows H while manual height stays fixed', () => {
+  const elements={tech_insulation_wall_height_mode:{value:'auto'},bowl_height:{value:'1.7'},tech_insulation_wall_height:{value:''}};
+  const context=vm.createContext({form:{elements},FormData:class {getAll(){return [];} [Symbol.iterator](){return [][Symbol.iterator]();}}});
+  vm.runInContext(fn('inputs'),context);vm.runInContext('inputs()',context);
+  assert.equal(elements.tech_insulation_wall_height.value,'1.6');
+  elements.tech_insulation_wall_height_mode.value='manual'; elements.bowl_height.value='2';
+  vm.runInContext('inputs()',context);assert.equal(elements.tech_insulation_wall_height.value,'1.6');
 });

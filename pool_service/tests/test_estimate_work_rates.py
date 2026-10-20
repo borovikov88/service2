@@ -151,3 +151,16 @@ class WorkRateMemoryTests(TestCase):
         for variant in ('standard','premium'):
             self.assertEqual(Decimal(new['variants'][variant]['total'])-Decimal(snapshot['variants'][variant]['total']),Decimal('90440'))
         self.assertEqual(new['variants']['economy']['total'],snapshot['variants']['economy']['total'])
+
+    def test_legacy_add_works_endpoint_preserves_explicit_clear_with_memory(self):
+        self.snapshot=confirm_price(self.data('3000'),self.org,self.user)['snapshot']
+        cleared=confirm_price(self.data(None),self.org,self.user)['snapshot']
+        for action in ('add_works','recalculate'):
+            data={'action':action,'snapshot':cleared}
+            if action=='recalculate': data['inputs']=cleared['inputs']
+            from pool_service.services.estimate_catalog import CatalogUnavailable
+            with patch('pool_service.estimate_views.get_catalog',side_effect=CatalogUnavailable('Synthetic unavailable')):
+                response=self.post(**data)
+            self.assertEqual(response.status_code,200)
+            self.assertIsNone(block(response.json()['snapshot'],'finish')['rows'][1]['price'])
+        self.assertEqual(PoolEstimateWorkRate.objects.get().price,Decimal('3000'))

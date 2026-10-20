@@ -7,12 +7,13 @@ from . import estimate_embedded as embedded
 from . import estimate_works as works
 from . import estimate_primary as primary
 from . import estimate_technology as technology
+from . import estimate_level_control as level_control
 
 from pool_service.services.permissions import organization_accesses_for_user
 
 VARIANTS = {"economy": ("Эконом", "Aquaviva"), "standard": ("Стандарт", "Hayward"), "premium": ("Премиум", "IML")}
 BLOCKS = {"construction": "Строительство чаши", "embedded": "Закладные элементы", "equipment": "Оборудование", "finish": "Отделка", "options": "Дополнительные работы"}
-KINDS = {"other", "work", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", *embedded.ROLES}
+KINDS = {"other", "work", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", *embedded.ROLES, *level_control.ROLES}
 FINISHES = {
     "film": ("Плёнка ПВХ для бассейна (+15% запас)", "Монтаж и сварка плёнки ПВХ"),
     "tile": ("Плитка для бассейна (без запаса)", "Облицовка бассейна плиткой"),
@@ -86,7 +87,7 @@ def sync_exchanger_accessories(snapshot, *, only_variant=None, create=False):
                     if unlinked:
                         # A legacy pair can be bound only to one unambiguous exchanger.
                         # Preserve quantities/prices of manually selected historical equipment.
-                        if len(parents) == len(unlinked) == 1:
+                        if len(parents) == len(unlinked) == 1 and not unlinked[0].get("heating_unbound"):
                             unlinked[0]["heating_parent"] = parent_id
                         continue
                     rid = kind if kind not in ids else next((f"{kind}_{n}" for n in range(100) if f"{kind}_{n}" not in ids), "")
@@ -98,6 +99,9 @@ def sync_exchanger_accessories(snapshot, *, only_variant=None, create=False):
                     rows.append(row)
                     ids.add(rid)
         for row in rows:
+            if (row["kind"] in ACCESSORIES and row.get("heating_unbound") and not row.get("heating_parent")
+                    and row["auto_quantity"] and row["basis"] == "exchanger_quantity" and not row["existing"]):
+                row["quantity"] = None
             if row["kind"] not in ACCESSORIES or not row.get("heating_parent") or row["existing"]:
                 continue
             parent = parents.get(row["heating_parent"])
@@ -221,7 +225,7 @@ def geometry(data):
     if data.get("bowl_height"):
         height = Decimal(data["bowl_height"])
         perimeter = 2 * (length + width)
-        area = length * width + perimeter * height
+        area = length * width + perimeter * height + (technology.band_area(data) or Decimal(0))
         metrics = {"volume": length * width * average, "surface": length * width,
                    "perimeter": perimeter, "finish_area": area,
                    "finish_net": Decimal(embedded.ceil_quantity(area)),
@@ -361,7 +365,7 @@ def make_row(key, name, unit="компл.", quantity="1", basis="", kind="other"
 def generate(raw):
     # Defaults belong only to new calculations; normalize/load never inject them.
     if isinstance(raw, dict):
-        raw = {"wall_thickness": "0.20", "slab_thickness": "0.20", **raw}
+        raw = technology.fresh_defaults({"wall_thickness": "0.20", "slab_thickness": "0.20", **raw})
     inputs = normalize_inputs(raw)
     metrics = geometry(inputs)
     variants = {}
@@ -379,7 +383,7 @@ def generate(raw):
             row["heating_type"] = heating_types(inputs)[0]
             rowsets["equipment"].insert(2, row)
         variants[key] = {"embedded_profile": embedded.DEFAULTS[key], "blocks": [{"id": bid, "title": title, "excluded": False, "reason": "", "rows": rowsets[bid]} for bid, title in BLOCKS.items()]}
-    result = {"schema": 1, "inputs": inputs, "variants": variants, "geometry": metrics, "heating_accessories": 1}
+    result = {"schema": 1, "inputs": inputs, "variants": variants, "geometry": metrics, "heating_accessories": 1, "level_system": 1}
     ensure_heating_rows(result)
     works.add_works(result, fresh=True)
     technology.initialize_fresh(result)
@@ -387,6 +391,7 @@ def generate(raw):
     technology.apply(result, create=True)
     embedded.ensure_rows(result)
     embedded.update_quantities(result)
+    level_control.sync(result, create=True)
     return evaluate(result)
 
 
@@ -400,6 +405,12 @@ def normalize_catalog(raw):
     if not url or raw.get("selection") not in ("auto", "manual") or raw.get("power") not in ("230", "400", "unknown") or raw.get("heater_type") not in ("", "exchanger", "electric", "heatpump"):
         raise EstimateInputError("Некорректные данные товара магазина.")
     result = {"id": str(raw["id"]), "url": url, "selection": raw["selection"], "power": raw["power"], "heater_type": raw["heater_type"]}
+    from .estimate_fitting_facts import SOURCE
+    result['specification_note'] = string(raw.get('specification_note', ''), 'Источник характеристик', 1000)
+    result['specification_source'] = SOURCE if raw.get('specification_source') == SOURCE else ''
+    result["level_control"] = string(raw.get("level_control", "unknown"), "Комплектация регулятором уровня", 20)
+    if result["level_control"] not in level_control.STATES:
+        raise EstimateInputError("Некорректная комплектация регулятором уровня.")
     result["image"] = safe_image_url(raw.get("image", ""))
     options = raw.get("power_options", [raw["power"]] if raw["power"] != "unknown" else [])
     if not isinstance(options, list) or len(options) > 2 or any(p not in ("230", "400") for p in options) or len(set(options)) != len(options):
@@ -422,6 +433,13 @@ def normalize_catalog(raw):
     result["price"] = str(number(raw.get("price"), "Цена магазина", minimum=".01", places=2))
     for field in ("nominal_flow", "heating_power"):
         result[field] = _optional(number(raw.get(field), "Характеристика магазина", minimum=".001", maximum="100000", optional=True))
+    if raw.get('roll_area') is not None or raw.get('roll_price') is not None:
+        from .estimate_liner import ROLLS
+        fact = ROLLS.get(result['sku'])
+        if not fact or raw.get('roll_area') != fact[1]:
+            raise EstimateInputError('Неподтверждённая площадь рулона.')
+        result['roll_area'] = fact[1]
+        result['roll_price'] = str(number(raw.get('roll_price'), 'Цена рулона', minimum='.01', places=2))
     for field in ("available", "missing"):
         result[field] = boolean(raw.get(field, False))
     return result
@@ -431,6 +449,8 @@ def normalize_snapshot(raw):
     if not isinstance(raw, dict) or raw.get("schema") != 1:
         raise EstimateInputError("Неизвестный формат расчёта.")
     result = {"schema": 1, "inputs": normalize_inputs(raw.get("inputs")), "variants": {}, "works_catalog": 1 if raw.get("works_catalog") == 1 else 0, "heating_accessories": 1 if raw.get("heating_accessories") == 1 else 0}
+    if raw.get("level_system") == 1:
+        result["level_system"] = 1
     if raw.get("technology_version") == 1:
         result["technology_version"] = 1
     variants = raw.get("variants")
@@ -457,7 +477,7 @@ def normalize_snapshot(raw):
                 if not isinstance(rid, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", rid) or rid in row_ids:
                     raise EstimateInputError("Строки должны иметь уникальные идентификаторы.")
                 row_ids.add(rid)
-                if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("basis", ""), str) or row.get("basis", "") not in {"", "finish_area", "finish_net", "finish_stock", "surface", "perimeter", "volume", "concrete_total", "exchanger_quantity", "embedded_work", *embedded.ROLES, *technology.BASES}:
+                if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("basis", ""), str) or row.get("basis", "") not in {"", "finish_area", "finish_net", "finish_stock", "surface", "perimeter", "volume", "concrete_total", "exchanger_quantity", "embedded_work", "level_system", *embedded.ROLES, *technology.BASES}:
                     raise EstimateInputError("Некорректный тип строки.")
                 item = {"id": rid, "kind": row["kind"], "basis": row.get("basis", "")}
                 item["heating_parent"] = string(row.get("heating_parent", ""), "Связанный теплообменник", 64)
@@ -471,10 +491,16 @@ def normalize_snapshot(raw):
                 item["finish_type"] = string(row.get("finish_type", ""), "Тип отделки", 20)
                 if item["finish_type"] not in {"", *FINISHES}:
                     raise EstimateInputError("Некорректный тип отделки строки.")
-                for field, limit in (("name", 200), ("unit", 20), ("brand", 80), ("model", 120), ("reason", 300), ("rate_source", 300)):
+                for field, limit in (("name", 200), ("unit", 20), ("brand", 80), ("model", 120), ("reason", 300), ("rate_source", 300), ("selection_note", 1000)):
                     item[field] = string(row.get(field, ""), field, limit, required=field in {"name", "unit"})
-                for field in ("excluded", "existing", "auto_quantity", "selection_locked", "quantity_stale"):
+                for field in ("excluded", "existing", "auto_quantity", "selection_locked", "quantity_stale", "heating_unbound", "level_managed", "unit_price_manual"):
                     item[field] = boolean(row.get(field, False))
+                if item["heating_parent"]:
+                    item["heating_unbound"] = False
+                item['level_status'] = string(row.get('level_status', 'unknown'), 'Комплектация уровня', 20)
+                item['level_evidence'] = string(row.get('level_evidence', ''), 'Источник комплектации уровня', 500)
+                if item['level_status'] not in level_control.STATES or (item['level_status'] != 'unknown' and not item['level_evidence'].strip()):
+                    raise EstimateInputError('Укажите источник подтверждения комплектации регулятором уровня.')
                 item["work_code"] = string(row.get("work_code", ""), "Код работы", 80)
                 works.identify(item)
                 item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", optional=item["kind"] == "work" or item["basis"] in {"concrete_total", "exchanger_quantity", *technology.BASES}))
@@ -503,6 +529,7 @@ def evaluate(raw):
     result["technology"] = technology.summary(result["inputs"])
     result["heating"] = heating_requirement(result["inputs"])
     embedded.update_quantities(result)
+    level_control.sync(result)
     result["prices"] = price_summary(result)
     for key, variant in result["variants"].items():
         total, missing, models, missing_quantities = Decimal(0), 0, 0, 0
@@ -514,7 +541,11 @@ def evaluate(raw):
                 if included or row["existing"]:
                     physical.append(row)
                 charged = included and not row["existing"]
+                from . import estimate_liner
+                row["price_conversion_note"] = estimate_liner.note(row)
                 amount = (Decimal(row["quantity"]) * Decimal(row["price"])).quantize(CENT, rounding=ROUND_HALF_UP) if charged and row["price"] is not None and row["quantity"] is not None else None
+                if charged and row['quantity'] is not None and estimate_liner.active(row):
+                    amount = estimate_liner.amount(row)
                 row["amount"] = _optional(amount)
                 if charged and row["price"] is None:
                     missing += 1
@@ -526,7 +557,7 @@ def evaluate(raw):
                     subtotal += amount
             block["subtotal"] = str(subtotal.quantize(CENT))
             total += subtotal
-        warnings = technology.warnings(result["inputs"])
+        warnings = technology.warnings(result["inputs"]) + level_control.warnings(variant)
         if result["inputs"].get("bowl_height"):
             warnings.append("Геометрия прямоугольной чаши с горизонтальным дном, без ступеней и лавок. Дополнительные строительные слои учитываются только при явном выборе технологии. Армирование и прочность требуют проекта.")
             if "concrete_total" not in result["geometry"]:
@@ -605,6 +636,8 @@ def evaluate(raw):
             elif result["heating"]["mode"] == "estimated":
                 warnings.append("Мощность подогрева рассчитана предварительно по времени прогрева с заданным запасом. Теплопотери, особенно у открытого бассейна, рассчитываются отдельно; запас их не заменяет.")
             if "exchanger" in heating_types(result["inputs"]):
+                if any(r["kind"] in ACCESSORIES and r.get("heating_unbound") and not r.get("heating_parent") for r in physical):
+                    warnings.append("Связь насоса/клапана с теплообменником снята пользователем и автоматически не восстанавливается. Комплект первичного контура не подтверждён; выберите связь в редакторе строки. Автоматическое количество неизвестно, ручное сохранено.")
                 if any(r["kind"] in ACCESSORIES and not r.get("heating_parent") for r in physical):
                     warnings.append("Есть непривязанные насосы/клапаны. Откройте строку кнопкой ✎, выберите «Теплообменник для этого насоса/клапана», сохраните и пересчитайте состав. Ручные количества сохранятся; новые пары добавятся только для отсутствующих связей.")
                 for parent in (r for r in physical if r["kind"] == "heater" and row_heating_type(r, result["inputs"]) == "exchanger"):
@@ -637,6 +670,7 @@ def recalculate(raw, inputs):
     """Keep exclusions and manual edits; update only explicitly automatic quantities."""
     result = normalize_snapshot(raw)
     result["heating_accessories"] = 1
+    result["level_system"] = 1
     old_inputs = result["inputs"].copy()
     old_finish = result["inputs"]["finish"]
     for variant in result["variants"].values():
@@ -645,6 +679,9 @@ def recalculate(raw, inputs):
                 if row["kind"] == "heater":
                     row["heating_type"] = row_heating_type(row, result["inputs"])
     result["inputs"] = normalize_inputs(inputs)
+    # Upgrade only the editable copy; saved versions are never passed through here on load.
+    works.add_works(result)
+    works.fill_missing_prices(result)
     # Also adds geotextile when recalculating a legacy film estimate.
     change_finish(result, result["inputs"]["finish"], replace=old_finish != result["inputs"]["finish"])
     metrics = geometry(result["inputs"])
@@ -677,4 +714,5 @@ def recalculate(raw, inputs):
     result['geometry'] = metrics
     embedded.ensure_rows(result)
     embedded.update_quantities(result)
+    level_control.sync(result, create=True)
     return evaluate(result)

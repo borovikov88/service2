@@ -85,7 +85,7 @@ class SkimmerEstimateTests(SimpleTestCase):
             b=next(b for b in v['blocks'] if b['id']=='finish');b['rows']=b['rows'][:2]
             for r in b['rows']:r['basis']='finish_area';r['quantity']='68.000'
         upgraded=recalculate(legacy,{**INPUTS,'finish':'film'})
-        self.assertEqual([r['quantity'] for r in block(upgraded,'finish')['rows'][:3]],['79.000','68.000','79.000'])
+        self.assertEqual([next(r['quantity'] for r in block(upgraded,'finish')['rows'] if r['id'].startswith(prefix)) for prefix in ('finish_material','finish_work','finish_geotextile')],['79.000','68.000','79.000'])
 
     def test_outdoor_factor_applies_once_only_to_automatic_heating(self):
         inside=generate(HEATING);outside=generate({**HEATING,'location':'outdoor'})
@@ -162,3 +162,57 @@ class SkimmerEstimateTests(SimpleTestCase):
         old=deepcopy(s)
         for v in old['variants'].values():v.pop('embedded_profile')
         self.assertEqual(evaluate(old)['variants']['premium']['embedded_profile'],'steel316')
+
+    def test_catalog_reports_profile_and_ambiguous_unavailable_grade(self):
+        products=catalog.parse_catalog(feed(
+            offer(801,'Форсунка Kripsol BOL 20 под лайнер',brand='Kripsol'),
+            offer(802,'Форсунка Aquaviva AISI 304 под лайнер'),
+            offer(803,'Форсунка Aquaviva AISI 304/316 под лайнер',available='false'),
+            offer(804,'Форсунка Aquaviva EM4412 под лайнер')))
+        inputs=generate({**INPUTS,'finish':'film'})['inputs']
+        results=catalog.search_catalog(products,'','inlet','',inputs,Decimal('8'),variant='premium')
+        byid={p['id']:p for p in results['products']}
+        self.assertIn('профилю КП',byid['801']['warning'])
+        self.assertIn('профилю КП',byid['802']['warning'])
+        self.assertIn('доступность',byid['803']['warning'])
+        self.assertIn('марка стали не подтверждены',byid['803']['warning'])
+        self.assertIn('Материал',byid['804']['warning'])
+        selected,_=catalog.auto_select(generate({**INPUTS,'finish':'film'}),products)
+        self.assertIsNone(fitting(selected,'inlet','premium')['price'])
+        self.assertIn('не подтверждены',fitting(selected,'inlet','premium')['selection_note'])
+
+    def test_verified_exact_fitting_identity_enriches_only_material_and_lining(self):
+        def item(pid,model,sku,brand='Aquaviva',extra=''):
+            return offer(pid,f'Форсунка {brand} {model} {extra}',brand=brand,price='123.45',description='Идентификация модели').replace('</offer>',f'<vendorCode>{sku}</vendorCode></offer>')
+        products=catalog.parse_catalog(feed(item(901,'EM4412','16785'),item(902,'EM4414','16786'),
+            item(903,'EM4408','16781'),item(904,'EM4409','16782'),item(905,'EM4412-X','16785'),
+            item(906,'EM4412','wrong'),item(907,'EM4412','16785',brand='Other'),item(908,'EM4412','16785',extra='под бетон')))
+        for pid,lining in [('901','film'),('902','film'),('903','concrete'),('904','concrete')]:
+            product=products['products'][pid]
+            self.assertEqual(product['material'],'plastic')
+            self.assertEqual(product['lining'],[lining])
+            self.assertEqual(product['price'],'123.45')
+            self.assertTrue(product['available'])
+            self.assertIsNone(product['nominal_flow'])
+            self.assertIn('дилера',product['specification_note'])
+        self.assertIn('9 и 5',products['products']['902']['specification_note'])
+        for pid in ('905','906','907','908'):
+            self.assertEqual(products['products'][pid]['material'],'')
+        self.assertIn('Конфликт',products['products']['908']['specification_note'])
+        selected,_=catalog.auto_select(generate({**INPUTS,'finish':'film'}),products)
+        nozzle=fitting(selected,'inlet')
+        self.assertEqual(nozzle['catalog']['id'],'901')
+        self.assertEqual(nozzle['price'],'123.45')
+        self.assertIn('не подтверждён',nozzle['catalog']['specification_note'])
+        self.assertIsNone(fitting(selected,'inlet','premium')['price'])
+
+    def test_enrichment_does_not_override_explicit_body_or_lining_conflicts(self):
+        from pool_service.services.estimate_fitting_facts import enrich
+        for description in ('Корпус из нержавеющей стали AISI 316.', 'Для бетонных бассейнов.', 'Материал корпуса: AISI 316', 'Корпус из латуни', '<b>Материал корпуса:</b><span>AISI 316</span>'):
+            specs={'material':'','lining':[],'embedded_role':'inlet'}
+            enrich(specs,'Форсунка Aquaviva EM4412','Aquaviva','16785',description)
+            self.assertEqual(specs['material'],'')
+            self.assertIn('Конфликт',specs['specification_note'])
+        specs={'material':'','lining':[],'embedded_role':'inlet'}
+        enrich(specs,'Форсунка Aquaviva EM4414','Aquaviva','16786','Корпус ABS; винты из нержавеющей стали AISI 316, латунные вставки.')
+        self.assertEqual(specs['material'],'plastic')

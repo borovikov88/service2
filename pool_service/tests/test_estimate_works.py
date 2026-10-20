@@ -63,7 +63,8 @@ class EstimateWorkTests(SimpleTestCase):
         self.assertTrue(work(restored, 'liner_steps')['excluded'])
 
     def test_explicit_legacy_upgrade_preserves_total_scope_and_rates(self):
-        s = generate(INPUTS)
+        from pool_service.services.estimate_technology import MODES
+        s = generate({**INPUTS, **{'tech_'+key:'' for key in MODES}})
         for v in s['variants'].values():
             for b in v['blocks']:
                 b['rows'] = [r for r in b['rows'] if not r['id'].startswith('work_')]
@@ -78,7 +79,7 @@ class EstimateWorkTests(SimpleTestCase):
         self.assertEqual(again, result)
         self.assertEqual(len(block(before, 'construction')['rows']), 2)
 
-    def test_recalculating_legacy_does_not_silently_add_paid_work(self):
+    def test_recalculating_legacy_adds_default_work_only_to_editable_copy(self):
         s = generate({**INPUTS, 'finish': 'film'})
         s.pop('works_catalog')
         for v in s['variants'].values():
@@ -86,10 +87,14 @@ class EstimateWorkTests(SimpleTestCase):
                 b['rows'] = [r for r in b['rows'] if not r['id'].startswith('work_')]
         before = evaluate(s)
         result = recalculate(before, {**INPUTS, 'finish': 'film'})
-        self.assertEqual(result['variants']['economy']['total'], before['variants']['economy']['total'])
-        self.assertFalse(any(r['id'].startswith('work_') for r in block(result, 'finish')['rows']))
+        self.assertEqual(Decimal(result['variants']['economy']['total'])-Decimal(before['variants']['economy']['total']),Decimal('18360'))
+        self.assertIsNone(work(result,'plaster')['quantity'])
+        self.assertEqual(work(result,'underlay_film')['price'],'200.00')
+        self.assertFalse(any(r['id'].startswith('work_') for r in block(before,'finish')['rows']))
+        again=recalculate(result,result['inputs'])
+        self.assertEqual(again['variants'],result['variants'])
         tile = recalculate(before, {**INPUTS, 'finish': 'tile'})
-        self.assertFalse(any(r.get('work_code') == 'waterproofing_tile' for r in block(tile,'finish')['rows']))
+        self.assertTrue(any(r.get('work_code') == 'waterproofing_tile' and r['price'] is None for r in block(tile,'finish')['rows']))
 
     def test_mosaic_rates_follow_the_workbook_lookup_and_tile_stays_unknown(self):
         mosaic = generate({**INPUTS, 'finish': 'mosaic'})
@@ -100,3 +105,16 @@ class EstimateWorkTests(SimpleTestCase):
         tile = recalculate(mosaic, {**INPUTS, 'finish': 'tile'})
         self.assertIsNone(work(tile, 'finish_tile')['price'])
         self.assertIsNone(work(tile, 'waterproofing_tile')['price'])
+
+    def test_automatic_defaults_preserve_manual_discount_clear_and_unknown_rate(self):
+        s=generate({**INPUTS,'finish':'film'})
+        work(s,'finish_film')['price']='1234'
+        work(s,'underlay_film').update(price=None,rate_source='Ручная цена текущей сметы')
+        work(s,'primer').update(price=None,selection_locked=True)
+        work(s,'sand_base')['price']=None
+        result=recalculate(s,s['inputs'])
+        self.assertEqual(work(result,'finish_film')['price'],'1234.00')
+        self.assertIsNone(work(result,'underlay_film')['price'])
+        self.assertIsNone(work(result,'primer')['price'])
+        self.assertEqual(work(result,'sand_base')['price'],'200.00')
+        self.assertIsNone(work(result,'excavation')['price'])

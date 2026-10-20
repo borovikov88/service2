@@ -5,7 +5,7 @@ from pool_service.services.pool_estimates import generate, evaluate, recalculate
 from pool_service.services import estimate_technology as tech
 from pool_service.tests.test_pool_estimates import INPUTS
 
-BASE = {**INPUTS, 'length':'8', 'width':'4', 'depth_start':'1.5', 'depth_end':'1.5',
+BASE = {**INPUTS, **{'tech_'+key:'' for key in tech.MODES}, 'length':'8', 'width':'4', 'depth_start':'1.5', 'depth_end':'1.5',
         'bowl_height':'1.7', 'wall_thickness':'.2', 'slab_thickness':'.2'}
 TECH = {
     'tech_sand':'on','tech_sand_thickness':'.1','tech_sand_projection':'.1',
@@ -147,3 +147,42 @@ class TechnologyTests(SimpleTestCase):
         manual=recalculate(historical,{**historical['inputs'],'tech_plaster':'walls'})
         self.assertEqual(row(manual,'plaster')['quantity'],'12.000')
         self.assertEqual(row(manual,'plaster')['price'],'1234.00')
+
+
+class ApprovedDefaultTests(SimpleTestCase):
+    def fresh(self, **changes):
+        return generate({**{k:v for k,v in BASE.items() if not k.startswith('tech_')}, 'finish':'film', **changes})
+
+    def test_defaults_exact_geometry_and_band_charged_once(self):
+        s=self.fresh()
+        self.assertEqual(s['inputs']['tech_insulation_wall_height'],'1.600')
+        for key,value in {'finish_area':'74.01','finish_net':'75','finish_stock':'86',
+                          'tech_pit_volume':'93.906','tech_backfill_volume':'23.724'}.items():
+            self.assertEqual(Decimal(s['geometry'][key]),Decimal(value))
+        self.assertFalse(any(r.get('work_code')=='top_finish' and not r['excluded'] for r in rows(s)))
+        self.assertEqual(row(s,'plaster')['quantity'],'73.000')
+        self.assertEqual(row(s,'sand_base')['quantity'],'37.000')
+        self.assertEqual(row(s,'base_concrete')['quantity'],'6.000')
+        without=recalculate(s,{**s['inputs'],'tech_top_finish':'off'})
+        # Two square metres extra: film labor 2000 + underlay labor 200 + primer labor 70.
+        for tier in s['variants']:
+            self.assertEqual(Decimal(s['variants'][tier]['total'])-Decimal(without['variants'][tier]['total']),Decimal('4540'))
+        with_floor=self.fresh(tech_insulation_floor='on')
+        self.assertEqual(Decimal(with_floor['geometry']['tech_backfill_volume']),Decimal('24.414'))
+
+    def test_height_manual_unknown_and_historical_inputs(self):
+        s=self.fresh()
+        changed=recalculate(s,{**s['inputs'],'bowl_height':'2'})
+        self.assertEqual(Decimal(changed['inputs']['tech_insulation_wall_height']),Decimal('1.9'))
+        manual=recalculate(changed,{**changed['inputs'],'tech_insulation_wall_height_mode':'manual','tech_insulation_wall_height':'1.2'})
+        self.assertEqual(Decimal(manual['inputs']['tech_insulation_wall_height']),Decimal('1.2'))
+        old=generate(BASE)
+        old['inputs']={k:v for k,v in old['inputs'].items() if not k.startswith('tech_')}
+        self.assertFalse(any(k.startswith('tech_') for k in evaluate(old)['inputs']))
+        self.assertFalse(any(k.startswith('tech_') for k in recalculate(old,old['inputs'])['inputs']))
+        for value in ('','off'):
+            explicit=self.fresh(tech_plaster=value)
+            self.assertIsNone(row(explicit,'plaster')['amount'])
+        mosaic=self.fresh(finish='mosaic')
+        self.assertEqual(mosaic['inputs']['tech_top_finish'],'off')
+        with self.assertRaises(EstimateInputError): self.fresh(tech_top_band_width='.3')

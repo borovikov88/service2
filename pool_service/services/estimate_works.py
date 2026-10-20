@@ -106,7 +106,7 @@ def fill_missing_prices(snapshot):
     for key, variant in snapshot['variants'].items():
         for block in variant['blocks']:
             for row in block['rows']:
-                if not is_work(row) or row['price'] is not None or row['existing']:
+                if not is_work(row) or row['price'] is not None or row['existing'] or row.get('selection_locked') or row.get('rate_source') == 'Ручная цена текущей сметы':
                     continue
                 rate = source_rate(row, key)
                 if rate is not None:
@@ -118,6 +118,7 @@ def fill_missing_prices(snapshot):
 def add_works(snapshot, *, fresh=False):
     """Explicit upgrade of an editable copy. Never alter existing rates or history."""
     from .pool_estimates import make_row, geometry, EstimateInputError
+    from .estimate_technology import bind_new_work
     metrics = geometry(snapshot['inputs'])
     for key, variant in snapshot['variants'].items():
         blocks = {b['id']: b for b in variant['blocks']}
@@ -135,6 +136,7 @@ def add_works(snapshot, *, fresh=False):
                 unit, qty = 'компл.', '1'
             row = make_row('work_' + code, name, unit, metrics[basis] if basis else qty, basis, 'work')
             row.update(work_code=code)
+            bind_new_work(row)
             row['price'] = source_rate(row, key)
             if optional or (generic and bid == 'construction'):
                 row.update(excluded=True, reason='Есть общая строка строительства: замените её детализацией при необходимости' if generic and bid == 'construction' else 'Дополнительная работа: восстановите при необходимости')
