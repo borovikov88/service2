@@ -45,6 +45,57 @@ def domestic_feed(signal, include_pool=False):
 
 
 class HeatPumpPurposeTests(SimpleTestCase):
+    def test_domestic_adjectives_are_blocked_without_matching_pool_near_house(self):
+        for phrase in ('для отопления частного дома', 'для отопления загородного дома',
+                       'для обогрева индивидуального жилого дома', 'для дачного дома'):
+            for source in ('name', 'description', 'category'):
+                with self.subTest(phrase=phrase, source=source):
+                    name = 'Тепловой насос Test 20 кВт 220В'
+                    xml = offer(1, name + (' ' + phrase if source == 'name' else ''),
+                                description=phrase if source == 'description' else '')
+                    if source == 'category':
+                        xml = xml.replace('</offer>', '<categoryId>7</categoryId></offer>')
+                    payload = feed(xml)
+                    if source == 'category':
+                        categories = '<categories><category id="7">Тепловые насосы ' + phrase + '</category></categories>'
+                        payload = payload.replace(b'<offers>', categories.encode()+b'<offers>')
+                    c = catalog.parse_catalog(payload)
+                    result,_ = catalog.auto_select(generate(HEAT_INPUTS),c)
+                    for tier in result['variants']:
+                        self.assertIsNone(target(result,'heater',tier)['catalog'])
+                    self.assert_purpose_warning(catalog.candidate_reason(c['products']['1'],result['inputs'],Decimal('8')))
+        for phrase in ('Для отопления бассейна возле частного дома.',
+                       'Для бассейна загородного дома.',
+                       'Не предназначен для отопления частного дома.',
+                       'Для частного бассейна у загородного дома.'):
+            with self.subTest(allowed=phrase):
+                c = catalog.parse_catalog(feed(offer(1,POOL_NAME,description=phrase)))
+                result,_ = catalog.auto_select(generate(HEAT_INPUTS),c)
+                self.assertEqual(target(result,'heater')['catalog']['id'],'1')
+        from pool_service.services.estimate_heater_purpose import purpose_note
+        for adjective in ('chastnogo','zagorodnogo'):
+            self.assertTrue(purpose_note(url='https://shop.aqualine22.ru/teplovoy-nasos-dlya-otopleniya-'+adjective+'-doma.html'))
+        self.assertFalse(purpose_note(url='https://shop.aqualine22.ru/teplovoy-nasos-dlya-otopleniya-basseyna-zagorodnogo-doma.html'))
+
+    def test_postposed_denial_is_local_to_domestic_claim(self):
+        for description in ('Для бассейна; для отопления дома не подходит.',
+                            'Для отопления частного дома не предназначен.',
+                            'Для отопления загородного дома — не применяется.'):
+            with self.subTest(description=description):
+                c = catalog.parse_catalog(feed(offer(1,POOL_NAME,description=description)))
+                result,_ = catalog.auto_select(generate(HEAT_INPUTS),c)
+                self.assertFalse(c['products']['1']['heater_purpose_note'])
+                for tier in result['variants']:
+                    self.assertEqual(target(result,'heater',tier)['catalog']['id'],'1')
+        for description in ('Для дома, не подходит для бассейна',
+                            'Для отопления частного дома, не предназначен для бассейна'):
+            with self.subTest(description=description):
+                c = catalog.parse_catalog(feed(offer(1,'Тепловой насос Test 20 кВт 220В',description=description)))
+                result,_ = catalog.auto_select(generate(HEAT_INPUTS),c)
+                for tier in result['variants']:
+                    self.assertIsNone(target(result,'heater',tier)['catalog'])
+                self.assert_purpose_warning(catalog.candidate_reason(c['products']['1'],result['inputs'],Decimal('8')))
+
     def assert_purpose_warning(self, text):
         self.assertRegex((text or '').casefold(), r'отопления|теплообменник')
 

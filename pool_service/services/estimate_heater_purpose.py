@@ -7,10 +7,12 @@ from urllib.parse import unquote
 def purpose_note(name='', category='', url='', description=''):
     # Scope the evidence to an explicit domestic/building heating purpose.
     # A bare "воздух–вода", "отопление" or mention of a pool proves neither use.
-    purpose = (r'\bдля\s+(?:(?:отопления|обогрева)\s+)?'
-               r'(?:дом(?:а|ов)\b|коттедж\w*|здани\w*|помещени\w*|жилищ\w*)'
-               r'|\b(?:отоплени[ея]|обогрев[а]?)\s+(?:жил\w*\s+)?'
-               r'(?:дом(?:а|ов)\b|коттедж\w*|здани\w*|помещени\w*)')
+    # Bound modifiers to known domestic adjectives; never skip arbitrary words
+    # such as "бассейна возле" on the way to a later mention of a house.
+    modifiers = r'(?:(?:частн|загородн|жил|индивидуальн|многоквартирн|дачн)\w*\s+){0,2}'
+    building = modifiers + r'(?:дом(?:а|ов)\b|коттедж\w*|здани\w*|помещени\w*|жилищ\w*)'
+    purpose = (r'\bдля\s+(?:(?:отопления|обогрева)\s+)?' + building
+               + r'|\b(?:отоплени[ея]|обогрев[а]?)\s+' + building)
     for source, raw in (('название', name), ('категория', category), ('описание', description)):
         text = unescape(re.sub(r'<[^>]*>', ' ', raw or '')).casefold().replace('ё', 'е')
         if source == 'категория':
@@ -26,9 +28,17 @@ def purpose_note(name='', category='', url='', description=''):
                 # "отопления дома" also occurs inside a negated "для ..." claim.
                 if re.search(r'\bне\s+(?:(?:предназначен\w*|подходит|используется|применяется)\s+)?для\s+$', clause[:match.start()]):
                     continue
+                denial = re.match(r'\s*[,—:-]?\s*не\s+(?:подходит|предназначен\w*|используется|применяется)\b', clause[match.end():])
+                if denial:
+                    remainder = clause[match.end()+denial.end():]
+                    # "для дома не подходит" negates this purpose, but
+                    # "для дома, не подходит для бассейна" denies another use.
+                    if not re.match(r'\s+(?:для|под)\b', remainder):
+                        continue
                 return source + ': ' + re.sub(r'\s+', ' ', clause).strip()[:220]
     path = unquote(url or '').casefold()
-    if re.search(r'(?:teplov[^/]*nasos[^/]*|nasos[^/]*)-dlya-(?:(?:otopleniya|obogreva)-)?(?:doma|domov|kottedzha|zdaniy|pomeshcheniy)(?:[-/.]|$)', path):
+    url_modifiers = r'(?:(?:chastnogo|zagorodnogo|zhilogo|individualnogo|mnogokvartirnogo|dachnogo)-){0,2}'
+    if re.search(r'(?:teplov[^/]*nasos[^/]*|nasos[^/]*)-dlya-(?:(?:otopleniya|obogreva)-)?' + url_modifiers + r'(?:doma|domov|kottedzha|zdaniy|pomeshcheniy)(?:[-/.]|$)', path):
         return 'URL: раздел/товар тепловых насосов для дома или отопления'
     return ''
 
