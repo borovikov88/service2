@@ -61,6 +61,7 @@ def confirm_price(data, organization, user):
     source = next((r for r in block['rows'] if r['id'] == rid), None)
     if source is None or not is_work(source):
         raise EstimateInputError('Выберите работу для изменения расценки.')
+    if snapshot.get('construction_version') and bid == 'construction': all_quotes = True
     targets = []
     for key, v in snapshot['variants'].items():
         if key != variant and not all_quotes:

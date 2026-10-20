@@ -13,7 +13,7 @@ from pool_service.models import Organization, OrganizationAccess
 from pool_service.services.pool_estimates import EstimateInputError, evaluate, generate, recalculate
 
 
-INPUTS = {"title": "Синтетический тест", "length": "8", "width": "4", "depth_start": "1.5", "depth_end": "1.5", "turnover_hours": "6", "location": "indoor", "heating": "none", "power": "unknown"}
+INPUTS = {"construction_scheme": "legacy","title": "Синтетический тест", "length": "8", "width": "4", "depth_start": "1.5", "depth_end": "1.5", "turnover_hours": "6", "location": "indoor", "heating": "none", "power": "unknown"}
 
 
 def block(snapshot, key="equipment", variant="economy"):

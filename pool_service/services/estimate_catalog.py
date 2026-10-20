@@ -268,6 +268,9 @@ def candidate_reason(product, inputs, required_flow, *, for_auto=False):
 def apply_product(row, product, catalog, selection="manual"):
     from .estimate_liner import validate_selection
     validate_selection(row, product)
+    row['construction_price'] = None
+    row['construction_price_suspended'] = False
+    row['construction_computed_price'] = None
     old_kind = row['kind']
     row["selection_note"] = ""
     row['level_status'], row['level_evidence'] = 'unknown', ''

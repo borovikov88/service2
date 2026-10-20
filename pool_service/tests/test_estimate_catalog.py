@@ -284,3 +284,26 @@ class CatalogViewsTests(TestCase):
         self.assertEqual(find(loaded)['catalog']['roll_area'],'41.58')
         self.assertEqual(find(loaded)['amount'],'189997.09')
         self.assertEqual(find(loaded)['finish_type'],'')
+
+
+    def test_construction_package_print_blank_prices_shared_rates_and_tenant(self):
+        from pool_service.tests.test_estimate_construction import NEW, row
+        created=self.post(action='generate',inputs=NEW)
+        self.assertEqual(created.status_code,200)
+        s=created.json()['snapshot']
+        self.assertEqual(row(s,'bowl_package')['price'],'20000.00')
+        changed=self.post(action='work_price',snapshot=s,variant='economy',block='construction',row='bowl_package',price='0',all=False)
+        self.assertEqual(changed.status_code,200)
+        s=changed.json()['snapshot']
+        for tier in s['variants']:self.assertEqual(row(s,'bowl_package',tier)['price'],'0.00')
+        saved=self.post(action='save',snapshot=s,expected_revision=0).json()
+        loaded=self.client.get(self.url,{'organization':self.org.pk,'id':saved['id'],'version':1}).json()['snapshot']
+        self.assertEqual(row(loaded,'material_supplies')['amount'],row(s,'material_supplies')['amount'])
+        printed=self.client.get(reverse('pool_estimate_print',args=[saved['id'],1]))
+        self.assertContains(printed,'Материалы для строительства чаши')
+        self.assertContains(printed,'data-price="delivery_concrete"></td>')
+        self.assertContains(printed,'data-price="excavation_package"></td>')
+        self.assertContains(printed,'возможности подъезда техники')
+        self.assertNotContains(printed,'обязательно проверить с конструктором')
+        forbidden=self.post(action='work_price',snapshot=s,organization=self.other.pk,variant='economy',block='construction',row='bowl_package',price='100')
+        self.assertEqual(forbidden.status_code,403)

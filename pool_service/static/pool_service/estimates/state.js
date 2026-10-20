@@ -58,6 +58,7 @@ export function setWorkPrice(snapshot, variantKey, blockId, source, price, all =
 }
 
 export function automaticQuantity(snapshot, variantKey, row) {
+  if (row.basis?.startsWith('pkg_')) return row.quantity; // Server owns exact construction quantities and handling scope.
   if (row.basis === 'level_system') return '1';
   const variant = snapshot.variants[variantKey];
   const value = row.basis === 'exchanger_quantity'

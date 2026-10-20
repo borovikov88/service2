@@ -8,11 +8,12 @@ from . import estimate_works as works
 from . import estimate_primary as primary
 from . import estimate_technology as technology
 from . import estimate_level_control as level_control
+from . import estimate_construction as construction
 
 from pool_service.services.permissions import organization_accesses_for_user
 
 VARIANTS = {"economy": ("Эконом", "Aquaviva"), "standard": ("Стандарт", "Hayward"), "premium": ("Премиум", "IML")}
-BLOCKS = {"construction": "Строительство чаши", "embedded": "Закладные элементы", "equipment": "Оборудование", "finish": "Отделка", "options": "Дополнительные работы"}
+BLOCKS = {"construction": "Строительство чаши", "construction_materials": "Материалы для строительства чаши", "embedded": "Закладные элементы", "equipment": "Оборудование", "finish": "Отделка", "options": "Дополнительные работы"}
 KINDS = {"other", "work", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", *embedded.ROLES, *level_control.ROLES}
 FINISHES = {
     "film": ("Плёнка ПВХ для бассейна (+15% запас)", "Монтаж и сварка плёнки ПВХ"),
@@ -164,13 +165,21 @@ def normalize_inputs(raw):
     data = {"title": string(raw.get("title", ""), "Название расчёта", required=True)}
     for key, label, low, high in [
         ("length", "Длина", ".1", "100"), ("width", "Ширина", ".1", "100"),
-        ("depth_start", "Глубина в начале", ".1", "10"), ("depth_end", "Глубина в конце", ".1", "10"),
+        ("depth_start", "Глубина воды в начале", ".1", "10"), ("depth_end", "Глубина воды в конце", ".1", "10"),
         ("turnover_hours", "Время оборота воды", ".5", "24"),
     ]:
         data[key] = str(number(raw.get(key), label, minimum=low, maximum=high))
     for field, label in (("bowl_height", "Полная внутренняя высота чаши"), ("wall_thickness", "Толщина стен"), ("slab_thickness", "Толщина плиты")):
         if field in raw:
             data[field] = _optional(number(raw.get(field), label, optional=True, minimum=".001", maximum="10"))
+    if 'freeboard' in raw:
+        freeboard=number(raw.get('freeboard'),'Высота борта над водой',optional=True,minimum='0',maximum='3')
+        data['freeboard']=str(freeboard) if freeboard is not None else None
+        data['bowl_height']=str(Decimal(data['depth_start'])+freeboard) if freeboard is not None else None
+        if data['bowl_height'] and Decimal(data['bowl_height'])>10:
+            raise EstimateInputError('Полная высота чаши превышает 10 м.')
+        raw['bowl_height']=data['bowl_height']
+    data.update(construction.normalize(raw))
     if data.get("bowl_height"):
         if Decimal(data["depth_start"]) != Decimal(data["depth_end"]):
             raise EstimateInputError("Расчёт полной чаши пока поддерживает горизонтальное дно: глубины воды должны совпадать.")
@@ -334,6 +343,7 @@ def change_finish(snapshot, finish, replace=True):
 
 
 def update_construction_quantities(snapshot):
+    if snapshot.get("construction_version") == 1: return
     metrics = geometry(snapshot["inputs"])
     if "concrete_total" not in metrics:
         return
@@ -365,13 +375,18 @@ def make_row(key, name, unit="компл.", quantity="1", basis="", kind="other"
 def generate(raw):
     # Defaults belong only to new calculations; normalize/load never inject them.
     if isinstance(raw, dict):
+        if raw.get('construction_scheme') != 'legacy':
+            raw=construction.defaults(raw)
+            if 'freeboard' not in raw and 'bowl_height' not in raw: raw['freeboard']='.15'
         raw = technology.fresh_defaults({"wall_thickness": "0.20", "slab_thickness": "0.20", **raw})
     inputs = normalize_inputs(raw)
     metrics = geometry(inputs)
+    package = inputs.get("construction_scheme") == "package"
     variants = {}
     for key, (_, brand) in VARIANTS.items():
         rowsets = {
-            "construction": [make_row("bowl_material", "Материалы для чаши")],
+            "construction": [] if package else [make_row("bowl_material", "Материалы для чаши")],
+            "construction_materials": [],
             "embedded": [make_row("embedded_work", "Установка закладных элементов и обвязка", kind="work")],
             "equipment": [make_row("pump", "Фильтрационный насос", kind="pump", brand=brand), make_row("filter", "Фильтр", kind="filter", brand=brand),
                           make_row("treatment", "Обеззараживание: подобрать комплект"), make_row("piping", "Обвязка и автоматика"), make_row("equipment_work", "Монтаж и пусконаладка")],
@@ -382,8 +397,9 @@ def generate(raw):
             row = make_row("heater", "Подогрев: подобрать мощность и модель", kind="heater")
             row["heating_type"] = heating_types(inputs)[0]
             rowsets["equipment"].insert(2, row)
-        variants[key] = {"embedded_profile": embedded.DEFAULTS[key], "blocks": [{"id": bid, "title": title, "excluded": False, "reason": "", "rows": rowsets[bid]} for bid, title in BLOCKS.items()]}
+        variants[key] = {"embedded_profile": embedded.DEFAULTS[key], "blocks": [{"id": bid, "title": title, "excluded": False, "reason": "", "rows": rowsets[bid]} for bid, title in BLOCKS.items() if package or bid != construction.MATERIAL_BLOCK]}
     result = {"schema": 1, "inputs": inputs, "variants": variants, "geometry": metrics, "heating_accessories": 1, "level_system": 1}
+    if package: result["construction_version"]=1
     ensure_heating_rows(result)
     works.add_works(result, fresh=True)
     technology.initialize_fresh(result)
@@ -392,6 +408,7 @@ def generate(raw):
     embedded.ensure_rows(result)
     embedded.update_quantities(result)
     level_control.sync(result, create=True)
+    if package: construction.initialize(result)
     return evaluate(result)
 
 
@@ -449,6 +466,8 @@ def normalize_snapshot(raw):
     if not isinstance(raw, dict) or raw.get("schema") != 1:
         raise EstimateInputError("Неизвестный формат расчёта.")
     result = {"schema": 1, "inputs": normalize_inputs(raw.get("inputs")), "variants": {}, "works_catalog": 1 if raw.get("works_catalog") == 1 else 0, "heating_accessories": 1 if raw.get("heating_accessories") == 1 else 0}
+    if raw.get("construction_version") == 1: result["construction_version"] = 1
+    expected_blocks=set(BLOCKS) if result.get("construction_version") else set(BLOCKS)-{construction.MATERIAL_BLOCK}
     if raw.get("level_system") == 1:
         result["level_system"] = 1
     if raw.get("technology_version") == 1:
@@ -459,11 +478,11 @@ def normalize_snapshot(raw):
     for key in VARIANTS:
         variant = variants[key]
         blocks = variant.get("blocks") if isinstance(variant, dict) else None
-        if not isinstance(blocks, list) or len(blocks) != len(BLOCKS):
+        if not isinstance(blocks, list) or len(blocks) != len(expected_blocks):
             raise EstimateInputError("Некорректный состав блоков.")
         block_ids, row_ids, cleaned = set(), set(), []
         for block in blocks:
-            if not isinstance(block, dict) or not isinstance(block.get("id"), str) or block["id"] not in BLOCKS or block["id"] in block_ids:
+            if not isinstance(block, dict) or not isinstance(block.get("id"), str) or block["id"] not in expected_blocks or block["id"] in block_ids:
                 raise EstimateInputError("Некорректный блок.")
             block_ids.add(block["id"])
             rows = block.get("rows")
@@ -477,7 +496,7 @@ def normalize_snapshot(raw):
                 if not isinstance(rid, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", rid) or rid in row_ids:
                     raise EstimateInputError("Строки должны иметь уникальные идентификаторы.")
                 row_ids.add(rid)
-                if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("basis", ""), str) or row.get("basis", "") not in {"", "finish_area", "finish_net", "finish_stock", "surface", "perimeter", "volume", "concrete_total", "exchanger_quantity", "embedded_work", "level_system", *embedded.ROLES, *technology.BASES}:
+                if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("basis", ""), str) or row.get("basis", "") not in {"", "finish_area", "finish_net", "finish_stock", "surface", "perimeter", "volume", "concrete_total", "exchanger_quantity", "embedded_work", "level_system", *embedded.ROLES, *technology.BASES, *construction.BASES}:
                     raise EstimateInputError("Некорректный тип строки.")
                 item = {"id": rid, "kind": row["kind"], "basis": row.get("basis", "")}
                 item["heating_parent"] = string(row.get("heating_parent", ""), "Связанный теплообменник", 64)
@@ -493,7 +512,7 @@ def normalize_snapshot(raw):
                     raise EstimateInputError("Некорректный тип отделки строки.")
                 for field, limit in (("name", 200), ("unit", 20), ("brand", 80), ("model", 120), ("reason", 300), ("rate_source", 300), ("selection_note", 1000)):
                     item[field] = string(row.get(field, ""), field, limit, required=field in {"name", "unit"})
-                for field in ("excluded", "existing", "auto_quantity", "selection_locked", "quantity_stale", "heating_unbound", "level_managed", "unit_price_manual"):
+                for field in ("excluded", "existing", "auto_quantity", "selection_locked", "quantity_stale", "heating_unbound", "level_managed", "unit_price_manual", "construction_price_suspended"):
                     item[field] = boolean(row.get(field, False))
                 if item["heating_parent"]:
                     item["heating_unbound"] = False
@@ -503,12 +522,18 @@ def normalize_snapshot(raw):
                     raise EstimateInputError('Укажите источник подтверждения комплектации регулятором уровня.')
                 item["work_code"] = string(row.get("work_code", ""), "Код работы", 80)
                 works.identify(item)
-                item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", optional=item["kind"] == "work" or item["basis"] in {"concrete_total", "exchanger_quantity", *technology.BASES}))
+                item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", optional=item["kind"] == "work" or item["basis"] in {"concrete_total", "exchanger_quantity", *technology.BASES, *construction.BASES}))
                 item["price"] = _optional(number(row.get("price"), "Цена", optional=True, places=2))
                 specs = row.get("specs", {})
                 if not isinstance(specs, dict):
                     raise EstimateInputError("Некорректные характеристики.")
                 item["specs"] = {field: _optional(number(specs.get(field), "Характеристика оборудования", minimum=".001", maximum="100000", optional=True)) for field in ("flow", "head", "filter_flow", "backwash_flow")}
+                item['construction_price'] = construction.normalize_price(row.get('construction_price'))
+                item['construction_computed_price'] = _optional(number(row.get('construction_computed_price'),'Расчётная цена комплекта',optional=True,places=2))
+                item['handling_mode'] = string(row.get('handling_mode','unknown'),'Способ разгрузки',20)
+                if item['handling_mode'] not in ('unknown','manual','mechanized','none'):
+                    raise EstimateInputError('Выберите способ разгрузки.')
+                item['handling_mass'] = _optional(number(row.get('handling_mass'),'Масса для ПРР, т',optional=True,minimum='0',maximum='1000000'))
                 item["catalog"] = normalize_catalog(row.get("catalog"))
                 clean["rows"].append(item)
             cleaned.append(clean)
@@ -526,6 +551,7 @@ def evaluate(raw):
     sync_exchanger_accessories(result)
     result["geometry"] = geometry(result["inputs"])
     result["geometry"].update(technology.apply(result))
+    construction.sync(result)
     result["technology"] = technology.summary(result["inputs"])
     result["heating"] = heating_requirement(result["inputs"])
     embedded.update_quantities(result)
@@ -546,6 +572,11 @@ def evaluate(raw):
                 amount = (Decimal(row["quantity"]) * Decimal(row["price"])).quantize(CENT, rounding=ROUND_HALF_UP) if charged and row["price"] is not None and row["quantity"] is not None else None
                 if charged and row['quantity'] is not None and estimate_liner.active(row):
                     amount = estimate_liner.amount(row)
+                if charged and row['quantity'] is not None and construction.price_active(row):
+                    amount = construction.amount(row)
+                if charged and row.get('construction_unit_conflict'):
+                    amount=None
+                    if row['price'] is not None: missing+=1
                 row["amount"] = _optional(amount)
                 if charged and row["price"] is None:
                     missing += 1
@@ -558,6 +589,12 @@ def evaluate(raw):
             block["subtotal"] = str(subtotal.quantize(CENT))
             total += subtotal
         warnings = technology.warnings(result["inputs"]) + level_control.warnings(variant)
+        if result.get('construction_version'):
+            warnings = [w for w in warnings if 'прочности/армирования' not in w]
+            warnings.append(construction.CLIENT_NOTE)
+            warnings.append('Вывоз: предполагается повторное использование пригодного грунта для засыпки, без разрыхления; подтвердите допущение и фактическое количество.')
+            if any('ПРР: база неполная' in n for n in variant.get('construction_notes',[])):
+                warnings.append('База ПРР неполная: масса и способ разгрузки части материалов уточняются.')
         if result["inputs"].get("bowl_height"):
             warnings.append("Геометрия прямоугольной чаши с горизонтальным дном, без ступеней и лавок. Дополнительные строительные слои учитываются только при явном выборе технологии. Армирование и прочность требуют проекта.")
             if "concrete_total" not in result["geometry"]:
@@ -690,7 +727,7 @@ def recalculate(raw, inputs):
     for variant in result["variants"].values():
         for block in variant["blocks"]:
             for row in block["rows"]:
-                if (dimensions_changed or technology_changed) and not row["auto_quantity"] and block["id"] in {"construction", "finish"} and row["quantity"] is not None:
+                if (dimensions_changed or technology_changed) and not row["auto_quantity"] and block["id"] in {"construction", "construction_materials", "finish"} and row["quantity"] is not None:
                     row["quantity_stale"] = True
                 if row["basis"] == "concrete_total" and row["auto_quantity"] and "concrete_total" not in metrics:
                     # Removing dimensions must not leave apparently valid stale concrete volumes.

@@ -127,6 +127,7 @@ def add_works(snapshot, *, fresh=False):
                 identify(row)
         generic = next((r for r in blocks['construction']['rows'] if r['id'] == 'bowl_work'), None)
         for code, bid, name, unit, economy, standard, qty, optional in WORKS:
+            if snapshot.get("construction_version") and bid == "construction": continue
             block = blocks[bid]
             if any(r.get('work_code') == code for r in block['rows']):
                 continue
@@ -159,6 +160,8 @@ def add_works(snapshot, *, fresh=False):
 
 
 def shared_base(row):
+    if row.get('work_code') == 'bowl_package' and row.get('unit') == 'м³': return '20000'
+    if row.get('work_code') == 'handling_package' and row.get('unit') == 'т': return '300'
     if row.get('unit') == 'м²' and row.get('finish_type') == 'film':
         return {'finish_film':'2000', 'underlay_film':'200'}.get(row.get('work_code'))
     return None
