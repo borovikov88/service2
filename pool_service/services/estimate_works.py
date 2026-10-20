@@ -48,7 +48,7 @@ def identify(row):
 
 def finish_rate(finish, variant):
     if finish == 'film':
-        return '2000' if variant == 'economy' else '800'
+        return '2000'
     if finish == 'mosaic':
         return '2000' if variant == 'economy' else '2500'
     return None
@@ -62,7 +62,7 @@ def finish_extras(finish, metrics, variant):
         row = make_row('work_' + code, 'Монтаж подложки' if finish == 'film' else 'Гидроизоляция',
                        'м²', metrics['finish_net'], 'finish_net', 'work')
         row.update(work_code=code + '_' + finish, finish_type=finish,
-                   price=(('200' if variant == 'economy' else '70') if finish == 'film' else
+                   price=('200' if finish == 'film' else
                           ('200' if variant == 'economy' else '600') if finish == 'mosaic' else None))
         rows.append(row)
     if finish == 'film':
@@ -97,7 +97,7 @@ def source_rate(row, variant):
         if code == 'finish_' + finish:
             return finish_rate(finish, variant)
         if code == ('underlay_film' if finish == 'film' else 'waterproofing_mosaic'):
-            return ('200' if variant == 'economy' else '70' if finish == 'film' else '600')
+            return '200' if finish == 'film' or variant == 'economy' else '600'
     return None
 
 
@@ -154,3 +154,9 @@ def add_works(snapshot, *, fresh=False):
         fill_missing_prices(snapshot)
     snapshot['works_catalog'] = 1
     return snapshot
+
+
+def shared_base(row):
+    if row.get('unit') == 'м²' and row.get('finish_type') == 'film':
+        return {'finish_film':'2000', 'underlay_film':'200'}.get(row.get('work_code'))
+    return None

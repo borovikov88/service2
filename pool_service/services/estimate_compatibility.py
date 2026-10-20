@@ -84,9 +84,7 @@ def repair(raw, variant_key, block_id, row_id, catalog=None):
     role = row['compatibility']['kind']
     flow, _ = duty(result, variant)
     if role == 'filter':
-        brand = VARIANTS[variant_key][1]
         choices = [p for p in (catalog or {}).get('products', {}).values() if p['kind'] == 'filter'
-                   and (variant_key == 'premium' or p['brand'] == brand)
                    and not candidate_reason(p, result['inputs'], flow, for_auto=True)]
         if not choices:
             raise EstimateInputError('Подходящий фильтр в выбранном сегменте не найден. Откройте каталог и проверьте другие бренды. Текущая позиция сохранена.')

@@ -35,8 +35,24 @@ def estimate_page(request):
     organizations = _organizations(request.user)
     if not organizations:
         return render(request, "403.html", status=403)
+    # Resolve tenant context before rendering; never trust a hidden client value.
+    requested = request.GET.get("organization")
+    if requested is not None:
+        organization = organizations.get(requested)
+        if organization is None:
+            return render(request, "403.html", status=403)
+    elif request.GET.get("id"):
+        try:
+            identifier = UUID(request.GET["id"])
+        except (ValueError, TypeError, AttributeError):
+            return render(request, "403.html", status=403)
+        estimate = get_object_or_404(PoolEstimate, pk=identifier, organization_id__in=organizations)
+        organization = organizations[str(estimate.organization_id)]
+    else:
+        organization = organizations.get(str(request.session.get("estimate_organization", ""))) or next(iter(organizations.values()))
+    request.session["estimate_organization"] = str(organization.pk)
     return render(request, "pool_service/estimates/calculator.html", {
-        "active_tab": "estimates", "estimate_organizations": organizations.values(),
+        "active_tab": "estimates", "estimate_organization": organization,
     })
 
 
@@ -54,9 +70,17 @@ def _load(organization, identifier):
     return get_object_or_404(PoolEstimate, pk=uid, organization=organization)
 
 
+def _author(user):
+    return {"id": user.pk, "name": user.get_full_name() or user.get_username()} if user else {"id": None, "name": "Автор не указан"}
+
+
 def _version_data(estimate, version):
     return {"id": str(estimate.pk), "revision": estimate.revision, "loaded_version": version.number,
-            "snapshot": {**version.snapshot, "prices": price_summary(version.snapshot)}, "versions": list(estimate.versions.values("number", "note", "created_at"))}
+            "snapshot": {**version.snapshot, "prices": price_summary(version.snapshot)},
+            "created_by": _author(estimate.created_by), "created_at": estimate.created_at,
+            "versions": [{"number": v.number, "note": v.note, "created_at": v.created_at,
+                          "created_by": _author(v.created_by)}
+                         for v in estimate.versions.select_related("created_by").defer("snapshot")]}
 
 
 @login_required
@@ -90,8 +114,8 @@ def estimate_api(request):
                 version = get_object_or_404(estimate.versions, number=number)
                 return JsonResponse(_version_data(estimate, version))
             query = string(data.get("q", ""), "Поиск", 200)
-            projects = PoolEstimate.objects.filter(organization=organization, title__icontains=query)
-            return JsonResponse({"projects": list(projects.values("id", "title", "revision", "updated_at")[:50]), "limit": 50})
+            projects = PoolEstimate.objects.filter(organization=organization, title__icontains=query).select_related("created_by")
+            return JsonResponse({"projects": [{"id": p.pk, "title": p.title, "revision": p.revision, "updated_at": p.updated_at, "created_at": p.created_at, "created_by": _author(p.created_by)} for p in projects[:50]], "limit": 50})
         action = data.get("action")
         if action == "generate":
             snapshot = apply_defaults(generate(data.get("inputs")), organization)
@@ -109,7 +133,7 @@ def estimate_api(request):
             return JsonResponse({'images': {i: products[i].get('image', '') for i in set(ids) if i in products}})
         if action == "catalog_search":
             inputs = normalize_inputs(data.get("inputs"))
-            return JsonResponse(search_catalog(get_catalog(), data.get("q", ""), data.get("kind", ""), data.get("brand", ""), inputs, Decimal(geometry(inputs)["required_flow"])))
+            return JsonResponse(search_catalog(get_catalog(), data.get("q", ""), data.get("kind", ""), data.get("brand", ""), inputs, Decimal(geometry(inputs)["required_flow"]), variant=string(data.get("variant", "economy"), "Смета", 20)))
         if action == 'compatibility_auto':
             from .services.estimate_compatibility import repair
             variant = string(data.get('variant'), 'Вариант', 20)

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {setExcluded, emptyRow} from '../static/pool_service/estimates/state.js';
+import {setExcluded, emptyRow, automaticQuantity, quantityRequired} from '../static/pool_service/estimates/state.js';
 
 function sample() {
   return {variants: Object.fromEntries(['economy', 'standard', 'premium'].map(key => [key, {blocks: [{id: 'equipment', excluded: false, reason: '', rows: [emptyRow('pump'), {...emptyRow('filter'), excluded: true, price: '120'}]}]}]))};
@@ -72,4 +72,24 @@ test('different units, finishes, materials and ambiguous duplicates are not over
   const copy=structuredClone(source);copy.id='other';
   s.variants.standard.blocks[0].rows=[copy,{...copy,id:'duplicate'}];
   assert.equal(workPriceTargets(s,'economy','equipment',source).length,1);
+});
+
+test('unlinking an automatic exchanger accessory leaves unknown quantity, never NaN', () => {
+  const s = sample();
+  s.geometry = {};
+  const row = {...emptyRow('accessory'), basis:'exchanger_quantity', heating_parent:'pump'};
+  assert.equal(automaticQuantity(s, 'economy', row), '1');
+  row.heating_parent = '';
+  assert.equal(automaticQuantity(s, 'economy', row), null);
+  assert.equal(JSON.stringify({quantity:automaticQuantity(s, 'economy', row)}), '{"quantity":null}');
+});
+
+test('automatic unknown quantities can submit, explicit manual zero remains valid', () => {
+  const row = {...emptyRow('accessory'), basis:'exchanger_quantity',auto_quantity:true,quantity:null};
+  assert.equal(quantityRequired(row),false);
+  row.auto_quantity=false;
+  assert.equal(quantityRequired(row),true);
+  row.quantity='0';
+  assert.equal(row.quantity,'0');
+  assert.equal(quantityRequired(emptyRow('custom')),true);
 });

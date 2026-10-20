@@ -31,7 +31,7 @@ class PoolEstimateEngineTests(SimpleTestCase):
 
     def test_geometry_and_three_preferences(self):
         self.assertEqual(self.snapshot["geometry"], {"volume": "48.000", "surface": "32.000", "perimeter": "24.000", "finish_area": "68.000", "finish_net": "68.000", "finish_stock": "79.000", "required_flow": "8.000"})
-        self.assertEqual([v["preferred_brand"] for v in self.snapshot["variants"].values()], ["Aquaviva", "Hayward", "Дорогие модели каталога"])
+        self.assertEqual([v["preferred_brand"] for v in self.snapshot["variants"].values()], ["Дешёвый подходящий", "Средний подходящий", "Дорогой подходящий"])
         sloped = generate({**INPUTS, "depth_end": "2.5"})
         self.assertEqual(sloped["geometry"]["volume"], "64.000")
         self.assertGreater(Decimal(sloped["geometry"]["finish_area"]), Decimal("80"))
@@ -114,7 +114,7 @@ class PoolEstimateEngineTests(SimpleTestCase):
         for value in ("NaN", "Infinity", "-1", True, [], "1e9999"):
             with self.subTest(value=value), self.assertRaises(EstimateInputError):
                 generate({**INPUTS, "length": value})
-        for field, value in (("price", "-0.01"), ("quantity", "0"), ("excluded", "false")):
+        for field, value in (("price", "-0.01"), ("quantity", "-0.001"), ("excluded", "false")):
             snapshot = deepcopy(self.snapshot)
             block(snapshot)["rows"][0][field] = value
             with self.subTest(field=field), self.assertRaises(EstimateInputError):
@@ -226,3 +226,48 @@ class PoolEstimateViewsTests(TestCase):
         self.client.force_login(self.outsider)
         response = self.client.get(self.url, {"organization": self.other_org.pk})
         self.assertEqual(response.json()["projects"], [])
+
+    def test_manager_author_history_and_direct_tenant_access(self):
+        manager=User.objects.create_user('estimate-manager-author',first_name='Synthetic',last_name='Manager')
+        OrganizationAccess.objects.create(organization=self.org,user=manager,role='manager')
+        self.client.force_login(manager)
+        self.assertEqual(self.client.get(reverse('pool_estimate_page')).status_code,200)
+        from pool_service.services.estimate_catalog import CatalogUnavailable
+        from unittest.mock import patch
+        with patch('pool_service.estimate_views.get_catalog',side_effect=CatalogUnavailable('Test feed unavailable')):
+            generated=self.post(action='generate',inputs=INPUTS)
+        self.assertEqual(generated.status_code,200)
+        self.snapshot=generated.json()['snapshot']
+        first=self.save().json()
+        self.assertEqual(first['created_by']['id'],manager.pk)
+        self.assertEqual(first['versions'][0]['created_by']['id'],manager.pk)
+        listed=self.client.get(self.url,{'organization':self.org.pk}).json()['projects']
+        self.assertEqual(listed[0]['created_by']['id'],manager.pk)
+        saved_version=deepcopy(first['versions'][0])
+        self.client.force_login(self.owner)
+        second=self.save(id=first['id'],expected_revision=1).json()
+        self.assertEqual(second['created_by']['id'],manager.pk)
+        self.assertEqual(second['versions'][0]['created_by']['id'],self.owner.pk)
+        self.assertEqual(second['versions'][1],saved_version)
+        self.client.force_login(manager)
+        old=self.client.get(self.url,{'organization':self.org.pk,'id':first['id'],'version':1})
+        self.assertEqual(old.status_code,200)
+        self.assertEqual(old.json()['versions'][1],saved_version)
+        self.assertEqual(self.post(action='validate',snapshot=self.snapshot).status_code,200)
+        self.assertEqual(self.post(action='recalculate',snapshot=self.snapshot,inputs=INPUTS,organization=self.other_org.pk).status_code,403)
+        self.assertEqual(self.save(organization=self.other_org.pk).status_code,403)
+        self.assertEqual(self.client.get(self.url,{'organization':self.other_org.pk,'id':first['id']}).status_code,403)
+        printed=self.client.get(reverse('pool_estimate_print',args=[first['id'],1]))
+        self.assertEqual(printed.status_code,200)
+        self.assertNotContains(printed,'Synthetic Manager')
+        third=self.save(id=first['id'],expected_revision=2,created_by=self.owner.pk).json()
+        self.assertEqual(third['versions'][0]['created_by']['id'],manager.pk)
+        self.assertEqual(third['versions'][2],saved_version)
+        self.client.force_login(self.outsider)
+        self.assertEqual(self.client.get(self.url,{'organization':self.other_org.pk,'id':first['id']}).status_code,404)
+        self.assertEqual(self.save(id=first['id'],expected_revision=2,organization=self.other_org.pk).status_code,404)
+        self.assertEqual(self.client.get(reverse('pool_estimate_print',args=[first['id'],1])).status_code,404)
+        PoolEstimateVersion.objects.filter(estimate_id=first['id'],number=1).update(created_by=None)
+        self.client.force_login(manager)
+        unknown=self.client.get(self.url,{'organization':self.org.pk,'id':first['id']}).json()
+        self.assertEqual(next(v for v in unknown['versions'] if v['number']==1)['created_by'],{'id':None,'name':'Автор не указан'})

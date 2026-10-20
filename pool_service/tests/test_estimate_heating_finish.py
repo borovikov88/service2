@@ -91,7 +91,7 @@ class HeatingFinishTests(SimpleTestCase):
         ))
         s, _ = catalog.auto_select(generate(HEATING), f)
         self.assertEqual([heater(s, v)['catalog']['id'] for v in s['variants']], ['91', '92', '93'])
-        self.assertTrue(any('альтернатива Aquaviva' in w for w in s['variants']['economy']['warnings']))
+        self.assertEqual(heater(s)['brand'], 'Other')
         catalog.apply_product(heater(s), f['products']['93'], f)
         result, _ = catalog.auto_select(s, f)
         self.assertEqual(heater(result)['catalog']['id'], '93')
@@ -129,7 +129,7 @@ class HeatingFinishTests(SimpleTestCase):
         self.assertFalse(block(film, 'finish')['rows'][0]['excluded'])
         self.assertTrue(block(film, 'finish')['rows'][1]['excluded'])
         self.assertEqual(len([r for r in block(film, 'finish')['rows'] if r.get('finish_type')]), 8)
-        self.assertEqual(block(film, 'finish')['subtotal'], '174360.00')  # Includes primer/plaster from Excel.
+        self.assertEqual(block(film, 'finish')['subtotal'], '113160.00')  # Primer included; fresh plaster requires an explicit scheme.
         self.assertFalse(original['excluded'])
 
     def test_finish_changes_preserve_block_scope_and_legacy_rows(self):
@@ -163,9 +163,9 @@ class HeatingFinishTests(SimpleTestCase):
         active = [r for r in block(tile, 'finish')['rows'] if not r['excluded'] and r.get('finish_type')]
         self.assertEqual(len(active), 3)
         self.assertTrue(all(r['finish_type'] == 'tile' for r in active))
-        self.assertEqual(block(tile,'finish')['subtotal'], '65960.00')  # Preparation remains; tile rate is unknown.
+        self.assertEqual(block(tile,'finish')['subtotal'], '4760.00')  # Primer remains; tile rate and plaster quantity are unknown.
         restored = recalculate(tile, {**INPUTS, 'finish': ''})
-        self.assertEqual(block(restored,'finish')['subtotal'], '79560.00')
+        self.assertEqual(block(restored,'finish')['subtotal'], '18360.00')
 
     def test_one_price_date_does_not_claim_all_versions_have_newest_prices(self):
         old, _ = catalog.auto_select(generate(INPUTS), fixture())

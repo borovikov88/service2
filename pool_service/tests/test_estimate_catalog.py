@@ -65,13 +65,13 @@ class CatalogEngineTests(SimpleTestCase):
         for url in ("javascript:alert(1)", "https://shop.aqualine22.ru@evil.invalid/", "https://shop.aqualine22.ru:444/", "https://shop.aqualine22.ru/\nfoo"):
             self.assertEqual(catalog.safe_shop_url(url), "")
 
-    def test_economy_standard_brands_and_premium_catalogue_selection(self):
+    def test_price_tiers_with_technically_comparable_catalogue_selection(self):
         s, count = catalog.auto_select(generate(INPUTS), self.catalog)
         self.assertEqual(count, 6)
         self.assertEqual(block(s)["rows"][0]["catalog"]["id"], "1")
         self.assertEqual(block(s, variant="standard")["rows"][0]["brand"], "Hayward")
         self.assertIsNotNone(block(s, variant="premium")["rows"][0]["price"])
-        self.assertEqual(sum(Decimal(r["amount"] or 0) for r in block(s)["rows"] if r["kind"] != "work"), Decimal("300.30"))
+        self.assertEqual(sum(Decimal(r["amount"] or 0) for r in block(s)["rows"] if r["kind"] != "work"), Decimal("200.20"))
 
     def test_spa_unavailable_wrong_voltage_and_wrong_head_not_auto_selected(self):
         f = catalog.parse_catalog(feed(
