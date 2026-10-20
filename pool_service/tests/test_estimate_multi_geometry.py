@@ -170,9 +170,9 @@ class MultiGeometryTests(SimpleTestCase):
         def printable(value):
             return render_to_string('pool_service/estimates/print.html', {'version':{'snapshot':value, 'number':1}})
         html = printable(snapshot)
-        for label, value in (('Полная внутренняя высота чаши H', '1.700'), ('Толщина стен', '0.200'), ('Толщина плиты', '0.200')):
+        for label, value in (('Полная внутренняя высота чаши H', '1.7'), ('Толщина стен', '0.2'), ('Толщина плиты', '0.2')):
             self.assertIn(f'{label}, м: <strong>{value}</strong>', html)
-        self.assertIn('глубина воды 1.580–1.580', html)
+        self.assertIn('глубина воды 1.58–1.58', html)
         self.assertEqual(snapshot, before)
         old = generate(INPUTS)
         old["inputs"].pop("wall_thickness")
@@ -181,7 +181,7 @@ class MultiGeometryTests(SimpleTestCase):
         self.assertEqual(legacy.count('<strong>не указана</strong>'), 3)
         partial = printable(generate({**BOWL, 'wall_thickness': '', 'slab_thickness': ''}))
         self.assertEqual(partial.count('<strong>не указана</strong>'), 2)
-        self.assertIn('H, м: <strong>1.700</strong>', partial)
+        self.assertIn('H, м: <strong>1.7</strong>', partial)
 
     def test_new_thickness_defaults_do_not_backfill_history(self):
         fresh = generate(INPUTS)

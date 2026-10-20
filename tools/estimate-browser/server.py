@@ -36,4 +36,4 @@ class Handler(SimpleHTTPRequestHandler):
         else:out={}
         self.respond(out)
 os.chdir(ROOT / 'pool_service/static')
-ThreadingHTTPServer(('127.0.0.1',8769),Handler).serve_forever()
+ThreadingHTTPServer(('127.0.0.1',int(os.environ.get('ESTIMATE_BROWSER_PORT', '8769'))),Handler).serve_forever()

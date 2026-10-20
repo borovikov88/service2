@@ -526,6 +526,10 @@ def normalize_snapshot(raw):
                 # must not round that saved quantity and silently change the charge.
                 quantity_places = None if result.get("construction_version") and item["basis"] in construction.BASES else 3
                 item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", places=quantity_places, optional=item["kind"] == "work" or item["basis"] in {"concrete_total", "exchanger_quantity", *technology.BASES, *construction.BASES}))
+                if boolean(row.get("quantity_edited", False)) and not item["auto_quantity"] and re.fullmatch(r"(?:шт\.?|компл\.?|комплект(?:а|ов)?|упак\.?|пара|пар)", item["unit"], re.IGNORECASE):
+                    entered = number(row.get("quantity"), "Количество", maximum="1000000", optional=True, places=None)
+                    if entered is not None and entered != entered.to_integral_value():
+                        raise EstimateInputError("Укажите целое количество для штучной позиции.")
                 item["price"] = _optional(number(row.get("price"), "Цена", optional=True, places=2))
                 specs = row.get("specs", {})
                 if not isinstance(specs, dict):

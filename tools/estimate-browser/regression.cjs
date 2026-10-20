@@ -3,7 +3,7 @@ const {chromium}=require('playwright');
 const browser=await chromium.launch({executablePath:'/usr/bin/chromium',headless:true,args:['--no-sandbox']});
 const page=await browser.newPage({viewport:{width:1365,height:1000}});
 const errors=[];page.on('pageerror',e=>errors.push(e.message));
-await page.goto('http://127.0.0.1:8769/estimates/');
+await page.goto(process.env.ESTIMATE_BROWSER_URL || 'http://127.0.0.1:8769/estimates/');
 await page.waitForFunction(()=>document.querySelectorAll('[data-variant]').length===3);
 console.log('initial three variants: OK');
 if(await page.getByText('Добавить работы и цены из Excel',{exact:true}).count())throw Error('Excel button remains');
@@ -20,10 +20,10 @@ if(!await page.locator('#pe-heating-fields').isVisible())throw Error('Heating fi
 if(await page.locator('#pe-org').count())throw Error('Organization field remains');
 for(const text of ['Циркуляционный насос первичного','Электромагнитный клапан первичного','Бетон М300']) if(!await page.getByText(text,{exact:false}).first().count())throw Error('Missing '+text);
 console.log('three sources + concrete + accessories: OK');
-if(await page.locator('[data-row="finish_material"][data-field="quantity"]').inputValue()!=='86.000')throw Error('PVC band/stock quantity');
+if(await page.locator('[data-row="finish_material"][data-field="quantity"]').inputValue()!=='86')throw Error('PVC band/stock quantity');
 if(!await page.getByText('Цена рулона',{exact:false}).count())throw Error('Roll conversion not explained');
 if(await page.locator('[name=tech_insulation_wall_height]').inputValue()!=='1.6')throw Error('Automatic insulation height');
-if(await page.locator('[data-row="work_plaster"][data-field="quantity"]').inputValue()!=='73.000')throw Error('Explicit default plaster');
+if(await page.locator('[data-row="work_plaster"][data-field="quantity"]').inputValue()!=='73')throw Error('Explicit default plaster');
 console.log('approved defaults + film roll conversion: OK');
 await page.locator('[data-shop=solenoid_valve]').click();
 await page.locator('#pe-catalog-dialog').waitFor({state:'visible'});
@@ -42,7 +42,7 @@ if(await page.locator('[data-shop=solenoid_valve]').count()!==1)throw Error('Acc
 console.log('source disable/restore: OK');
 await page.locator('[data-row="heater_exchanger"][data-field="quantity"]').fill('2');
 await page.locator('[data-row="heater_exchanger"][data-field="quantity"]').press('Tab');
-await page.waitForFunction(()=>document.querySelector('[data-row="circulation_pump"][data-field="quantity"]').value==='2.000');
+await page.waitForFunction(()=>document.querySelector('[data-row="circulation_pump"][data-field="quantity"]').value==='2');
 if(await page.locator('[data-quantity-mode="heater_exchanger"]').textContent()!=='вручную')throw Error('Manual label missing');
 if(await page.locator('[data-quantity-mode="circulation_pump"]').textContent()!=='авто')throw Error('Auto label missing');
 await page.locator('[data-exclude-row="heater_exchanger"]').click();
@@ -65,7 +65,7 @@ await page.locator('#pe-row-form [name=heating_parent]').selectOption('heater_ex
 // Click actual submit: browser constraint validation must not block this path.
 await page.locator('#pe-row-form button[type=submit]').click();
 await page.locator('#pe-row-dialog').waitFor({state:'hidden'});
-await page.waitForFunction(()=>document.querySelector('[data-row="circulation_pump"][data-field="quantity"]')?.value==='2.000');
+await page.waitForFunction(()=>document.querySelector('[data-row="circulation_pump"][data-field="quantity"]')?.value==='2');
 if(await page.locator('[data-quantity-mode="circulation_pump"]').textContent()!=='авто')throw Error('Rebind became manual');
 if(await page.locator('[data-shop="circulation_pump"]').count()!==1)throw Error('Rebind duplicated accessory');
 await page.locator('[data-edit="circulation_pump"]').click();
@@ -85,15 +85,15 @@ await page.locator('[name=tech_sand]').selectOption('on');
 await page.locator('[name=tech_sand_thickness]').fill('0.1');
 await page.locator('[name=tech_sand_projection]').fill('0.1');
 await page.locator('#pe-parameters button[type=submit]').click();
-await page.waitForFunction(()=>Number(document.querySelector('[data-row="material_sand"][data-field="quantity"]')?.value)===6.3296);
+await page.waitForFunction(()=>Number(document.querySelector('[data-row="material_sand"][data-field="quantity"]')?.value)===6.3);
 await page.locator('[name=tech_sand]').selectOption('');
 await page.locator('#pe-parameters button[type=submit]').click();
 await page.waitForFunction(()=>document.querySelector('[data-row="material_sand"][data-field="quantity"]')?.value==='');
-console.log('sand with projection -> 6.3296t; unknown -> empty quantity: OK');
+console.log('sand with projection -> display 6.3t; unknown -> empty quantity: OK');
 await page.locator('[data-variant="premium"]').click();
 await page.locator('[data-row="heater_exchanger"][data-field="quantity"]').fill('2');
 await page.locator('[data-row="heater_exchanger"][data-field="quantity"]').press('Tab');
-await page.waitForFunction(()=>document.querySelector('[data-row="solenoid_valve"][data-field="quantity"]')?.value==='2.000');
+await page.waitForFunction(()=>document.querySelector('[data-row="solenoid_valve"][data-field="quantity"]')?.value==='2');
 await page.locator('[data-edit="solenoid_valve"]').click();
 await page.locator('#pe-row-form [name=heating_parent]').selectOption('');
 await page.locator('#pe-row-form button[type=submit]').click();
@@ -107,7 +107,7 @@ if(await page.locator('#pe-row-form [name=quantity]').inputValue()!=='')throw Er
 await page.locator('#pe-row-form [name=heating_parent]').selectOption('heater_exchanger');
 await page.locator('#pe-row-form button[type=submit]').click();
 await page.locator('#pe-row-dialog').waitFor({state:'hidden'});
-await page.waitForFunction(()=>document.querySelector('[data-row="solenoid_valve"][data-field="quantity"]')?.value==='2.000');
+await page.waitForFunction(()=>document.querySelector('[data-row="solenoid_valve"][data-field="quantity"]')?.value==='2');
 if(await page.locator('[data-shop="solenoid_valve"]').count()!==1)throw Error('Valve duplicated');
 console.log('premium valve explicit unlink survives parameter recalculation; manual rebind2, no duplicate: OK');
 
