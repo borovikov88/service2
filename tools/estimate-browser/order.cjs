@@ -21,6 +21,7 @@ const {chromium}=require('playwright');
   check(JSON.stringify(await rows())===JSON.stringify(before),'invalid price blocks reorder');
   await price.fill('12.34');await price.blur();
   await page.waitForResponse(r=>r.url().includes('/estimates/api')&&r.request().postDataJSON()?.action==='validate');
+  await page.waitForFunction(()=>document.querySelector('[data-amount="pump"]')?.textContent==='12,3');
   const total=await page.locator('[data-variant="economy"] .pe-total').textContent();
   await down().scrollIntoViewIfNeeded();
   if(width<500)await down().tap();else {await down().focus();await page.keyboard.press('Enter');}

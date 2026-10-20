@@ -648,6 +648,8 @@ def evaluate(raw):
             label = row["name"]
             if row["kind"] in ACCESSORIES:
                 row["selection_status"] = "preliminary_primary"
+                row["selection_note"] = primary.proposal_note({**origin, "kind": row["kind"], "name": row["name"], "brand": row["brand"]}, result["inputs"])
+                warnings.append(f"{label}: {row['selection_note']}")
                 issue = primary.rejection({**origin, "kind": row["kind"], "name": row["name"], "brand": row["brand"]}, result["inputs"])
                 if issue:
                     warnings.append(f"{label}: {issue} Сохранённая модель требует замены или ручного подтверждения.")
@@ -717,7 +719,7 @@ def evaluate(raw):
                         if sum((Decimal(r["quantity"] or 0) for r in accessories), Decimal(0)) != Decimal(parent["quantity"]):
                             warnings.append(f"{name}: количество не соответствует теплообменнику {parent['name']}. Пересчитайте состав или проверьте ручное количество/привязку.")
                 if not result["inputs"].get("primary_pump_connection") or not result["inputs"].get("primary_valve_connection"):
-                    warnings.append("Для предварительной комплектации укажите отдельные присоединения насоса и клапана первичного контура. Размеры переходников не предполагаются.")
+                    warnings.append("Проверить: присоединения насоса и клапана на объекте не заданы; выбранные модели являются предварительными кандидатами. Размеры переходников не предполагаются.")
                 warnings.append("Предварительная комплектация первичного контура НЕ подтверждает совместимость: нужны рабочая Q–H кривая, температура/давление/среда, Kv и минимальный перепад клапана. Qmax/Hmax не являются рабочей точкой; типовой насос 25/4 подходит не всем теплообменникам.")
                 warnings.append("Первичный контур теплообменника: циркуляционный насос и электромагнитный клапан требуют подтверждения рабочей точки, температуры, давления, теплоносителя, питания и присоединений. Без этих данных автоматический подбор и цена не подтверждены.")
                 warnings.append("Для теплообменника подтвердите мощность при фактической температуре и расходе теплоносителя, а также мощность котла.")
