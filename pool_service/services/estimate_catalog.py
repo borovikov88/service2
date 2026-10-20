@@ -20,7 +20,7 @@ from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requ
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
-CACHE_KEY = "pool-estimate-shop-v10"
+CACHE_KEY = "pool-estimate-shop-v11"
 CACHE_SECONDS = 900
 MAX_BYTES = 20_000_000
 FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
@@ -127,6 +127,14 @@ def parse_catalog(payload, checked_at=None):
     if not offers or len(offers) > 15000:
         raise CatalogUnavailable("В выгрузке магазина нет допустимого списка товаров.")
     categories = {c.get("id"): (c.text or "")[:200] for c in root.findall("./shop/categories/category")}
+    parents = {c.get("id"): c.get("parentId") for c in root.findall("./shop/categories/category")}
+    def category_path(cid):
+        parts, seen = [], set()
+        while cid and cid not in seen and len(seen) < 30:
+            seen.add(cid)
+            parts.append(categories.get(cid, ''))
+            cid = parents.get(cid)
+        return ' / '.join(reversed(parts))
     products = {}
     for offer in offers:
         pid, url = offer.get("id", ""), safe_shop_url(offer.findtext("url", ""))
@@ -159,6 +167,8 @@ def parse_catalog(payload, checked_at=None):
         if set(specs.get('lining', [])) & set(specs.get('lining_denied', [])):
             specs.update(specification_conflict=True, lining=[], specification_note=(specs.get('specification_note','') + ' Противоречивое указание допуска и запрета отделки.').strip())
         category = categories.get(offer.findtext("categoryId"), "")
+        from .estimate_heater_purpose import purpose_note
+        specs['heater_purpose_note'] = purpose_note(name, category_path(offer.findtext('categoryId')), url, description) if specs['heater_type'] == 'heatpump' else ''
         circulation_section = (bool(re.search(r"циркуляцион\w* насос", category, re.I))
                                or "/tsirkulyatsionnye-nasosy/" in url)
         if circulation_section and specs["kind"] in {"pump", "circulation_pump"}:
@@ -261,6 +271,9 @@ def candidate_reason(product, inputs, required_flow, *, for_auto=False):
     if product["kind"] == "filter" and (not product["filter_flow"] or Decimal(product["filter_flow"]) < required_flow):
         return "Производительность фильтра ниже требуемой либо не определена."
     if product["kind"] == "heater":
+        from .estimate_heater_purpose import reason as purpose_reason
+        if purpose_reason(product):
+            return purpose_reason(product)
         if product["heater_type"] not in heating_types(inputs):
             return "Другой тип подогрева."
         required_power = heating_requirement(inputs)["power"]
@@ -299,6 +312,7 @@ def apply_product(row, product, catalog, selection="manual"):
     row["specs"] = {k: product[k] for k in ("flow", "head", "filter_flow", "backwash_flow")}
     row["catalog"] = {k: product[k] for k in ("id", "url", "sku", "price", "available", "nominal_flow", "power", "power_options", "heating_power", "heater_type", "titanium", "embedded_role", "material", "lining")}
     row["catalog"]["filtration"] = product.get("filtration")
+    row["catalog"]["heater_purpose_note"] = product.get("heater_purpose_note", "")
     row["catalog"]["body_family"] = product.get("body_family", "")
     row["catalog"]["lining_denied"] = product.get("lining_denied", [])
     row["catalog"]["level_control"] = product.get("level_control", "unknown")

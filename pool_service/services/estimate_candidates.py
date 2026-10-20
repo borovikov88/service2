@@ -35,6 +35,10 @@ def assess(product, inputs, required_flow, profile=None):
         if not head: missing.append('расчётный напор объекта')
         if not product.get('head') or not product.get('flow'): missing.append('рабочая Q–H точка насоса')
     if kind == 'heater':
+        from .estimate_heater_purpose import reason as purpose_reason
+        blocked = purpose_reason(product)
+        if blocked:
+            return blocked, []
         if product.get('heater_type') not in heating_types(inputs):
             return 'Другой тип нагрева.', []
         required = heating_requirement(inputs)['power']
