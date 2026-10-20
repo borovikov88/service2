@@ -11,21 +11,22 @@ class NumberDisplayTests(SimpleTestCase):
         for phrase in (
             'Геометрия и объём работ по чаше считаются точно.',
             'В новых сметах автоматические количества песка (т) и бетона (м³) округляются вверх до целых',
-            'арматуры — вверх до 0,5 кг',
+            'арматуры — вверх до 0,5 т',
             'Ручные количества не округляются; исторические сметы сохраняют свои правила.',
         ):
             self.assertIn(phrase, text)
+        self.assertRegex(text, r'<p class="pe-help" data-help-target="#pe-parameters-title">[^<]*арматуры — вверх до 0,5 т[^<]*</p>')
         self.assertNotIn('материалы считаются по расчётным объёмам без округления вверх', text)
 
     def test_display_only_print_and_exact_geometry(self):
         s=generate(NEW)
         for tier in s['variants']:
             row(s,'material_sand',tier).update(quantity='5.9136',auto_quantity=False)
-            row(s,'material_rebar',tier).update(quantity='1259.2533',auto_quantity=False)
+            row(s,'material_rebar',tier).update(quantity='1.2592533',auto_quantity=False)
         s=evaluate(s); before=deepcopy(s)
         html=render_to_string('pool_service/estimates/print.html',{'version':{'snapshot':s,'number':1}})
         self.assertIn('5,9 т',html)
-        self.assertIn('1259,3 кг',html)
+        self.assertIn('1,3 т',html)
         self.assertIn('6741,5',html)
         self.assertIn('113332,8',html)
         self.assertIn('0.15',html)

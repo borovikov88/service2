@@ -3,7 +3,8 @@ from decimal import Decimal as D, ROUND_CEILING, ROUND_HALF_UP
 
 MATERIAL_BLOCK = 'construction_materials'
 QUANTITY_STEPS = {'pkg_concrete_total': D('1'), 'pkg_base_volume': D('1'),
-                  'pkg_sand_tonnes': D('1'), 'pkg_rebar_mass': D('0.5')}
+                  'pkg_sand_tonnes': D('1'), 'pkg_rebar_mass': D('0.5'),
+                  'pkg_rebar_tonnes': D('0.5')}
 
 def estimate_quantity(value, step):
     return (value / step).to_integral_value(rounding=ROUND_CEILING) * step if value is not None else None
@@ -34,7 +35,8 @@ WORKS = (
 )
 EXPECTED_UNITS = {'pkg_'+metric:unit for _,_,unit,metric in MATERIALS}
 EXPECTED_UNITS.update({'pkg_'+r[3]:r[2] for r in WORKS if r[3]})
-BASES = {'pkg_'+metric for *_,metric in MATERIALS} | {'pkg_'+r[3] for r in WORKS if r[3]}
+EXPECTED_UNITS['pkg_rebar_tonnes'] = 'т'
+BASES = {'pkg_'+metric for *_,metric in MATERIALS} | {'pkg_'+r[3] for r in WORKS if r[3]} | {'pkg_rebar_tonnes'}
 INTERNAL = ('Арматура: предварительная сметная модель количества, не инженерный подбор. '
             'Диаметр и сетки обязательно проверить с конструктором. Нахлёсты, анкеровки, '
             'защитные слои и достаточность схемы не подтверждены; отдельно не учтены.')
@@ -107,6 +109,7 @@ def metrics(inputs, geometry):
             base=(length+prep_length)*D('3.141592653589793')*(diameter/1000)**2/4*D('7850')
             out['rebar_base_mass']=base
             out['rebar_mass']=base*(1+reserve/100)
+    out['rebar_tonnes'] = out['rebar_mass'] / 1000 if out['rebar_mass'] is not None else None
     return out
 
 
@@ -120,9 +123,13 @@ def initialize(snapshot):
             block['rows'].append(row)
         materials=next(b for b in variant['blocks'] if b['id']==MATERIAL_BLOCK)
         for code,title,unit,metric in MATERIALS:
+            if code == 'rebar' and snapshot.get('construction_quantity_version') == 2:
+                unit, metric = 'т', 'rebar_tonnes'
             row=make_row('material_'+code,title,unit,None,'pkg_'+metric)
             if code in PRICE_BASES:
                 retail,area=PRICE_BASES[code]
+                if code == 'rebar' and unit == 'т':
+                    retail = str(D(retail) * 1000)
                 client=D(retail)*D('1.20')
                 row['construction_price']={'retail':retail,'markup':'20','divisor':area}
                 row['price']=str((client/D(area)).quantize(D('.01'),rounding=ROUND_HALF_UP))
@@ -170,7 +177,7 @@ def sync(snapshot):
                     notes.append(f"{row['name']}: автоматическая база имеет единицу {expected_unit}, а строка — {row['unit']}. Задайте количество и цену вручную либо восстановите единицу; автоматическое начисление не подтверждено.")
                 if not mismatch and row['basis'] in BASES and key in values and row['auto_quantity'] and not row['existing']:
                     value=values[key]
-                    if snapshot.get('construction_quantity_version') == 1 and block['id'] == MATERIAL_BLOCK and row['basis'] in QUANTITY_STEPS:
+                    if snapshot.get('construction_quantity_version') in (1, 2) and block['id'] == MATERIAL_BLOCK and row['basis'] in QUANTITY_STEPS:
                         row['construction_calculated_quantity']=format(value,'f') if value is not None else None
                         step=QUANTITY_STEPS[row['basis']]
                         estimated=estimate_quantity(value,step)

@@ -399,7 +399,7 @@ def generate(raw):
             rowsets["equipment"].insert(2, row)
         variants[key] = {"embedded_profile": embedded.DEFAULTS[key], "blocks": [{"id": bid, "title": title, "excluded": False, "reason": "", "rows": rowsets[bid]} for bid, title in BLOCKS.items() if package or bid != construction.MATERIAL_BLOCK]}
     result = {"schema": 1, "inputs": inputs, "variants": variants, "geometry": metrics, "heating_accessories": 1, "level_system": 1}
-    if package: result.update(construction_version=1, construction_quantity_version=1)
+    if package: result.update(construction_version=1, construction_quantity_version=2)
     ensure_heating_rows(result)
     works.add_works(result, fresh=True)
     technology.initialize_fresh(result)
@@ -428,6 +428,22 @@ def normalize_catalog(raw):
     result["level_control"] = string(raw.get("level_control", "unknown"), "Комплектация регулятором уровня", 20)
     if result["level_control"] not in level_control.STATES:
         raise EstimateInputError("Некорректная комплектация регулятором уровня.")
+    result['level_scheme'] = string(raw.get('level_scheme', ''), 'Схема регулятора', 30)
+    result['specification_conflict'] = boolean(raw.get('specification_conflict', False))
+    skus = raw.get('level_regulator_skus', [])
+    if result['level_scheme'] not in {'', 'external_float'} or not isinstance(skus, list) or len(skus) > 30 or any(not isinstance(s, str) or not re.fullmatch(r'\d{1,12}', s) for s in skus):
+        raise EstimateInputError('Некорректные характеристики системы уровня.')
+    result['level_regulator_skus'] = skus[:]
+    result['level_data_issue'] = string(raw.get('level_data_issue', ''), 'Проверка линии уровня', 20)
+    if result['level_data_issue'] not in {'', 'unknown', 'conflict'}:
+        raise EstimateInputError('Некорректная проверка линии уровня.')
+    from .estimate_catalog_params import HYDRAULICS, diameter
+    for key in ('purpose', 'passage', 'connection', 'diameter'):
+        value = string(raw.get('level_' + key, ''), 'Характеристика линии уровня', 40)
+        if value and (diameter(value) != value if key == 'diameter' else value not in HYDRAULICS[key].values()):
+            raise EstimateInputError('Некорректная характеристика линии уровня.')
+        result['level_' + key] = value
+
     result["image"] = safe_image_url(raw.get("image", ""))
     options = raw.get("power_options", [raw["power"]] if raw["power"] != "unknown" else [])
     if not isinstance(options, list) or len(options) > 2 or any(p not in ("230", "400") for p in options) or len(set(options)) != len(options):
@@ -467,8 +483,8 @@ def normalize_snapshot(raw):
         raise EstimateInputError("Неизвестный формат расчёта.")
     result = {"schema": 1, "inputs": normalize_inputs(raw.get("inputs")), "variants": {}, "works_catalog": 1 if raw.get("works_catalog") == 1 else 0, "heating_accessories": 1 if raw.get("heating_accessories") == 1 else 0}
     if raw.get("construction_version") == 1: result["construction_version"] = 1
-    if result.get("construction_version") and raw.get("construction_quantity_version") == 1:
-        result["construction_quantity_version"] = 1
+    if result.get("construction_version") and raw.get("construction_quantity_version") in (1, 2):
+        result["construction_quantity_version"] = raw["construction_quantity_version"]
     expected_blocks=set(BLOCKS) if result.get("construction_version") else set(BLOCKS)-{construction.MATERIAL_BLOCK}
     if raw.get("level_system") == 1:
         result["level_system"] = 1
@@ -597,7 +613,7 @@ def evaluate(raw):
                     subtotal += amount
             block["subtotal"] = str(subtotal.quantize(CENT))
             total += subtotal
-        warnings = technology.warnings(result["inputs"]) + level_control.warnings(variant)
+        warnings = technology.warnings(result["inputs"]) + level_control.warnings(variant, result["inputs"])
         if result.get('construction_version'):
             warnings = [w for w in warnings if 'прочности/армирования' not in w]
             warnings.append(construction.CLIENT_NOTE)

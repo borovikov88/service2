@@ -156,7 +156,7 @@ class ConstructionTests(SimpleTestCase):
     def test_material_quantization_only_new_automatic_materials(self):
         s=generate(NEW)
         expected={'material_sand':('6','6840.00'), 'material_concrete_bowl':('16','153600.00'),
-                  'material_concrete_base':('6','55440.00'), 'material_rebar':('1259.5','113355.00')}
+                  'material_concrete_base':('6','55440.00'), 'material_rebar':('1.5','135000.00')}
         for tier in s['variants']:
             for rid,(quantity,amount) in expected.items():
                 r=row(s,rid,tier)
@@ -167,12 +167,15 @@ class ConstructionTests(SimpleTestCase):
             self.assertEqual(row(s,'bowl_package',tier)['amount'],'311520.00')
         self.assertEqual(D(s['geometry']['concrete_total']),D('15.576'))
         old=deepcopy(s);old.pop('construction_quantity_version')
+        for tier in old['variants']:
+            row(old,'material_rebar',tier).update(unit='кг',basis='pkg_rebar_mass',price='90.00',
+                construction_price={'retail':'75','markup':'20','divisor':'1'})
         old=evaluate(old)
         self.assertEqual(D(row(old,'material_sand')['quantity']),D('5.9136'))
         self.assertEqual(row(old,'material_sand')['amount'],'6741.50')
         self.assertEqual(recalculate(old,old['inputs'])['variants'],old['variants'])
         self.assertNotIn('construction_quantity_version',evaluate(old))
-        self.assertEqual(D(s['variants']['economy']['total'])-D(old['variants']['economy']['total']),D('8404.54'))
+        self.assertEqual(D(s['variants']['economy']['total'])-D(old['variants']['economy']['total']),D('30049.54'))
         for rid in expected:row(s,rid).update(auto_quantity=False,quantity='1.2345')
         manual=evaluate(s)
         self.assertEqual(row(recalculate(manual,manual['inputs']),'material_sand')['quantity'],'1.2345')
@@ -184,3 +187,73 @@ class ConstructionTests(SimpleTestCase):
                 self.assertLess(rounded-value,step)
                 self.assertEqual(package.estimate_quantity(rounded,step),rounded)
             self.assertIsNone(package.estimate_quantity(None,step))
+
+    def test_rebar_tonnes_boundaries_after_reserve_and_handling(self):
+        from unittest.mock import patch
+        s=generate(NEW)
+        original=package.metrics(s['inputs'],s['geometry'])
+        for kg, expected in [('0','0'),('500','0.5'),('500.000001','1'),
+                             ('1000','1'),('1000.000001','1.5'),('1500','1.5'),('1500.000001','2')]:
+            facts={**original,'rebar_mass':D(kg),'rebar_tonnes':D(kg)/1000}
+            with patch.object(package,'metrics',return_value=facts):
+                changed=deepcopy(s)
+                row(changed,'material_rebar')['handling_mode']='manual'
+                result=evaluate(changed)
+                r=row(result,'material_rebar')
+                self.assertEqual(r['unit'],'т')
+                self.assertEqual(D(r['quantity']),D(expected))
+                self.assertEqual(D(r['amount']),D(expected)*90000)
+                self.assertEqual(D(row(result,'handling_package')['quantity']),D(expected))
+                self.assertEqual(D(row(result,'handling_package')['amount']),D(expected)*300)
+                self.assertEqual(row(result,'bowl_package')['quantity'],row(s,'bowl_package')['quantity'])
+
+    def test_rebar_v2_exact_mass_reserve_once_and_noop_json_roundtrip(self):
+        import json
+        s=generate(NEW); r=row(s,'material_rebar')
+        self.assertEqual(s['construction_quantity_version'],2)
+        self.assertEqual((r['unit'],r['basis'],r['price'],r['amount']),('т','pkg_rebar_tonnes','90000.00','135000.00'))
+        self.assertEqual(D(r['construction_price']['retail']),D('75000'))
+        self.assertEqual(D(r['construction_calculated_quantity']),D(s['construction_assumptions']['rebar_mass'])/1000)
+        self.assertIn('до 0.5 т',r['construction_quantity_note'])
+        loaded=evaluate(json.loads(json.dumps(s)))
+        again=recalculate(loaded,loaded['inputs'])
+        self.assertEqual(again['variants'],s['variants'])
+        self.assertEqual(D(s['construction_assumptions']['rebar_mass']),D(s['construction_assumptions']['rebar_base_mass'])*D('1.05'))
+
+    def test_historical_rebar_kg_versions_do_not_convert(self):
+        for version in (None,1):
+            s=generate(NEW)
+            if version is None:s.pop('construction_quantity_version')
+            else:s['construction_quantity_version']=version
+            for tier in s['variants']:
+                row(s,'material_rebar',tier).update(unit='кг',basis='pkg_rebar_mass',price='90.00',
+                    construction_price={'retail':'75','markup':'20','divisor':'1'})
+            old=evaluate(s); again=recalculate(old,old['inputs'])
+            self.assertEqual(row(again,'material_rebar'),row(old,'material_rebar'))
+            self.assertEqual(row(again,'material_rebar')['unit'],'кг')
+            self.assertEqual(again.get('construction_quantity_version'),version)
+            if version==1:self.assertEqual(row(again,'material_rebar')['amount'],'113355.00')
+            else:self.assertEqual(row(again,'material_rebar')['amount'],'113332.80')
+            row(old,'material_rebar').update(auto_quantity=False,quantity='1234.5678',price='88.88',unit_price_manual=True)
+            manual=recalculate(old,old['inputs'])
+            self.assertEqual(row(manual,'material_rebar')['quantity'],'1234.5678')
+            self.assertEqual(row(manual,'material_rebar')['price'],'88.88')
+            self.assertEqual(row(manual,'material_rebar')['unit'],'кг')
+
+    def test_manual_tonnes_unit_switch_and_explicit_handling_mass(self):
+        s=generate(NEW)
+        row(s,'material_rebar').update(quantity='1.234567',auto_quantity=False,price='80000',unit_price_manual=True,handling_mode='manual')
+        manual=recalculate(s,s['inputs'])
+        self.assertEqual(row(manual,'material_rebar')['quantity'],'1.234567')
+        self.assertEqual(row(manual,'material_rebar')['amount'],'98765.36')
+        self.assertEqual(D(row(manual,'handling_package')['quantity']),D('1.234567'))
+        row(s,'material_rebar')['handling_mass']='2.25'
+        self.assertEqual(D(row(evaluate(s),'handling_package')['quantity']),D('2.25'))
+        switched=generate(NEW);row(switched,'material_rebar').update(unit='кг',handling_mode='manual')
+        invalid=evaluate(switched)
+        self.assertIsNone(row(invalid,'material_rebar')['amount'])
+        self.assertIsNone(row(invalid,'handling_package')['quantity'])
+        row(switched,'material_rebar').update(auto_quantity=False,quantity='1500',price='90',unit_price_manual=True)
+        fixed=evaluate(switched)
+        self.assertEqual(row(fixed,'material_rebar')['amount'],'135000.00')
+        self.assertEqual(D(row(fixed,'handling_package')['quantity']),D('1.5'))

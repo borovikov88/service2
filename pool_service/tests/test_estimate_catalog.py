@@ -289,27 +289,39 @@ class CatalogViewsTests(TestCase):
 
     def test_construction_quantization_version_survives_save_and_load(self):
         from pool_service.tests.test_estimate_construction import NEW, row
-        for quantized in (True, False):
-            with self.subTest(quantized=quantized):
+        for version in (None, 1, 2):
+            with self.subTest(version=version):
                 s = self.post(action='generate', inputs=NEW).json()['snapshot']
-                if not quantized:
-                    s.pop('construction_quantity_version')
-                    s = evaluate(s)
+                if version != 2:
+                    for tier in s['variants']:
+                        row(s,'material_rebar',tier).update(unit='кг',basis='pkg_rebar_mass',price='90.00',
+                            construction_price={'retail':'75','markup':'20','divisor':'1'})
+                if version is None: s.pop('construction_quantity_version')
+                else: s['construction_quantity_version'] = version
+                s = evaluate(s)
                 saved = self.post(action='save', snapshot=s, expected_revision=0).json()
                 loaded = self.client.get(self.url, {
                     'organization': self.org.pk, 'id': saved['id'], 'version': 1,
                 }).json()['snapshot']
-                self.assertEqual(loaded.get('construction_quantity_version'), 1 if quantized else None)
+                self.assertEqual(loaded.get('construction_quantity_version'), version)
                 self.assertEqual(loaded['variants'], s['variants'])
-                self.assertEqual(row(loaded,'material_sand')['amount'], '6840.00' if quantized else '6741.50')
+                self.assertEqual(row(loaded,'material_sand')['amount'], '6741.50' if version is None else '6840.00')
+                self.assertEqual(row(loaded,'material_rebar')['unit'], 'т' if version == 2 else 'кг')
+                self.assertEqual(row(loaded,'material_rebar')['amount'],
+                    {None:'113332.80',1:'113355.00',2:'135000.00'}[version])
                 printed = self.client.get(reverse('pool_estimate_print', args=[saved['id'],1]))
-                if quantized: self.assertContains(printed,'Стоимость материала рассчитана по сметному количеству.')
+                if version:
+                    self.assertContains(printed,'Стоимость материала рассчитана по сметному количеству.')
                 else: self.assertNotContains(printed,'Стоимость материала рассчитана по сметному количеству.')
+                if version == 2:
+                    self.assertContains(printed,'1,5 т')
+                    self.assertContains(printed,'135000')
 
     def test_construction_manual_quantity_precision_survives_save_and_load(self):
         from pool_service.tests.test_estimate_construction import NEW, row
         s = self.post(action='generate', inputs=NEW).json()['snapshot']
         row(s, 'material_sand').update(quantity='5.9136', auto_quantity=False)
+        row(s, 'material_rebar').update(quantity='1.234567', auto_quantity=False, price='80000', unit_price_manual=True)
         s = evaluate(s)
         before = deepcopy(row(s, 'material_sand'))
         saved = self.post(action='save', snapshot=s, expected_revision=0).json()
@@ -320,6 +332,9 @@ class CatalogViewsTests(TestCase):
         self.assertEqual(row(loaded, 'material_sand')['amount'], before['amount'])
         self.assertEqual(loaded['variants']['economy']['total'], s['variants']['economy']['total'])
         self.assertFalse(row(loaded, 'material_sand')['auto_quantity'])
+        self.assertEqual(row(loaded, 'material_rebar')['quantity'], '1.234567')
+        self.assertEqual(row(loaded, 'material_rebar')['amount'], '98765.36')
+        self.assertEqual(row(loaded, 'material_rebar')['unit'], 'т')
 
     def test_construction_package_print_preserves_equipment_name_brand_and_model(self):
         from pool_service.tests.test_estimate_construction import NEW, row

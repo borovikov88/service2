@@ -20,7 +20,7 @@ from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requ
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
-CACHE_KEY = "pool-estimate-shop-v8"
+CACHE_KEY = "pool-estimate-shop-v10"
 CACHE_SECONDS = 900
 MAX_BYTES = 20_000_000
 FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
@@ -147,6 +147,8 @@ def parse_catalog(payload, checked_at=None):
         enrich(specs, name, brand, offer.findtext('vendorCode', '')[:80], description)
         from .estimate_level_control import classify
         classify(specs, name, brand, offer.findtext('vendorCode', '')[:80])
+        from .estimate_catalog_params import apply as apply_params
+        apply_params(specs, offer)
         category = categories.get(offer.findtext("categoryId"), "")
         circulation_section = (bool(re.search(r"циркуляцион\w* насос", category, re.I))
                                or "/tsirkulyatsionnye-nasosy/" in url)
@@ -231,6 +233,8 @@ def candidate_reason(product, inputs, required_flow, *, for_auto=False):
     """None means eligible for a preliminary proposal, never engineering signoff."""
     if not product["available"]:
         return "Выгрузка магазина не подтверждает доступность к заказу."
+    if product.get("specification_conflict"):
+        return product.get("specification_note") or "Конфликт характеристик товара."
     if product["kind"] in {"circulation_pump", "solenoid_valve"}:
         return "Требуется подтверждение характеристик первичного контура и совместимости: расход/напор, температура, давление, теплоноситель, питание и присоединения."
     if product["kind"] == "pump":
@@ -243,7 +247,8 @@ def candidate_reason(product, inputs, required_flow, *, for_auto=False):
         if inputs.get("required_head") and (not product["head"] or Decimal(product["head"]) != Decimal(inputs["required_head"])):
             return "В каталоге нет рабочей точки при указанном расчётном напоре."
     if product['kind'] == 'level_regulator':
-        return 'Комплект регулятора: подтвердите схему подключения к чаше, давление водоснабжения и совместимую отдельную форсунку. Автоподбор без этих данных не выполняется.'
+        from .estimate_level_control import regulator_reason
+        return regulator_reason(product)
     if product["kind"] == "filter" and (not product["filter_flow"] or Decimal(product["filter_flow"]) < required_flow):
         return "Производительность фильтра ниже требуемой либо не определена."
     if product["kind"] == "heater":
@@ -284,6 +289,8 @@ def apply_product(row, product, catalog, selection="manual"):
     row["specs"] = {k: product[k] for k in ("flow", "head", "filter_flow", "backwash_flow")}
     row["catalog"] = {k: product[k] for k in ("id", "url", "sku", "price", "available", "nominal_flow", "power", "power_options", "heating_power", "heater_type", "titanium", "embedded_role", "material", "lining")}
     row["catalog"]["level_control"] = product.get("level_control", "unknown")
+    for field, default in (("level_data_issue", ""), ("level_purpose", ""), ("level_passage", ""), ("level_connection", ""), ("level_diameter", ""), ("level_scheme", ""), ("level_regulator_skus", []), ("specification_conflict", False)):
+        row["catalog"][field] = deepcopy(product.get(field, default))
     row["catalog"]["specification_note"] = product.get("specification_note", "")
     row["catalog"]["specification_source"] = product.get("specification_source", "")
     row["catalog"]["image"] = safe_image_url(product.get("image", ""))
@@ -368,7 +375,7 @@ def auto_select(snapshot, catalog, only_variant=None):
                 placeholder = not origin and not row['model'] and row['price'] is None and row['name'] == embedded.ROLES[role] + ': подобрать модель'
                 if not (untouched or placeholder):
                     continue
-                choices = [p for p in catalog['products'].values() if p.get('embedded_role') == role and embedded.matches(p, variant['embedded_profile'], result['inputs']['finish'])]
+                choices = [p for p in catalog['products'].values() if not p.get("specification_conflict") and p.get('embedded_role') == role and embedded.matches(p, variant['embedded_profile'], result['inputs']['finish'])]
                 if choices:
                     product = select_price_tier(choices, key)
                     if not origin or product['id'] != origin['id']:
@@ -378,6 +385,8 @@ def auto_select(snapshot, catalog, only_variant=None):
     filled += fill_primary(result, catalog, only_variant)
     from .estimate_liner import fill as fill_liner
     filled += fill_liner(result, catalog, only_variant)
+    from .estimate_level_control import fill as fill_level
+    filled += fill_level(result, catalog, only_variant)
     embedded.update_quantities(result, only_variant)
     result = evaluate(result)
     explain_unfilled(result, catalog, only_variant)
@@ -410,15 +419,17 @@ def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="
         raise EstimateInputError('Выберите комплектацию закладных.')
     def reason(product):
         issue = profile_reason(product, inputs, required_flow, profile)
+        if product['kind'] == 'level_regulator' and not issue:
+            return product.get('specification_note') or 'Предварительный подбор; проверьте монтаж по паспорту модели.'
         if kind == 'level_inlet':
-            return 'Подключение этой форсунки к регулятору уровня не подтверждено. Требуется проверка схемы и размеров. ' + (issue or '')
+            return (issue or 'Для отдельной линии уровня проверьте свободный проход, тип и диаметр присоединений этой форсунки и выбранного регулятора. Совпадение бренда или список артикулов не обязательны.')
         return issue
     query = search_text(string(query, "Поиск товара", 120)).split()
     kind = string(kind, "Тип товара", 20)
     brand = string(brand, "Бренд", 80)
     if kind not in {"", "other", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "level_regulator", "level_inlet", *embedded.ROLES}:
         raise EstimateInputError("Неизвестный тип товара.")
-    matches = [p for p in catalog["products"].values() if (not kind or p["kind"] == ("inlet" if kind == "level_inlet" else kind)) and (not brand or p["brand"].casefold() == brand.casefold()) and all(q in search_text(p["name"] + " " + p["sku"] + " " + p["id"]) for q in query)]
+    matches = [p for p in catalog["products"].values() if (not kind or (p['kind'] in {'inlet', 'vacuum'} if kind == 'level_inlet' else p['kind'] == kind)) and (not brand or p["brand"].casefold() == brand.casefold()) and all(q in search_text(p["name"] + " " + p["sku"] + " " + p["id"]) for q in query)]
     matches.sort(key=lambda p: (bool(reason(p)), not p["available"], bool(kind == "circulation_pump" and variant != "economy" and p.get("frequency_control") is not True), Decimal(p["price"]), int(p["id"])))
     from .estimate_liner import area
     return {"products": [{**p, "warning": reason(p), "roll_area": area(p)} for p in matches[:40]], "total": len(matches), "status": catalog_status(catalog)}
