@@ -434,6 +434,16 @@ def normalize_catalog(raw):
     if result['level_scheme'] not in {'', 'external_float'} or not isinstance(skus, list) or len(skus) > 30 or any(not isinstance(s, str) or not re.fullmatch(r'\d{1,12}', s) for s in skus):
         raise EstimateInputError('Некорректные характеристики системы уровня.')
     result['level_regulator_skus'] = skus[:]
+    result['level_data_issue'] = string(raw.get('level_data_issue', ''), 'Проверка линии уровня', 20)
+    if result['level_data_issue'] not in {'', 'unknown', 'conflict'}:
+        raise EstimateInputError('Некорректная проверка линии уровня.')
+    from .estimate_catalog_params import HYDRAULICS, diameter
+    for key in ('purpose', 'passage', 'connection', 'diameter'):
+        value = string(raw.get('level_' + key, ''), 'Характеристика линии уровня', 40)
+        if value and (diameter(value) != value if key == 'diameter' else value not in HYDRAULICS[key].values()):
+            raise EstimateInputError('Некорректная характеристика линии уровня.')
+        result['level_' + key] = value
+
     result["image"] = safe_image_url(raw.get("image", ""))
     options = raw.get("power_options", [raw["power"]] if raw["power"] != "unknown" else [])
     if not isinstance(options, list) or len(options) > 2 or any(p not in ("230", "400") for p in options) or len(set(options)) != len(options):

@@ -12,6 +12,10 @@ ALIASES = {
     'lining': {'тип отделки', 'тип покрытия бассейна', 'отделка бассейна', 'pool lining'},
     'builtin': {'регулятор уровня в комплекте', 'встроенный регулятор уровня', 'built-in level regulator'},
     'scheme': {'схема регулятора уровня', 'level regulator scheme'},
+    'purpose': {'назначение линии уровня', 'level line purpose'},
+    'passage': {'свободный проход линии уровня', 'level line free passage'},
+    'connection': {'тип подключения линии уровня', 'level line connection type'},
+    'diameter': {'диаметр подключения линии уровня', 'level line diameter'},
     'regulators': {'совместимые регуляторы уровня (артикулы)', 'compatible level regulator skus'},
 }
 
@@ -57,14 +61,42 @@ def regulators(value):
     return tuple(sorted(set(tokens))) if 0 < len(tokens) <= 30 and all(re.fullmatch(r'\d{1,12}', t) for t in tokens) else None
 
 
+# These describe the dedicated communicating line, not the mains-water inlet.
+HYDRAULICS = {
+    'purpose': {'отдельная сообщающаяся линия': 'communicating', 'communicating': 'communicating',
+                'напорная линия фильтрации': 'filtration', 'filtration': 'filtration'},
+    'passage': {'да': 'yes', 'yes': 'yes', 'нет': 'no', 'no': 'no'},
+    'connection': {'клеевое внутреннее': 'glue_socket', 'glue_socket': 'glue_socket',
+                   'клеевое наружное': 'glue_spigot', 'glue_spigot': 'glue_spigot',
+                   'bsp внутренняя': 'bsp_female', 'bsp_female': 'bsp_female',
+                   'bsp наружная': 'bsp_male', 'bsp_male': 'bsp_male'},
+}
+
+
+def diameter(value):
+    # Explicit units only: DN50, 50 mm and G1½ are not interchangeable evidence.
+    m = re.fullmatch(r'(\d+(?:[.,]\d+)?)\s*(мм|mm|дюйм|inch)', value)
+    if not m:
+        return None
+    from decimal import Decimal
+    number = Decimal(m[1].replace(',', '.'))
+    if not 0 < number <= 1000:
+        return None
+    return format(number.normalize(), 'f') + (' mm' if m[2] in {'мм','mm'} else ' inch')
+
+
 def apply(specs, offer):
     parsers = {'body': body, 'grade': grade, 'lining': lining, 'builtin': builtin, 'scheme': scheme, 'regulators': regulators}
-    facts, invalid = {}, set()
+    parsers.update({key: (lambda value, options=options: options.get(value)) for key, options in HYDRAULICS.items()})
+    parsers['diameter'] = diameter
+    facts, invalid, contradictions = {}, set(), set()
     for key, aliases in ALIASES.items():
         values = [parsers[key](text(p.text)) for p in offer.findall('param') if text(p.get('name')) in aliases]
         if values:
             if None in values or len(set(values)) != 1:
                 invalid.add(key)
+                if len(set(values) - {None}) > 1:
+                    contradictions.add(key)
             else:
                 facts[key] = values[0]
     problems = []
@@ -106,7 +138,14 @@ def apply(specs, offer):
             problems.append('Не подтверждена характеристика XML: ' + key + '.')
         elif key in facts:
             specs[target] = list(facts[key]) if key == 'regulators' else facts[key]
+    for key in ('purpose', 'passage', 'connection', 'diameter'):
+        specs['level_' + key] = facts.get(key, '')
+    hydraulic_keys = {'purpose', 'passage', 'connection', 'diameter'}
+    specs['level_data_issue'] = 'conflict' if contradictions & hydraulic_keys else 'unknown' if invalid & hydraulic_keys else ''
     specs['specification_conflict'] = bool(problems)
     if facts or invalid:
-        note = 'Характеристики XML param. ' + ' '.join(problems)
+        labels = {'purpose': 'назначение линии уровня', 'passage': 'свободный проход линии уровня',
+                  'connection': 'тип подключения линии уровня', 'diameter': 'диаметр подключения линии уровня'}
+        hydraulic_note = (' Уточните поля: ' + ', '.join(labels[k] for k in sorted(invalid & hydraulic_keys)) + '.') if invalid & hydraulic_keys else ''
+        note = 'Характеристики XML param. ' + ' '.join(problems) + hydraulic_note
         specs['specification_note'] = (specs.get('specification_note', '') + ' ' + note).strip()[:1000]

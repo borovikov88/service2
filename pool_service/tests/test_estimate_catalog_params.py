@@ -170,3 +170,79 @@ class LevelAutoTests(SimpleTestCase):
         self.assertIsNone(pair(s)[1]['catalog'])
         self.assertEqual(pair(s)[0]['catalog']['selection'],'manual')
         self.assertIn('конфликт характеристик',' '.join(s['variants']['economy']['warnings']))
+
+class HydraulicLevelTests(SimpleTestCase):
+    def products(self, inlet_changes=(), regulator_changes=(), skus=''):
+        # Explicit synthetic interface facts, not assertions about live products.
+        common=[('Тип подключения линии уровня','клеевое внутреннее'),
+                ('Диаметр подключения линии уровня','50 мм')]
+        fitting=[('Назначение линии уровня','отдельная сообщающаяся линия'),
+                 ('Свободный проход линии уровня','да'),('Материал корпуса','ABS'),
+                 ('Тип отделки','пленка')]
+        def merged(base, changes):
+            return list({**dict(base), **dict(changes)}.items())
+        c=catalog.parse_catalog(feed(
+            item(901,'Регулятор уровня Aquaviva RO-7','16791',params=merged(common,regulator_changes)),
+            item(904,'Форсунка тестовая','904',params=merged(common+fitting+
+                 ([('Совместимые регуляторы уровня (артикулы)',skus)] if skus else []),inlet_changes))))
+        return c, c['products']['904'], c['products']['901']
+
+    def test_technical_match_without_sku_populates_distinct_row_and_roundtrips(self):
+        from pool_service.services.estimate_level_control import fill
+        c,p,r=self.products()
+        s=generate({**INPUTS,'finish':'film'})
+        before_total=Decimal(s['variants']['economy']['total'])
+        before=[deepcopy(row) for row in block(s,'embedded')['rows'] if row['kind']=='inlet']
+        self.assertEqual(fill(s,c,only='economy'),2)
+        result=evaluate(s)
+        self.assertEqual(Decimal(result['variants']['economy']['total'])-before_total,Decimal('200'))
+        self.assertEqual(pair(result)[1]['catalog']['id'],'904')
+        self.assertEqual(pair(result)[1]['catalog']['level_diameter'],'50 mm')
+        self.assertEqual(pair(result)[1]['catalog']['level_regulator_skus'],[])
+        self.assertEqual([row for row in block(s,'embedded')['rows'] if row['kind']=='inlet'],before)
+        self.assertEqual(fill(result,c,only='economy'),0)
+        self.assertEqual(pair(result)[1]['kind'],'level_inlet')
+
+    def test_unknown_is_not_incompatible_and_gives_specific_missing_field(self):
+        from pool_service.services.estimate_level_control import inlet_reason
+        c,p,r=self.products()
+        p['level_passage']=''
+        reason=inlet_reason(p,r,{'finish':'film'},'plastic_budget')
+        self.assertIn('свободный проход форсунки',reason)
+        self.assertIn('не доказанная несовместимость',reason)
+        p['level_passage']='yes';r['level_connection']=''
+        self.assertIn('тип присоединения регулятора',inlet_reason(p,r,{'finish':'film'},'plastic_budget'))
+
+    def test_allowlist_never_overrides_filtration_closed_or_mismatched_line(self):
+        from pool_service.services.estimate_level_control import inlet_reason
+        for change, expected in [([('Назначение линии уровня','напорная линия фильтрации')],'напорная'),
+                                 ([('Свободный проход линии уровня','нет')],'закрыт'),
+                                 ([('Диаметр подключения линии уровня','40 мм')],'Диаметры'),
+                                 ([('Тип подключения линии уровня','bsp внутренняя')],'Типы')]:
+            c,p,r=self.products(change,skus='16791')
+            self.assertIn(expected,inlet_reason(p,r,{'finish':'film'},'plastic_budget'))
+
+    def test_optional_sku_absence_or_different_list_does_not_block_technical_match(self):
+        from pool_service.services.estimate_level_control import inlet_reason
+        for skus in ('','528'):
+            c,p,r=self.products(skus=skus)
+            self.assertIsNone(inlet_reason(p,r,{'finish':'film'},'plastic_budget'))
+
+    def test_diameter_units_and_unknown_values_never_assumed(self):
+        from pool_service.services.estimate_level_control import inlet_reason
+        for value in ('50','DN50','1 1/2','неизвестно'):
+            c,p,r=self.products([('Диаметр подключения линии уровня',value)],skus='16791')
+            self.assertEqual(p['level_diameter'],'')
+            self.assertIn('не распознано',inlet_reason(p,r,{'finish':'film'},'plastic_budget'))
+        c,p,r=self.products([('Диаметр подключения линии уровня','1.5 inch')])
+        self.assertIn('Диаметры',inlet_reason(p,r,{'finish':'film'},'plastic_budget'))
+
+    def test_duplicate_conflicting_hydraulics_not_overridden_by_allowlist(self):
+        from pool_service.services.estimate_level_control import inlet_reason
+        c,p,r=self.products()
+        p=catalog.parse_catalog(feed(item(904,'Форсунка тестовая',params=[
+            ('Материал корпуса','ABS'),('Тип отделки','пленка'),
+            ('Свободный проход линии уровня','да'),('Свободный проход линии уровня','нет'),
+            ('Совместимые регуляторы уровня (артикулы)','16791') ])))['products']['904']
+        self.assertEqual(p['level_data_issue'],'conflict')
+        self.assertIn('Противоречивые',inlet_reason(p,r,{'finish':'film'},'plastic_budget'))

@@ -20,7 +20,7 @@ from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requ
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
-CACHE_KEY = "pool-estimate-shop-v9"
+CACHE_KEY = "pool-estimate-shop-v10"
 CACHE_SECONDS = 900
 MAX_BYTES = 20_000_000
 FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
@@ -289,7 +289,7 @@ def apply_product(row, product, catalog, selection="manual"):
     row["specs"] = {k: product[k] for k in ("flow", "head", "filter_flow", "backwash_flow")}
     row["catalog"] = {k: product[k] for k in ("id", "url", "sku", "price", "available", "nominal_flow", "power", "power_options", "heating_power", "heater_type", "titanium", "embedded_role", "material", "lining")}
     row["catalog"]["level_control"] = product.get("level_control", "unknown")
-    for field, default in (("level_scheme", ""), ("level_regulator_skus", []), ("specification_conflict", False)):
+    for field, default in (("level_data_issue", ""), ("level_purpose", ""), ("level_passage", ""), ("level_connection", ""), ("level_diameter", ""), ("level_scheme", ""), ("level_regulator_skus", []), ("specification_conflict", False)):
         row["catalog"][field] = deepcopy(product.get(field, default))
     row["catalog"]["specification_note"] = product.get("specification_note", "")
     row["catalog"]["specification_source"] = product.get("specification_source", "")
@@ -422,7 +422,7 @@ def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="
         if product['kind'] == 'level_regulator' and not issue:
             return product.get('specification_note') or 'Предварительный подбор; проверьте монтаж по паспорту модели.'
         if kind == 'level_inlet':
-            return 'Подключение этой форсунки к регулятору уровня не подтверждено. Требуется проверка схемы и размеров. ' + (issue or '')
+            return (issue or 'Для отдельной линии уровня проверьте свободный проход, тип и диаметр присоединений этой форсунки и выбранного регулятора. Совпадение бренда или список артикулов не обязательны.')
         return issue
     query = search_text(string(query, "Поиск товара", 120)).split()
     kind = string(kind, "Тип товара", 20)

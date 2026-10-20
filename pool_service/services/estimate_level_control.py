@@ -69,7 +69,9 @@ def warnings(variant, inputs=None):
                 dict(r.get('catalog') or {}, kind='inlet', available=True, brand=r.get('brand', '')),
                 product, inputs, variant['embedded_profile']) for r in inlets)
             if not verified:
-                notes.append('Для регулятора арт. ' + product.get('sku', '') + ' не подтверждена отдельная форсунка. Укажите в её характеристиках совместимый артикул регулятора, материал корпуса и отделку. Ручные позиции сохранены для проверки.')
+                reasons = [inlet_reason(dict(r.get('catalog') or {}, kind='inlet', available=True, brand=r.get('brand', '')), product, inputs, variant['embedded_profile']) for r in inlets] if inputs else []
+                detail = next((reason for reason in reasons if reason), 'Нужны назначение отдельной линии, свободный проход, тип и диаметр соединений, отделка и материал корпуса.')
+                notes.append('Для регулятора арт. ' + product.get('sku', '') + ' не подтверждена отдельная форсунка. ' + detail + ' Ручные позиции сохранены для проверки.')
     return notes
 
 
@@ -109,11 +111,68 @@ def regulator_reason(product):
     return None
 
 
-def inlet_matches(product, regulator, inputs, profile):
+def inlet_reason(product, regulator, inputs, profile):
+    """None = evidence for a dedicated line; unknown is never a proven mismatch.
+
+    A model-specific compatibility statement may supply missing interface facts,
+    but cannot override an explicit hydraulic/lining/material contradiction.
+    """
     from . import estimate_embedded as embedded
-    return (not regulator_reason(regulator) and product.get('kind') in {'inlet', 'vacuum'} and not product.get('specification_conflict')
-            and regulator.get('sku') in product.get('level_regulator_skus', [])
-            and embedded.matches(product, profile, inputs['finish']))
+    issue = regulator_reason(regulator)
+    if issue:
+        return issue
+    if not product.get('available'):
+        return 'Доступность форсунки не подтверждена.'
+    if product.get('kind') not in {'inlet', 'vacuum'}:
+        return 'Назначение товара как проходной закладной не подтверждено.'
+    if product.get('specification_conflict'):
+        return 'Характеристики форсунки требуют уточнения: ' + product.get('specification_note', '')
+    finish = 'film' if inputs['finish'] == 'film' else 'concrete' if inputs['finish'] in {'tile', 'mosaic'} else ''
+    if not product.get('material'):
+        return 'Материал корпуса форсунки не подтверждён.'
+    if not embedded.profile_matches(product, profile):
+        return 'Материал/бренд форсунки не соответствует выбранному профилю КП.'
+    if not product.get('lining') or not finish:
+        return 'Исполнение форсунки под отделку чаши не подтверждено.'
+    if finish not in product['lining']:
+        return 'Исполнение форсунки не соответствует отделке чаши.'
+    for item, label in ((product, 'форсунки'), (regulator, 'регулятора')):
+        if item.get('level_purpose') == 'filtration':
+            return 'Несовместимая схема: указана напорная линия фильтрации вместо отдельной сообщающейся линии.'
+        if item.get('level_passage') == 'no':
+            return 'Несовместимая схема: свободный проход ' + label + ' закрыт.'
+    for item in (product, regulator):
+        if item.get('level_data_issue') == 'conflict':
+            return 'Противоречивые характеристики линии уровня в XML; уточните источник. ' + item.get('specification_note', '')
+        if item.get('level_data_issue') == 'unknown':
+            return 'Значение характеристики линии уровня не распознано; техническая совместимость пока неизвестна. ' + item.get('specification_note', '')
+    pc, rc = product.get('level_connection'), regulator.get('level_connection')
+    pd, rd = product.get('level_diameter'), regulator.get('level_diameter')
+    if pd and rd and pd != rd:
+        return 'Диаметры линии различаются; необходимая переходная обвязка не подтверждена.'
+    if pc and rc and pc != rc:
+        return 'Типы присоединений линии различаются; необходимая обвязка не подтверждена.'
+    # Exact-model evidence is an alternative, never a required brand/SKU gate.
+    if regulator.get('sku') in product.get('level_regulator_skus', []):
+        return None
+    missing = []
+    if product.get('level_purpose') != 'communicating': missing.append('назначение отдельной сообщающейся линии')
+    if product.get('level_passage') != 'yes': missing.append('свободный проход форсунки')
+    if not pc: missing.append('тип присоединения форсунки')
+    if not pd: missing.append('диаметр присоединения форсунки с единицей')
+    if not rc: missing.append('тип присоединения регулятора к чаше')
+    if not rd: missing.append('диаметр присоединения регулятора к чаше с единицей')
+    if missing:
+        return 'Не подтверждены: ' + ', '.join(missing) + '. Это недостаток данных, а не доказанная несовместимость.'
+    # Two metric sockets accept a common pipe; threaded/spigot arrangements need
+    # documented fittings. Equal nominal diameters alone do not prove the assembly.
+    if pc != 'glue_socket' or not pd.endswith(' mm'):
+        return 'Нужна схема соединительной обвязки для этих присоединений; переходники автоматически не предполагаются.'
+    return None
+
+
+def inlet_matches(product, regulator, inputs, profile):
+    return inlet_reason(product, regulator, inputs, profile) is None
 
 
 def editable(row):
