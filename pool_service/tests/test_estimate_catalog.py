@@ -251,3 +251,18 @@ class CatalogViewsTests(TestCase):
         self.assertEqual(old["variants"]["economy"]["embedded_profile"],"plastic_budget")
         self.assertEqual(self.post(action="embedded_profile",snapshot=s,variant="economy",profile="steel304",organization=self.other.pk).status_code,403)
         self.fetch.assert_not_called()
+
+
+    def test_roll_conversion_survives_save_load_recalculate_and_print(self):
+        from pool_service.tests.test_estimate_liner import stock, film
+        self.fetch.return_value=stock()
+        s=self.post(action='generate',inputs={**INPUTS,'finish':'film','bowl_height':'1.7'}).json()['snapshot']
+        amount=film(s)['amount']
+        saved=self.post(action='save',snapshot=s,expected_revision=0).json()
+        loaded=self.client.get(self.url,{'organization':self.org.pk,'id':saved['id'],'version':1}).json()['snapshot']
+        self.assertEqual(film(loaded)['amount'],amount)
+        changed=self.post(action='recalculate',snapshot=loaded,inputs=loaded['inputs']).json()['snapshot']
+        self.assertEqual(film(changed)['amount'],amount)
+        printed=self.client.get(reverse('pool_estimate_print',args=[saved['id'],1]))
+        self.assertContains(printed,'Цена рулона 100001.00')
+        self.assertContains(printed,amount)

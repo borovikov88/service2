@@ -236,11 +236,12 @@ class MultiGeometryTests(SimpleTestCase):
         self.assertEqual(next(r for r in block(evaluate(legacy))['rows'] if r['kind']=='circulation_pump')['quantity'], '1.000')
 
     def test_exact_geometry_controls_and_water_level_independence(self):
-        s = generate(BOWL)
+        # Isolate internal geometry; approved PVC band defaults have separate tests.
+        s = generate({**BOWL, 'tech_top_finish':'off'})
         g = s['geometry']
         for key, expected in {'volume':'30.445968', 'slab_concrete':'4.70592', 'wall_concrete':'7.242', 'concrete_total':'11.94792', 'finish_area':'54.1196', 'finish_net':'55', 'finish_stock':'63'}.items():
             self.assertEqual(Decimal(g[key]), Decimal(expected), key)
-        second = {**BOWL, 'length':'6', 'width':'3', 'bowl_height':'1.5', 'depth_start':'1.4', 'depth_end':'1.4'}
+        second = {**BOWL, 'tech_top_finish':'off', 'length':'6', 'width':'3', 'bowl_height':'1.5', 'depth_start':'1.4', 'depth_end':'1.4'}
         s2 = generate(second)
         for key, expected in {'volume':'25.2','slab_concrete':'4.352','wall_concrete':'5.64','concrete_total':'9.992','finish_area':'45','finish_stock':'52'}.items():
             self.assertEqual(Decimal(s2['geometry'][key]), Decimal(expected), key)

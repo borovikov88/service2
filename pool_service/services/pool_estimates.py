@@ -433,6 +433,13 @@ def normalize_catalog(raw):
     result["price"] = str(number(raw.get("price"), "Цена магазина", minimum=".01", places=2))
     for field in ("nominal_flow", "heating_power"):
         result[field] = _optional(number(raw.get(field), "Характеристика магазина", minimum=".001", maximum="100000", optional=True))
+    if raw.get('roll_area') is not None or raw.get('roll_price') is not None:
+        from .estimate_liner import ROLLS
+        fact = ROLLS.get(result['sku'])
+        if not fact or raw.get('roll_area') != fact[1]:
+            raise EstimateInputError('Неподтверждённая площадь рулона.')
+        result['roll_area'] = fact[1]
+        result['roll_price'] = str(number(raw.get('roll_price'), 'Цена рулона', minimum='.01', places=2))
     for field in ("available", "missing"):
         result[field] = boolean(raw.get(field, False))
     return result
@@ -486,7 +493,7 @@ def normalize_snapshot(raw):
                     raise EstimateInputError("Некорректный тип отделки строки.")
                 for field, limit in (("name", 200), ("unit", 20), ("brand", 80), ("model", 120), ("reason", 300), ("rate_source", 300), ("selection_note", 1000)):
                     item[field] = string(row.get(field, ""), field, limit, required=field in {"name", "unit"})
-                for field in ("excluded", "existing", "auto_quantity", "selection_locked", "quantity_stale", "heating_unbound", "level_managed"):
+                for field in ("excluded", "existing", "auto_quantity", "selection_locked", "quantity_stale", "heating_unbound", "level_managed", "unit_price_manual"):
                     item[field] = boolean(row.get(field, False))
                 if item["heating_parent"]:
                     item["heating_unbound"] = False
@@ -534,7 +541,11 @@ def evaluate(raw):
                 if included or row["existing"]:
                     physical.append(row)
                 charged = included and not row["existing"]
+                from . import estimate_liner
+                row["price_conversion_note"] = estimate_liner.note(row)
                 amount = (Decimal(row["quantity"]) * Decimal(row["price"])).quantize(CENT, rounding=ROUND_HALF_UP) if charged and row["price"] is not None and row["quantity"] is not None else None
+                if charged and row['quantity'] is not None and estimate_liner.active(row):
+                    amount = estimate_liner.amount(row)
                 row["amount"] = _optional(amount)
                 if charged and row["price"] is None:
                     missing += 1

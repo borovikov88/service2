@@ -9,6 +9,8 @@ import django
 django.setup()
 from django.template import Template, Context
 from pool_service.services.pool_estimates import generate, recalculate, evaluate
+from pool_service.services.estimate_catalog import auto_select
+from pool_service.tests.test_estimate_liner import stock
 source=(ROOT / 'pool_service/templates/pool_service/estimates/calculator.html').read_text()
 source=re.sub(r'{% extends .*?%}|{% block .*?%}|{% endblock %}', '', source)
 html=Template(source).render(Context({'estimate_organization':{'pk':1}, 'csrf_token':'test-only'}))
@@ -26,7 +28,7 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         data=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         action=data['action']
-        if action=='generate': out={'snapshot':generate(data['inputs']), 'selected_count':0}
+        if action=='generate': out={'snapshot':auto_select(generate(data['inputs']),stock())[0], 'selected_count':3}
         elif action=='recalculate':out={'snapshot':recalculate(data['snapshot'],data['inputs'])}
         elif action=='validate':out={'snapshot':evaluate(data['snapshot'])}
         elif action=='catalog_search':out={'products':[], 'total':0,'status':{'count':0,'brands':{}}}

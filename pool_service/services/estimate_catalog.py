@@ -266,6 +266,9 @@ def candidate_reason(product, inputs, required_flow, *, for_auto=False):
 
 
 def apply_product(row, product, catalog, selection="manual"):
+    from .estimate_liner import area
+    if row.get('finish_type') == 'film' and row['id'].startswith('finish_material') and row['unit'] == 'м²' and not area(product):
+        raise EstimateInputError('Для этой плёнки не подтверждена площадь рулона: нельзя записать цену рулона как цену м². Уточните единицу и задайте проверенную цену вручную.')
     old_kind = row['kind']
     row["selection_note"] = ""
     row['level_status'], row['level_evidence'] = 'unknown', ''
@@ -282,6 +285,9 @@ def apply_product(row, product, catalog, selection="manual"):
     row["catalog"]["specification_source"] = product.get("specification_source", "")
     row["catalog"]["image"] = safe_image_url(product.get("image", ""))
     row["catalog"].update(checked_at=catalog["checked_at"], feed_date=catalog["feed_date"], selection=selection, missing=False)
+
+    from .estimate_liner import set_conversion
+    set_conversion(row, product)
 
 
 def select_price_tier(choices, tier):
@@ -367,6 +373,8 @@ def auto_select(snapshot, catalog, only_variant=None):
                         filled += 1
     from .estimate_primary import fill as fill_primary
     filled += fill_primary(result, catalog, only_variant)
+    from .estimate_liner import fill as fill_liner
+    filled += fill_liner(result, catalog, only_variant)
     embedded.update_quantities(result, only_variant)
     result = evaluate(result)
     explain_unfilled(result, catalog, only_variant)
@@ -409,7 +417,8 @@ def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="
         raise EstimateInputError("Неизвестный тип товара.")
     matches = [p for p in catalog["products"].values() if (not kind or p["kind"] == ("inlet" if kind == "level_inlet" else kind)) and (not brand or p["brand"].casefold() == brand.casefold()) and all(q in search_text(p["name"] + " " + p["sku"] + " " + p["id"]) for q in query)]
     matches.sort(key=lambda p: (bool(reason(p)), not p["available"], bool(kind == "circulation_pump" and variant != "economy" and p.get("frequency_control") is not True), Decimal(p["price"]), int(p["id"])))
-    return {"products": [{**p, "warning": reason(p)} for p in matches[:40]], "total": len(matches), "status": catalog_status(catalog)}
+    from .estimate_liner import area
+    return {"products": [{**p, "warning": reason(p), "roll_area": area(p)} for p in matches[:40]], "total": len(matches), "status": catalog_status(catalog)}
 
 
 def refresh_prices(snapshot, catalog, variant_key):
@@ -421,12 +430,21 @@ def refresh_prices(snapshot, catalog, variant_key):
             origin = row.get("catalog")
             if block["excluded"] or row["excluded"] or row["existing"] or not origin:
                 continue
-            if row["price"] != origin["price"]:
+            if row.get("unit_price_manual") or row["price"] != origin["price"]:
                 skipped += 1
                 continue
             product = catalog["products"].get(origin["id"])
             if not product:
                 origin["missing"] = True
+                continue
+            if origin.get('roll_area'):
+                from .estimate_liner import area, set_conversion
+                if area(product) != origin['roll_area'] or row['unit'] != 'м²' or row.get('finish_type') != 'film':
+                    skipped += 1
+                    continue
+                set_conversion(row, product)
+                origin.update(available=product['available'], missing=False, checked_at=catalog['checked_at'], feed_date=catalog['feed_date'])
+                updated += 1
                 continue
             row["price"] = product["price"]
             origin.update(price=product["price"], available=product["available"], missing=False, checked_at=catalog["checked_at"], feed_date=catalog["feed_date"])

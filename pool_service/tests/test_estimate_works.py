@@ -63,7 +63,8 @@ class EstimateWorkTests(SimpleTestCase):
         self.assertTrue(work(restored, 'liner_steps')['excluded'])
 
     def test_explicit_legacy_upgrade_preserves_total_scope_and_rates(self):
-        s = generate(INPUTS)
+        from pool_service.services.estimate_technology import MODES
+        s = generate({**INPUTS, **{'tech_'+key:'' for key in MODES}})
         for v in s['variants'].values():
             for b in v['blocks']:
                 b['rows'] = [r for r in b['rows'] if not r['id'].startswith('work_')]
