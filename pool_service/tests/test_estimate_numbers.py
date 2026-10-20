@@ -7,7 +7,11 @@ from .test_estimate_construction import NEW, row
 
 class NumberDisplayTests(SimpleTestCase):
     def test_display_only_print_and_exact_geometry(self):
-        s=generate(NEW); before=deepcopy(s)
+        s=generate(NEW)
+        for tier in s['variants']:
+            row(s,'material_sand',tier).update(quantity='5.9136',auto_quantity=False)
+            row(s,'material_rebar',tier).update(quantity='1259.2533',auto_quantity=False)
+        s=evaluate(s); before=deepcopy(s)
         html=render_to_string('pool_service/estimates/print.html',{'version':{'snapshot':s,'number':1}})
         self.assertIn('5,9 т',html)
         self.assertIn('1259,3 кг',html)

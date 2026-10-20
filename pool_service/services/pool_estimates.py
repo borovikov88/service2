@@ -399,7 +399,7 @@ def generate(raw):
             rowsets["equipment"].insert(2, row)
         variants[key] = {"embedded_profile": embedded.DEFAULTS[key], "blocks": [{"id": bid, "title": title, "excluded": False, "reason": "", "rows": rowsets[bid]} for bid, title in BLOCKS.items() if package or bid != construction.MATERIAL_BLOCK]}
     result = {"schema": 1, "inputs": inputs, "variants": variants, "geometry": metrics, "heating_accessories": 1, "level_system": 1}
-    if package: result["construction_version"]=1
+    if package: result.update(construction_version=1, construction_quantity_version=1)
     ensure_heating_rows(result)
     works.add_works(result, fresh=True)
     technology.initialize_fresh(result)
@@ -467,6 +467,8 @@ def normalize_snapshot(raw):
         raise EstimateInputError("Неизвестный формат расчёта.")
     result = {"schema": 1, "inputs": normalize_inputs(raw.get("inputs")), "variants": {}, "works_catalog": 1 if raw.get("works_catalog") == 1 else 0, "heating_accessories": 1 if raw.get("heating_accessories") == 1 else 0}
     if raw.get("construction_version") == 1: result["construction_version"] = 1
+    if result.get("construction_version") and raw.get("construction_quantity_version") == 1:
+        result["construction_quantity_version"] = 1
     expected_blocks=set(BLOCKS) if result.get("construction_version") else set(BLOCKS)-{construction.MATERIAL_BLOCK}
     if raw.get("level_system") == 1:
         result["level_system"] = 1

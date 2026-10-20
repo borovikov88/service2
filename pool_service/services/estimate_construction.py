@@ -2,6 +2,13 @@
 from decimal import Decimal as D, ROUND_CEILING, ROUND_HALF_UP
 
 MATERIAL_BLOCK = 'construction_materials'
+QUANTITY_STEPS = {'pkg_concrete_total': D('1'), 'pkg_base_volume': D('1'),
+                  'pkg_sand_tonnes': D('1'), 'pkg_rebar_mass': D('0.5')}
+
+def estimate_quantity(value, step):
+    return (value / step).to_integral_value(rounding=ROUND_CEILING) * step if value is not None else None
+
+
 PRICE_BASES = {'concrete_bowl': ('8000','1'), 'concrete_base': ('7700','1'),
                'sand': ('950','1'), 'rebar': ('75','1'), 'insulation': ('2772','4.85')}
 PARAMETERS = {'sand_density':('1.6','.1','5'), 'rebar_diameter':(None,'6','40'),
@@ -151,6 +158,8 @@ def sync(snapshot):
         handling=D(0);confirmed=False;incomplete=False
         for block in variant['blocks']:
             for row in block['rows']:
+                row['construction_quantity_note']=''
+                row['construction_calculated_quantity']=None
                 key=row['basis'].removeprefix('pkg_')
                 expected_unit=EXPECTED_UNITS.get(row['basis'])
                 mismatch=bool(expected_unit and row['unit']!=expected_unit)
@@ -161,6 +170,16 @@ def sync(snapshot):
                     notes.append(f"{row['name']}: автоматическая база имеет единицу {expected_unit}, а строка — {row['unit']}. Задайте количество и цену вручную либо восстановите единицу; автоматическое начисление не подтверждено.")
                 if not mismatch and row['basis'] in BASES and key in values and row['auto_quantity'] and not row['existing']:
                     value=values[key]
+                    if snapshot.get('construction_quantity_version') == 1 and block['id'] == MATERIAL_BLOCK and row['basis'] in QUANTITY_STEPS:
+                        row['construction_calculated_quantity']=format(value,'f') if value is not None else None
+                        step=QUANTITY_STEPS[row['basis']]
+                        estimated=estimate_quantity(value,step)
+                        if value is not None:
+                            shown=format(value.quantize(D('.1'),rounding=ROUND_HALF_UP),'f')
+                            row['construction_quantity_note']=(f'Расчётное количество ≈ {shown} {row["unit"]}; '
+                                f'сметное {estimated} {row["unit"]}: округление вверх до {step} {row["unit"]}. '
+                                'Стоимость материала рассчитана по сметному количеству.')
+                        value=estimated
                     row['quantity']=format(value,'f') if value is not None else None
                 if row['id']=='material_insulation' and row.get('construction_price') and not row.get('unit_price_manual'):
                     inputs=snapshot['inputs']
