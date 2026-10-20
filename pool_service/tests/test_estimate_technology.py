@@ -34,7 +34,7 @@ class TechnologyTests(SimpleTestCase):
                              ('strip_formwork','90.000'),('plaster','41.000'),('excavation','94.000'),('backfill','26.000')]:
                 self.assertEqual(row(new,code,tier)['quantity'],qty)
                 self.assertEqual(len([r for r in rows(new,tier) if r.get('work_code')==code]),1)
-            self.assertEqual(Decimal(new['variants'][tier]['total'])-Decimal(old['variants'][tier]['total']),Decimal('47800'))
+            self.assertEqual(Decimal(new['variants'][tier]['total'])-Decimal(old['variants'][tier]['total']),Decimal('113500'))
             self.assertIsNone(row(new,'tech_plaster_material',tier)['price'])
             self.assertIsNone(row(new,'bowl_rebar',tier)['quantity'])
         twice=recalculate(new,new['inputs'])
@@ -107,3 +107,43 @@ class TechnologyTests(SimpleTestCase):
         cleared=recalculate(insulated,{**insulated['inputs'],'tech_insulation_floor':''})
         self.assertIsNone(row(cleared,'insulation')['quantity'])
         self.assertIsNone(row(cleared,'insulation')['amount'])
+
+    def test_fresh_unknown_never_charges_technology_and_transitions_are_consistent(self):
+        for initial in ({}, {'tech_plaster':''}, {'tech_plaster':'off'}):
+            snapshot=generate({**BASE,**initial})
+            self.assertEqual(snapshot['technology_version'],1)
+            for tier in snapshot['variants']:
+                for _,_,_,_,unit,_,code in tech.ROWS:
+                    if code and any(r.get('work_code')==code for r in rows(snapshot,tier)):
+                        self.assertIsNone(row(snapshot,code,tier)['quantity'])
+                        self.assertIsNone(row(snapshot,code,tier)['amount'])
+            empty=recalculate(snapshot,{**snapshot['inputs'],'tech_plaster':''})
+            for tier in empty['variants']:
+                plaster=row(empty,'plaster',tier)
+                self.assertIsNone(plaster['quantity'])
+                self.assertIsNone(plaster['amount'])
+                self.assertFalse(plaster['excluded'])
+                self.assertEqual(plaster['basis'],'tech_plaster_area')
+            self.assertEqual([v['total'] for v in empty['variants'].values()],
+                             [v['total'] for v in generate(BASE)['variants'].values()])
+
+    def test_unmarked_history_retains_legacy_plaster_and_manual_changes(self):
+        historical=generate(BASE)
+        historical.pop('technology_version')
+        for tier in historical['variants']:
+            for r in rows(historical,tier):
+                if r['basis'] in tech.BASES:
+                    r.update(basis='',auto_quantity=False)
+            row(historical,'plaster',tier).update(basis='finish_net',auto_quantity=True,quantity='73.000')
+        frozen=evaluate(historical)
+        self.assertNotIn('technology_version',frozen)
+        for result in (evaluate(frozen),recalculate(frozen,frozen['inputs'])):
+            for tier in result['variants']:
+                self.assertEqual(row(result,'plaster',tier)['quantity'],'73.000')
+                self.assertEqual(row(result,'plaster',tier)['amount'],'65700.00')
+                self.assertEqual(result['variants'][tier]['total'],frozen['variants'][tier]['total'])
+        for tier in historical['variants']:
+            row(historical,'plaster',tier).update(quantity='12',auto_quantity=False,price='1234')
+        manual=recalculate(historical,{**historical['inputs'],'tech_plaster':'walls'})
+        self.assertEqual(row(manual,'plaster')['quantity'],'12.000')
+        self.assertEqual(row(manual,'plaster')['price'],'1234.00')

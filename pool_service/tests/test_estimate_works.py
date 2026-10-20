@@ -36,7 +36,7 @@ class EstimateWorkTests(SimpleTestCase):
         result = evaluate(s)
         self.assertIsNone(work(result, 'excavation')['amount'])
         self.assertGreater(result['variants']['economy']['missing_quantities'], 0)
-        row['quantity'] = '3'
+        row.update(quantity='3', auto_quantity=False)
         self.assertEqual(Decimal(evaluate(s)['variants']['economy']['total']) - base, Decimal('30.15'))
         row.update(excluded=True)
         self.assertEqual(Decimal(evaluate(s)['variants']['economy']['total']), base)
@@ -45,8 +45,10 @@ class EstimateWorkTests(SimpleTestCase):
 
     def test_labor_has_no_stock_and_optional_rows_stay_excluded(self):
         s = generate({**INPUTS, 'finish': 'film', 'length': '8.123'})
-        for code in ('finish_film', 'underlay_film', 'primer', 'plaster'):
+        for code in ('finish_film', 'underlay_film', 'primer'):
             self.assertEqual(work(s, code)['quantity'], '69.000')
+        self.assertIsNone(work(s, 'plaster')['quantity'])
+        self.assertIsNone(work(s, 'plaster')['amount'])
         for code in ('liner_steps', 'gutters', 'countercurrent', 'waterfall', 'construction_travel', 'finish_travel'):
             self.assertTrue(work(s, code)['excluded'])
             self.assertIsNone(work(s, code)['amount'])

@@ -382,6 +382,7 @@ def generate(raw):
     result = {"schema": 1, "inputs": inputs, "variants": variants, "geometry": metrics, "heating_accessories": 1}
     ensure_heating_rows(result)
     works.add_works(result, fresh=True)
+    technology.initialize_fresh(result)
     update_construction_quantities(result)
     technology.apply(result, create=True)
     embedded.ensure_rows(result)
@@ -430,6 +431,8 @@ def normalize_snapshot(raw):
     if not isinstance(raw, dict) or raw.get("schema") != 1:
         raise EstimateInputError("Неизвестный формат расчёта.")
     result = {"schema": 1, "inputs": normalize_inputs(raw.get("inputs")), "variants": {}, "works_catalog": 1 if raw.get("works_catalog") == 1 else 0, "heating_accessories": 1 if raw.get("heating_accessories") == 1 else 0}
+    if raw.get("technology_version") == 1:
+        result["technology_version"] = 1
     variants = raw.get("variants")
     if not isinstance(variants, dict) or set(variants) != set(VARIANTS):
         raise EstimateInputError("В расчёте должны быть три варианта.")

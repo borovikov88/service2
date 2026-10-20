@@ -124,6 +124,19 @@ def quantities(inputs):
     return values
 
 
+def initialize_fresh(snapshot):
+    """Bind only freshly generated work rows; never call for saved snapshots."""
+    snapshot['technology_version'] = 1
+    for variant in snapshot['variants'].values():
+        for _, _, metric, _, unit, block_id, work_code in ROWS:
+            if not work_code:
+                continue
+            block = next(b for b in variant['blocks'] if b['id'] == block_id)
+            for row in block['rows']:
+                if row.get('work_code') == work_code and row['unit'] == unit:
+                    row.update(basis='tech_' + metric, auto_quantity=True, quantity=None)
+
+
 def apply(snapshot, create=False):
     from .pool_estimates import make_row, EstimateInputError
     from .estimate_embedded import ceil_quantity
@@ -162,7 +175,7 @@ def apply(snapshot, create=False):
                 row.update(basis=basis, auto_quantity=True); eligible=True
             if eligible and row['unit'] == unit:
                 row['quantity'] = format(D(ceil_quantity(metrics[basis])), '.3f') if metrics[basis] is not None else None
-    return metrics
+    return metrics if any(inputs.get('tech_' + name) for name in MODES) else {}
 
 
 def warnings(inputs):

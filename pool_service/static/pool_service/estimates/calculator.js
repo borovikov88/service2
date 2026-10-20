@@ -1,4 +1,4 @@
-import {setExcluded, emptyRow, isWork, samePrice, workPriceTargets, automaticQuantity} from './state.js?v=4';
+import {setExcluded, emptyRow, isWork, samePrice, workPriceTargets, automaticQuantity, quantityRequired} from './state.js?v=5';
 
 const root = document.querySelector('#pool-estimator');
 const $ = selector => root.querySelector(selector);
@@ -312,7 +312,7 @@ root.addEventListener('click', event => {
     for (const key of ['name', 'unit', 'brand', 'model', 'kind', 'quantity', 'price']) edit.elements.namedItem(key).value = rowBeingEdited[key] ?? '';
     for (const key of ['existing', 'auto_quantity']) edit.elements.namedItem(key).checked = rowBeingEdited[key];
     for (const key of ['flow', 'head', 'filter_flow', 'backwash_flow']) edit.elements.namedItem(key).value = rowBeingEdited.specs[key] ?? '';
-    edit.elements.quantity.required = !isWork(rowBeingEdited);
+    edit.elements.quantity.required = quantityRequired(rowBeingEdited);
     const accessory = ['circulation_pump','solenoid_valve'].includes(rowBeingEdited.kind);
     $('#pe-heating-parent-label').hidden = !accessory;
     const parentSelect = edit.elements.heating_parent;
@@ -321,6 +321,12 @@ root.addEventListener('click', event => {
     $('#pe-auto-label').hidden = !rowBeingEdited.basis;
     $('#pe-row-dialog').showModal();
   }
+});
+$('#pe-row-form').addEventListener('change', event => {
+  if (!['auto_quantity', 'kind'].includes(event.target.name)) return;
+  const f = event.currentTarget;
+  f.elements.quantity.required = quantityRequired({...rowBeingEdited, kind:f.elements.kind.value,
+    auto_quantity:f.elements.auto_quantity.checked});
 });
 $('#pe-row-form').addEventListener('submit', event => {
   event.preventDefault();
@@ -360,9 +366,6 @@ function askWorkPrice(blockId, row, price, draftRow = null) {
   $('#pe-price-error').textContent = '';
   $('#pe-price-dialog').showModal();
 }
-$('#pe-row-form').elements.kind.addEventListener('change', event => {
-  $('#pe-row-form').elements.quantity.required = event.target.value !== 'work';
-});
 root.addEventListener('click', async event => {
   const button = event.target.closest('[data-price-choice]');
   if (!button || busy || !priceTarget) return;

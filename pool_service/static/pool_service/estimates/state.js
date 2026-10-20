@@ -65,3 +65,7 @@ export function automaticQuantity(snapshot, variantKey, row) {
   return value === null || value === undefined || value === '' || !Number.isFinite(Number(value))
     ? null : String(Math.ceil(Number(value)));
 }
+
+export function quantityRequired(row) {
+  return !isWork(row) && !(row.basis && row.auto_quantity);
+}
