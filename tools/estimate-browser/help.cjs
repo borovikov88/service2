@@ -60,5 +60,32 @@ const {chromium}=require('playwright');
   check(await candidate.getAttribute('aria-label').then(x=>x.startsWith('Проверить:')),'candidate remains visibly critical');
   check(errors.length===0,errors.join('\n'));console.log((mobile?'mobile':'desktop')+': hover/focus/tap/Escape/outside, modal, dynamic rows, bounds, dark theme PASS; no help API calls; JS errors 0');await context.close();
  }
+ for(const mode of ['missing-api','missing-selector']){
+ const fallback=await browser.newContext({viewport:{width:390,height:844}});
+ await fallback.addInitScript(mode=>{
+   if(mode==='missing-api'){
+   Object.defineProperty(HTMLElement.prototype,'showPopover',{value:undefined,configurable:true});
+   Object.defineProperty(HTMLElement.prototype,'hidePopover',{value:undefined,configurable:true});
+   }
+   const supports=CSS.supports.bind(CSS);
+   if(mode==='missing-selector')CSS.supports=(...args)=>args[0]==='selector(:popover-open)'?false:supports(...args);
+   const matches=Element.prototype.matches;
+   Element.prototype.matches=function(selector){if(selector.includes(':popover-open'))throw new SyntaxError('unsupported selector');return matches.call(this,selector);};
+ },mode);
+ const oldPage=await fallback.newPage(), oldErrors=[];oldPage.on('pageerror',e=>oldErrors.push(e.message));
+ await oldPage.goto(process.env.ESTIMATE_BROWSER_URL||'http://127.0.0.1:8772/estimates/');
+ await oldPage.waitForSelector('[data-row="material_sand"][data-field="quantity"]');
+ check(await oldPage.locator('.pe-help-button,.pe-help-source,#pe-help-popover').count()===0,'unsupported API leaves originals intact');
+ check(await oldPage.locator('#pe-parameters p.pe-help').first().isVisible(),'fallback parameter help visible');
+ const oldNote=oldPage.locator('[data-construction-quantity="material_sand"]');
+ check(await oldNote.isVisible()&&(await oldNote.textContent()).includes('округление вверх'),'fallback material help visible');
+ check(await oldPage.locator('#pe-warnings').isVisible(),'fallback checks visible');
+ await oldPage.locator('[data-variant="premium"]').click();
+ check(await oldNote.isVisible(),'fallback dynamic help remains visible');
+ check(await oldPage.locator('[data-row="material_sand"][data-field="quantity"]').inputValue()==='6','fallback retains calculated quantities');
+ check(oldErrors.length===0,oldErrors.join('\n'));
+ console.log(mode+': original parameter/row/check help and dynamic variants accessible; JS errors 0');
+ await fallback.close();
+ }
  await browser.close();
 })().catch(e=>{console.error(e);process.exit(1)});

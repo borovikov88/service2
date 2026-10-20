@@ -2,6 +2,11 @@
 export function installHelp(root) {
   const doc=root.ownerDocument, groups=new Map();
   const panel=doc.createElement('div');
+  // Progressive enhancement: keep all original help visible unless both the
+  // methods and selector are supported. Never hide information before this gate.
+  const supported=typeof panel.showPopover==='function' && typeof panel.hidePopover==='function'
+    && doc.defaultView.CSS?.supports?.('selector(:popover-open)');
+  if(!supported)return {refresh() {}, close() {}};
   panel.id='pe-help-popover'; panel.className='pe-help-popover'; panel.setAttribute('popover','manual');
   panel.setAttribute('role','region'); panel.setAttribute('aria-label','Подробности подсказки');
   root.append(panel);
