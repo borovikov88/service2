@@ -19,7 +19,7 @@ def sync(snapshot, create=False):
         included = any(status(r) == 'included' for r in skimmers)
         for kind, title in ROLES.items():
             candidates = [r for r in rows if r['kind']==kind]
-            legacy_bundle = any(r['id'] == 'embedded_supply' for r in rows)
+            legacy_bundle = any(r['id'] == 'embedded_supply' and not (r['excluded'] and r['reason'] == 'Состав закладных детализирован') for r in rows)
             if not candidates and create and not legacy_bundle:
                 if len(block['rows']) >= 100:
                     raise EstimateInputError('В блоке недостаточно места для системы уровня воды.')
@@ -30,7 +30,7 @@ def sync(snapshot, create=False):
                 row['level_managed']=True
                 block['rows'].append(row);rows.append(row);candidates=[row]
             for row in candidates:
-                if not row.get('level_managed') or row['existing'] or row.get('selection_locked') or not row['auto_quantity']:
+                if not row.get('level_managed') or row['existing'] or row.get('selection_locked') or not row['auto_quantity'] or (row.get('catalog') or {}).get('selection') == 'manual':
                     continue
                 if included and not row['excluded']:
                     row.update(excluded=True,reason=OFF)
@@ -42,12 +42,21 @@ def sync(snapshot, create=False):
 
 
 def warnings(variant):
-    state=variant.get('level_control_status')
-    if state == 'unknown':
-        return ['Комплектация скиммера регулятором уровня не подтверждена. Предварительно добавлена одна отдельная система на чашу; уточните точную модель и комплект. Дополнительная форсунка регулятора не учитывается как возвратная форсунка фильтрации.']
+    state = variant.get('level_control_status')
+    if not state: return []
+    rows = [r for b in variant['blocks'] for r in b['rows'] if r['kind'] in ROLES and
+            ((not b['excluded'] and not r['excluded']) or r['existing']) and
+            r['quantity'] is not None and Decimal(r['quantity']) > 0]
+    roles = {r['kind'] for r in rows}
     if state == 'included':
-        return ['В выбранном скиммере подтверждён регулятор уровня в комплекте; автоматически добавленная отдельная пара исключена. Проверьте, что он обслуживает общую чашу. Ручные и уже установленные позиции требуют отдельной проверки на дублирование.']
-    return ['Отдельный регулятор уровня и его форсунка: одна система на чашу, без включения этой форсунки в расчёт фильтрации.'] if state else []
+        text = 'В выбранном скиммере подтверждён регулятор уровня в комплекте. '
+        text += ('Конфликт комплектации: отдельные ручные/установленные позиции системы уровня сохранены. Проверьте дублирование и явно исключите лишнее.' if rows else
+                 'Активных отдельных позиций системы уровня нет; проверьте, что встроенный комплект обслуживает всю чашу.')
+        return [text]
+    prefix = 'Комплектация скиммера регулятором уровня не подтверждена. ' if state == 'unknown' else ''
+    text = ('В смете есть отдельный регулятор и его форсунка; проверьте состав и количество для одной чаши.' if roles == set(ROLES) else
+            'Отдельная система уровня не сформирована полностью: проверьте отсутствующие или исключённые позиции и прежний общий комплект.')
+    return [prefix + text + ' Форсунка регулятора не учитывается как возвратная форсунка фильтрации.']
 
 
 def status(row):

@@ -266,3 +266,21 @@ class CatalogViewsTests(TestCase):
         printed=self.client.get(reverse('pool_estimate_print',args=[saved['id'],1]))
         self.assertContains(printed,'Цена рулона 100001.00')
         self.assertContains(printed,amount)
+
+
+    def test_custom_roll_selection_normalizes_save_load_lineage(self):
+        from pool_service.tests.test_estimate_liner import stock, film
+        self.fetch.return_value=stock()
+        s=generate(INPUTS)
+        row=film(s)
+        row.update(id='550e8400-e29b-41d4-a716-446655440000',finish_type='',basis='',auto_quantity=False,quantity='79')
+        selected=self.post(action='catalog_apply',snapshot=s,variant='economy',block='finish',row=row['id'],product_id='1')
+        self.assertEqual(selected.status_code,200)
+        s=selected.json()['snapshot']
+        find=lambda snapshot:next(r for r in block(snapshot,'finish')['rows'] if r['id']==row['id'])
+        self.assertEqual(find(s)['amount'],'189997.09')
+        saved=self.post(action='save',snapshot=s,expected_revision=0).json()
+        loaded=self.client.get(self.url,{'organization':self.org.pk,'id':saved['id'],'version':1}).json()['snapshot']
+        self.assertEqual(find(loaded)['catalog']['roll_area'],'41.58')
+        self.assertEqual(find(loaded)['amount'],'189997.09')
+        self.assertEqual(find(loaded)['finish_type'],'')

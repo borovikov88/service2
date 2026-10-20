@@ -17,9 +17,20 @@ def area(product):
     return fact[1] if re.search(patterns[fact[0]], name) else None
 
 
+def validate_selection(row, product):
+    from .pool_estimates import EstimateInputError
+    is_liner = (product.get('sku') in ROLLS or bool(re.search(r'^(?:(?:армированная|пвх)\s+)*(?:лайнер|пл[её]нка)\b', product['name'], re.I)))
+    film_target = row['id'].startswith('finish_material') and row.get('finish_type') == 'film'
+    if not is_liner and not film_target: return
+    if not area(product):
+        raise EstimateInputError('Для этой плёнки не подтверждена площадь и единица продажи рулона. Уточните единицу и задайте проверенную цену вручную.')
+    if row['unit'] not in ('м²', 'рулон', 'рул.'):
+        raise EstimateInputError('Цена выбранной плёнки указана за рулон. Выберите единицу м² для пересчёта либо рулон; цена в другую единицу не переносится.')
+
+
 def set_conversion(row, product):
     size = area(product)
-    if row.get('finish_type') != 'film' or not row['id'].startswith('finish_material') or row['unit'] != 'м²' or not size:
+    if row['unit'] != 'м²' or not size:
         return
     origin = row['catalog']
     origin.update(roll_price=product['price'], roll_area=size)
@@ -30,7 +41,7 @@ def set_conversion(row, product):
 def active(row):
     origin = row.get('catalog') or {}
     return (origin.get('roll_price') is not None and origin.get('roll_area') and
-            row['unit'] == 'м²' and row.get('finish_type') == 'film' and not row.get('unit_price_manual') and
+            row['unit'] == 'м²' and not row.get('unit_price_manual') and
             row['price'] is not None and D(row['price']) == D(origin['price']))
 
 

@@ -266,9 +266,8 @@ def candidate_reason(product, inputs, required_flow, *, for_auto=False):
 
 
 def apply_product(row, product, catalog, selection="manual"):
-    from .estimate_liner import area
-    if row.get('finish_type') == 'film' and row['id'].startswith('finish_material') and row['unit'] == 'м²' and not area(product):
-        raise EstimateInputError('Для этой плёнки не подтверждена площадь рулона: нельзя записать цену рулона как цену м². Уточните единицу и задайте проверенную цену вручную.')
+    from .estimate_liner import validate_selection
+    validate_selection(row, product)
     old_kind = row['kind']
     row["selection_note"] = ""
     row['level_status'], row['level_evidence'] = 'unknown', ''
@@ -439,7 +438,7 @@ def refresh_prices(snapshot, catalog, variant_key):
                 continue
             if origin.get('roll_area'):
                 from .estimate_liner import area, set_conversion
-                if area(product) != origin['roll_area'] or row['unit'] != 'м²' or row.get('finish_type') != 'film':
+                if area(product) != origin['roll_area'] or row['unit'] != 'м²':
                     skipped += 1
                     continue
                 set_conversion(row, product)

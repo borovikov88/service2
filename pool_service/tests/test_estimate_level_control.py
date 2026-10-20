@@ -67,3 +67,37 @@ class LevelControlTests(SimpleTestCase):
         results=catalog.search_catalog(c,'','level_regulator','',s['inputs'],1)
         self.assertEqual(results['total'],3)
         self.assertTrue(all(p['warning'] for p in results['products']))
+
+    def test_retired_legacy_bundle_gets_pair_once_but_manual_exclusion_is_respected(self):
+        from pool_service.services.pool_estimates import make_row
+        for reason in ('Состав закладных детализирован','Исключено пользователем'):
+            s=generate(INPUTS)
+            for v in s['variants'].values():
+                b=next(b for b in v['blocks'] if b['id']=='embedded')
+                b['rows']=[r for r in b['rows'] if r['kind'] not in ('level_regulator','level_inlet')]
+                old=make_row('embedded_supply','Прежний комплект')
+                old.update(excluded=True,reason=reason);b['rows'].append(old)
+            first=recalculate(s,s['inputs']);second=recalculate(first,first['inputs'])
+            expected=2 if reason=='Состав закладных детализирован' else 0
+            self.assertEqual(len(self.pair(second)),expected)
+            self.assertEqual(len(self.pair(first)),expected)
+            warning=' '.join(second['variants']['economy']['warnings'])
+            self.assertIn('есть отдельный регулятор' if expected else 'не сформирована полностью',warning)
+
+    def test_manual_catalog_pick_survives_builtin_and_reverse(self):
+        raw=offer(1,'Регулятор уровня Aquaviva RO-7',price='100').replace('</offer>','<vendorCode>16791</vendorCode></offer>')
+        c=catalog.parse_catalog(feed(raw))
+        s=generate(INPUTS);reg=self.pair(s)[0]
+        catalog.apply_product(reg,c['products']['1'],c)
+        self.assertFalse(reg.get('selection_locked',False))
+        skimmer=next(r for r in block(s,'embedded')['rows'] if r['kind']=='skimmer')
+        skimmer.update(level_status='included',level_evidence='Паспорт exact model')
+        checked=evaluate(s)
+        self.assertFalse(self.pair(checked)[0]['excluded'])
+        self.assertEqual(self.pair(checked)[0]['amount'],'100.00')
+        self.assertTrue(any('Конфликт комплектации' in w for w in checked['variants']['economy']['warnings']))
+        next(r for r in block(checked,'embedded')['rows'] if r['kind']=='skimmer').update(level_status='absent')
+        restored=evaluate(checked)
+        self.assertFalse(self.pair(restored)[0]['excluded'])
+        self.assertFalse(self.pair(restored)[1]['excluded'])
+        self.assertEqual(self.pair(restored)[0]['amount'],'100.00')

@@ -74,3 +74,34 @@ class LinerTests(SimpleTestCase):
         s=generate({**INPUTS,'finish':'film'});before=deepcopy(film(s))
         with self.assertRaises(EstimateInputError): catalog.apply_product(film(s),c['products']['4'],c)
         self.assertEqual(film(s),before)
+
+    def test_custom_uuid_and_legacy_without_finish_type_convert_and_keep_manual_prices(self):
+        c=stock()
+        for rid in ('550e8400-e29b-41d4-a716-446655440000','finish_material'):
+            s=generate(INPUTS); r=film(s)
+            r.update(id=rid,finish_type='',basis='',auto_quantity=False,quantity='79')
+            catalog.apply_product(r,c['products']['1'],c)
+            checked=evaluate(s)
+            find=lambda snapshot: next(x for x in block(snapshot,'finish')['rows'] if x['id']==rid)
+            self.assertEqual(find(checked)['amount'],'189997.09')
+            self.assertEqual(find(checked)['catalog']['roll_area'],'41.58')
+            self.assertIn('Цена рулона',find(checked)['price_conversion_note'])
+            refreshed,_,_=catalog.refresh_prices(checked,c,'economy')
+            self.assertEqual(find(refreshed)['amount'],'189997.09')
+            find(checked).update(price='12.34',unit_price_manual=True)
+            self.assertEqual(find(evaluate(checked))['amount'],'974.86')
+        for unit in ('шт.','компл.','м'):
+            s=generate(INPUTS);r=film(s);r.update(id='custom',finish_type='',unit=unit)
+            before=deepcopy(r)
+            with self.assertRaises(EstimateInputError):catalog.apply_product(r,c['products']['1'],c)
+            self.assertEqual(r,before)
+        s=generate(INPUTS);r=film(s);r.update(id='custom',finish_type='')
+        with self.assertRaises(EstimateInputError):catalog.apply_product(r,c['products']['4'],c)
+
+    def test_liner_accessories_are_not_mistaken_for_roll_material(self):
+        for name in ('Клей для ПВХ пленки','Уголок крепёжный для лайнера','Жидкий ПВХ для пленки'):
+            c=catalog.parse_catalog(feed(offer(11,name,description='',price='123')))
+            s=generate(INPUTS);r=film(s);r.update(id='custom',finish_type='',unit='шт.',quantity='1',auto_quantity=False)
+            catalog.apply_product(r,c['products']['11'],c)
+            self.assertEqual(r['price'],'123.00')
+            self.assertNotIn('roll_area',r['catalog'])
