@@ -266,6 +266,14 @@ def select_heater(choices, tier):
     return middle
 
 
+def choose_filtration_product(choices, tier):
+    if tier == 'premium':
+        minimum = min(Decimal(p['nominal_flow']) for p in choices)
+        comparable = [p for p in choices if Decimal(p['nominal_flow']) <= minimum * Decimal('1.25')]
+        return min(comparable, key=lambda p: (-Decimal(p['price']), Decimal(p['nominal_flow']), int(p['id'])))
+    return min(choices, key=lambda p: (Decimal(p['nominal_flow']), Decimal(p['price']), int(p['id'])))
+
+
 def auto_select(snapshot, catalog, only_variant=None):
     result = deepcopy(snapshot)
     embedded.ensure_rows(result, only_variant)
@@ -310,12 +318,7 @@ def auto_select(snapshot, catalog, only_variant=None):
                     if choices:
                         # Minimum sufficient capacity first, then retail price
                         # within that capacity; never select a giant cheap pump.
-                        product = select_heater(choices, key) if kind == "heater" else min(choices, key=lambda p: (Decimal(p["nominal_flow"]), Decimal(p["price"]), int(p["id"])))
-                        if key == 'premium' and kind in ('pump', 'filter'):
-                            # Compare nearby capacities; price is not a reason to buy an oversized commercial unit.
-                            minimum = min(Decimal(p['nominal_flow']) for p in choices)
-                            comparable = [p for p in choices if Decimal(p['nominal_flow']) <= minimum * Decimal('1.25')]
-                            product = min(comparable, key=lambda p: (-Decimal(p['price']), Decimal(p['nominal_flow']), int(p['id'])))
+                        product = select_heater(choices, key) if kind == "heater" else choose_filtration_product(choices, key)
                         if origin and product["id"] == origin["id"]:
                             continue  # same model keeps its frozen price
                         apply_product(row, product, catalog, "auto")

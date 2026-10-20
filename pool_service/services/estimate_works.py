@@ -73,6 +73,48 @@ def finish_extras(finish, metrics, variant):
     return rows
 
 
+def source_rate(row, variant):
+    """Reusable unit rates only. Basic blanks may use the same work/unit in Standard.
+
+    Source: owner's workbook, basic/standart/lux G43:G59 and G158:G166,
+    Оборудование G148:G153. Never treat cached package totals as unit rates.
+    """
+    code = row.get('work_code')
+    for item_code, _, _, unit, economy, standard, _, _ in WORKS:
+        if item_code != code:
+            continue
+        if code == 'finish_transport' and variant != 'economy':
+            unit = 'компл.'
+        if row['unit'] != unit:
+            return None
+        return (economy if economy is not None else standard) if variant == 'economy' else standard
+    if code == 'equipment_work' and row['unit'] == 'компл.' and variant == 'economy':
+        return '70000'
+    if code == 'liner_steps' and row['unit'] == 'шт.' and row.get('finish_type') == 'film':
+        return '15000' if variant == 'economy' else None
+    finish = row.get('finish_type')
+    if row['unit'] == 'м²' and finish in ('film', 'mosaic'):
+        if code == 'finish_' + finish:
+            return finish_rate(finish, variant)
+        if code == ('underlay_film' if finish == 'film' else 'waterproofing_mosaic'):
+            return ('200' if variant == 'economy' else '70' if finish == 'film' else '600')
+    return None
+
+
+def fill_missing_prices(snapshot):
+    count = 0
+    for key, variant in snapshot['variants'].items():
+        for block in variant['blocks']:
+            for row in block['rows']:
+                if not is_work(row) or row['price'] is not None or row['existing']:
+                    continue
+                rate = source_rate(row, key)
+                if rate is not None:
+                    row['price'] = rate
+                    count += 1
+    return count
+
+
 def add_works(snapshot, *, fresh=False):
     """Explicit upgrade of an editable copy. Never alter existing rates or history."""
     from .pool_estimates import make_row, geometry, EstimateInputError
@@ -92,7 +134,8 @@ def add_works(snapshot, *, fresh=False):
             if code == 'finish_transport' and key != 'economy':
                 unit, qty = 'компл.', '1'
             row = make_row('work_' + code, name, unit, metrics[basis] if basis else qty, basis, 'work')
-            row.update(work_code=code, price=economy if key == 'economy' else standard)
+            row.update(work_code=code)
+            row['price'] = source_rate(row, key)
             if optional or (generic and bid == 'construction'):
                 row.update(excluded=True, reason='Есть общая строка строительства: замените её детализацией при необходимости' if generic and bid == 'construction' else 'Дополнительная работа: восстановите при необходимости')
             if len(block['rows']) >= 100:
@@ -107,5 +150,7 @@ def add_works(snapshot, *, fresh=False):
                                     ('finish', 'finish_work', finish_rate(snapshot['inputs']['finish'], key))):
                 row = next(r for r in blocks[bid]['rows'] if r['id'] == rid)
                 row['price'] = price
+    if fresh:
+        fill_missing_prices(snapshot)
     snapshot['works_catalog'] = 1
     return snapshot

@@ -318,6 +318,7 @@ def normalize_snapshot(raw):
 
 def evaluate(raw):
     """Recompute derived fields on the server; never trust client totals/warnings."""
+    from .estimate_compatibility import annotate
     result = normalize_snapshot(raw)
     result["geometry"] = geometry(result["inputs"])
     result["heating"] = heating_requirement(result["inputs"])
@@ -426,6 +427,7 @@ def evaluate(raw):
         if result["inputs"]["finish"] and any(b["id"] == "finish" and not b["excluded"] for b in variant["blocks"]):
             warnings.append("Отделка: плёнка и геотекстиль с запасом 15%, работы без запаса; расчётные количества округляются вверх до целого м². Подготовка основания и расходники уточняются отдельно.")
         variant.update(total=str(total.quantize(CENT)), missing_prices=missing, missing_quantities=missing_quantities, missing_models=models, warnings=warnings, title=VARIANTS[key][0], preferred_brand="Дорогие модели каталога" if key == "premium" else VARIANTS[key][1])
+        annotate(result, variant)
     return result
 
 
