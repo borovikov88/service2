@@ -4,6 +4,7 @@ from decimal import Decimal
 from django.test import SimpleTestCase, TestCase
 from django.contrib.auth.models import User
 from django.urls import reverse
+from django.template.loader import render_to_string
 from pool_service.models import Organization, OrganizationAccess
 from pool_service.estimate_models import PoolEstimate
 from pool_service.services import estimate_catalog as catalog
@@ -144,6 +145,40 @@ class MultiGeometryTests(SimpleTestCase):
             self.assertTrue(all(p['warning'] for p in result['products']))
         snapshot, _ = catalog.auto_select(generate({**INPUTS, 'heating':'exchanger'}), c)
         self.assertIsNone(next(r for r in block(snapshot)['rows'] if r['kind']=='circulation_pump')['price'])
+
+    def test_category_identifies_circulation_without_reclassifying_accessories(self):
+        offers = []
+        for pid, name in ((91, 'Насос Aquaviva Test Qmax 2.8м3/ч Hmax 4м'),
+                          (92, 'Муфта для циркуляционного насоса'),
+                          (93, 'Тепловой насос Test 6 кВт 220В')):
+            offers.append(offer(pid, name).replace('</offer>', '<categoryId>42</categoryId></offer>'))
+        xml = feed(*offers).replace(b'<shop>', '<shop><categories><category id="42">Циркуляционные насосы</category></categories>'.encode())
+        c = catalog.parse_catalog(xml)
+        self.assertEqual(c['products']['91']['kind'], 'circulation_pump')
+        self.assertFalse(c['products']['91']['filtration'])
+        self.assertIsNone(c['products']['91']['nominal_flow'])
+        self.assertIsNone(c['products']['91']['head'])
+        self.assertEqual(c['products']['92']['kind'], 'other')
+        self.assertEqual(c['products']['93']['heater_type'], 'heatpump')
+        snapshot, _ = catalog.auto_select(generate(INPUTS), c)
+        for variant in snapshot['variants']:
+            self.assertIsNone(block(snapshot, variant=variant)['rows'][0]['catalog'])
+
+    def test_print_uses_saved_dimensions_and_does_not_invent_legacy_height(self):
+        snapshot = generate(BOWL)
+        before = deepcopy(snapshot)
+        def printable(value):
+            return render_to_string('pool_service/estimates/print.html', {'version':{'snapshot':value, 'number':1}})
+        html = printable(snapshot)
+        for label, value in (('Полная внутренняя высота чаши H', '1.700'), ('Толщина стен', '0.200'), ('Толщина плиты', '0.200')):
+            self.assertIn(f'{label}, м: <strong>{value}</strong>', html)
+        self.assertIn('глубина воды 1.580–1.580', html)
+        self.assertEqual(snapshot, before)
+        legacy = printable(generate(INPUTS))
+        self.assertEqual(legacy.count('<strong>не указана</strong>'), 3)
+        partial = printable(generate({**BOWL, 'wall_thickness': '', 'slab_thickness': ''}))
+        self.assertEqual(partial.count('<strong>не указана</strong>'), 2)
+        self.assertIn('H, м: <strong>1.700</strong>', partial)
 
     def test_exact_geometry_controls_and_water_level_independence(self):
         s = generate(BOWL)

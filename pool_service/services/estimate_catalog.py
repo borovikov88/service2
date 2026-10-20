@@ -144,7 +144,7 @@ def parse_catalog(payload, checked_at=None):
         category = categories.get(offer.findtext("categoryId"), "")
         circulation_section = (bool(re.search(r"циркуляцион\w* насос", category, re.I))
                                or "/tsirkulyatsionnye-nasosy/" in url)
-        if circulation_section and specs["kind"] in {"pump", "other", "circulation_pump"}:
+        if circulation_section and specs["kind"] in {"pump", "circulation_pump"}:
             specs.update(kind="circulation_pump", nominal_flow=None, flow=None, head=None,
                          filter_flow=None, filtration=False)
         # Only explicit model-title evidence. Do not infer VFD or duty from SKU/Qmax/Hmax.
