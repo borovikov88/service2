@@ -66,7 +66,9 @@ class HeatingFinishTests(SimpleTestCase):
                 self.assertFalse(any('питание не соответствует' in w or 'напряжение питания' in w for w in s['variants']['economy']['warnings']))
         unknown = catalog.parse_catalog(feed(offer(92, 'Электронагреватель Test 9кВт', description='Модели 220В и 380В; мощность 9 или 12 кВт')))
         s, _ = catalog.auto_select(generate({**HEATING, 'heating_power': '9'}), unknown)
-        self.assertIsNone(heater(s)['price'])
+        self.assertEqual(heater(s)['catalog']['id'],'92')
+        self.assertIn('питание модели',heater(s)['selection_note'])
+        self.assertEqual(heater(s)['catalog']['power_options'],[])
 
     def test_brand_and_titanium_preferences_cannot_invert_price_tiers(self):
         for prices in (('1000', '100', '200'), ('200', '300', '100')):
@@ -203,8 +205,12 @@ class HeatingFinishTests(SimpleTestCase):
         old,_=catalog.auto_select(generate({**inputs,'power':'unknown'}),products)
         self.assertEqual(heater(old)['catalog']['id'],'201')
         changed,_=catalog.auto_select(recalculate(old,inputs),products)
-        self.assertEqual(heater(changed)['catalog']['id'],'201')
-        self.assertIn('НЕ подтверждена',heater(changed)['selection_note'])
+        self.assertIsNone(heater(changed)['catalog'])
+        self.assertIn('отклонён',heater(changed)['selection_note'])
+        heater(old)['catalog']['selection']='manual'
+        kept,_=catalog.auto_select(recalculate(old,inputs),products)
+        self.assertEqual(heater(kept)['catalog']['id'],'201')
+        self.assertIn('Проверить:',heater(kept)['selection_note'])
         smaller,_=catalog.auto_select(generate({**inputs,'heating_power':'9.5'}),products)
         self.assertEqual(heater(smaller)['catalog']['id'],'202')
         self.assertEqual(heater(smaller)['selection_note'],'')

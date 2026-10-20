@@ -96,7 +96,9 @@ def _specifications(name, description):
     filtration = bool(re.search(r"префильтр|предварительн\w* фильтр|систем\w* фильтрации|\bпф\b", evidence))
     if re.search(r"без префильтр|без предварительн|гидромассаж|\bспа\b|\bspa\b|противоток", evidence):
         filtration = False
-    return {"kind": kind, "nominal_flow": flow,
+    capacities = {_decimal(v, '100000') for v in re.findall(FLOW if kind in {'pump','filter'} else r"(\d+(?:[.,]\d+)?)\s*(?:квт|kw)\b", text, re.I)} - {None}
+    conflict = len(capacities) > 1 or kind == 'pump' and len(power_values) > 1
+    return {"specification_conflict": bool(conflict), "kind": kind, "nominal_flow": flow,
             "flow": _decimal(point.group(1), "100000") if head else None,
             "head": head, "filter_flow": flow if kind == "filter" else None,
             "backwash_flow": None, "power": power, "filtration": filtration,
@@ -140,15 +142,22 @@ def parse_catalog(payload, checked_at=None):
                 brand = canonical
                 break
         description = offer.findtext("description", "")[:12000]
-        specs = {**_specifications(name, description), **embedded.specifications(name, description, brand)}
+        core_specs = _specifications(name, description)
+        specs = {**core_specs, **embedded.specifications(name, description, brand)}
+        if core_specs.get('specification_conflict'):
+            specs['specification_conflict'] = True
+            specs['specification_note'] = (specs.get('specification_note', '') + ' Противоречивые значения мощности/расхода/питания в названии товара.').strip()
         from .estimate_fitting_facts import enrich
         specs["level_control"] = "unknown"
-        specs.update(specification_note='', specification_source='')
+        specs.setdefault('specification_note', '')
+        specs.setdefault('specification_source', '')
         enrich(specs, name, brand, offer.findtext('vendorCode', '')[:80], description)
         from .estimate_level_control import classify
         classify(specs, name, brand, offer.findtext('vendorCode', '')[:80])
         from .estimate_catalog_params import apply as apply_params
         apply_params(specs, offer)
+        if set(specs.get('lining', [])) & set(specs.get('lining_denied', [])):
+            specs.update(specification_conflict=True, lining=[], specification_note=(specs.get('specification_note','') + ' Противоречивое указание допуска и запрета отделки.').strip())
         category = categories.get(offer.findtext("categoryId"), "")
         circulation_section = (bool(re.search(r"циркуляцион\w* насос", category, re.I))
                                or "/tsirkulyatsionnye-nasosy/" in url)
@@ -278,6 +287,7 @@ def apply_product(row, product, catalog, selection="manual"):
     row['construction_computed_price'] = None
     old_kind = row['kind']
     row["selection_note"] = ""
+    row["catalog_review_note"] = ""
     row['level_status'], row['level_evidence'] = 'unknown', ''
     # A successful product selection explicitly adopts its catalogue price.
     row.update(name=product["name"], brand=product["brand"], model=product["model"], price=product["price"], kind=product["kind"], unit_price_manual=False)
@@ -288,6 +298,9 @@ def apply_product(row, product, catalog, selection="manual"):
         row["heating_type"] = product["heater_type"]
     row["specs"] = {k: product[k] for k in ("flow", "head", "filter_flow", "backwash_flow")}
     row["catalog"] = {k: product[k] for k in ("id", "url", "sku", "price", "available", "nominal_flow", "power", "power_options", "heating_power", "heater_type", "titanium", "embedded_role", "material", "lining")}
+    row["catalog"]["filtration"] = product.get("filtration")
+    row["catalog"]["body_family"] = product.get("body_family", "")
+    row["catalog"]["lining_denied"] = product.get("lining_denied", [])
     row["catalog"]["level_control"] = product.get("level_control", "unknown")
     for field, default in (("level_data_issue", ""), ("level_purpose", ""), ("level_passage", ""), ("level_connection", ""), ("level_diameter", ""), ("level_scheme", ""), ("level_regulator_skus", []), ("specification_conflict", False)):
         row["catalog"][field] = deepcopy(product.get(field, default))
@@ -298,6 +311,14 @@ def apply_product(row, product, catalog, selection="manual"):
 
     from .estimate_liner import set_conversion
     set_conversion(row, product)
+
+
+def refresh_auto_facts(row, product, catalog):
+    # Automatic selection can refresh technical evidence, never frozen prices.
+    frozen = {key: row['catalog'][key] for key in ('price','checked_at','feed_date')}
+    apply_product(row, product, catalog, 'auto')
+    row['catalog'].update(frozen)
+    row['price'] = frozen['price']
 
 
 def select_price_tier(choices, tier):
@@ -323,6 +344,7 @@ def choose_filtration_product(choices, tier):
 
 
 def auto_select(snapshot, catalog, only_variant=None):
+    from . import estimate_candidates as candidates
     result = deepcopy(snapshot)
     ensure_heating_rows(result, only_variant)
     embedded.ensure_rows(result, only_variant)
@@ -344,7 +366,7 @@ def auto_select(snapshot, catalog, only_variant=None):
                     placeholder = (not origin and not row["model"] and row["price"] is None
                                    and row["name"] == template_name and row["brand"] in ({brand, ""} if kind == "heater" else {brand})
                                    and row["unit"] == "компл." and not row["basis"] and not any(row["specs"].values()))
-                    if row["kind"] != kind or row["excluded"] or row["existing"] or row.get("selection_locked") or not (untouched_auto or placeholder) or Decimal(row["quantity"]) != 1:
+                    if row["kind"] != kind or row["excluded"] or row["existing"] or row.get("selection_locked") or not (untouched_auto or placeholder) or row.get("unit_price_manual") or Decimal(row["quantity"]) != 1:
                         continue
                     flow = required
                     if kind == "filter":
@@ -353,18 +375,24 @@ def auto_select(snapshot, catalog, only_variant=None):
                         if pumps:
                             pump = pumps[0]
                             pump_flow = pump["specs"].get("flow") or (pump.get("catalog") or {}).get("nominal_flow")
-                            if not pump_flow:
-                                continue
-                            flow = max(flow, Decimal(pump_flow))
-                    choices = [p for p in catalog["products"].values() if p["kind"] == kind and (kind != "heater" or p["heater_type"] == row_heating_type(row, result["inputs"])) and not candidate_reason(p, result["inputs"], flow, for_auto=True)]
-                    if choices:
-                        # Minimum sufficient capacity first, then retail price
-                        # within that capacity; never select a giant cheap pump.
-                        product = select_heater(choices, key) if kind == "heater" else choose_filtration_product(choices, key)
-                        if origin and product["id"] == origin["id"]:
-                            continue  # same model keeps its frozen price
-                        apply_product(row, product, catalog, "auto")
+                            if pump_flow:
+                                flow = max(flow, Decimal(pump_flow))
+                    choices = [p for p in catalog['products'].values() if p['kind'] == kind and (kind != 'heater' or p['heater_type'] == row_heating_type(row, result['inputs']))]
+                    product = candidates.choose(choices, key, result['inputs'], flow)
+                    if product:
+                        if origin and product['id'] == origin['id']:
+                            # Refresh facts, retain frozen price until explicit price refresh.
+                            refresh_auto_facts(row, product, catalog)
+                            continue
+                        apply_product(row, product, catalog, 'auto')
                         filled += 1
+                    elif untouched_auto:
+                        current = catalog['products'].get(origin['id']) or {**origin, **row['specs'], 'kind':kind, 'name':row['name']}
+                        issue, _ = candidates.assess(current, result['inputs'], flow)
+                        if issue:
+                            row.update(name=template_name, brand=brand, model='', price=None, catalog=None,
+                                       selection_note='Проверить: прежний автоматический кандидат отклонён. ' + issue + ' Подходящая замена не найдена.')
+                            row['specs'] = dict.fromkeys(('flow','head','filter_flow','backwash_flow'))
         block = next(b for b in variant['blocks'] if b['id'] == 'embedded')
         if not block['excluded']:
             for row in block['rows']:
@@ -373,20 +401,43 @@ def auto_select(snapshot, catalog, only_variant=None):
                     continue
                 untouched = origin and origin['selection'] == 'auto' and row['price'] == origin['price']
                 placeholder = not origin and not row['model'] and row['price'] is None and row['name'] == embedded.ROLES[role] + ': подобрать модель'
-                if not (untouched or placeholder):
+                if not (untouched or placeholder) or row.get('unit_price_manual') or not row['auto_quantity']:
                     continue
-                choices = [p for p in catalog['products'].values() if not p.get("specification_conflict") and p.get('embedded_role') == role and embedded.matches(p, variant['embedded_profile'], result['inputs']['finish'])]
-                if choices:
-                    product = select_price_tier(choices, key)
+                choices = [p for p in catalog['products'].values() if p.get('embedded_role') == role]
+                product = candidates.choose(choices, key, result['inputs'], required, variant['embedded_profile'])
+                if product:
                     if not origin or product['id'] != origin['id']:
                         apply_product(row, product, catalog, 'auto')
                         filled += 1
+                    else:
+                        refresh_auto_facts(row, product, catalog)
+                elif untouched:
+                    current = catalog['products'].get(origin['id']) or {**origin, 'kind':row['kind'], 'name':row['name'], 'brand':row['brand']}
+                    issue, _ = candidates.assess(current, result['inputs'], required, variant['embedded_profile'])
+                    if issue:
+                        row.update(name=embedded.ROLES[role] + ': подобрать модель', brand='', model='', price=None, catalog=None,
+                                   selection_note='Проверить: прежний автоматический кандидат отклонён. ' + issue + ' Подходящая замена не найдена.')
+                        row['specs'] = dict.fromkeys(('flow','head','filter_flow','backwash_flow'))
     from .estimate_primary import fill as fill_primary
     filled += fill_primary(result, catalog, only_variant)
     from .estimate_liner import fill as fill_liner
     filled += fill_liner(result, catalog, only_variant)
     from .estimate_level_control import fill as fill_level
     filled += fill_level(result, catalog, only_variant)
+    # Explicit refresh also warns about newly known conflicts on protected rows;
+    # it does not replace their frozen product, price, quantity or user facts.
+    from .estimate_compatibility import duty
+    for tier, variant in result['variants'].items():
+        if only_variant and only_variant != tier: continue
+        pump_duty, _ = duty(result, variant)
+        for block in variant['blocks']:
+            if block['excluded']: continue
+            for row in block['rows']:
+                if row['excluded'] or not row.get('catalog'): continue
+                current = catalog['products'].get(row['catalog']['id'])
+                if not current or row['kind'] not in candidates.CORE and not row.get('embedded_role'): continue
+                issue, _ = candidates.assess(current, result['inputs'], max(required, pump_duty or required) if row['kind'] == 'filter' else required, variant['embedded_profile'])
+                row['catalog_review_note'] = ('Текущая выгрузка ' + catalog['checked_at'] + ': ' + issue)[:1000] if issue else ''
     embedded.update_quantities(result, only_variant)
     result = evaluate(result)
     explain_unfilled(result, catalog, only_variant)
@@ -474,6 +525,8 @@ def explain_unfilled(snapshot, catalog, only_variant=None):
         for block in variant['blocks']:
             for row in block['rows']:
                 if row['kind'] != 'heater' and not row.get('embedded_role'):
+                    continue
+                if row.get('selection_status') == 'check_core' or not row.get('catalog') and row.get('selection_note', '').startswith('Проверить: прежний автоматический кандидат отклонён.'):
                     continue
                 row['selection_note'] = ''
                 if block['excluded'] or row['excluded'] or row['existing']:

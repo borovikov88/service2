@@ -113,6 +113,11 @@ def apply(specs, offer):
                 text(p.get('name')) in {'марка стали корпуса', 'body steel grade'}
                 for p in offer.findall('param'))):
             material = steel
+    family = ('steel' if material and material.startswith('steel') else 'plastic' if material == 'plastic' else '')
+    if family and specs.get('body_family') and family != specs['body_family']:
+        invalid.add('body')
+    elif family:
+        specs['body_family'] = family
     old = specs.get('material', '')
     if material == 'steel':
         material = old if old.startswith('steel') else ''

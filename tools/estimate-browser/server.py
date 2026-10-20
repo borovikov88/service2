@@ -11,6 +11,12 @@ from django.template import Template, Context
 from pool_service.services.pool_estimates import generate, recalculate, evaluate
 from pool_service.services.estimate_catalog import auto_select
 from pool_service.tests.test_estimate_liner import stock
+if os.environ.get('ESTIMATE_BROWSER_CATALOG') == 'preliminary':
+    from pool_service.tests.test_estimate_catalog import offer, feed
+    from pool_service.services.estimate_catalog import parse_catalog
+    def stock():
+        return parse_catalog(feed(offer(901, 'Насос Synthetic unknown', price='100'),
+                                  offer(902, 'Фильтр Synthetic unknown', price='200')))
 source=(ROOT / 'pool_service/templates/pool_service/estimates/calculator.html').read_text()
 source=re.sub(r'{% extends .*?%}|{% block .*?%}|{% endblock %}', '', source)
 html=Template(source).render(Context({'estimate_organization':{'pk':1}, 'csrf_token':'test-only'}))
