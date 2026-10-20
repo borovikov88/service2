@@ -85,13 +85,42 @@ export function installHelp(root) {
   window.visualViewport?.addEventListener('scroll',position);
   root.addEventListener('close',()=>close(),true);
   function anchorFor(source) {
+    if(source.dataset.helpTarget)return root.querySelector(source.dataset.helpTarget) || source;
     if(source.matches('[data-row-check], [data-help-source], [data-help-warning]'))return source;
     const cell=source.closest('td');if(cell)return cell;
     if(source.closest('label'))return source.closest('label');
+    const article=source.closest('.pe-catalog-item');if(article)return article.querySelector('strong');
     const previous=source.previousElementSibling;
-    if(previous?.matches('label,summary,legend,h2,h3'))return previous;
-    if(previous?.matches('.pe-grid2'))return previous.querySelector('label:last-of-type') || source;
-    return source;
+    if(previous?.matches('label'))return previous;
+    if(previous?.matches('summary,legend,h2,h3'))return previous;
+    // General prose belongs to its section, never the last field in a grid.
+    const section=source.closest('details,fieldset,dialog,section,aside');
+    return section?.querySelector('summary,legend,h2,h3') || source;
+  }
+  function attachHelp(anchor, button, warning) {
+    if(warning){anchor.before(button);return;}
+    const control=anchor.matches('td,label') ? anchor.querySelector('input:not([type=hidden]):not([type=checkbox]),select,textarea') : null;
+    if(control){
+      let shell=control.closest('.pe-help-field');
+      if(!shell){
+        shell=doc.createElement('span');shell.className='pe-help-field';
+        if(anchor.matches('td'))shell.style.width=control.getBoundingClientRect().width+'px';
+        control.before(shell);shell.append(control);
+      }
+      button.classList.add('pe-help-corner');shell.append(button);return;
+    }
+    if(anchor.matches('td')){
+      anchor.classList.add('pe-help-cell');button.classList.add('pe-help-corner');anchor.append(button);return;
+    }
+    // Keep the last word and icon together without making the whole title nowrap.
+    const textNodes=[...anchor.childNodes].filter(node=>node.nodeType===3 && node.textContent.trim());
+    const text=textNodes.at(-1);
+    if(text){
+      const match=text.textContent.match(/^(.*?)(\S+)(\s*)$/s);
+      const tail=doc.createElement('span');tail.className='pe-help-tail';
+      text.textContent=match[1];tail.append(doc.createTextNode(match[2]),button);text.after(tail);
+    }else if(anchor.matches('.pe-help-source'))anchor.before(button);
+    else anchor.append(button);
   }
   function refresh() {
     const next=new Map();
@@ -104,7 +133,7 @@ export function installHelp(root) {
       if(!next.has(anchor))next.set(anchor,[]);
       next.get(anchor).push(source);
     }
-    for(const [anchor,group] of groups)if(!next.has(anchor)||!anchor.isConnected){if(active===group)close();group.button.remove();groups.delete(anchor);}
+    for(const [anchor,group] of groups)if(!next.has(anchor)||!anchor.isConnected||!group.button.isConnected){if(active===group)close();group.button.remove();groups.delete(anchor);}
     for(const [anchor,sources] of next) {
       let group=groups.get(anchor);
       if(!group) {
@@ -117,9 +146,7 @@ export function installHelp(root) {
         group.label=name.trim();
         button.setAttribute('aria-label',(warning?'Проверить: ':'Подсказка: ')+group.label);
         button.textContent=warning?(anchor.dataset.helpLabel || '! Проверить'):'?';
-        if(anchor.matches('td'))(anchor.querySelector('.pe-row-name') || anchor).append(button);
-        else if(anchor===sources[0])anchor.before(button);
-        else anchor.append(button);
+        attachHelp(anchor,button,warning);
         button.addEventListener('pointerenter',event=>{if(event.pointerType==='mouse')open(group);});
         button.addEventListener('pointerleave',laterClose);
         button.addEventListener('focus',()=>{if(!restoring)open(group);});

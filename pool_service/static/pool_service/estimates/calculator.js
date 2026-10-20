@@ -1,4 +1,4 @@
-import {installHelp} from './help.js?v=2';
+import {installHelp} from './help.js?v=3';
 import {money, indivisible, exactNumber, cleanNote, bindNumber, rawValue, installNumbers} from './numbers.js?v=1';
 import {setExcluded, emptyRow, isWork, samePrice, workPriceTargets, automaticQuantity, quantityRequired} from './state.js?v=7';
 
