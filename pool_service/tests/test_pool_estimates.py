@@ -271,3 +271,34 @@ class PoolEstimateViewsTests(TestCase):
         self.client.force_login(manager)
         unknown=self.client.get(self.url,{'organization':self.org.pk,'id':first['id']}).json()
         self.assertEqual(next(v for v in unknown['versions'] if v['number']==1)['created_by'],{'id':None,'name':'Автор не указан'})
+
+    def test_explicit_unbound_round_trip_save_load_and_recalculate(self):
+        from unittest.mock import patch
+        from pool_service.services.estimate_catalog import CatalogUnavailable
+        self.snapshot=generate({**INPUTS,'heating':'exchanger'})
+        rows=block(self.snapshot,variant='premium')['rows']
+        parent=next(r for r in rows if r['kind']=='heater')
+        parent['quantity']='2'
+        valve=next(r for r in rows if r['kind']=='solenoid_valve')
+        valve.update(heating_parent='',heating_unbound=True,quantity='2',price='100')
+        with patch('pool_service.estimate_views.get_catalog',side_effect=CatalogUnavailable('Synthetic offline catalog')):
+            recalculated=self.post(action='recalculate',snapshot=self.snapshot,inputs=self.snapshot['inputs']).json()['snapshot']
+            validated=self.post(action='validate',snapshot=recalculated).json()['snapshot']
+            saved=self.save(snapshot=validated).json()
+            loaded=self.client.get(self.url,{'organization':self.org.pk,'id':saved['id'],'version':1}).json()['snapshot']
+            again=self.post(action='recalculate',snapshot=loaded,inputs=loaded['inputs']).json()['snapshot']
+            for snapshot in (recalculated,validated,loaded,again):
+                valves=[r for r in block(snapshot,variant='premium')['rows'] if r['kind']=='solenoid_valve']
+                self.assertEqual(len(valves),1)
+                self.assertEqual(valves[0]['heating_parent'],'')
+                self.assertTrue(valves[0]['heating_unbound'])
+                self.assertIsNone(valves[0]['quantity'])
+                self.assertIsNone(valves[0]['amount'])
+            target=next(r for r in block(again,variant='premium')['rows'] if r['kind']=='solenoid_valve')
+            target.update(heating_parent=parent['id'],heating_unbound=False)
+            restored=self.post(action='recalculate',snapshot=again,inputs=again['inputs']).json()['snapshot']
+            valves=[r for r in block(restored,variant='premium')['rows'] if r['kind']=='solenoid_valve']
+            self.assertEqual(len(valves),1)
+            self.assertEqual(valves[0]['quantity'],'2.000')
+            self.assertEqual(valves[0]['amount'],'200.00')
+            self.assertIsNone(next(r for r in block(loaded,variant='premium')['rows'] if r['kind']=='solenoid_valve')['amount'])

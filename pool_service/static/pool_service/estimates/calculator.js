@@ -339,7 +339,10 @@ $('#pe-row-form').addEventListener('submit', event => {
   if (row.kind === 'work' && !row.work_code) row.work_code = row.id.startsWith('finish_work') ? 'finish_' + (row.finish_type || 'unknown') : row.id;
   if (['name', 'brand', 'model', 'kind'].some(key => row[key] !== rowBeingEdited[key])) row.catalog = null;
   if (row.quantity !== rowBeingEdited.quantity) row.quantity_stale = false;
-  if (['circulation_pump','solenoid_valve'].includes(row.kind)) row.heating_parent = f.elements.heating_parent.value;
+  if (['circulation_pump','solenoid_valve'].includes(row.kind)) {
+    row.heating_parent = f.elements.heating_parent.value;
+    row.heating_unbound = !row.heating_parent;
+  }
   row.existing = f.elements.existing.checked;
   row.auto_quantity = Boolean(row.basis) && f.elements.auto_quantity.checked;
   if (row.auto_quantity) row.quantity = automaticQuantity(snapshot, selected, row);

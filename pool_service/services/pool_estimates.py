@@ -86,7 +86,7 @@ def sync_exchanger_accessories(snapshot, *, only_variant=None, create=False):
                     if unlinked:
                         # A legacy pair can be bound only to one unambiguous exchanger.
                         # Preserve quantities/prices of manually selected historical equipment.
-                        if len(parents) == len(unlinked) == 1:
+                        if len(parents) == len(unlinked) == 1 and not unlinked[0].get("heating_unbound"):
                             unlinked[0]["heating_parent"] = parent_id
                         continue
                     rid = kind if kind not in ids else next((f"{kind}_{n}" for n in range(100) if f"{kind}_{n}" not in ids), "")
@@ -98,6 +98,9 @@ def sync_exchanger_accessories(snapshot, *, only_variant=None, create=False):
                     rows.append(row)
                     ids.add(rid)
         for row in rows:
+            if (row["kind"] in ACCESSORIES and row.get("heating_unbound") and not row.get("heating_parent")
+                    and row["auto_quantity"] and row["basis"] == "exchanger_quantity" and not row["existing"]):
+                row["quantity"] = None
             if row["kind"] not in ACCESSORIES or not row.get("heating_parent") or row["existing"]:
                 continue
             parent = parents.get(row["heating_parent"])
@@ -473,8 +476,10 @@ def normalize_snapshot(raw):
                     raise EstimateInputError("Некорректный тип отделки строки.")
                 for field, limit in (("name", 200), ("unit", 20), ("brand", 80), ("model", 120), ("reason", 300), ("rate_source", 300)):
                     item[field] = string(row.get(field, ""), field, limit, required=field in {"name", "unit"})
-                for field in ("excluded", "existing", "auto_quantity", "selection_locked", "quantity_stale"):
+                for field in ("excluded", "existing", "auto_quantity", "selection_locked", "quantity_stale", "heating_unbound"):
                     item[field] = boolean(row.get(field, False))
+                if item["heating_parent"]:
+                    item["heating_unbound"] = False
                 item["work_code"] = string(row.get("work_code", ""), "Код работы", 80)
                 works.identify(item)
                 item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", optional=item["kind"] == "work" or item["basis"] in {"concrete_total", "exchanger_quantity", *technology.BASES}))
@@ -605,6 +610,8 @@ def evaluate(raw):
             elif result["heating"]["mode"] == "estimated":
                 warnings.append("Мощность подогрева рассчитана предварительно по времени прогрева с заданным запасом. Теплопотери, особенно у открытого бассейна, рассчитываются отдельно; запас их не заменяет.")
             if "exchanger" in heating_types(result["inputs"]):
+                if any(r["kind"] in ACCESSORIES and r.get("heating_unbound") and not r.get("heating_parent") for r in physical):
+                    warnings.append("Связь насоса/клапана с теплообменником снята пользователем и автоматически не восстанавливается. Комплект первичного контура не подтверждён; выберите связь в редакторе строки. Автоматическое количество неизвестно, ручное сохранено.")
                 if any(r["kind"] in ACCESSORIES and not r.get("heating_parent") for r in physical):
                     warnings.append("Есть непривязанные насосы/клапаны. Откройте строку кнопкой ✎, выберите «Теплообменник для этого насоса/клапана», сохраните и пересчитайте состав. Ручные количества сохранятся; новые пары добавятся только для отсутствующих связей.")
                 for parent in (r for r in physical if r["kind"] == "heater" and row_heating_type(r, result["inputs"]) == "exchanger"):

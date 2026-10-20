@@ -88,3 +88,37 @@ class PrimaryCircuitTests(SimpleTestCase):
         self.assertIsNone(facts({**product, 'name':product['name']+'X'}))
         valve = fixture()['products']['93']
         self.assertIsNone(facts({**valve, 'name':'Aquaviva 2W31 DN250'}))
+
+    def test_explicit_unbound_survives_recalculate_while_legacy_pair_still_binds(self):
+        s=generate(PRIMARY)
+        for tier in s['variants']:
+            rows=block(s,variant=tier)['rows']
+            parent=next(r for r in rows if r['kind']=='heater')
+            parent['quantity']='2'
+            valve=next(r for r in rows if r['kind']=='solenoid_valve')
+            valve.update(heating_parent='',heating_unbound=True,quantity='2',price='100')
+        result=evaluate(recalculate(s,s['inputs']))
+        for tier in result['variants']:
+            valves=[r for r in block(result,variant=tier)['rows'] if r['kind']=='solenoid_valve']
+            self.assertEqual(len(valves),1)
+            self.assertEqual(valves[0]['heating_parent'],'')
+            self.assertTrue(valves[0]['heating_unbound'])
+            self.assertIsNone(valves[0]['quantity'])
+            self.assertIsNone(valves[0]['amount'])
+            self.assertTrue(any('снята пользователем' in w for w in result['variants'][tier]['warnings']))
+            # Parent assignment is authoritative even when a stale unbound flag is submitted.
+            valves[0]['heating_parent']=next(r['id'] for r in block(result,variant=tier)['rows'] if r['kind']=='heater')
+        rebound=recalculate(result,result['inputs'])
+        for tier in rebound['variants']:
+            valve=next(r for r in block(rebound,variant=tier)['rows'] if r['kind']=='solenoid_valve')
+            self.assertFalse(valve['heating_unbound'])
+            self.assertEqual(valve['quantity'],'2.000')
+            self.assertEqual(valve['amount'],'200.00')
+        legacy=generate(PRIMARY)
+        for tier in legacy['variants']:
+            for r in block(legacy,variant=tier)['rows']:
+                if r['kind']=='solenoid_valve':
+                    r['heating_parent']=''
+                    r.pop('heating_unbound',None)
+        legacy=recalculate(legacy,legacy['inputs'])
+        self.assertTrue(all(next(r for r in block(legacy,variant=t)['rows'] if r['kind']=='solenoid_valve')['heating_parent'] for t in legacy['variants']))
