@@ -264,8 +264,9 @@ class CatalogViewsTests(TestCase):
         changed=self.post(action='recalculate',snapshot=loaded,inputs=loaded['inputs']).json()['snapshot']
         self.assertEqual(film(changed)['amount'],amount)
         printed=self.client.get(reverse('pool_estimate_print',args=[saved['id'],1]))
-        self.assertContains(printed,'Цена рулона 100001.00')
-        self.assertContains(printed,amount)
+        self.assertContains(printed,'Цена рулона 100001 ₽')
+        from pool_service.templatetags.estimate_numbers import estimate_number
+        self.assertContains(printed,estimate_number(amount))
 
 
     def test_custom_roll_selection_normalizes_save_load_lineage(self):
@@ -286,11 +287,31 @@ class CatalogViewsTests(TestCase):
         self.assertEqual(find(loaded)['finish_type'],'')
 
 
+    def test_construction_quantization_version_survives_save_and_load(self):
+        from pool_service.tests.test_estimate_construction import NEW, row
+        for quantized in (True, False):
+            with self.subTest(quantized=quantized):
+                s = self.post(action='generate', inputs=NEW).json()['snapshot']
+                if not quantized:
+                    s.pop('construction_quantity_version')
+                    s = evaluate(s)
+                saved = self.post(action='save', snapshot=s, expected_revision=0).json()
+                loaded = self.client.get(self.url, {
+                    'organization': self.org.pk, 'id': saved['id'], 'version': 1,
+                }).json()['snapshot']
+                self.assertEqual(loaded.get('construction_quantity_version'), 1 if quantized else None)
+                self.assertEqual(loaded['variants'], s['variants'])
+                self.assertEqual(row(loaded,'material_sand')['amount'], '6840.00' if quantized else '6741.50')
+                printed = self.client.get(reverse('pool_estimate_print', args=[saved['id'],1]))
+                if quantized: self.assertContains(printed,'Стоимость материала рассчитана по сметному количеству.')
+                else: self.assertNotContains(printed,'Стоимость материала рассчитана по сметному количеству.')
+
     def test_construction_manual_quantity_precision_survives_save_and_load(self):
         from pool_service.tests.test_estimate_construction import NEW, row
         s = self.post(action='generate', inputs=NEW).json()['snapshot']
+        row(s, 'material_sand').update(quantity='5.9136', auto_quantity=False)
+        s = evaluate(s)
         before = deepcopy(row(s, 'material_sand'))
-        row(s, 'material_sand')['auto_quantity'] = False
         saved = self.post(action='save', snapshot=s, expected_revision=0).json()
         loaded = self.client.get(self.url, {
             'organization': self.org.pk, 'id': saved['id'], 'version': 1,

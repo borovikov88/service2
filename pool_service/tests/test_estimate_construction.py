@@ -27,7 +27,7 @@ class ConstructionTests(SimpleTestCase):
                         original = row(before, r['id'], tier)
                         self.assertEqual(r['quantity'], original['quantity'])
                         self.assertEqual(r['amount'], original['amount'])
-        self.assertEqual(D(row(manual, 'material_sand')['quantity']), D('5.9136'))
+        self.assertEqual(D(row(manual, 'material_sand')['quantity']), D('6'))
         self.assertEqual(evaluate(manual)['variants'], manual['variants'])
         row(manual, 'material_sand')['quantity'] = '5.914'
         self.assertEqual(row(evaluate(manual), 'material_sand')['quantity'], '5.914')
@@ -58,8 +58,8 @@ class ConstructionTests(SimpleTestCase):
             ids={r['id'] for r in block(s,'construction',tier)['rows']}
             self.assertEqual(ids,{r[0] for r in package.WORKS})
             self.assertEqual(row(s,'bowl_package',tier)['amount'],'311520.00')
-            self.assertEqual(row(s,'material_concrete_bowl',tier)['amount'],'149529.60')
-            self.assertEqual(row(s,'material_concrete_base',tier)['amount'],'51226.56')
+            self.assertEqual(row(s,'material_concrete_bowl',tier)['amount'],'153600.00')
+            self.assertEqual(row(s,'material_concrete_base',tier)['amount'],'55440.00')
             self.assertIsNone(row(s,'excavation_package',tier)['price'])
             self.assertTrue(all(row(s,k,tier)['price'] is None for k in ('delivery_concrete','delivery_rebar','delivery_sand','soil_removal')))
             self.assertNotIn('work_construction_transport',ids)
@@ -68,7 +68,7 @@ class ConstructionTests(SimpleTestCase):
 
     def test_prices_markup_once_sand_and_penoplex_and_supplies(self):
         s=generate(NEW)
-        self.assertEqual(D(row(s,'material_sand')['quantity']),D('3.696')*D('1.6'))
+        self.assertEqual(D(row(s,'material_sand')['quantity']),D('6'))
         self.assertEqual(row(s,'material_sand')['price'],'1140.00')
         self.assertEqual(row(s,'material_supplies')['price'],'17900.00') #71.6*250; no film band/stock/markup
         self.assertEqual(row(s,'material_supplies')['quantity'],'1')
@@ -87,7 +87,7 @@ class ConstructionTests(SimpleTestCase):
         a=generate({**NEW,'length':'10','construction_rebar_reserve':'0'})
         b=generate({**NEW,'length':'10','construction_rebar_reserve':'5'})
         self.assertEqual(D(b['construction_assumptions']['rebar_diameter']),10)
-        self.assertAlmostEqual(D(row(b,'material_rebar')['quantity']),D(row(a,'material_rebar')['quantity'])*D('1.05'),places=15)
+        self.assertAlmostEqual(D(b['construction_assumptions']['rebar_mass']),D(a['construction_assumptions']['rebar_mass'])*D('1.05'),places=15)
         c=generate({**NEW,'length':'10.001'})
         self.assertEqual(D(c['construction_assumptions']['rebar_diameter']),12)
         self.assertEqual(row(recalculate(b,b['inputs']),'material_rebar')['amount'],row(b,'material_rebar')['amount'])
@@ -108,7 +108,7 @@ class ConstructionTests(SimpleTestCase):
         row(s,'material_concrete_bowl').update(handling_mode='manual',handling_mass='100')
         handled=evaluate(s)
         self.assertEqual(D(row(handled,'handling_package')['quantity']),D(row(s,'material_sand')['quantity']))
-        self.assertEqual(row(handled,'handling_package')['amount'],'1774.08')
+        self.assertEqual(row(handled,'handling_package')['amount'],'1800.00')
         row(s,'material_sand').update(excluded=True)
         self.assertIsNone(row(evaluate(s),'handling_package')['quantity'])
         row(s,'handling_package').update(quantity='0',auto_quantity=False)
@@ -152,3 +152,35 @@ class ConstructionTests(SimpleTestCase):
         self.assertIsNone(row(restored,'material_insulation')['construction_price'])
         apply_product(row(s,'material_supplies'),c['products']['99'],c)
         self.assertEqual(row(recalculate(s,{**s['inputs'],'length':'9'}),'material_supplies')['price'],'100.00')
+
+    def test_material_quantization_only_new_automatic_materials(self):
+        s=generate(NEW)
+        expected={'material_sand':('6','6840.00'), 'material_concrete_bowl':('16','153600.00'),
+                  'material_concrete_base':('6','55440.00'), 'material_rebar':('1259.5','113355.00')}
+        for tier in s['variants']:
+            for rid,(quantity,amount) in expected.items():
+                r=row(s,rid,tier)
+                self.assertEqual(D(r['quantity']),D(quantity))
+                self.assertEqual(r['amount'],amount)
+                self.assertIn('сметное',r['construction_quantity_note'])
+            self.assertEqual(D(row(s,'bowl_package',tier)['quantity']),D('15.576'))
+            self.assertEqual(row(s,'bowl_package',tier)['amount'],'311520.00')
+        self.assertEqual(D(s['geometry']['concrete_total']),D('15.576'))
+        old=deepcopy(s);old.pop('construction_quantity_version')
+        old=evaluate(old)
+        self.assertEqual(D(row(old,'material_sand')['quantity']),D('5.9136'))
+        self.assertEqual(row(old,'material_sand')['amount'],'6741.50')
+        self.assertEqual(recalculate(old,old['inputs'])['variants'],old['variants'])
+        self.assertNotIn('construction_quantity_version',evaluate(old))
+        self.assertEqual(D(s['variants']['economy']['total'])-D(old['variants']['economy']['total']),D('8404.54'))
+        for rid in expected:row(s,rid).update(auto_quantity=False,quantity='1.2345')
+        manual=evaluate(s)
+        self.assertEqual(row(recalculate(manual,manual['inputs']),'material_sand')['quantity'],'1.2345')
+        self.assertEqual(row(manual,'material_concrete_bowl')['quantity'],'1.2345')
+        for step in (D('1'),D('0.5')):
+            for value in (D('0'),step,step+D('.000001'),step-D('.000001')):
+                rounded=package.estimate_quantity(value,step)
+                self.assertGreaterEqual(rounded,value)
+                self.assertLess(rounded-value,step)
+                self.assertEqual(package.estimate_quantity(rounded,step),rounded)
+            self.assertIsNone(package.estimate_quantity(None,step))

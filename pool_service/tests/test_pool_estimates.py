@@ -214,7 +214,7 @@ class PoolEstimateViewsTests(TestCase):
         filt.update(name="Excluded synthetic filter", excluded=True, price="999")
         first = self.save().json()
         response = self.client.get(reverse("pool_estimate_print", args=[first["id"], 1]))
-        self.assertContains(response, "12.34")
+        self.assertContains(response, "12,3")
         self.assertContains(response, "&lt;script&gt;")
         self.assertNotContains(response, '<script>alert(')
         self.assertNotContains(response, "Excluded synthetic filter")
