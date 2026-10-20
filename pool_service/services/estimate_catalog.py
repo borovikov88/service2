@@ -348,6 +348,8 @@ def auto_select(snapshot, catalog, only_variant=None):
                     if not origin or product['id'] != origin['id']:
                         apply_product(row, product, catalog, 'auto')
                         filled += 1
+    from .estimate_primary import fill as fill_primary
+    filled += fill_primary(result, catalog, only_variant)
     embedded.update_quantities(result, only_variant)
     return evaluate(result), filled
 

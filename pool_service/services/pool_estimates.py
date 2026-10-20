@@ -5,6 +5,7 @@ import re
 
 from . import estimate_embedded as embedded
 from . import estimate_works as works
+from . import estimate_primary as primary
 
 from pool_service.services.permissions import organization_accesses_for_user
 
@@ -170,6 +171,18 @@ def normalize_inputs(raw):
             raise EstimateInputError("Расчёт полной чаши пока поддерживает горизонтальное дно: глубины воды должны совпадать.")
         if Decimal(data["depth_start"]) > Decimal(data["bowl_height"]):
             raise EstimateInputError("Глубина воды не может превышать полную внутреннюю высоту чаши.")
+    for field in ("primary_pump_connection", "primary_valve_connection"):
+        if field in raw:
+            data[field] = string(raw[field], "Присоединение первичного контура", 16)
+            if data[field] not in primary.CONNECTIONS:
+                raise EstimateInputError("Выберите присоединение первичного контура.")
+    if "primary_medium" in raw:
+        data["primary_medium"] = string(raw["primary_medium"], "Теплоноситель", 16)
+        if data["primary_medium"] not in {"", "water", "glycol"}:
+            raise EstimateInputError("Выберите теплоноситель.")
+    for field, label, maximum in (("primary_temperature", "Температура теплоносителя", "200"), ("primary_delta", "Перепад температуры первичного контура", "100"), ("primary_flow", "Расход первичного контура", "1000"), ("primary_head", "Напор первичного контура", "100")):
+        if field in raw:
+            data[field] = _optional(number(raw[field], label, optional=True, minimum=".001", maximum=maximum))
     data["required_head"] = _optional(number(raw.get("required_head"), "Расчётный напор", optional=True, minimum=".1", maximum="100"))
     data["heating_power"] = _optional(number(raw.get("heating_power"), "Мощность подогрева", optional=True, minimum=".1", maximum="10000"))
     # Missing fields in old saved versions stay missing; never inject new assumptions.
@@ -526,6 +539,11 @@ def evaluate(raw):
             if not origin:
                 continue
             label = row["name"]
+            if row["kind"] in ACCESSORIES:
+                row["selection_status"] = "preliminary_primary"
+                issue = primary.rejection({**origin, "kind": row["kind"], "name": row["name"], "brand": row["brand"]}, result["inputs"])
+                if issue:
+                    warnings.append(f"{label}: {issue} Сохранённая модель требует замены или ручного подтверждения.")
             if row.get('embedded_role'):
                 if not embedded.matches({**origin, 'brand': row['brand']}, variant['embedded_profile'], result['inputs']['finish']):
                     warnings.append(f'{label}: материал, отделка или доступность не соответствуют выбранному комплекту закладных либо не подтверждены. Сохранена прежняя позиция; проверьте замену.')
@@ -579,6 +597,8 @@ def evaluate(raw):
             elif result["heating"]["mode"] == "estimated":
                 warnings.append("Мощность подогрева рассчитана предварительно по времени прогрева с заданным запасом. Теплопотери, особенно у открытого бассейна, рассчитываются отдельно; запас их не заменяет.")
             if "exchanger" in heating_types(result["inputs"]):
+                if any(r["kind"] in ACCESSORIES and not r.get("heating_parent") for r in physical):
+                    warnings.append("Есть непривязанные насосы/клапаны. Откройте строку кнопкой ✎, выберите «Теплообменник для этого насоса/клапана», сохраните и пересчитайте состав. Ручные количества сохранятся; новые пары добавятся только для отсутствующих связей.")
                 for parent in (r for r in physical if r["kind"] == "heater" and row_heating_type(r, result["inputs"]) == "exchanger"):
                     if exchanger_count(parent) is None:
                         warnings.append("Для количества аксессуаров укажите целое число теплообменников в шт. или компл.; автоматический объём пока неизвестен.")
@@ -587,6 +607,9 @@ def evaluate(raw):
                         accessories = [r for r in physical if r["kind"] == kind and r.get("heating_parent") == parent["id"]]
                         if sum((Decimal(r["quantity"] or 0) for r in accessories), Decimal(0)) != Decimal(parent["quantity"]):
                             warnings.append(f"{name}: количество не соответствует теплообменнику {parent['name']}. Пересчитайте состав или проверьте ручное количество/привязку.")
+                if not result["inputs"].get("primary_pump_connection") or not result["inputs"].get("primary_valve_connection"):
+                    warnings.append("Для предварительной комплектации укажите отдельные присоединения насоса и клапана первичного контура. Размеры переходников не предполагаются.")
+                warnings.append("Предварительная комплектация первичного контура НЕ подтверждает совместимость: нужны рабочая Q–H кривая, температура/давление/среда, Kv и минимальный перепад клапана. Qmax/Hmax не являются рабочей точкой; типовой насос 25/4 подходит не всем теплообменникам.")
                 warnings.append("Первичный контур теплообменника: циркуляционный насос и электромагнитный клапан требуют подтверждения рабочей точки, температуры, давления, теплоносителя, питания и присоединений. Без этих данных автоматический подбор и цена не подтверждены.")
                 warnings.append("Для теплообменника подтвердите мощность при фактической температуре и расходе теплоносителя, а также мощность котла.")
             if "heatpump" in heating_types(result["inputs"]):

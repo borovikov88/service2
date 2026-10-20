@@ -56,3 +56,12 @@ export function setWorkPrice(snapshot, variantKey, blockId, source, price, all =
   }
   return snapshot;
 }
+
+export function automaticQuantity(snapshot, variantKey, row) {
+  const variant = snapshot.variants[variantKey];
+  const value = row.basis === 'exchanger_quantity'
+    ? variant.blocks.flatMap(b => b.rows).find(r => r.id === row.heating_parent)?.quantity
+    : variant.embedded_counts?.[row.basis] ?? snapshot.geometry[row.basis];
+  return value === null || value === undefined || value === '' || !Number.isFinite(Number(value))
+    ? null : String(Math.ceil(Number(value)));
+}
