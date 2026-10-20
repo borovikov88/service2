@@ -10,14 +10,28 @@ def lining_claims(text):
     text = (text or '').casefold().replace('ё', 'е')
     patterns = {'film': r'(?:пленк\w*|лайнер\w*)',
                 'concrete': r'(?:бетон\w*|плитк\w*|мозаик\w*)'}
+    item = '(?:' + '|'.join(patterns.values()) + ')'
+    # Consume only an explicit coordinated list of finish words. In particular,
+    # never extend a negation through a full stop or an independent sentence.
+    separator = r'(?:\s*(?:,|/|\bи\b|\bили\b|\bлибо\b|\bа также\b)\s*(?:и\s+)?)'
+    negative = (r'\bне\s+(?:(?:подходит|предназначен\w*)\s+)?(?:для|под)\s+'
+                + item + '(?:' + separator + item + ')*')
     denied = set()
-    for kind, pattern in patterns.items():
-        negative = r'\bне\s+(?:(?:подходит|предназначен\w*)\s+)?(?:для|под)\s+' + pattern
-        if re.search(negative, text):
-            denied.add(kind)
-            text = re.sub(negative, '', text)
+    def remove_negative(match):
+        denied.update(kind for kind, pattern in patterns.items() if re.search(pattern, match.group()))
+        return ' '
+    text = re.sub(negative, remove_negative, text)
     positive = {kind for kind, pattern in patterns.items() if re.search(pattern, text)}
     return positive, denied
+
+
+def body_grade_claims(text):
+    """Only a grade attached directly to BODY material, never nearby fasteners."""
+    prefix = r'(?:материал\s+корпуса|корпус)\s*[:—-]?\s*(?:(?:выполнен|изготовлен)\s+)?(?:из\s+)?'
+    steel = r'(?:(?:нержавеющ\w*\s+)?стал[ьи]\s+)?'
+    grade = r'aisi[ -]*\d{3}(?:l|л)?(?:\s*/\s*\d{3}(?:l|л)?)*\b'
+    claims = re.findall(prefix + steel + grade, text, re.I)
+    return set(re.findall(r'\d{3}', ' '.join(claims)))
 
 
 def without_hardware_grades(name):

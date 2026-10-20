@@ -152,10 +152,15 @@ class SkimmerEstimateTests(SimpleTestCase):
             self.assertEqual(embedded.specifications(name,'','Aquaviva')['embedded_role'],'')
         for name in ('Форсунка стеновая под лайнер AISI 304/316', 'Скиммер Test 304 под лайнер'):
             self.assertEqual(embedded.specifications(name,'','Aquaviva')['material'],'')
-        for name in ('Скиммер пластиковый под лайнер с крышкой AISI 316', 'Форсунка под лайнер с винтами AISI 316', 'Скиммер под лайнер AISI 316'):
+        for name in ('Скиммер пластиковый под лайнер с крышкой AISI 316', 'Форсунка под лайнер с винтами AISI 316'):
             spec = embedded.specifications(name,'Материал корпуса ABS','Aquaviva')
-            self.assertEqual(spec['material'],'')
+            # Explicit BODY ABS survives a different material of hardware.
+            self.assertEqual(spec['material'],'plastic')
             self.assertFalse(embedded.matches({**spec,'available':True,'brand':'Aquaviva'},'steel316','film'))
+        spec = embedded.specifications('Скиммер под лайнер AISI 316','Материал корпуса ABS','Aquaviva')
+        self.assertEqual(spec['material'],'')
+        self.assertTrue(spec['specification_conflict'])
+        self.assertFalse(embedded.matches({**spec,'available':True,'brand':'Aquaviva'},'steel316','film'))
         s=generate(INPUTS)
         for profile in ([],{},None,'wood'):
             with self.assertRaises(EstimateInputError):embedded.change_profile(s,'economy',profile)

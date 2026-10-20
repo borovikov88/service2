@@ -141,3 +141,86 @@ class EmbeddedCandidateTests(SimpleTestCase):
         p=self.product('Форсунка корпус AISI304 с винтами AISI201 под пленку')
         self.assertIsNotNone(assess(p,'steel316','film')[0])
         self.assertIsNone(assess(p,'steel304','film')[0])
+
+    def test_explicit_body_grade_in_description_is_not_unknown_or_hardware(self):
+        for grade in ('304','316'):
+            with self.subTest(grade=grade):
+                p=self.product('Форсунка Test под пленку',description='Материал корпуса: AISI '+grade+'.')
+                self.assertEqual((p['body_family'],p['material']),('steel','steel'+grade))
+                self.assertEqual(assess(p,'steel'+grade,'film'),(None,[]))
+                other='steel316' if grade=='304' else 'steel304'
+                self.assertIsNotNone(assess(p,other,'film')[0])
+        p=self.product('Форсунка Test под пленку',description='Материал корпуса: AISI 201.')
+        self.assertTrue(p['specification_conflict'])
+        self.assertIsNotNone(assess(p,'steel316','film')[0])
+        p=self.product('Форсунка Test под пленку',description='Корпус из ABS. Винты AISI316.')
+        self.assertEqual((p['body_family'],p['material']),('plastic','plastic'))
+        self.assertEqual(assess(p,'plastic_budget','film'),(None,[]))
+        p=self.product('Форсунка корпус ABS с винтами AISI316 под пленку')
+        self.assertEqual(p['material'],'plastic')
+        p=catalog.parse_catalog(feed(item(1,'Форсунка Test под пленку',params=[
+            ('Материал корпуса','AISI316')],description='Материал корпуса: AISI304.')))['products']['1']
+        self.assertTrue(p['specification_conflict'])
+        self.assertEqual(p['material'],'')
+        self.assertIsNotNone(assess(p,'steel316','film')[0])
+
+    def test_negative_finish_lists_include_every_item_but_stop_at_sentence(self):
+        from pool_service.services.estimate_embedded_candidates import lining_claims
+        for words in ('плитки и пленки','плитки, пленки, мозаики и бетона',
+                      'плитки/пленки/мозаики/бетона', 'пленки или плитки'):
+            sentence='Не подходит для '+words
+            with self.subTest(words=words):
+                self.assertEqual(lining_claims(sentence),(set(),{'film','concrete'}))
+                for name,description in [('Форсунка ABS '+sentence,''),('Форсунка ABS',sentence)]:
+                    p=self.product(name,description=description)
+                    self.assertEqual(p['lining_denied'],['concrete','film'])
+                    self.assertIsNotNone(assess(p,'plastic_budget','film')[0])
+                    self.assertIsNotNone(assess(p,'plastic_budget','tile')[0])
+        self.assertEqual(lining_claims('Не подходит для плитки. Для пленки.'),({'film'},{'concrete'}))
+        p=self.product('Форсунка ABS не подходит для плитки. Под пленку.')
+        self.assertEqual(p['lining_denied'],['concrete'])
+        self.assertEqual(assess(p,'plastic_budget','film'),(None,[]))
+
+    def test_rejected_body_or_finish_withdraws_auto_but_preserves_manual_amount(self):
+        import json
+        from decimal import Decimal
+        from pool_service.services.pool_estimates import generate, evaluate, recalculate
+        from .test_pool_estimates import INPUTS
+        from .test_estimate_candidates import target
+        cases = [
+            ('premium', item(1,'Форсунка AISI316 под пленку',price='100'),
+             item(1,'Форсунка Test под пленку',price='100',params=[('Материал корпуса','AISI316')],
+                  description='Материал корпуса: AISI304.')),
+            ('economy', item(1,'Форсунка ABS под пленку',price='100'),
+             item(1,'Форсунка ABS не подходит для плитки и пленки',price='100')),
+        ]
+        for tier, good_xml, bad_xml in cases:
+            with self.subTest(tier=tier):
+                initial,_=catalog.auto_select(generate({**INPUTS,'finish':'film'}),catalog.parse_catalog(feed(good_xml)))
+                self.assertEqual(target(initial,'inlet',tier)['amount'],'300.00')
+                before_total=Decimal(initial['variants'][tier]['total'])
+                changed=catalog.parse_catalog(feed(bad_xml))
+                # New project parameters and a save/load-like JSON roundtrip must
+                # not hide a newly proven catalogue contradiction.
+                restored=evaluate(json.loads(json.dumps(initial)))
+                result,_=catalog.auto_select(recalculate(restored,restored['inputs']),changed)
+                row=target(result,'inlet',tier)
+                self.assertIsNone(row['catalog'])
+                self.assertIsNone(row['price'])
+                self.assertIsNone(row['amount'])
+                self.assertIn('отклонён',row['selection_note'])
+                self.assertEqual(Decimal(result['variants'][tier]['total']),before_total-Decimal('300'))
+                roundtrip=evaluate(json.loads(json.dumps(recalculate(result,result['inputs']))))
+                self.assertIsNone(target(roundtrip,'inlet',tier)['amount'])
+                self.assertEqual(roundtrip['variants'][tier]['total'],result['variants'][tier]['total'])
+                manual=deepcopy(initial)
+                protected=target(manual,'inlet',tier)
+                protected['catalog']['selection']='manual'
+                protected.update(price='123.45',unit_price_manual=True)
+                kept,_=catalog.auto_select(manual,changed)
+                protected=target(kept,'inlet',tier)
+                self.assertEqual(protected['price'],'123.45')
+                self.assertEqual(protected['amount'],'370.35')
+                self.assertIsNotNone(protected['catalog'])
+                self.assertIn('Текущая выгрузка',protected['selection_note'])
+                self.assertEqual(target(evaluate(kept),'inlet',tier)['amount'],'370.35')
