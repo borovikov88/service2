@@ -103,8 +103,10 @@ def classify(specs, name, brand, sku):
 def regulator_reason(product):
     if not product.get('available', True):
         return 'Выгрузка магазина не подтверждает доступность к заказу.'
+    if product.get('level_data_issue') == 'conflict':
+        return 'Противоречивые характеристики линии уровня в XML; уточните источник. ' + product.get('specification_note', '')
     if product.get('specification_conflict'):
-        return 'Конфликт характеристик регулятора; проверьте XML param.'
+        return 'Конфликт характеристик регулятора; проверьте XML param. ' + product.get('specification_note', '')
     if product.get('level_scheme') != 'external_float':
         return ('Не подтверждена схема этой модели: внешний поплавковый регулятор '
                 'с отдельным подключением к чаше. Укажите схему в характеристиках товара.')
@@ -217,7 +219,9 @@ def fill(snapshot, catalog, only=None):
                 evidence = dict(inlet.get('catalog') or {}, kind='inlet', available=True,
                                 brand=inlet.get('brand', ''))
                 choices = [p for p in choices if inlet_matches(evidence, p, snapshot['inputs'], variant['embedded_profile'])]
-            paired = [p for p in choices if compatible(p)]
+            # A protected fitting is the actual pair; unrelated live fittings
+            # must not override its confirmed compatibility or price ranking.
+            paired = [p for p in choices if compatible(p)] if editable(inlet) else choices
             product = select_price_tier(paired or choices, tier)
             if product and (reg.get('catalog') or {}).get('id') != product['id']:
                 apply_product(reg, product, catalog, 'auto')

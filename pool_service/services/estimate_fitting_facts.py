@@ -35,7 +35,7 @@ def enrich(specs, name, brand, sku, description=""):
     opposite_lining = re.search(r'(?:для|под)\s+(?:бетон|плитк|мозаик)', description, re.I) if lining == 'film' else re.search(r'(?:для|под)\s+(?:лайнер|пл[её]нк)', description, re.I)
     conflict = bool(body_metal or opposite_lining) or bool(re.search(r'aisi|нерж', name, re.I)) or specs.get('material') not in ('', 'plastic') or bool(set(specs.get('lining', [])) - {lining})
     if conflict:
-        specs.update(material='', lining=[], specification_note='Конфликт характеристик выгрузки и каталога модели; автоматический подбор заблокирован. ' + note,
+        specs.update(material='', lining=[], specification_conflict=True, specification_note='Конфликт характеристик выгрузки и каталога модели; автоматический подбор заблокирован. ' + note,
                      specification_source=SOURCE)
     else:
         specs.update(material='plastic', lining=[lining], specification_note=note, specification_source=SOURCE)

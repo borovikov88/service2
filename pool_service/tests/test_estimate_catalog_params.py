@@ -246,3 +246,44 @@ class HydraulicLevelTests(SimpleTestCase):
             ('Совместимые регуляторы уровня (артикулы)','16791') ])))['products']['904']
         self.assertEqual(p['level_data_issue'],'conflict')
         self.assertIn('Противоречивые',inlet_reason(p,r,{'finish':'film'},'plastic_budget'))
+
+class ReviewRegressionTests(SimpleTestCase):
+    start = LevelAutoTests.start
+    def test_enrichment_conflict_is_sticky_through_params_and_roundtrip(self):
+        from pool_service.services import estimate_embedded as embedded
+        c=catalog.parse_catalog(feed(item(1,'Форсунка Aquaviva EM4412 AISI316','16785',
+            params=[('Материал корпуса','ABS'),('Тип отделки','пленка')])))
+        p=c['products']['1']
+        self.assertTrue(p['specification_conflict'])
+        self.assertEqual((p['material'],p['lining']),('',[]))
+        self.assertFalse(embedded.matches(p,'plastic_budget','film'))
+        s=self.start();catalog.apply_product(pair(s)[1],p,c)
+        self.assertTrue(pair(evaluate(s))[1]['catalog']['specification_conflict'])
+        self.assertIn('Конфликт характеристик',catalog.candidate_reason(p,s['inputs'],Decimal('1')))
+
+    def test_protected_inlet_ranks_its_pairs_not_unrelated_live_pairs(self):
+        from pool_service.services.estimate_level_control import fill
+        s=self.start(); frozen=catalog.parse_catalog(feed(nozzle(skus='16791,528')))
+        catalog.apply_product(pair(s)[1],frozen['products']['904'],frozen)
+        before=evaluate(deepcopy(s)); original=deepcopy(pair(before)[1])
+        live=catalog.parse_catalog(feed(*REGS[:2],nozzle(905,skus='528')))
+        fill(s,live,only='economy');result=evaluate(s)
+        self.assertEqual(pair(result)[0]['catalog']['sku'],'16791')
+        self.assertEqual(pair(result)[1],original)
+        self.assertEqual(Decimal(result['variants']['economy']['total'])-Decimal(before['variants']['economy']['total']),Decimal('4000'))
+        self.assertEqual(fill(result,live,only='economy'),0)
+
+    def test_conflicting_regulator_diameter_excluded_with_specific_warning(self):
+        bad=item(901,'Регулятор уровня Aquaviva RO-7','16791',price='4000',params=[
+            ('Диаметр подключения линии уровня','50 мм'),('Диаметр подключения линии уровня','40 мм')])
+        c=catalog.parse_catalog(feed(bad,REGS[1],nozzle(skus='16791,528')))
+        self.assertEqual(c['products']['901']['level_data_issue'],'conflict')
+        s,count=catalog.auto_select(self.start(),c)
+        self.assertEqual(pair(s)[0]['catalog']['sku'],'528')
+        reason=catalog.candidate_reason(c['products']['901'],s['inputs'],Decimal('1'))
+        self.assertIn('Противоречивые',reason)
+        self.assertIn('диаметр подключения',reason)
+        # A saved manual conflicting selection stays visible with its exact issue.
+        catalog.apply_product(pair(s)[0],c['products']['901'],c)
+        result=evaluate(s)
+        self.assertIn('диаметр подключения',' '.join(result['variants']['economy']['warnings']))

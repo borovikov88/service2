@@ -99,6 +99,7 @@ def apply(specs, offer):
                     contradictions.add(key)
             else:
                 facts[key] = values[0]
+    upstream_conflict = bool(specs.get("specification_conflict"))
     problems = []
     material = facts.get('body')
     steel = facts.get('grade')
@@ -142,7 +143,11 @@ def apply(specs, offer):
         specs['level_' + key] = facts.get(key, '')
     hydraulic_keys = {'purpose', 'passage', 'connection', 'diameter'}
     specs['level_data_issue'] = 'conflict' if contradictions & hydraulic_keys else 'unknown' if invalid & hydraulic_keys else ''
-    specs['specification_conflict'] = bool(problems)
+    specs['specification_conflict'] = upstream_conflict or bool(problems)
+    if upstream_conflict:
+        # Enrichment erased contradictory facts, not missing data to backfill.
+        specs['material'] = ''
+        specs['lining'] = []
     if facts or invalid:
         labels = {'purpose': 'назначение линии уровня', 'passage': 'свободный проход линии уровня',
                   'connection': 'тип подключения линии уровня', 'diameter': 'диаметр подключения линии уровня'}
