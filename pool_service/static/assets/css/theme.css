@@ -1013,3 +1013,26 @@ html[data-theme="dark"] .desktop-sidebar__brand-mark {
   background: #111a28;
   border: 1px solid #304158;
 }
+
+
+/* Dark theme: service journal dosing-station columns. */
+html[data-theme="dark"] .dosing-header-cell,
+html[data-theme="dark"] .dosing-group {
+  color: #c8d8ea !important;
+  background-color: #1b2d43 !important;
+  border-color: #3a4c62 !important;
+}
+
+html[data-theme="dark"] .dosing-column-cell,
+html[data-theme="dark"] .dosing-head {
+  color: #b9c9dc !important;
+  background-color: #1a293d !important;
+  border-color: #3a4c62 !important;
+}
+
+html[data-theme="dark"] .dosing-data,
+html[data-theme="dark"] .dosing-cell {
+  color: #dfe8f2 !important;
+  background-color: #17263a !important;
+  border-color: #304158 !important;
+}
