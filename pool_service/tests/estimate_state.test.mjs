@@ -93,3 +93,20 @@ test('automatic unknown quantities can submit, explicit manual zero remains vali
   assert.equal(row.quantity,'0');
   assert.equal(quantityRequired(emptyRow('custom')),true);
 });
+
+test('row order swaps visible slots only, preserves identity, hidden rows and other quotes', async () => {
+  const {moveRow} = await import('../static/pool_service/estimates/state.js');
+  const s=sample(), b=s.variants.economy.blocks[0];
+  b.rows.push({...emptyRow('heater'), heating_parent:'parent', quantity:'2', price:'123.45'});
+  const [pump,hidden,heater]=b.rows, others=JSON.stringify(s.variants.standard);
+  assert.equal(moveRow(s,'economy','equipment','heater',-1),true);
+  assert.deepEqual(b.rows,[heater,hidden,pump]);
+  assert.equal(b.rows[0],heater);
+  assert.equal(JSON.stringify(s.variants.standard),others);
+  for(const args of [['heater',-1],['pump',1],['filter',1],['heater',2],['missing',1]])
+    assert.equal(moveRow(s,'economy','equipment',...args),false);
+  assert.equal(moveRow(s,'economy','other','heater',1),false);
+  assert.equal(moveRow(s,'economy','equipment','heater',1),true);
+  assert.deepEqual(b.rows,[pump,hidden,heater]);
+  b.excluded=true;assert.equal(moveRow(s,'economy','equipment','heater',-1),false);
+});
