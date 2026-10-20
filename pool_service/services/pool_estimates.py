@@ -428,6 +428,12 @@ def normalize_catalog(raw):
     result["level_control"] = string(raw.get("level_control", "unknown"), "Комплектация регулятором уровня", 20)
     if result["level_control"] not in level_control.STATES:
         raise EstimateInputError("Некорректная комплектация регулятором уровня.")
+    result['level_scheme'] = string(raw.get('level_scheme', ''), 'Схема регулятора', 30)
+    result['specification_conflict'] = boolean(raw.get('specification_conflict', False))
+    skus = raw.get('level_regulator_skus', [])
+    if result['level_scheme'] not in {'', 'external_float'} or not isinstance(skus, list) or len(skus) > 30 or any(not isinstance(s, str) or not re.fullmatch(r'\d{1,12}', s) for s in skus):
+        raise EstimateInputError('Некорректные характеристики системы уровня.')
+    result['level_regulator_skus'] = skus[:]
     result["image"] = safe_image_url(raw.get("image", ""))
     options = raw.get("power_options", [raw["power"]] if raw["power"] != "unknown" else [])
     if not isinstance(options, list) or len(options) > 2 or any(p not in ("230", "400") for p in options) or len(set(options)) != len(options):
@@ -597,7 +603,7 @@ def evaluate(raw):
                     subtotal += amount
             block["subtotal"] = str(subtotal.quantize(CENT))
             total += subtotal
-        warnings = technology.warnings(result["inputs"]) + level_control.warnings(variant)
+        warnings = technology.warnings(result["inputs"]) + level_control.warnings(variant, result["inputs"])
         if result.get('construction_version'):
             warnings = [w for w in warnings if 'прочности/армирования' not in w]
             warnings.append(construction.CLIENT_NOTE)
