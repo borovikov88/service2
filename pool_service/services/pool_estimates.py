@@ -6,6 +6,7 @@ import re
 from . import estimate_embedded as embedded
 from . import estimate_works as works
 from . import estimate_primary as primary
+from . import estimate_technology as technology
 
 from pool_service.services.permissions import organization_accesses_for_user
 
@@ -183,6 +184,7 @@ def normalize_inputs(raw):
     for field, label, maximum in (("primary_temperature", "Температура теплоносителя", "200"), ("primary_delta", "Перепад температуры первичного контура", "100"), ("primary_flow", "Расход первичного контура", "1000"), ("primary_head", "Напор первичного контура", "100")):
         if field in raw:
             data[field] = _optional(number(raw[field], label, optional=True, minimum=".001", maximum=maximum))
+    data.update(technology.normalize(raw))
     data["required_head"] = _optional(number(raw.get("required_head"), "Расчётный напор", optional=True, minimum=".1", maximum="100"))
     data["heating_power"] = _optional(number(raw.get("heating_power"), "Мощность подогрева", optional=True, minimum=".1", maximum="10000"))
     # Missing fields in old saved versions stay missing; never inject new assumptions.
@@ -381,6 +383,7 @@ def generate(raw):
     ensure_heating_rows(result)
     works.add_works(result, fresh=True)
     update_construction_quantities(result)
+    technology.apply(result, create=True)
     embedded.ensure_rows(result)
     embedded.update_quantities(result)
     return evaluate(result)
@@ -451,7 +454,7 @@ def normalize_snapshot(raw):
                 if not isinstance(rid, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", rid) or rid in row_ids:
                     raise EstimateInputError("Строки должны иметь уникальные идентификаторы.")
                 row_ids.add(rid)
-                if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("basis", ""), str) or row.get("basis", "") not in {"", "finish_area", "finish_net", "finish_stock", "surface", "perimeter", "volume", "concrete_total", "exchanger_quantity", "embedded_work", *embedded.ROLES}:
+                if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("basis", ""), str) or row.get("basis", "") not in {"", "finish_area", "finish_net", "finish_stock", "surface", "perimeter", "volume", "concrete_total", "exchanger_quantity", "embedded_work", *embedded.ROLES, *technology.BASES}:
                     raise EstimateInputError("Некорректный тип строки.")
                 item = {"id": rid, "kind": row["kind"], "basis": row.get("basis", "")}
                 item["heating_parent"] = string(row.get("heating_parent", ""), "Связанный теплообменник", 64)
@@ -471,7 +474,7 @@ def normalize_snapshot(raw):
                     item[field] = boolean(row.get(field, False))
                 item["work_code"] = string(row.get("work_code", ""), "Код работы", 80)
                 works.identify(item)
-                item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", optional=item["kind"] == "work" or item["basis"] in {"concrete_total", "exchanger_quantity"}))
+                item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", optional=item["kind"] == "work" or item["basis"] in {"concrete_total", "exchanger_quantity", *technology.BASES}))
                 item["price"] = _optional(number(row.get("price"), "Цена", optional=True, places=2))
                 specs = row.get("specs", {})
                 if not isinstance(specs, dict):
@@ -493,6 +496,8 @@ def evaluate(raw):
     result = normalize_snapshot(raw)
     sync_exchanger_accessories(result)
     result["geometry"] = geometry(result["inputs"])
+    result["geometry"].update(technology.apply(result))
+    result["technology"] = technology.summary(result["inputs"])
     result["heating"] = heating_requirement(result["inputs"])
     embedded.update_quantities(result)
     result["prices"] = price_summary(result)
@@ -518,9 +523,9 @@ def evaluate(raw):
                     subtotal += amount
             block["subtotal"] = str(subtotal.quantize(CENT))
             total += subtotal
-        warnings = []
+        warnings = technology.warnings(result["inputs"])
         if result["inputs"].get("bowl_height"):
-            warnings.append("Геометрия прямоугольной чаши с горизонтальным дном, без ступеней и лавок. Верхнее кольцо и наружная отделка не включены. Армирование, прочность, котлован, подготовки, опалубка и утепление требуют проекта и выбора технологии.")
+            warnings.append("Геометрия прямоугольной чаши с горизонтальным дном, без ступеней и лавок. Дополнительные строительные слои учитываются только при явном выборе технологии. Армирование и прочность требуют проекта.")
             if "concrete_total" not in result["geometry"]:
                 warnings.append("Объём бетона не определён: укажите толщины стен и плиты.")
         else:
@@ -640,11 +645,12 @@ def recalculate(raw, inputs):
     # Also adds geotextile when recalculating a legacy film estimate.
     change_finish(result, result["inputs"]["finish"], replace=old_finish != result["inputs"]["finish"])
     metrics = geometry(result["inputs"])
+    technology_changed = any(old_inputs.get(k) != result["inputs"].get(k) for k in set(old_inputs) | set(result["inputs"]) if k.startswith("tech_"))
     dimensions_changed = any(old_inputs.get(k) != result["inputs"].get(k) for k in ("length", "width", "depth_start", "depth_end", "bowl_height", "wall_thickness", "slab_thickness"))
     for variant in result["variants"].values():
         for block in variant["blocks"]:
             for row in block["rows"]:
-                if dimensions_changed and not row["auto_quantity"] and block["id"] in {"construction", "finish"} and row["quantity"] is not None:
+                if (dimensions_changed or technology_changed) and not row["auto_quantity"] and block["id"] in {"construction", "finish"} and row["quantity"] is not None:
                     row["quantity_stale"] = True
                 if row["basis"] == "concrete_total" and row["auto_quantity"] and "concrete_total" not in metrics:
                     # Removing dimensions must not leave apparently valid stale concrete volumes.
@@ -664,6 +670,7 @@ def recalculate(raw, inputs):
                     row['quantity'] = embedded.ceil_quantity(metrics[row['basis']])
     ensure_heating_rows(result)
     update_construction_quantities(result)
+    metrics.update(technology.apply(result, create=True))
     result['geometry'] = metrics
     embedded.ensure_rows(result)
     embedded.update_quantities(result)

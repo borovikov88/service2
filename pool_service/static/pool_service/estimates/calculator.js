@@ -203,6 +203,7 @@ function setHeating(values) {
   for (const checkbox of form.querySelectorAll('[name="heating_types"]')) checkbox.checked = selectedTypes.includes(checkbox.value);
 }
 function fillParameters() {
+  form.querySelectorAll('[name^="tech_"]').forEach(el => { el.value = ''; });
   // Historical snapshots must not inherit the inputs of a more recent estimate.
   for (const [key, value] of Object.entries({primary_pump_connection:'', primary_valve_connection:'', primary_medium:'', primary_temperature:'', primary_delta:'', primary_flow:'', primary_head:'', bowl_height: '', wall_thickness: '', slab_thickness: '', heating_power: '', water_start: '', water_target: '', heating_hours: '', heating_reserve: '', finish: '', skimmer_area: '25', skimmer_flow: '5', inlet_flow: '3'})) {
     form.elements.namedItem(key).value = snapshot.inputs[key] ?? value;

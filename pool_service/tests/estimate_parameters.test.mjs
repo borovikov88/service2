@@ -50,3 +50,13 @@ test('server-linked exclusions refresh structure but quantity edits preserve the
   context.excluded=structuredClone(before);context.excluded.blocks[0].rows[1].excluded=true;
   assert.equal(vm.runInContext('rowLayout(before)===rowLayout(excluded)',context),false);
 });
+
+test('loading an old version clears technology dimensions and schemes from the newer form', () => {
+  const controls = {tech_sand:{value:'on'},tech_sand_thickness:{value:'0.2'}};
+  const fallback = {value:''};
+  const context = vm.createContext({form:{querySelectorAll:()=>Object.values(controls), elements:{namedItem:key=>controls[key]||fallback}},
+    snapshot:{inputs:{}}, setHeating:()=>{}, heatingFields:()=>{}, parametersDirty:true});
+  vm.runInContext(fn('fillParameters')+';fillParameters()',context);
+  assert.equal(controls.tech_sand.value,'');
+  assert.equal(controls.tech_sand_thickness.value,'');
+});
