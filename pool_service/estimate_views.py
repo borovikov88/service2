@@ -70,9 +70,17 @@ def _load(organization, identifier):
     return get_object_or_404(PoolEstimate, pk=uid, organization=organization)
 
 
+def _author(user):
+    return {"id": user.pk, "name": user.get_full_name() or user.get_username()} if user else {"id": None, "name": "Автор не указан"}
+
+
 def _version_data(estimate, version):
     return {"id": str(estimate.pk), "revision": estimate.revision, "loaded_version": version.number,
-            "snapshot": {**version.snapshot, "prices": price_summary(version.snapshot)}, "versions": list(estimate.versions.values("number", "note", "created_at"))}
+            "snapshot": {**version.snapshot, "prices": price_summary(version.snapshot)},
+            "created_by": _author(estimate.created_by), "created_at": estimate.created_at,
+            "versions": [{"number": v.number, "note": v.note, "created_at": v.created_at,
+                          "created_by": _author(v.created_by)}
+                         for v in estimate.versions.select_related("created_by").defer("snapshot")]}
 
 
 @login_required
@@ -106,8 +114,8 @@ def estimate_api(request):
                 version = get_object_or_404(estimate.versions, number=number)
                 return JsonResponse(_version_data(estimate, version))
             query = string(data.get("q", ""), "Поиск", 200)
-            projects = PoolEstimate.objects.filter(organization=organization, title__icontains=query)
-            return JsonResponse({"projects": list(projects.values("id", "title", "revision", "updated_at")[:50]), "limit": 50})
+            projects = PoolEstimate.objects.filter(organization=organization, title__icontains=query).select_related("created_by")
+            return JsonResponse({"projects": [{"id": p.pk, "title": p.title, "revision": p.revision, "updated_at": p.updated_at, "created_at": p.created_at, "created_by": _author(p.created_by)} for p in projects[:50]], "limit": 50})
         action = data.get("action")
         if action == "generate":
             snapshot = apply_defaults(generate(data.get("inputs")), organization)

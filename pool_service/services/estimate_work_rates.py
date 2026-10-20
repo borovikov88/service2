@@ -6,7 +6,7 @@ import json
 from django.db import transaction
 from pool_service.estimate_models import PoolEstimateWorkRate
 from pool_service.models import Organization
-from .estimate_works import is_work
+from .estimate_works import is_work, shared_base
 from .pool_estimates import EstimateInputError, VARIANTS, boolean, evaluate, number, string
 
 
@@ -15,15 +15,22 @@ def identity(row):
 
 
 def apply_defaults(snapshot, organization, *, only_new=None):
-    rates = {(r.variant, r.identity): r.price for r in PoolEstimateWorkRate.objects.filter(organization=organization)}
+    records = list(PoolEstimateWorkRate.objects.filter(organization=organization))
+    rates = {(r.variant, r.identity): r.price for r in records}
     for key, variant in snapshot['variants'].items():
         for block in variant['blocks']:
             for row in block['rows']:
                 if not is_work(row) or not row.get('work_code') or (only_new is not None and (key, row['id']) in only_new):
                     continue
-                price = rates.get((key, identity(row)))
+                base = shared_base(row)
+                candidates = [r for r in records if r.identity == identity(row)] if base else []
+                price = max([Decimal(base), *(r.price for r in candidates)]) if base else rates.get((key, identity(row)))
                 if price is not None and (row['price'] is None or price > Decimal(row['price'])):
                     row['price'] = str(price)
+                if base and row['price'] is not None and Decimal(row['price']) == price:
+                    sources = sorted({VARIANTS[r.variant][0] for r in candidates if r.price == price and r.variant in VARIANTS})
+                    row['rate_source'] = ('Общая повышенная ставка организации: максимум сохранённых ставок; источник: ' + ', '.join(sources)
+                                          if price > Decimal(base) else 'Общая базовая ставка, утверждена владельцем 20.10.2026')
     return evaluate(snapshot)
 
 
@@ -70,10 +77,16 @@ def confirm_price(data, organization, user):
     with transaction.atomic():
         # Serializes first insert and concurrent raises for this tenant on MySQL.
         Organization.objects.select_for_update().get(pk=organization.pk)
+        shared = shared_base(source)
+        existing_common = list(PoolEstimateWorkRate.objects.filter(organization=organization, identity=identity(source)).values_list('price', flat=True)) if shared else []
+        minimum_raise = max([Decimal(shared), *existing_common]) if shared else None
         for key, target, previous in targets:
             target['price'] = str(price) if price is not None else None
+            target['rate_source'] = 'Ручная цена текущей сметы'
             # Empty, equal and discounted rates change this quote only.
             if price is None or (previous is not None and price <= Decimal(previous)):
+                continue
+            if minimum_raise is not None and price <= minimum_raise:
                 continue
             rate, created = PoolEstimateWorkRate.objects.get_or_create(
                 organization=organization, variant=key, identity=identity(target),

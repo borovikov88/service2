@@ -42,7 +42,7 @@ class WorkRateMemoryTests(TestCase):
         confirm_price(self.data('2800'), self.org, self.user)
         fresh = apply_defaults(generate({**INPUTS, 'finish': 'film'}), self.org)
         self.assertEqual(block(fresh, 'finish')['rows'][1]['price'], '3000.00')
-        self.assertEqual(block(fresh, 'finish', 'standard')['rows'][1]['price'], '800.00')
+        self.assertEqual(block(fresh, 'finish', 'standard')['rows'][1]['price'], '3000.00')
         self.assertEqual(block(frozen, 'finish')['rows'][1]['price'], '2000.00')
         self.assertEqual(PoolEstimateWorkRate.objects.get().price, Decimal('3000'))
 
@@ -95,3 +95,59 @@ class WorkRateMemoryTests(TestCase):
         result = confirm_price(self.data('1500'), self.org, self.user)
         self.assertEqual(result['remembered'], 0)
         self.assertFalse(PoolEstimateWorkRate.objects.exists())
+
+    def test_shared_film_bases_and_conflicting_records_read_max_without_migration(self):
+        from pool_service.services.estimate_work_rates import identity
+        base=generate({**INPUTS,'finish':'film'})
+        for variant in base['variants']:
+            self.assertEqual(block(base,'finish',variant)['rows'][1]['price'],'2000.00')
+            underlay=next(r for r in block(base,'finish',variant)['rows'] if r.get('work_code')=='underlay_film')
+            self.assertEqual(underlay['price'],'200.00')
+        target=block(base,'finish')['rows'][1]
+        for variant,price in [('economy','2500'),('standard','3100'),('premium','2700')]:
+            PoolEstimateWorkRate.objects.create(organization=self.org,variant=variant,identity=identity(target),work_code='finish_film',unit='м²',finish_type='film',price=price)
+        before=list(PoolEstimateWorkRate.objects.values())
+        fresh=apply_defaults(deepcopy(base),self.org)
+        for variant in fresh['variants']:
+            r=block(fresh,'finish',variant)['rows'][1]
+            self.assertEqual(r['price'],'3100.00')
+            self.assertIn('Стандарт',r['rate_source'])
+        self.assertEqual(list(PoolEstimateWorkRate.objects.values()),before)
+        self.assertEqual(block(apply_defaults(deepcopy(base),self.other),'finish')['rows'][1]['price'],'2000.00')
+        self.snapshot=fresh
+        self.assertEqual(confirm_price(self.data('3000'),self.org,self.user)['remembered'],0)
+        self.assertEqual(list(PoolEstimateWorkRate.objects.values()),before)
+        protected={(v,r['id']) for v,b in fresh['variants'].items() for block_ in b['blocks'] for r in block_['rows']}
+        block(fresh,'finish')['rows'][1]['price']='1234'
+        self.assertEqual(block(apply_defaults(fresh,self.org,only_new=protected),'finish')['rows'][1]['price'],'1234.00')
+
+    def test_geotextile_raise_shared_but_below_base_not_remembered(self):
+        data={**self.data('250'),'row':'work_underlay'}
+        result=confirm_price(data,self.org,self.user)
+        self.assertEqual(result['remembered'],1)
+        fresh=apply_defaults(generate({**INPUTS,'finish':'film'}),self.org)
+        for variant in fresh['variants']:
+            r=next(r for r in block(fresh,'finish',variant)['rows'] if r.get('work_code')=='underlay_film')
+            self.assertEqual(r['price'],'250.00')
+        self.snapshot=result['snapshot']
+        confirm_price({**data,'snapshot':self.snapshot,'price':'100'},self.org,self.user)
+        self.assertEqual(PoolEstimateWorkRate.objects.get().price,Decimal('250'))
+
+    def test_old_film_prices_survive_recalculate_save_and_history(self):
+        from pool_service.services.pool_estimates import recalculate
+        snapshot=generate({**INPUTS,'finish':'film'})
+        for variant in ('standard','premium'):
+            for row in block(snapshot,'finish',variant)['rows']:
+                if row.get('work_code')=='finish_film': row['price']='800'
+                if row.get('work_code')=='underlay_film': row['price']='70'
+        snapshot=evaluate(snapshot)
+        recalculated=recalculate(snapshot,snapshot['inputs'])
+        for variant in snapshot['variants']:
+            self.assertEqual(snapshot['variants'][variant]['total'],recalculated['variants'][variant]['total'])
+        saved=self.post(action='save',snapshot=snapshot,expected_revision=0).json()
+        old=self.client.get(self.url,{'organization':self.org.pk,'id':saved['id'],'version':1}).json()['snapshot']
+        self.assertEqual(old['variants'],snapshot['variants'])
+        new=generate({**INPUTS,'finish':'film'})
+        for variant in ('standard','premium'):
+            self.assertEqual(Decimal(new['variants'][variant]['total'])-Decimal(snapshot['variants'][variant]['total']),Decimal('90440'))
+        self.assertEqual(new['variants']['economy']['total'],snapshot['variants']['economy']['total'])

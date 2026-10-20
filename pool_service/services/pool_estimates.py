@@ -471,7 +471,7 @@ def normalize_snapshot(raw):
                 item["finish_type"] = string(row.get("finish_type", ""), "Тип отделки", 20)
                 if item["finish_type"] not in {"", *FINISHES}:
                     raise EstimateInputError("Некорректный тип отделки строки.")
-                for field, limit in (("name", 200), ("unit", 20), ("brand", 80), ("model", 120), ("reason", 300)):
+                for field, limit in (("name", 200), ("unit", 20), ("brand", 80), ("model", 120), ("reason", 300), ("rate_source", 300)):
                     item[field] = string(row.get(field, ""), field, limit, required=field in {"name", "unit"})
                 for field in ("excluded", "existing", "auto_quantity", "selection_locked", "quantity_stale"):
                     item[field] = boolean(row.get(field, False))
