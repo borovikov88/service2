@@ -12,6 +12,7 @@ from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_http_methods
 
 from pool_service.services.estimate_embedded import change_profile
+from pool_service.services.estimate_work_rates import apply_defaults, confirm_price
 from pool_service.estimate_models import PoolEstimate, PoolEstimateVersion
 from pool_service.services.pool_estimates import (
     EstimateInputError, allowed_organizations, evaluate, generate, geometry, normalize_inputs, price_summary, recalculate, string, VARIANTS,
@@ -93,13 +94,19 @@ def estimate_api(request):
             return JsonResponse({"projects": list(projects.values("id", "title", "revision", "updated_at")[:50]), "limit": 50})
         action = data.get("action")
         if action == "generate":
-            snapshot = generate(data.get("inputs"))
+            snapshot = apply_defaults(generate(data.get("inputs")), organization)
             try:
                 catalog = get_catalog()
                 snapshot, count = auto_select(snapshot, catalog)
                 return JsonResponse({"snapshot": snapshot, "catalog_status": catalog_status(catalog), "selected_count": count})
             except CatalogUnavailable as exc:
                 return JsonResponse({"snapshot": snapshot, "catalog_error": str(exc)})
+        if action == 'catalog_images':
+            ids = data.get('ids')
+            if not isinstance(ids, list) or len(ids) > 1500 or any(not isinstance(i, str) or not i.isdigit() or len(i) > 12 for i in ids):
+                raise EstimateInputError('Некорректный список товаров.')
+            products = get_catalog()['products']
+            return JsonResponse({'images': {i: products[i].get('image', '') for i in set(ids) if i in products}})
         if action == "catalog_search":
             inputs = normalize_inputs(data.get("inputs"))
             return JsonResponse(search_catalog(get_catalog(), data.get("q", ""), data.get("kind", ""), data.get("brand", ""), inputs, Decimal(geometry(inputs)["required_flow"])))
@@ -127,7 +134,8 @@ def estimate_api(request):
             apply_product(row, product, catalog)
             return JsonResponse({"snapshot": evaluate(snapshot), "catalog_status": catalog_status(catalog)})
         if action == "recalculate":
-            snapshot = recalculate(data.get("snapshot"), data.get("inputs"))
+            previous_rows = {(k, r["id"]) for k, v in evaluate(data.get("snapshot"))["variants"].items() for b in v["blocks"] for r in b["rows"]}
+            snapshot = apply_defaults(recalculate(data.get("snapshot"), data.get("inputs")), organization, only_new=previous_rows)
             try:
                 catalog = get_catalog()
                 snapshot, count = auto_select(snapshot, catalog)
@@ -147,9 +155,12 @@ def estimate_api(request):
             from .services.estimate_works import add_works
             from .services.pool_estimates import change_finish
             snapshot = evaluate(data.get('snapshot'))
+            previous_rows = {(k, r["id"]) for k, v in snapshot["variants"].items() for b in v["blocks"] for r in b["rows"]}
             add_works(snapshot)
             change_finish(snapshot, snapshot['inputs']['finish'], replace=False)
-            return JsonResponse({'snapshot': evaluate(snapshot)})
+            return JsonResponse({'snapshot': apply_defaults(snapshot, organization, only_new=previous_rows)})
+        if action == 'work_price':
+            return JsonResponse(confirm_price(data, organization, request.user))
         if action == "validate":
             return JsonResponse({"snapshot": evaluate(data.get("snapshot"))})
         if action != "save":

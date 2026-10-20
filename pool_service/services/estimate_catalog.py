@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 import re
 import time
 from urllib.error import URLError
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, unquote
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 import xml.etree.ElementTree as ET
 
@@ -20,7 +20,7 @@ from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requ
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
-CACHE_KEY = "pool-estimate-shop-v3"
+CACHE_KEY = "pool-estimate-shop-v4"
 CACHE_SECONDS = 900
 MAX_BYTES = 20_000_000
 FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
@@ -40,6 +40,16 @@ def safe_shop_url(value):
     except ValueError:
         pass
     return ""
+
+
+def safe_image_url(value):
+    url = safe_shop_url(value)
+    if not url:
+        return ''
+    path = unquote(urlsplit(url).path)
+    if not path.startswith('/image/') or any(part in ('.', '..') for part in path.split('/')) or '\\' in path:
+        return ''
+    return url
 
 
 def _decimal(text, maximum="1000000000"):
@@ -132,6 +142,7 @@ def parse_catalog(payload, checked_at=None):
         model = re.sub(r"^(?:песочный )?(?:фильтр|насос)(?: для бассейна)?\s+", "", name, flags=re.I).split("(")[0].strip()[:120]
         products[pid] = {"id": pid, "url": url, "name": name, "brand": brand, "model": model,
                          "sku": offer.findtext("vendorCode", "")[:80],
+                         "image": next((url for p in offer.findall("picture") if (url := safe_image_url(p.text))), ""),
                          "price": str(Decimal(price).quantize(Decimal(".01"))),
                          "available": offer.get("available") == "true",
                          "category": categories.get(offer.findtext("categoryId"), ""), **specs}
@@ -230,6 +241,7 @@ def apply_product(row, product, catalog, selection="manual"):
     row.update(name=product["name"], brand=product["brand"], model=product["model"], price=product["price"], kind=product["kind"])
     row["specs"] = {k: product[k] for k in ("flow", "head", "filter_flow", "backwash_flow")}
     row["catalog"] = {k: product[k] for k in ("id", "url", "sku", "price", "available", "nominal_flow", "power", "power_options", "heating_power", "heater_type", "titanium", "embedded_role", "material", "lining")}
+    row["catalog"]["image"] = safe_image_url(product.get("image", ""))
     row["catalog"].update(checked_at=catalog["checked_at"], feed_date=catalog["feed_date"], selection=selection, missing=False)
 
 
