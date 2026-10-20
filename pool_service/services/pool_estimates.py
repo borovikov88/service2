@@ -222,13 +222,14 @@ def generate(raw):
 def normalize_catalog(raw):
     if raw is None:
         return None
-    from .estimate_catalog import safe_shop_url
+    from .estimate_catalog import safe_shop_url, safe_image_url
     if not isinstance(raw, dict) or not re.fullmatch(r"\d{1,12}", str(raw.get("id", ""))):
         raise EstimateInputError("Некорректная ссылка на товар каталога.")
     url = safe_shop_url(raw.get("url"))
     if not url or raw.get("selection") not in ("auto", "manual") or raw.get("power") not in ("230", "400", "unknown") or raw.get("heater_type") not in ("", "exchanger", "electric", "heatpump"):
         raise EstimateInputError("Некорректные данные товара магазина.")
     result = {"id": str(raw["id"]), "url": url, "selection": raw["selection"], "power": raw["power"], "heater_type": raw["heater_type"]}
+    result["image"] = safe_image_url(raw.get("image", ""))
     options = raw.get("power_options", [raw["power"]] if raw["power"] != "unknown" else [])
     if not isinstance(options, list) or len(options) > 2 or any(p not in ("230", "400") for p in options) or len(set(options)) != len(options):
         raise EstimateInputError("Некорректные варианты питания товара.")

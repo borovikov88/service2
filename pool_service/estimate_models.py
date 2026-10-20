@@ -35,3 +35,22 @@ class PoolEstimateVersion(models.Model):
         if not self._state.adding:
             raise ValidationError("Сохранённая версия неизменяема. Создайте новую версию.")
         return super().save(*args, **kwargs)
+
+
+class PoolEstimateWorkRate(models.Model):
+    """Highest confirmed manual rate, isolated by organization and quote tier."""
+    organization = models.ForeignKey('pool_service.Organization', on_delete=models.CASCADE)
+    variant = models.CharField(max_length=16)
+    identity = models.CharField(max_length=64)
+    work_code = models.CharField(max_length=80)
+    unit = models.CharField(max_length=20)
+    finish_type = models.CharField(max_length=20, blank=True)
+    price = models.DecimalField(max_digits=12, decimal_places=2)
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['organization', 'variant', 'identity'], name='pool_work_rate_org_tier_uniq'),
+            models.CheckConstraint(condition=models.Q(price__gte=0), name='pool_work_rate_nonnegative'),
+        ]
