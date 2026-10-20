@@ -44,6 +44,8 @@ export function installNumbers(root) {
   }, true);
   root.addEventListener('focusout', ({target:el}) => {
     const s=states.get(el); if(!s)return;
+    // Keep invalid raw input visible; rounding can hide a step/min violation.
+    if(el.validity?.valid === false)return;
     s.display=displayNumber(s.raw,s.options); el.value=s.display;
     el.title=s.raw ? `Точное значение: ${exactNumber(s.raw)}. При редактировании показано полностью.` : '';
   });

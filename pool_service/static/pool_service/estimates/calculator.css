@@ -23,3 +23,5 @@
 .pe .pe-help-field>input:not([type=checkbox]),.pe .pe-help-field>select,.pe .pe-help-field>textarea,.pe td .pe-help-field>.pe-price,.pe td .pe-help-field>.pe-qty{width:100%!important}
 .pe .pe-help-field>.pe-help-corner{position:absolute;right:5px;top:8px;margin:0}.pe .pe-help-cell{position:relative}.pe .pe-help-cell>.pe-help-corner{position:absolute;right:4px;top:3px;margin:0}
 @media(pointer:coarse){.pe .pe-help-button:not(.pe-help-warning)::before{width:24px;height:24px}}
+
+.pe-row-order{display:flex;gap:4px;margin-bottom:4px}.pe .pe-row-order button{min-width:32px;min-height:32px;padding:0;border:1px solid var(--pe-line);border-radius:5px;background:var(--pe-bg);color:var(--pe-teal);cursor:pointer}.pe .pe-row-order button:disabled{opacity:.35;cursor:default}.pe .pe-row-order button:focus-visible{outline:2px solid var(--pe-teal);outline-offset:2px}@media(pointer:coarse){.pe .pe-row-order button{min-width:44px;min-height:44px}}

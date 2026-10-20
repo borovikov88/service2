@@ -144,6 +144,30 @@ class PoolEstimateViewsTests(TestCase):
     def save(self, **overrides):
         return self.post(**{"action": "save", "snapshot": self.snapshot, "expected_revision": 0, **overrides})
 
+    def test_row_order_survives_save_load_recalculate_and_print(self):
+        self.snapshot = generate({**INPUTS, 'heating_types':['exchanger','electric'],
+                                  'heating':'exchanger', 'construction_scheme':'package',
+                                  'freeboard':'0.15','wall_thickness':'0.2','slab_thickness':'0.2'})
+        before = deepcopy(self.snapshot)
+        rows = block(self.snapshot)['rows']
+        for i, row in enumerate(rows):
+            row.update(price='123.45', quantity='2', auto_quantity=False)
+            row['name'] = 'Order marker ' + str(i)
+        rows[1]['excluded'] = True
+        rows.reverse()
+        expected = [r['id'] for r in rows]
+        first = self.save().json()
+        loaded = self.client.get(self.url, {'organization':self.org.pk,'id':first['id']}).json()['snapshot']
+        recalculated = recalculate(loaded, loaded['inputs'])
+        self.assertEqual([r['id'] for r in block(recalculated)['rows']], expected)
+        self.assertEqual(block(recalculated)['rows'], block(loaded)['rows'])
+        self.assertEqual(recalculated['variants']['standard'], before['variants']['standard'])
+        self.assertEqual(recalculated['variants']['economy']['total'], loaded['variants']['economy']['total'])
+        html = self.client.get(reverse('pool_estimate_print',args=[first['id'],1])).content.decode()
+        names = [r['name'] for r in rows if not r['excluded']]
+        self.assertEqual(sorted(names,key=html.index),names)
+        self.assertNotIn(next(r['name'] for r in rows if r['excluded']),html)
+
     def test_work_upgrade_and_rate_versions_keep_tenant_boundary(self):
         first = self.save().json()
         frozen = deepcopy(PoolEstimateVersion.objects.get(number=1).snapshot)
