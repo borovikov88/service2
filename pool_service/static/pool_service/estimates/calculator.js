@@ -290,7 +290,10 @@ root.addEventListener('click', event => {
 }, true);
 root.addEventListener('input', event => {
   // Warn about loss even if the user closes the tab before the field blurs.
-  if (event.target.dataset.field && snapshot) changed();
+  if (event.target.dataset.field && snapshot) {
+    // An older validation response must not replace an edit before it blurs.
+    clearTimeout(timer); changed();
+  }
 });
 root.addEventListener('change', event => {
   const el = event.target;

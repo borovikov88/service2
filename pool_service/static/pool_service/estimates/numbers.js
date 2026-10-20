@@ -31,7 +31,7 @@ export function bindNumber(el, value, options={}) {
 }
 export function installNumbers(root) {
   root.addEventListener('focusin', ({target:el}) => {
-    const s=states.get(el); if(s) el.value=exactNumber(s.raw);
+    const s=states.get(el); if(s) { el.value=exactNumber(s.raw); el.select?.(); }
   });
   root.addEventListener('input', ({target:el}) => {
     const s=states.get(el); if(!s)return;

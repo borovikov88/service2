@@ -35,6 +35,21 @@ const {chromium}=require('playwright');
  await qty('material_sand').press('Home');await qty('material_sand').press('ArrowRight');await qty('material_sand').press('Shift+End');
  await qty('material_sand').evaluate(el=>{const data=new DataTransfer();data.setData('text',',7');el.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));});
  assert(await qty('material_sand').inputValue()==='1.7','paste replaces only selection');
+ let release, markPending;
+ const held=new Promise(resolve=>{release=resolve;});const pending=new Promise(resolve=>{markPending=resolve;});let hold=true;
+ await page.route(url=>url.pathname.includes('/estimates/api/'),async route=>{
+  if(hold && route.request().method()==='POST' && route.request().postDataJSON()?.action==='validate'){hold=false;markPending();await held;}
+  await route.continue();
+ });
+ await qty('material_sand').fill('6.2');await qty('material_sand').press('Tab');await Promise.race([pending,new Promise((_,reject)=>setTimeout(()=>reject(Error('validation interception timeout')),10000))]);
+ const price=page.locator('[data-row="finish_material"][data-field="price"]');
+ await price.fill('12.34');
+ const stale=page.waitForResponse(r=>r.url().includes('/estimates/api')&&r.request().postDataJSON()?.action==='validate');release();await stale;
+ assert(await price.inputValue()==='12.34','stale validation cannot overwrite focused price');
+ const fresh=page.waitForResponse(r=>r.url().includes('/estimates/api')&&r.request().postDataJSON()?.action==='validate');await price.press('Tab');
+ const corrected=(await (await fresh).json()).snapshot;
+ assert(item(corrected,'finish_material').price==='12.34','exact edited price survives stale validation');
+ assert(!item(corrected,'finish_material').price_conversion_note,'manual film clears conversion note');
  assert(errors.length===0,errors.join('\n'));
  console.log('mobile + exact focus/blur + auto/manual + no-op recalc + geometry + piece validation: PASS; JS errors: 0');
  await browser.close();
