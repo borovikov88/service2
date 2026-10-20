@@ -47,10 +47,6 @@ def ensure_heating_rows(snapshot, only_variant=None):
                 row = make_row("heater_" + source, "Подогрев: подобрать мощность и модель", kind="heater")
                 row["heating_type"] = source
                 additions.append(row)
-        if "exchanger" in selected:
-            for kind, name in ACCESSORIES.items():
-                if not any(r["kind"] == kind for r in rows):
-                    additions.append(make_row(kind, name, kind=kind))
         for row in additions:
             base = row["id"]
             row["id"] = next((f"{base}_{n}" for n in range(100) if f"{base}_{n}" not in ids), "") if base in ids else base
@@ -58,7 +54,59 @@ def ensure_heating_rows(snapshot, only_variant=None):
                 raise EstimateInputError("В блоке оборудования недостаточно места для нагрева.")
             ids.add(row["id"])
             equipment["rows"].append(row)
+    sync_exchanger_accessories(snapshot, only_variant=only_variant, create=True)
 
+
+
+def exchanger_count(row):
+    count = Decimal(row["quantity"])
+    return row["quantity"] if row["unit"] in {"шт.", "компл."} and count == count.to_integral_value() else None
+
+
+def sync_exchanger_accessories(snapshot, *, only_variant=None, create=False):
+    """One pair per exchanger row; quantities track that row unless manually edited."""
+    if not snapshot.get("heating_accessories"):
+        return
+    for key, variant in snapshot["variants"].items():
+        if only_variant and key != only_variant:
+            continue
+        equipment = next(b for b in variant["blocks"] if b["id"] == "equipment")
+        rows = [r for b in variant["blocks"] for r in b["rows"]]
+        physical_ids = {r["id"] for b in variant["blocks"] for r in b["rows"] if (not b["excluded"] and not r["excluded"]) or r["existing"]}
+        parents = {r["id"]: r for r in rows if r["kind"] == "heater" and row_heating_type(r, snapshot["inputs"]) == "exchanger"}
+        ids = {r["id"] for r in rows}
+        if create and "exchanger" in heating_types(snapshot["inputs"]):
+            for parent_id, parent in parents.items():
+                for kind, name in ACCESSORIES.items():
+                    if any(r["kind"] == kind and r.get("heating_parent") == parent_id for r in rows):
+                        continue
+                    unlinked = [r for r in rows if r["kind"] == kind and not r.get("heating_parent")]
+                    if unlinked:
+                        # A legacy pair can be bound only to one unambiguous exchanger.
+                        # Preserve quantities/prices of manually selected historical equipment.
+                        if len(parents) == len(unlinked) == 1:
+                            unlinked[0]["heating_parent"] = parent_id
+                        continue
+                    rid = kind if kind not in ids else next((f"{kind}_{n}" for n in range(100) if f"{kind}_{n}" not in ids), "")
+                    if not rid or len(equipment["rows"]) >= 100:
+                        raise EstimateInputError("В блоке оборудования недостаточно места для аксессуаров теплообменника.")
+                    row = make_row(rid, name, quantity=exchanger_count(parent), basis="exchanger_quantity", kind=kind)
+                    row["heating_parent"] = parent_id
+                    equipment["rows"].append(row)
+                    rows.append(row)
+                    ids.add(rid)
+        for row in rows:
+            if row["kind"] not in ACCESSORIES or not row.get("heating_parent") or row["existing"]:
+                continue
+            parent = parents.get(row["heating_parent"])
+            active = (parent and parent["id"] in physical_ids
+                      and "exchanger" in heating_types(snapshot["inputs"]))
+            if not active and not row["excluded"]:
+                row.update(excluded=True, reason=HEATING_OFF)
+            elif active and row["excluded"] and row["reason"] == HEATING_OFF:
+                row.update(excluded=False, reason="")
+            if parent and row["auto_quantity"] and row["basis"] == "exchanger_quantity":
+                row["quantity"] = exchanger_count(parent)
 
 
 class EstimateInputError(ValueError):
@@ -296,6 +344,9 @@ def make_row(key, name, unit="компл.", quantity="1", basis="", kind="other"
 
 
 def generate(raw):
+    # Defaults belong only to new calculations; normalize/load never inject them.
+    if isinstance(raw, dict):
+        raw = {"wall_thickness": "0.20", "slab_thickness": "0.20", **raw}
     inputs = normalize_inputs(raw)
     metrics = geometry(inputs)
     variants = {}
@@ -313,7 +364,7 @@ def generate(raw):
             row["heating_type"] = heating_types(inputs)[0]
             rowsets["equipment"].insert(2, row)
         variants[key] = {"embedded_profile": embedded.DEFAULTS[key], "blocks": [{"id": bid, "title": title, "excluded": False, "reason": "", "rows": rowsets[bid]} for bid, title in BLOCKS.items()]}
-    result = {"schema": 1, "inputs": inputs, "variants": variants, "geometry": metrics}
+    result = {"schema": 1, "inputs": inputs, "variants": variants, "geometry": metrics, "heating_accessories": 1}
     ensure_heating_rows(result)
     works.add_works(result, fresh=True)
     update_construction_quantities(result)
@@ -362,7 +413,7 @@ def normalize_catalog(raw):
 def normalize_snapshot(raw):
     if not isinstance(raw, dict) or raw.get("schema") != 1:
         raise EstimateInputError("Неизвестный формат расчёта.")
-    result = {"schema": 1, "inputs": normalize_inputs(raw.get("inputs")), "variants": {}, "works_catalog": 1 if raw.get("works_catalog") == 1 else 0}
+    result = {"schema": 1, "inputs": normalize_inputs(raw.get("inputs")), "variants": {}, "works_catalog": 1 if raw.get("works_catalog") == 1 else 0, "heating_accessories": 1 if raw.get("heating_accessories") == 1 else 0}
     variants = raw.get("variants")
     if not isinstance(variants, dict) or set(variants) != set(VARIANTS):
         raise EstimateInputError("В расчёте должны быть три варианта.")
@@ -387,9 +438,10 @@ def normalize_snapshot(raw):
                 if not isinstance(rid, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", rid) or rid in row_ids:
                     raise EstimateInputError("Строки должны иметь уникальные идентификаторы.")
                 row_ids.add(rid)
-                if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("basis", ""), str) or row.get("basis", "") not in {"", "finish_area", "finish_net", "finish_stock", "surface", "perimeter", "volume", "concrete_total", "embedded_work", *embedded.ROLES}:
+                if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("basis", ""), str) or row.get("basis", "") not in {"", "finish_area", "finish_net", "finish_stock", "surface", "perimeter", "volume", "concrete_total", "exchanger_quantity", "embedded_work", *embedded.ROLES}:
                     raise EstimateInputError("Некорректный тип строки.")
                 item = {"id": rid, "kind": row["kind"], "basis": row.get("basis", "")}
+                item["heating_parent"] = string(row.get("heating_parent", ""), "Связанный теплообменник", 64)
                 item["heating_type"] = string(row.get("heating_type", ""), "Тип нагрева строки", 20)
                 if item["heating_type"] not in {"", *HEATING_TYPES}:
                     raise EstimateInputError("Некорректный тип нагрева строки.")
@@ -406,7 +458,7 @@ def normalize_snapshot(raw):
                     item[field] = boolean(row.get(field, False))
                 item["work_code"] = string(row.get("work_code", ""), "Код работы", 80)
                 works.identify(item)
-                item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", optional=item["kind"] == "work" or item["basis"] == "concrete_total"))
+                item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", optional=item["kind"] == "work" or item["basis"] in {"concrete_total", "exchanger_quantity"}))
                 item["price"] = _optional(number(row.get("price"), "Цена", optional=True, places=2))
                 specs = row.get("specs", {})
                 if not isinstance(specs, dict):
@@ -426,6 +478,7 @@ def evaluate(raw):
     """Recompute derived fields on the server; never trust client totals/warnings."""
     from .estimate_compatibility import annotate
     result = normalize_snapshot(raw)
+    sync_exchanger_accessories(result)
     result["geometry"] = geometry(result["inputs"])
     result["heating"] = heating_requirement(result["inputs"])
     embedded.update_quantities(result)
@@ -526,6 +579,14 @@ def evaluate(raw):
             elif result["heating"]["mode"] == "estimated":
                 warnings.append("Мощность подогрева рассчитана предварительно по времени прогрева с заданным запасом. Теплопотери, особенно у открытого бассейна, рассчитываются отдельно; запас их не заменяет.")
             if "exchanger" in heating_types(result["inputs"]):
+                for parent in (r for r in physical if r["kind"] == "heater" and row_heating_type(r, result["inputs"]) == "exchanger"):
+                    if exchanger_count(parent) is None:
+                        warnings.append("Для количества аксессуаров укажите целое число теплообменников в шт. или компл.; автоматический объём пока неизвестен.")
+                        continue
+                    for kind, name in ACCESSORIES.items():
+                        accessories = [r for r in physical if r["kind"] == kind and r.get("heating_parent") == parent["id"]]
+                        if sum((Decimal(r["quantity"] or 0) for r in accessories), Decimal(0)) != Decimal(parent["quantity"]):
+                            warnings.append(f"{name}: количество не соответствует теплообменнику {parent['name']}. Пересчитайте состав или проверьте ручное количество/привязку.")
                 warnings.append("Первичный контур теплообменника: циркуляционный насос и электромагнитный клапан требуют подтверждения рабочей точки, температуры, давления, теплоносителя, питания и присоединений. Без этих данных автоматический подбор и цена не подтверждены.")
                 warnings.append("Для теплообменника подтвердите мощность при фактической температуре и расходе теплоносителя, а также мощность котла.")
             if "heatpump" in heating_types(result["inputs"]):
@@ -544,6 +605,7 @@ def evaluate(raw):
 def recalculate(raw, inputs):
     """Keep exclusions and manual edits; update only explicitly automatic quantities."""
     result = normalize_snapshot(raw)
+    result["heating_accessories"] = 1
     old_inputs = result["inputs"].copy()
     old_finish = result["inputs"]["finish"]
     for variant in result["variants"].values():

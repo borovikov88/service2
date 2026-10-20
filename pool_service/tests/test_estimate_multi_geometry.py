@@ -174,11 +174,66 @@ class MultiGeometryTests(SimpleTestCase):
             self.assertIn(f'{label}, м: <strong>{value}</strong>', html)
         self.assertIn('глубина воды 1.580–1.580', html)
         self.assertEqual(snapshot, before)
-        legacy = printable(generate(INPUTS))
+        old = generate(INPUTS)
+        old["inputs"].pop("wall_thickness")
+        old["inputs"].pop("slab_thickness")
+        legacy = printable(evaluate(old))
         self.assertEqual(legacy.count('<strong>не указана</strong>'), 3)
         partial = printable(generate({**BOWL, 'wall_thickness': '', 'slab_thickness': ''}))
         self.assertEqual(partial.count('<strong>не указана</strong>'), 2)
         self.assertIn('H, м: <strong>1.700</strong>', partial)
+
+    def test_new_thickness_defaults_do_not_backfill_history(self):
+        fresh = generate(INPUTS)
+        self.assertEqual(fresh['inputs']['wall_thickness'], '0.200')
+        self.assertEqual(fresh['inputs']['slab_thickness'], '0.200')
+        fresh['inputs'].pop('wall_thickness')
+        fresh['inputs'].pop('slab_thickness')
+        self.assertNotIn('wall_thickness', evaluate(fresh)['inputs'])
+        self.assertNotIn('slab_thickness', evaluate(fresh)['inputs'])
+
+    def test_each_exchanger_tracks_its_pair_and_preserves_manual_counts(self):
+        inputs = {**INPUTS, 'heating': 'exchanger'}
+        s = generate(inputs)
+        rows = block(s)['rows']
+        parent = next(r for r in rows if r['kind'] == 'heater')
+        parent['quantity'] = '2'
+        pair = [r for r in rows if r['kind'] in ('circulation_pump', 'solenoid_valve')]
+        for row, price in zip(pair, ('100', '200')):
+            self.assertEqual(row['heating_parent'], parent['id'])
+            row['price'] = price
+        baseline = Decimal(s['variants']['economy']['total'])
+        checked = evaluate(s)
+        self.assertEqual(Decimal(checked['variants']['economy']['total']) - baseline, 600)
+        self.assertEqual([r['quantity'] for r in block(checked)['rows'] if r['kind'] in ('circulation_pump','solenoid_valve')], ['2.000','2.000'])
+        second = deepcopy(parent)
+        second.update(id='second_exchanger', quantity='1')
+        block(checked)['rows'].append(second)
+        expanded = recalculate(checked, inputs)
+        accessory_rows = [r for r in block(expanded)['rows'] if r['kind'] in ('circulation_pump','solenoid_valve')]
+        self.assertEqual(len(accessory_rows), 4)
+        self.assertEqual({r['heating_parent'] for r in accessory_rows}, {parent['id'],'second_exchanger'})
+        manual = accessory_rows[0]
+        manual.update(quantity='0', auto_quantity=False)
+        preserved = evaluate(expanded)
+        self.assertEqual(next(r for r in block(preserved)['rows'] if r['id']==manual['id'])['quantity'], '0.000')
+        self.assertTrue(any('количество не соответствует' in w for w in preserved['variants']['economy']['warnings']))
+        off = recalculate(expanded, {**INPUTS, 'heating':'none'})
+        restored = recalculate(off, inputs)
+        self.assertEqual(len([r for r in block(restored)['rows'] if r['kind'] in ('circulation_pump','solenoid_valve')]),4)
+        self.assertEqual(sum(r['id']=='equipment_work' for r in block(restored)['rows']),1)
+        for change in ({'unit':'м³'}, {'quantity':'1.5'}):
+            invalid = deepcopy(checked)
+            next(r for r in block(invalid)['rows'] if r['kind']=='heater').update(change)
+            result = evaluate(invalid)
+            self.assertIsNone(next(r for r in block(result)['rows'] if r['kind']=='circulation_pump')['quantity'])
+            self.assertTrue(any('целое число теплообменников' in w for w in result['variants']['economy']['warnings']))
+        # Old snapshots are not silently upgraded by validation.
+        legacy = deepcopy(checked)
+        legacy.pop('heating_accessories')
+        row = next(r for r in block(legacy)['rows'] if r['kind']=='circulation_pump')
+        row['quantity'] = '1'
+        self.assertEqual(next(r for r in block(evaluate(legacy))['rows'] if r['kind']=='circulation_pump')['quantity'], '1.000')
 
     def test_exact_geometry_controls_and_water_level_independence(self):
         s = generate(BOWL)

@@ -125,6 +125,9 @@ async function run(action) {
   try { await action(); return true; } catch (error) { status(error.message, true); return false; }
   finally { disabled.forEach(([el, was]) => { el.disabled = was; }); busy = false; }
 }
+function rowLayout(variant) {
+  return JSON.stringify(variant.blocks.map(b => [b.id, b.excluded, b.rows.map(r => [r.id, r.excluded])]));
+}
 function queueValidation() {
   clearTimeout(timer);
   const token = sequence;
@@ -132,8 +135,9 @@ function queueValidation() {
     try {
       const result = await api({action: 'validate', snapshot});
       if (token !== sequence || busy) return;
+      const layoutChanged = rowLayout(snapshot.variants[selected]) !== rowLayout(result.snapshot.variants[selected]);
       snapshot = result.snapshot;
-      renderTotals();
+      if (layoutChanged) renderEditor(); else renderTotals();
     } catch (error) { if (token === sequence) status(error.message, true); }
   }, 300);
 }
@@ -142,6 +146,9 @@ function syncScope() {
     input.checked = !snapshot.variants[selected].blocks.find(b => b.id === input.dataset.scope).excluded;
     input.indeterminate = false;
   });
+}
+function quantityMode(row) {
+  return row.auto_quantity ? 'авто' : row.quantity === null ? 'не задано' : 'вручную';
 }
 function renderRowCheck(row, blockId) {
   const check = row.compatibility;
@@ -167,6 +174,8 @@ function renderTotals() {
     for (const row of block.rows) {
       const quantity = root.querySelector(`[data-row="${row.id}"][data-field="quantity"]`);
       if (row.auto_quantity && quantity && document.activeElement !== quantity) quantity.value = row.quantity;
+      const mode = root.querySelector(`[data-quantity-mode="${row.id}"]`);
+      if (mode) mode.textContent = quantityMode(row);
       const check = root.querySelector(`[data-row-check="${row.id}"]`);
       if (check) { check.innerHTML = renderRowCheck(row, block.id); check.hidden = !row.compatibility; }
       const amount = root.querySelector(`[data-amount="${row.id}"]`);
@@ -179,7 +188,7 @@ function renderEditor() {
   const variant = snapshot.variants[selected];
   $('#pe-blocks').innerHTML = variant.blocks.filter(b => !b.excluded).map(block => {
     const rows = block.rows.filter(r => !r.excluded);
-    return `<section class="pe-block"><div class="pe-block-head"><h3>${esc(block.title)}</h3><span class="pe-subtotal" data-subtotal="${block.id}">${money(block.subtotal)} ₽</span><button type="button" class="pe-link" data-exclude-block="${block.id}">Исключить</button></div>${rows.length ? `<div class="pe-table-wrap"><table><thead><tr><th>Позиция</th><th>Кол-во</th><th>Цена, ₽</th><th>Сумма, ₽</th><th><span class="visually-hidden">Действия</span></th></tr></thead><tbody>${rows.map(row => `<tr><td>${thumbnail(row.catalog?.image || productImages[row.catalog?.id], row.name)}<span class="pe-row-name">${esc(row.name)}</span><span class="pe-row-detail">${esc([({electric:'Электронагреватель', exchanger:'Теплообменник', heatpump:'Тепловой насос'})[row.heating_type], row.brand, row.model].filter(Boolean).join(' · '))}${row.auto_quantity ? ' · по геометрии' : isWork(row) && row.quantity === null ? ' · укажите объём работ' : ''}${row.existing ? ' · уже установлено' : ''}</span><div class="pe-row-check" data-row-check="${row.id}" aria-live="polite"${row.compatibility ? '' : ' hidden'}>${renderRowCheck(row, block.id)}</div></td><td><input class="pe-qty" data-field="quantity" data-block="${block.id}" data-row="${row.id}" type="number" min="0" max="1000000" step="0.001" value="${esc(row.quantity)}" placeholder="Уточнить" aria-label="Количество: ${esc(row.name)}"><span class="pe-row-detail">${esc(row.unit)}</span></td><td><input class="pe-price" data-field="price" data-block="${block.id}" data-row="${row.id}" type="number" min="0" max="1000000000" step="0.01" value="${esc(row.price)}" placeholder="Уточнить" aria-label="Цена: ${esc(row.name)}"></td><td class="pe-row-amount" data-amount="${row.id}">${money(row.amount)}</td><td class="pe-row-actions">${!isWork(row) ? `<button type="button" class="pe-link" data-shop="${row.id}" data-block="${block.id}" aria-label="Выбрать товар: ${esc(row.name)}">Каталог</button>` : ''}<button type="button" class="pe-link" data-edit="${row.id}" data-block="${block.id}" aria-label="Изменить: ${esc(row.name)}">✎</button><button type="button" class="pe-link" data-exclude-row="${row.id}" data-block="${block.id}" aria-label="Исключить: ${esc(row.name)}">×</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="pe-empty">В этом блоке пока нет активных позиций.</div>'}<button type="button" class="pe-link pe-add" data-add="${block.id}">+ Добавить позицию</button></section>`;
+    return `<section class="pe-block"><div class="pe-block-head"><h3>${esc(block.title)}</h3><span class="pe-subtotal" data-subtotal="${block.id}">${money(block.subtotal)} ₽</span><button type="button" class="pe-link" data-exclude-block="${block.id}">Исключить</button></div>${rows.length ? `<div class="pe-table-wrap"><table><thead><tr><th>Позиция</th><th>Кол-во</th><th>Цена, ₽</th><th>Сумма, ₽</th><th><span class="visually-hidden">Действия</span></th></tr></thead><tbody>${rows.map(row => `<tr><td>${thumbnail(row.catalog?.image || productImages[row.catalog?.id], row.name)}<span class="pe-row-name">${esc(row.name)}</span><span class="pe-row-detail">${esc([({electric:'Электронагреватель', exchanger:'Теплообменник', heatpump:'Тепловой насос'})[row.heating_type], row.brand, row.model].filter(Boolean).join(' · '))}${row.existing ? ' · уже установлено' : ''}</span><div class="pe-row-check" data-row-check="${row.id}" aria-live="polite"${row.compatibility ? '' : ' hidden'}>${renderRowCheck(row, block.id)}</div></td><td><input class="pe-qty" data-field="quantity" data-block="${block.id}" data-row="${row.id}" type="number" min="0" max="1000000" step="0.001" value="${esc(row.quantity)}" placeholder="Уточнить" aria-label="Количество: ${esc(row.name)}"><span class="pe-row-detail">${esc(row.unit)} · <span data-quantity-mode="${row.id}">${quantityMode(row)}</span></span></td><td><input class="pe-price" data-field="price" data-block="${block.id}" data-row="${row.id}" type="number" min="0" max="1000000000" step="0.01" value="${esc(row.price)}" placeholder="Уточнить" aria-label="Цена: ${esc(row.name)}"></td><td class="pe-row-amount" data-amount="${row.id}">${money(row.amount)}</td><td class="pe-row-actions">${!isWork(row) ? `<button type="button" class="pe-link" data-shop="${row.id}" data-block="${block.id}" aria-label="Выбрать товар: ${esc(row.name)}">Каталог</button>` : ''}<button type="button" class="pe-link" data-edit="${row.id}" data-block="${block.id}" aria-label="Изменить: ${esc(row.name)}">✎</button><button type="button" class="pe-link" data-exclude-row="${row.id}" data-block="${block.id}" aria-label="Исключить: ${esc(row.name)}">×</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="pe-empty">В этом блоке пока нет активных позиций.</div>'}<button type="button" class="pe-link pe-add" data-add="${block.id}">+ Добавить позицию</button></section>`;
   }).join('');
   const excluded = variant.blocks.filter(b => b.excluded || b.rows.some(r => r.excluded));
   $('#pe-excluded-count').textContent = `(${excluded.reduce((sum, b) => sum + (b.excluded ? 1 : b.rows.filter(r => r.excluded).length), 0)})`;
@@ -270,6 +279,8 @@ root.addEventListener('change', event => {
     }
     row[el.dataset.field] = value;
     if (el.dataset.field === 'quantity') { row.auto_quantity = false; row.quantity_stale = false; row.selection_locked = true; if (row.catalog) row.catalog.selection = 'manual'; }
+    const mode = root.querySelector(`[data-quantity-mode="${row.id}"]`);
+    if (mode) mode.textContent = quantityMode(row);
     changed(); queueValidation();
   }
   if (el.dataset.scope && snapshot) {
@@ -318,7 +329,7 @@ $('#pe-row-form').addEventListener('submit', event => {
   if (row.quantity !== rowBeingEdited.quantity) row.quantity_stale = false;
   row.existing = f.elements.existing.checked;
   row.auto_quantity = Boolean(row.basis) && f.elements.auto_quantity.checked;
-  if (row.auto_quantity) row.quantity = String(Math.ceil(Number(snapshot.variants[selected].embedded_counts?.[row.basis] ?? snapshot.geometry[row.basis])));
+  if (row.auto_quantity) row.quantity = String(Math.ceil(Number((row.basis === 'exchanger_quantity' ? snapshot.variants[selected].blocks.flatMap(b => b.rows).find(r => r.id === row.heating_parent)?.quantity : snapshot.variants[selected].embedded_counts?.[row.basis] ?? snapshot.geometry[row.basis]))));
   for (const key of ['flow', 'head', 'filter_flow', 'backwash_flow']) row.specs[key] = f.elements.namedItem(key).value || null;
   if (row.catalog && (row.quantity !== rowBeingEdited.quantity || ['flow','head','filter_flow','backwash_flow'].some(key => row.specs[key] !== rowBeingEdited.specs[key]))) row.catalog.selection = 'manual';
   const block = snapshot.variants[selected].blocks.find(b => b.id === f.elements.block_id.value);
