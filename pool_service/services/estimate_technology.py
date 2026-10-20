@@ -197,6 +197,7 @@ def apply(snapshot, create=False):
     metrics = quantities(inputs)
     for variant in snapshot['variants'].values():
         for code, feature, metric, title, unit, block_id, work_code in ROWS:
+            if snapshot.get('construction_version') and block_id == 'construction': continue
             state, basis = mode(inputs, feature), 'tech_' + metric
             if feature == 'top_finish' and state == 'film_band': state = 'off'  # Included once in main PVC finish rows.
             block = next(b for b in variant['blocks'] if b['id'] == block_id)
