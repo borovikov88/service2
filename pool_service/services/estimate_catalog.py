@@ -16,11 +16,11 @@ import xml.etree.ElementTree as ET
 from django.core.cache import cache
 
 from . import estimate_embedded as embedded
-from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requirement, make_row, string
+from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requirement, heating_types, row_heating_type, ensure_heating_rows, make_row, string
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
-CACHE_KEY = "pool-estimate-shop-v4"
+CACHE_KEY = "pool-estimate-shop-v5"
 CACHE_SECONDS = 900
 MAX_BYTES = 20_000_000
 FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
@@ -74,6 +74,10 @@ def _specifications(name, description):
         kind, heater_type = "heater", "exchanger"
     elif (text.startswith(("электронагреватель ", "электрический нагреватель ")) and not re.search(r"воздух|осушител", text)) or re.match(r"^нагреватель для бассейн(?:а|ов)\b.*(?:квт|kw)\b", text):
         kind, heater_type = "heater", "electric"
+    elif re.match(r"^(?:насос циркуляцион|циркуляцион\w* насос)", text):
+        kind = "circulation_pump"
+    elif re.match(r"^(?:(?:электромагнитн|соленоидн)\w* клапан|клапан (?:электромагнитн|соленоидн))", text):
+        kind = "solenoid_valve"
     elif re.match(r"^(?:песочный )?фильтр\s", text) and not re.search(r"пруд|картридж|дисков|магистраль|осмос", text):
         kind = "filter"
     elif re.match(r"^насос\s", text) and not re.search(r"дозир|дренаж|канализац|теплов|циркуляцион|скважин|фонтан", text):
@@ -207,6 +211,8 @@ def candidate_reason(product, inputs, required_flow, *, for_auto=False):
     """None means eligible for a preliminary proposal, never engineering signoff."""
     if not product["available"]:
         return "Выгрузка магазина не подтверждает доступность к заказу."
+    if product["kind"] in {"circulation_pump", "solenoid_valve"}:
+        return "Требуется подтверждение характеристик первичного контура и совместимости: расход/напор, температура, давление, теплоноситель, питание и присоединения."
     if product["kind"] == "pump":
         if not product["filtration"]:
             return "Назначение для фильтрации с префильтром не подтверждено."
@@ -219,7 +225,7 @@ def candidate_reason(product, inputs, required_flow, *, for_auto=False):
     if product["kind"] == "filter" and (not product["filter_flow"] or Decimal(product["filter_flow"]) < required_flow):
         return "Производительность фильтра ниже требуемой либо не определена."
     if product["kind"] == "heater":
-        if product["heater_type"] != inputs["heating"]:
+        if product["heater_type"] not in heating_types(inputs):
             return "Другой тип подогрева."
         required_power = heating_requirement(inputs)["power"]
         if not required_power:
@@ -239,43 +245,39 @@ def candidate_reason(product, inputs, required_flow, *, for_auto=False):
 
 def apply_product(row, product, catalog, selection="manual"):
     row.update(name=product["name"], brand=product["brand"], model=product["model"], price=product["price"], kind=product["kind"])
+    if product["kind"] == "heater":
+        row["heating_type"] = product["heater_type"]
     row["specs"] = {k: product[k] for k in ("flow", "head", "filter_flow", "backwash_flow")}
     row["catalog"] = {k: product[k] for k in ("id", "url", "sku", "price", "available", "nominal_flow", "power", "power_options", "heating_power", "heater_type", "titanium", "embedded_role", "material", "lining")}
     row["catalog"]["image"] = safe_image_url(product.get("image", ""))
     row["catalog"].update(checked_at=catalog["checked_at"], feed_date=catalog["feed_date"], selection=selection, missing=False)
 
 
-def select_heater(choices, tier):
-    """Price levels at the smallest sufficient capacity, independent of pump brand.
+def select_price_tier(choices, tier):
+    """Call only after technical filtering: 1 -> all; 2 -> low/high/high."""
+    comparable = sorted(choices, key=lambda p: (Decimal(p["price"]), int(p["id"])))
+    if not comparable:
+        return None
+    index = 0 if tier == "economy" else len(comparable) // 2 if tier == "standard" else -1
+    return comparable[index]
 
-    Brand/material preferences operate within the lower/upper price halves so
-    an expensive Aquaviva or cheap titanium model cannot invert the three tiers.
-    """
+
+def select_heater(choices, tier):
     if not choices:
         return None
     capacity = min(Decimal(p["heating_power"]) for p in choices)
-    comparable = sorted((p for p in choices if Decimal(p["heating_power"]) == capacity),
-                        key=lambda p: (Decimal(p["price"]), int(p["id"])))
-    middle = comparable[(len(comparable) - 1) // 2]
-    if tier == "economy":
-        preferred = [p for p in comparable if p["brand"] == "Aquaviva" and Decimal(p["price"]) <= Decimal(middle["price"])]
-        return (preferred or comparable)[0]
-    if tier == "premium":
-        preferred = [p for p in comparable if p["titanium"] and Decimal(p["price"]) >= Decimal(middle["price"])]
-        return (preferred or comparable)[-1]
-    return middle
+    return select_price_tier([p for p in choices if Decimal(p["heating_power"]) == capacity], tier)
 
 
 def choose_filtration_product(choices, tier):
-    if tier == 'premium':
-        minimum = min(Decimal(p['nominal_flow']) for p in choices)
-        comparable = [p for p in choices if Decimal(p['nominal_flow']) <= minimum * Decimal('1.25')]
-        return min(comparable, key=lambda p: (-Decimal(p['price']), Decimal(p['nominal_flow']), int(p['id'])))
-    return min(choices, key=lambda p: (Decimal(p['nominal_flow']), Decimal(p['price']), int(p['id'])))
+    minimum = min(Decimal(p["nominal_flow"]) for p in choices)
+    comparable = [p for p in choices if Decimal(p["nominal_flow"]) <= minimum * Decimal("1.25")]
+    return select_price_tier(comparable, tier)
 
 
 def auto_select(snapshot, catalog, only_variant=None):
     result = deepcopy(snapshot)
+    ensure_heating_rows(result, only_variant)
     embedded.ensure_rows(result, only_variant)
     required = Decimal(result["geometry"]["required_flow"])
     filled = 0
@@ -283,13 +285,6 @@ def auto_select(snapshot, catalog, only_variant=None):
         if only_variant and key != only_variant:
             continue
         brand = VARIANTS[key][1]
-        all_rows = [r for b in variant["blocks"] for r in b["rows"]]
-        equipment = next(b for b in variant["blocks"] if b["id"] == "equipment")
-        if result["inputs"]["heating"] != "none" and not equipment["excluded"] and not any(r["kind"] == "heater" for r in all_rows) and len(equipment["rows"]) < 100:
-            ids = {r["id"] for r in all_rows}
-            rid = next((f"heater_auto_{n}" for n in range(100) if f"heater_auto_{n}" not in ids), None)
-            if rid:
-                equipment["rows"].append(make_row(rid, "Подогрев: подобрать мощность и модель", kind="heater", brand=brand))
         pumps = [r for b in variant["blocks"] for r in b["rows"] if (not b["excluded"] and not r["excluded"] or r["existing"]) and r["kind"] == "pump"]
         for kind in ("pump", "filter", "heater"):
             for block in variant["blocks"]:
@@ -314,7 +309,7 @@ def auto_select(snapshot, catalog, only_variant=None):
                             if not pump_flow:
                                 continue
                             flow = max(flow, Decimal(pump_flow))
-                    choices = [p for p in catalog["products"].values() if p["kind"] == kind and (kind == "heater" or key == "premium" or p["brand"] == brand) and not candidate_reason(p, result["inputs"], flow, for_auto=True)]
+                    choices = [p for p in catalog["products"].values() if p["kind"] == kind and (kind != "heater" or p["heater_type"] == row_heating_type(row, result["inputs"])) and not candidate_reason(p, result["inputs"], flow, for_auto=True)]
                     if choices:
                         # Minimum sufficient capacity first, then retail price
                         # within that capacity; never select a giant cheap pump.
@@ -335,7 +330,7 @@ def auto_select(snapshot, catalog, only_variant=None):
                     continue
                 choices = [p for p in catalog['products'].values() if p.get('embedded_role') == role and embedded.matches(p, variant['embedded_profile'], result['inputs']['finish'])]
                 if choices:
-                    product = min(choices, key=lambda p: (Decimal(p['price']), int(p['id'])))
+                    product = select_price_tier(choices, key)
                     if not origin or product['id'] != origin['id']:
                         apply_product(row, product, catalog, 'auto')
                         filled += 1
@@ -343,13 +338,18 @@ def auto_select(snapshot, catalog, only_variant=None):
     return evaluate(result), filled
 
 
+def search_text(value):
+    value = value.casefold().replace("ё", "е")
+    return re.sub(r"(?:электромагнитн|соленоидн)\w*", "соленоидный", value)
+
+
 def search_catalog(catalog, query, kind, brand, inputs, required_flow):
-    query = string(query, "Поиск товара", 120).casefold().replace("ё", "е").split()
+    query = search_text(string(query, "Поиск товара", 120)).split()
     kind = string(kind, "Тип товара", 20)
     brand = string(brand, "Бренд", 80)
-    if kind not in {"", "other", "pump", "filter", "heater", *embedded.ROLES}:
+    if kind not in {"", "other", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", *embedded.ROLES}:
         raise EstimateInputError("Неизвестный тип товара.")
-    matches = [p for p in catalog["products"].values() if (not kind or p["kind"] == kind) and (not brand or p["brand"].casefold() == brand.casefold()) and all(q in (p["name"] + " " + p["sku"] + " " + p["id"]).casefold().replace("ё", "е") for q in query)]
+    matches = [p for p in catalog["products"].values() if (not kind or p["kind"] == kind) and (not brand or p["brand"].casefold() == brand.casefold()) and all(q in search_text(p["name"] + " " + p["sku"] + " " + p["id"]) for q in query)]
     matches.sort(key=lambda p: (bool(candidate_reason(p, inputs, required_flow)), not p["available"], Decimal(p["price"]), int(p["id"])))
     return {"products": [{**p, "warning": candidate_reason(p, inputs, required_flow)} for p in matches[:40]], "total": len(matches), "status": catalog_status(catalog)}
 

@@ -3,7 +3,7 @@ import {setExcluded, emptyRow, isWork, samePrice, workPriceTargets} from './stat
 const root = document.querySelector('#pool-estimator');
 const $ = selector => root.querySelector(selector);
 const form = $('#pe-parameters');
-const org = $('#pe-org');
+
 const titles = {economy: 'Эконом', standard: 'Стандарт', premium: 'Премиум'};
 const money = value => value === null || value === undefined ? '—' : new Intl.NumberFormat('ru-RU', {minimumFractionDigits: 0, maximumFractionDigits: 2}).format(Number(value));
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
@@ -19,14 +19,14 @@ const stamp = value => new Date(value).toLocaleString('ru-RU', {dateStyle: 'shor
 let snapshot, selected = 'economy', projectId = null, revision = 0, loadedVersion = null, versions = [];
 let dirty = false, parametersDirty = false, sequence = 0, busy = false, timer, searchTimer, searchAbort;
 let rowBeingEdited = null, copyOnSave = false;
-let currentOrg = org.value;
+const currentOrg = root.dataset.organization;
 let scopeTarget, priceTarget;
 let productImages = {};
 const embeddedDefaults = {economy: "plastic_budget", standard: "plastic_europe", premium: "steel316"};
 let catalogTarget, catalogTimer, catalogAbort, catalogSequence = 0;
 
 function heatingFields() {
-  $('#pe-heating-fields').hidden = form.elements.heating.value === 'none';
+  $('#pe-heating-fields').hidden = !form.querySelector('[name="heating_types"]:checked');
   const heating = snapshot?.heating;
   $('#pe-heating-result').textContent = parametersDirty ? 'Пересчитайте параметры для подбора нагревателя.' : heating?.power
     ? `${heating.mode === 'manual' ? 'Заданная' : 'Предварительная'} мощность: ${money(heating.power)} кВт.${heating.mode === 'estimated' && snapshot.inputs.location === 'outdoor' ? ' Улица: учтён коэффициент ×1,5.' : ''}`
@@ -90,7 +90,9 @@ function changed() {
   status('Есть несохранённые изменения');
 }
 function inputs() {
-  return Object.fromEntries(new FormData(form));
+  const data = new FormData(form);
+  const heating_types = data.getAll('heating_types');
+  return {...Object.fromEntries(data), heating_types, heating: heating_types[0] || 'none'};
 }
 function rememberLocation() {
   const url = new URL(location.href);
@@ -150,8 +152,8 @@ function renderTotals() {
   const prices = snapshot.prices;
   $('#pe-price-date').textContent = `Дата цен: ${prices?.checked_at ? new Date(prices.checked_at).toLocaleDateString('ru-RU') : 'не указана'}${prices?.mixed ? ' · наиболее ранняя из использованных' : ''}${prices?.manual ? ' · ручные цены проверяются отдельно' : ''}`;
   heatingFields();
-  $('#pe-metrics').innerHTML = [['Объём воды', g.volume, 'м³'], ['Зеркало воды', g.surface, 'м²'], ['Площадь отделки', g.finish_area, 'м²'], ['Требуемый расход', g.required_flow, 'м³/ч']].map(([label, value, unit]) => `<div class="pe-metric"><span>${label}</span><strong>${money(value)}<small>${unit}</small></strong></div>`).join('');
-  $('#pe-variants').innerHTML = Object.entries(snapshot.variants).map(([key, v]) => `<button type="button" class="pe-variant" role="tab" aria-selected="${key === selected}" data-variant="${key}"><strong>${titles[key]}</strong><span class="pe-brand">${key === 'premium' ? 'Дорогие модели каталога' : esc(v.preferred_brand) + ' · предпочтение'}</span><span class="pe-total">${(v.missing_prices || v.missing_quantities) && Number(v.total) === 0 ? 'Цена уточняется' : money(v.total) + ' ₽'}</span><span class="pe-price-note">${v.missing_prices || v.missing_quantities ? `Без цены: ${v.missing_prices} · без объёма: ${v.missing_quantities || 0} · сумма неполная` : 'Сумма заполненных строк'}</span></button>`).join('');
+  $('#pe-metrics').innerHTML = [['Объём воды', g.volume, 'м³'], ['Зеркало воды', g.surface, 'м²'], ['Площадь отделки', g.finish_area, 'м²'], ['Требуемый расход', g.required_flow, 'м³/ч'], ...(g.concrete_total ? [['Бетон чаши (точно)', g.concrete_total, 'м³']] : [])].map(([label, value, unit]) => `<div class="pe-metric"><span>${label}</span><strong>${money(value)}<small>${unit}</small></strong></div>`).join('');
+  $('#pe-variants').innerHTML = Object.entries(snapshot.variants).map(([key, v]) => `<button type="button" class="pe-variant" role="tab" aria-selected="${key === selected}" data-variant="${key}"><strong>${titles[key]}</strong><span class="pe-brand">${{economy:'Дешёвые подходящие модели', standard:'Средний ценовой уровень', premium:'Дорогие подходящие модели'}[key]}</span><span class="pe-total">${(v.missing_prices || v.missing_quantities) && Number(v.total) === 0 ? 'Цена уточняется' : money(v.total) + ' ₽'}</span><span class="pe-price-note">${v.missing_prices || v.missing_quantities ? `Без цены: ${v.missing_prices} · без объёма: ${v.missing_quantities || 0} · сумма неполная` : 'Сумма заполненных строк'}</span></button>`).join('');
   const variant = snapshot.variants[selected];
   $('#pe-embedded-profile').value = variant.embedded_profile || embeddedDefaults[selected];
   const q = variant.embedded_counts;
@@ -177,7 +179,7 @@ function renderEditor() {
   const variant = snapshot.variants[selected];
   $('#pe-blocks').innerHTML = variant.blocks.filter(b => !b.excluded).map(block => {
     const rows = block.rows.filter(r => !r.excluded);
-    return `<section class="pe-block"><div class="pe-block-head"><h3>${esc(block.title)}</h3><span class="pe-subtotal" data-subtotal="${block.id}">${money(block.subtotal)} ₽</span><button type="button" class="pe-link" data-exclude-block="${block.id}">Исключить</button></div>${rows.length ? `<div class="pe-table-wrap"><table><thead><tr><th>Позиция</th><th>Кол-во</th><th>Цена, ₽</th><th>Сумма, ₽</th><th><span class="visually-hidden">Действия</span></th></tr></thead><tbody>${rows.map(row => `<tr><td>${thumbnail(row.catalog?.image || productImages[row.catalog?.id], row.name)}<span class="pe-row-name">${esc(row.name)}</span><span class="pe-row-detail">${esc([row.brand, row.model].filter(Boolean).join(' · '))}${row.auto_quantity ? ' · по геометрии' : isWork(row) && row.quantity === null ? ' · укажите объём работ' : ''}${row.existing ? ' · уже установлено' : ''}</span><div class="pe-row-check" data-row-check="${row.id}" aria-live="polite"${row.compatibility ? '' : ' hidden'}>${renderRowCheck(row, block.id)}</div></td><td><input class="pe-qty" data-field="quantity" data-block="${block.id}" data-row="${row.id}" type="number" min="0.001" max="1000000" step="0.001" value="${esc(row.quantity)}" placeholder="Уточнить" aria-label="Количество: ${esc(row.name)}"><span class="pe-row-detail">${esc(row.unit)}</span></td><td><input class="pe-price" data-field="price" data-block="${block.id}" data-row="${row.id}" type="number" min="0" max="1000000000" step="0.01" value="${esc(row.price)}" placeholder="Уточнить" aria-label="Цена: ${esc(row.name)}"></td><td class="pe-row-amount" data-amount="${row.id}">${money(row.amount)}</td><td class="pe-row-actions">${!isWork(row) ? `<button type="button" class="pe-link" data-shop="${row.id}" data-block="${block.id}" aria-label="Выбрать товар: ${esc(row.name)}">Каталог</button>` : ''}<button type="button" class="pe-link" data-edit="${row.id}" data-block="${block.id}" aria-label="Изменить: ${esc(row.name)}">✎</button><button type="button" class="pe-link" data-exclude-row="${row.id}" data-block="${block.id}" aria-label="Исключить: ${esc(row.name)}">×</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="pe-empty">В этом блоке пока нет активных позиций.</div>'}<button type="button" class="pe-link pe-add" data-add="${block.id}">+ Добавить позицию</button></section>`;
+    return `<section class="pe-block"><div class="pe-block-head"><h3>${esc(block.title)}</h3><span class="pe-subtotal" data-subtotal="${block.id}">${money(block.subtotal)} ₽</span><button type="button" class="pe-link" data-exclude-block="${block.id}">Исключить</button></div>${rows.length ? `<div class="pe-table-wrap"><table><thead><tr><th>Позиция</th><th>Кол-во</th><th>Цена, ₽</th><th>Сумма, ₽</th><th><span class="visually-hidden">Действия</span></th></tr></thead><tbody>${rows.map(row => `<tr><td>${thumbnail(row.catalog?.image || productImages[row.catalog?.id], row.name)}<span class="pe-row-name">${esc(row.name)}</span><span class="pe-row-detail">${esc([({electric:'Электронагреватель', exchanger:'Теплообменник', heatpump:'Тепловой насос'})[row.heating_type], row.brand, row.model].filter(Boolean).join(' · '))}${row.auto_quantity ? ' · по геометрии' : isWork(row) && row.quantity === null ? ' · укажите объём работ' : ''}${row.existing ? ' · уже установлено' : ''}</span><div class="pe-row-check" data-row-check="${row.id}" aria-live="polite"${row.compatibility ? '' : ' hidden'}>${renderRowCheck(row, block.id)}</div></td><td><input class="pe-qty" data-field="quantity" data-block="${block.id}" data-row="${row.id}" type="number" min="0" max="1000000" step="0.001" value="${esc(row.quantity)}" placeholder="Уточнить" aria-label="Количество: ${esc(row.name)}"><span class="pe-row-detail">${esc(row.unit)}</span></td><td><input class="pe-price" data-field="price" data-block="${block.id}" data-row="${row.id}" type="number" min="0" max="1000000000" step="0.01" value="${esc(row.price)}" placeholder="Уточнить" aria-label="Цена: ${esc(row.name)}"></td><td class="pe-row-amount" data-amount="${row.id}">${money(row.amount)}</td><td class="pe-row-actions">${!isWork(row) ? `<button type="button" class="pe-link" data-shop="${row.id}" data-block="${block.id}" aria-label="Выбрать товар: ${esc(row.name)}">Каталог</button>` : ''}<button type="button" class="pe-link" data-edit="${row.id}" data-block="${block.id}" aria-label="Изменить: ${esc(row.name)}">✎</button><button type="button" class="pe-link" data-exclude-row="${row.id}" data-block="${block.id}" aria-label="Исключить: ${esc(row.name)}">×</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="pe-empty">В этом блоке пока нет активных позиций.</div>'}<button type="button" class="pe-link pe-add" data-add="${block.id}">+ Добавить позицию</button></section>`;
   }).join('');
   const excluded = variant.blocks.filter(b => b.excluded || b.rows.some(r => r.excluded));
   $('#pe-excluded-count').textContent = `(${excluded.reduce((sum, b) => sum + (b.excluded ? 1 : b.rows.filter(r => r.excluded).length), 0)})`;
@@ -187,14 +189,19 @@ function renderEditor() {
 function renderHistory() {
   $('#pe-history-list').innerHTML = versions.map(v => `<div class="pe-history-row"><div><strong>Версия ${v.number}</strong> · ${stamp(v.created_at)}<small>${esc(v.note || 'Без комментария')}</small></div><div><button type="button" class="pe-link" data-version="${v.number}">Открыть копию</button><a class="pe-link" href="${location.pathname}${encodeURIComponent(projectId)}/versions/${v.number}/print/" target="_blank" rel="noopener">Печать / PDF</a></div></div>`).join('') || 'После первого сохранения здесь появится версия 1.';
 }
+function setHeating(values) {
+  const selectedTypes = values.heating_types ?? (values.heating === 'none' ? [] : [values.heating]);
+  for (const checkbox of form.querySelectorAll('[name="heating_types"]')) checkbox.checked = selectedTypes.includes(checkbox.value);
+}
 function fillParameters() {
   // Historical snapshots must not inherit the inputs of a more recent estimate.
-  for (const [key, value] of Object.entries({heating_power: '', water_start: '', water_target: '', heating_hours: '', heating_reserve: '', finish: '', skimmer_area: '25', skimmer_flow: '5', inlet_flow: '3'})) {
+  for (const [key, value] of Object.entries({bowl_height: '', wall_thickness: '', slab_thickness: '', heating_power: '', water_start: '', water_target: '', heating_hours: '', heating_reserve: '', finish: '', skimmer_area: '25', skimmer_flow: '5', inlet_flow: '3'})) {
     form.elements.namedItem(key).value = snapshot.inputs[key] ?? value;
   }
   for (const [key, value] of Object.entries(snapshot.inputs)) {
-    if (form.elements.namedItem(key)) form.elements.namedItem(key).value = value ?? '';
+    if (key !== 'heating_types' && form.elements.namedItem(key)) form.elements.namedItem(key).value = value ?? '';
   }
+  setHeating(snapshot.inputs);
   parametersDirty = false;
   heatingFields();
 }
@@ -227,7 +234,6 @@ async function generateNew() {
   });
 }
 form.addEventListener('input', event => {
-  if (event.target === org) return;
   parametersDirty = true; changed();
   heatingFields();
   status('Параметры изменены. Нажмите «Пересчитать параметры», чтобы обновить сметы.');
@@ -263,7 +269,7 @@ root.addEventListener('change', event => {
       askWorkPrice(el.dataset.block, row, value); return;
     }
     row[el.dataset.field] = value;
-    if (el.dataset.field === 'quantity') { row.auto_quantity = false; row.selection_locked = true; if (row.catalog) row.catalog.selection = 'manual'; }
+    if (el.dataset.field === 'quantity') { row.auto_quantity = false; row.quantity_stale = false; row.selection_locked = true; if (row.catalog) row.catalog.selection = 'manual'; }
     changed(); queueValidation();
   }
   if (el.dataset.scope && snapshot) {
@@ -309,6 +315,7 @@ $('#pe-row-form').addEventListener('submit', event => {
   if (row.kind === 'work' && !row.quantity) row.quantity = null;
   if (row.kind === 'work' && !row.work_code) row.work_code = row.id.startsWith('finish_work') ? 'finish_' + (row.finish_type || 'unknown') : row.id;
   if (['name', 'brand', 'model', 'kind'].some(key => row[key] !== rowBeingEdited[key])) row.catalog = null;
+  if (row.quantity !== rowBeingEdited.quantity) row.quantity_stale = false;
   row.existing = f.elements.existing.checked;
   row.auto_quantity = Boolean(row.basis) && f.elements.auto_quantity.checked;
   if (row.auto_quantity) row.quantity = String(Math.ceil(Number(snapshot.variants[selected].embedded_counts?.[row.basis] ?? snapshot.geometry[row.basis])));
@@ -425,9 +432,10 @@ function askNew() {
 for (const id of ['#pe-new', '#pe-new-from-list']) $(id).addEventListener('click', askNew);
 async function startNew() {
   const previousInputs = inputs();
-  form.reset(); org.value = currentOrg;
+  form.reset();
   if (!await generateNew()) {
-    for (const [key, value] of Object.entries(previousInputs)) if (form.elements.namedItem(key)) form.elements.namedItem(key).value = value;
+    for (const [key, value] of Object.entries(previousInputs)) if (key !== 'heating_types' && form.elements.namedItem(key)) form.elements.namedItem(key).value = value;
+    setHeating(previousInputs);
     heatingFields();
   }
 }
@@ -450,16 +458,6 @@ root.addEventListener('click', async event => {
   }
   $('#pe-new-dialog').close();
   await startNew();
-});
-org.addEventListener('change', async () => {
-  if (!discardAllowed()) { org.value = currentOrg; return; }
-  const previousOrg = currentOrg, previousInputs = inputs();
-  currentOrg = org.value; form.reset(); org.value = currentOrg;
-  if (!await generateNew()) {
-    currentOrg = previousOrg;
-    for (const [key, value] of Object.entries(previousInputs)) form.elements.namedItem(key).value = value;
-    org.value = previousOrg;
-  }
 });
 window.addEventListener('beforeunload', event => { if (dirty) { event.preventDefault(); event.returnValue = ''; } });
 
@@ -556,8 +554,6 @@ for (const id of ['#pe-image-dialog', '#pe-catalog-dialog']) $(id).addEventListe
 });
 
 const initial = new URL(location.href).searchParams;
-if ([...org.options].some(option => option.value === initial.get('organization'))) org.value = initial.get('organization');
-currentOrg = org.value;
 $('#pe-project-search').value = initial.get('q') || '';
 if (initial.get('id')) await loadProject(initial.get('id'), initial.get('version') || '');
 else await generateNew();

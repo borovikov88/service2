@@ -35,8 +35,24 @@ def estimate_page(request):
     organizations = _organizations(request.user)
     if not organizations:
         return render(request, "403.html", status=403)
+    # Resolve tenant context before rendering; never trust a hidden client value.
+    requested = request.GET.get("organization")
+    if requested is not None:
+        organization = organizations.get(requested)
+        if organization is None:
+            return render(request, "403.html", status=403)
+    elif request.GET.get("id"):
+        try:
+            identifier = UUID(request.GET["id"])
+        except (ValueError, TypeError, AttributeError):
+            return render(request, "403.html", status=403)
+        estimate = get_object_or_404(PoolEstimate, pk=identifier, organization_id__in=organizations)
+        organization = organizations[str(estimate.organization_id)]
+    else:
+        organization = organizations.get(str(request.session.get("estimate_organization", ""))) or next(iter(organizations.values()))
+    request.session["estimate_organization"] = str(organization.pk)
     return render(request, "pool_service/estimates/calculator.html", {
-        "active_tab": "estimates", "estimate_organizations": organizations.values(),
+        "active_tab": "estimates", "estimate_organization": organization,
     })
 
 

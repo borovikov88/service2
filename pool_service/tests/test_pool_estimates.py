@@ -31,7 +31,7 @@ class PoolEstimateEngineTests(SimpleTestCase):
 
     def test_geometry_and_three_preferences(self):
         self.assertEqual(self.snapshot["geometry"], {"volume": "48.000", "surface": "32.000", "perimeter": "24.000", "finish_area": "68.000", "finish_net": "68.000", "finish_stock": "79.000", "required_flow": "8.000"})
-        self.assertEqual([v["preferred_brand"] for v in self.snapshot["variants"].values()], ["Aquaviva", "Hayward", "Дорогие модели каталога"])
+        self.assertEqual([v["preferred_brand"] for v in self.snapshot["variants"].values()], ["Дешёвый подходящий", "Средний подходящий", "Дорогой подходящий"])
         sloped = generate({**INPUTS, "depth_end": "2.5"})
         self.assertEqual(sloped["geometry"]["volume"], "64.000")
         self.assertGreater(Decimal(sloped["geometry"]["finish_area"]), Decimal("80"))
@@ -114,7 +114,7 @@ class PoolEstimateEngineTests(SimpleTestCase):
         for value in ("NaN", "Infinity", "-1", True, [], "1e9999"):
             with self.subTest(value=value), self.assertRaises(EstimateInputError):
                 generate({**INPUTS, "length": value})
-        for field, value in (("price", "-0.01"), ("quantity", "0"), ("excluded", "false")):
+        for field, value in (("price", "-0.01"), ("quantity", "-0.001"), ("excluded", "false")):
             snapshot = deepcopy(self.snapshot)
             block(snapshot)["rows"][0][field] = value
             with self.subTest(field=field), self.assertRaises(EstimateInputError):

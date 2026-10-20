@@ -91,7 +91,7 @@ class HeatingFinishTests(SimpleTestCase):
         ))
         s, _ = catalog.auto_select(generate(HEATING), f)
         self.assertEqual([heater(s, v)['catalog']['id'] for v in s['variants']], ['91', '92', '93'])
-        self.assertTrue(any('альтернатива Aquaviva' in w for w in s['variants']['economy']['warnings']))
+        self.assertEqual(heater(s)['brand'], 'Other')
         catalog.apply_product(heater(s), f['products']['93'], f)
         result, _ = catalog.auto_select(s, f)
         self.assertEqual(heater(result)['catalog']['id'], '93')
