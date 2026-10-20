@@ -14,6 +14,68 @@ from pool_service.tests.test_pool_estimates import INPUTS, block
 
 
 class WorkRateMemoryTests(TestCase):
+    def test_equipment_base_is_common_and_only_missing_old_totals_differ(self):
+        from .test_estimate_works import work
+        fresh=generate({**INPUTS,'finish':'film','heating_types':['electric','exchanger','heatpump']})
+        old=deepcopy(fresh)
+        for tier in ('standard','premium'):
+            work(old,'equipment_work',tier)['price']=None
+        old=evaluate(old)
+        for tier in fresh['variants']:
+            row=work(fresh,'equipment_work',tier)
+            self.assertEqual((row['price'],row['quantity'],row['amount']),('70000.00','1.000','70000.00'))
+            self.assertEqual(sum(r.get('work_code')=='equipment_work' for b in fresh['variants'][tier]['blocks'] for r in b['rows']),1)
+            delta=Decimal(fresh['variants'][tier]['total'])-Decimal(old['variants'][tier]['total'])
+            self.assertEqual(delta,Decimal('0' if tier=='economy' else '70000'))
+        self.assertEqual(evaluate(old)['variants'],old['variants'])
+
+    def test_equipment_raise_shared_across_new_quotes_but_not_tenants_or_units(self):
+        from .test_estimate_works import work
+        from pool_service.services.estimate_work_rates import identity
+        data={'snapshot':self.snapshot,'variant':'standard','block':'equipment',
+              'row':'equipment_work','price':'90000'}
+        result=confirm_price(data,self.org,self.user)
+        self.assertEqual(result['remembered'],1)
+        self.assertEqual(work(result['snapshot'],'equipment_work')['price'],'70000.00')
+        before=list(PoolEstimateWorkRate.objects.values())
+        for org,expected in ((self.org,'90000.00'),(self.other,'70000.00')):
+            fresh=apply_defaults(generate(INPUTS),org)
+            for tier in fresh['variants']:
+                self.assertEqual(work(fresh,'equipment_work',tier)['price'],expected)
+        self.assertEqual(list(PoolEstimateWorkRate.objects.values()),before)
+        discount=confirm_price({**data,'snapshot':result['snapshot'],'price':'65000'},self.org,self.user)
+        self.assertEqual(discount['remembered'],0)
+        self.assertEqual(work(discount['snapshot'],'equipment_work','standard')['price'],'65000.00')
+        unit_row=deepcopy(work(self.snapshot,'equipment_work'))
+        unit_row['unit']='ч'
+        self.assertNotEqual(identity(unit_row),identity(work(self.snapshot,'equipment_work')))
+        from pool_service.services.estimate_works import shared_base
+        self.assertIsNone(shared_base(unit_row))
+
+    def test_equipment_manual_discount_zero_and_clear_survive_api_and_history(self):
+        from .test_estimate_works import work
+        from pool_service.services.estimate_catalog import CatalogUnavailable
+        confirm_price({'snapshot':self.snapshot,'variant':'economy','block':'equipment',
+                       'row':'equipment_work','price':'90000'},self.org,self.user)
+        for tier,price in zip(self.snapshot['variants'],('65000','0',None)):
+            work(self.snapshot,'equipment_work',tier).update(
+                price=price,rate_source='Ручная цена текущей сметы')
+        original=evaluate(self.snapshot)
+        saved=self.post(action='save',snapshot=original,expected_revision=0)
+        self.assertEqual(saved.status_code,201)
+        records=list(PoolEstimateWorkRate.objects.values())
+        with patch('pool_service.estimate_views.get_catalog',side_effect=CatalogUnavailable('Synthetic unavailable')):
+            for action in ('validate','recalculate','add_works'):
+                response=self.post(action=action,snapshot=original,inputs=original['inputs'])
+                self.assertEqual(response.status_code,200)
+                result=response.json()['snapshot']
+                for tier in original['variants']:
+                    self.assertEqual(work(result,'equipment_work',tier)['price'],work(original,'equipment_work',tier)['price'])
+                    self.assertEqual(result['variants'][tier]['total'],original['variants'][tier]['total'])
+        loaded=self.client.get(self.url,{'organization':self.org.pk,'id':saved.json()['id'],'version':1}).json()['snapshot']
+        self.assertEqual(loaded['variants'],original['variants'])
+        self.assertEqual(list(PoolEstimateWorkRate.objects.values()),records)
+
     def setUp(self):
         self.org = Organization.objects.create(name='Rate memory test')
         self.other = Organization.objects.create(name='Rate memory other')

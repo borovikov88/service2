@@ -22,7 +22,8 @@ class EstimateWorkTests(SimpleTestCase):
             self.assertEqual(work(s, 'excavation', key)['quantity'], None)
             self.assertIsNone(work(s, 'embedded_work', key)['price'])  # Formula depends on the old fitting set.
         self.assertEqual(work(s, 'equipment_work')['price'], '70000.00')
-        self.assertIsNone(work(s, 'equipment_work', 'standard')['price'])  # Composite formula, not a unit rate.
+        self.assertEqual(work(s, 'equipment_work', 'standard')['price'], '70000.00')
+        self.assertEqual(work(s, 'equipment_work', 'premium')['price'], '70000.00')
         self.assertEqual(work(s, 'sand_base')['price'], '200.00')
         self.assertEqual(work(s, 'sand_base', 'premium')['price'], '200.00')
         self.assertEqual(work(s, 'finish_transport')['unit'], 'рейс')

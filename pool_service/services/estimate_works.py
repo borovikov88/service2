@@ -31,6 +31,9 @@ WORKS = (
     ('waterfall', 'options', 'Монтаж водопада', 'шт.', '9800', '9800', None, True),
 )
 LEGACY = {'bowl_work', 'embedded_work', 'equipment_work'}
+# Reusable Basic rate imported in PR334, not a cached Standard/Lux package total.
+# The owner's common-labor-rate rule applies this same base to all new quotes.
+EQUIPMENT_BASE = '70000'
 
 
 def is_work(row):
@@ -88,8 +91,8 @@ def source_rate(row, variant):
         if row['unit'] != unit:
             return None
         return (economy if economy is not None else standard) if variant == 'economy' else standard
-    if code == 'equipment_work' and row['unit'] == 'компл.' and variant == 'economy':
-        return '70000'
+    if code == 'equipment_work' and row['unit'] == 'компл.':
+        return EQUIPMENT_BASE
     if code == 'liner_steps' and row['unit'] == 'шт.' and row.get('finish_type') == 'film':
         return '15000' if variant == 'economy' else None
     finish = row.get('finish_type')
@@ -149,7 +152,7 @@ def add_works(snapshot, *, fresh=False):
                 row['id'] = next(f'{base}_{n}' for n in range(501) if f'{base}_{n}' not in ids)
             block['rows'].append(row)
         if fresh:
-            for bid, rid, price in (('equipment', 'equipment_work', '70000' if key == 'economy' else None),
+            for bid, rid, price in (('equipment', 'equipment_work', EQUIPMENT_BASE),
                                     ('finish', 'finish_work', finish_rate(snapshot['inputs']['finish'], key))):
                 row = next(r for r in blocks[bid]['rows'] if r['id'] == rid)
                 row['price'] = price
@@ -160,6 +163,7 @@ def add_works(snapshot, *, fresh=False):
 
 
 def shared_base(row):
+    if row.get('work_code') == 'equipment_work' and row.get('unit') == 'компл.': return EQUIPMENT_BASE
     if row.get('work_code') == 'bowl_package' and row.get('unit') == 'м³': return '20000'
     if row.get('work_code') == 'handling_package' and row.get('unit') == 'т': return '300'
     if row.get('unit') == 'м²' and row.get('finish_type') == 'film':
