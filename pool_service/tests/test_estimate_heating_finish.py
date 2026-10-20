@@ -43,7 +43,7 @@ class HeatingFinishTests(SimpleTestCase):
             s, count = catalog.auto_select(generate({**HEATING, 'heater_brand': old_choice}), f)
             self.assertEqual(count, 3)
             self.assertEqual([heater(s, v)['catalog']['id'] for v in s['variants']], ['81', '82', '83'])
-            self.assertEqual([s['variants'][v]['total'] for v in s['variants']], ['100.00', '200.00', '300.00'])
+            self.assertEqual([heater(s,v)['amount'] for v in s['variants']], ['100.00', '200.00', '300.00'])
         changed, _ = catalog.auto_select(recalculate(s, {**HEATING, 'heating_hours': '6'}), f)
         self.assertEqual(heater(changed)['catalog']['id'], '84')
         self.assertEqual(heater(s)['catalog']['id'], '81')
@@ -122,19 +122,21 @@ class HeatingFinishTests(SimpleTestCase):
         self.assertEqual(old['price'], '1200.00')
         self.assertTrue(old['excluded'])
         for v in tile['variants']:
-            active = [r for r in block(tile, 'finish', v)['rows'] if not r['excluded']]
-            self.assertEqual(len(active), 2)
+            active = [r for r in block(tile, 'finish', v)['rows'] if not r['excluded'] and r.get('finish_type')]
+            self.assertEqual(len(active), 3)
             self.assertTrue(all(r['finish_type'] == 'tile' and r['price'] is None and r['quantity'] == '68.000' for r in active))
         film = recalculate(tile, {**INPUTS, 'finish': 'film'})
         self.assertFalse(block(film, 'finish')['rows'][0]['excluded'])
         self.assertTrue(block(film, 'finish')['rows'][1]['excluded'])
-        self.assertEqual(len(block(film, 'finish')['rows']), 5)
-        self.assertEqual(film['variants']['economy']['total'], '94800.00')
+        self.assertEqual(len([r for r in block(film, 'finish')['rows'] if r.get('finish_type')]), 8)
+        self.assertEqual(block(film, 'finish')['subtotal'], '108400.00')
         self.assertFalse(original['excluded'])
 
     def test_finish_changes_preserve_block_scope_and_legacy_rows(self):
         old = generate(INPUTS)
         # Simulate an actual snapshot predating the finish selector.
+        for v in old['variants'].values():
+            next(b for b in v['blocks'] if b['id']=='finish')['rows'] = next(b for b in v['blocks'] if b['id']=='finish')['rows'][:2]
         old['inputs'].pop('finish')
         for v in old['variants'].values():
             for b in v['blocks']:
@@ -145,7 +147,7 @@ class HeatingFinishTests(SimpleTestCase):
         updated = recalculate(old, {**INPUTS, 'finish': 'mosaic', 'length': '10'})
         self.assertTrue(block(updated, 'finish')['excluded'])
         self.assertEqual(block(updated, 'finish')['rows'][0]['price'], '900.00')
-        self.assertEqual(len(block(updated, 'finish')['rows']), 4)
+        self.assertEqual(len(block(updated, 'finish')['rows']), 5)
         self.assertTrue(all(r['quantity'] == '82.000' for r in block(updated, 'finish')['rows']))
         self.assertEqual(evaluate(old)['inputs']['finish'], '')
         for value in ('wood', [], None):
@@ -155,15 +157,15 @@ class HeatingFinishTests(SimpleTestCase):
     def test_unselected_finish_rates_do_not_remain_active_after_selecting_tile(self):
         s = recalculate(generate({**INPUTS, 'finish': 'film'}), {**INPUTS, 'finish': ''})
         for row in block(s, 'finish')['rows']:
-            if not row['excluded']:
+            if not row['excluded'] and row['id'].startswith(('finish_material','finish_work')):
                 row['price'] = '100'
         tile = recalculate(s, {**INPUTS, 'finish': 'tile'})
-        active = [r for r in block(tile, 'finish')['rows'] if not r['excluded']]
-        self.assertEqual(len(active), 2)
+        active = [r for r in block(tile, 'finish')['rows'] if not r['excluded'] and r.get('finish_type')]
+        self.assertEqual(len(active), 3)
         self.assertTrue(all(r['finish_type'] == 'tile' for r in active))
-        self.assertEqual(tile['variants']['economy']['total'], '0.00')
+        self.assertEqual(block(tile,'finish')['subtotal'], '0.00')
         restored = recalculate(tile, {**INPUTS, 'finish': ''})
-        self.assertEqual(restored['variants']['economy']['total'], '13600.00')
+        self.assertEqual(block(restored,'finish')['subtotal'], '13600.00')
 
     def test_one_price_date_does_not_claim_all_versions_have_newest_prices(self):
         old, _ = catalog.auto_select(generate(INPUTS), fixture())

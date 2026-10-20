@@ -71,7 +71,7 @@ class CatalogEngineTests(SimpleTestCase):
         self.assertEqual(block(s)["rows"][0]["catalog"]["id"], "1")
         self.assertEqual(block(s, variant="standard")["rows"][0]["brand"], "Hayward")
         self.assertIsNotNone(block(s, variant="premium")["rows"][0]["price"])
-        self.assertEqual(s["variants"]["economy"]["total"], "300.30")
+        self.assertEqual(sum(Decimal(r["amount"] or 0) for r in block(s)["rows"] if r["kind"] != "work"), Decimal("300.30"))
 
     def test_spa_unavailable_wrong_voltage_and_wrong_head_not_auto_selected(self):
         f = catalog.parse_catalog(feed(

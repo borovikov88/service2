@@ -4,12 +4,13 @@ from datetime import datetime
 import re
 
 from . import estimate_embedded as embedded
+from . import estimate_works as works
 
 from pool_service.services.permissions import organization_accesses_for_user
 
 VARIANTS = {"economy": ("Эконом", "Aquaviva"), "standard": ("Стандарт", "Hayward"), "premium": ("Премиум", "IML")}
 BLOCKS = {"construction": "Строительство чаши", "embedded": "Закладные элементы", "equipment": "Оборудование", "finish": "Отделка", "options": "Дополнительные работы"}
-KINDS = {"other", "pump", "filter", "heater", *embedded.ROLES}
+KINDS = {"other", "work", "pump", "filter", "heater", *embedded.ROLES}
 FINISHES = {
     "film": ("Плёнка ПВХ для бассейна (+15% запас)", "Монтаж и сварка плёнки ПВХ"),
     "tile": ("Плитка для бассейна (без запаса)", "Облицовка бассейна плиткой"),
@@ -151,7 +152,7 @@ def price_summary(snapshot):
             "mixed": len({d.date() for d in dates}) > 1, "manual": manual}
 
 
-def finish_rows(finish, metrics):
+def finish_rows(finish, metrics, variant="economy", include_works=True):
     names = FINISHES.get(finish, ("Материал отделки (без запаса)", "Работы по отделке"))
     rows = []
     for key, name in zip(('finish_material', 'finish_work'), names):
@@ -161,12 +162,14 @@ def finish_rows(finish, metrics):
         rows.append(make_row('finish_geotextile', 'Геотекстиль под плёнку (+15% запас)', 'м²', embedded.ceil_quantity(metrics['finish_stock']), 'finish_stock'))
     for row in rows:
         row["finish_type"] = finish
-    return rows
+    works.identify(rows[1])
+    rows[1]["price"] = works.finish_rate(finish, variant) if include_works else None
+    return rows + (works.finish_extras(finish, metrics, variant) if include_works else [])
 
 
 def change_finish(snapshot, finish, replace=True):
     """Keep previous material/rate as reversible excluded rows, never reuse its price."""
-    for variant in snapshot["variants"].values():
+    for variant_key, variant in snapshot["variants"].items():
         block = next(b for b in variant["blocks"] if b["id"] == "finish")
         for row in block["rows"] if replace else []:
             managed = row.get("finish_type") or re.fullmatch(r"finish_(?:material|work|geotextile)(?:_(?:film|tile|mosaic)?_\d+)?", row["id"])
@@ -174,7 +177,7 @@ def change_finish(snapshot, finish, replace=True):
                 row.update(excluded=True, reason=FINISH_CHANGED)
             elif row.get("finish_type") == finish and row["excluded"] and row["reason"] == FINISH_CHANGED:
                 row.update(excluded=False, reason="")
-        for original in finish_rows(finish, geometry(snapshot["inputs"])):
+        for original in finish_rows(finish, geometry(snapshot["inputs"]), variant_key, include_works=bool(snapshot.get("works_catalog"))):
             base = original["id"]
             # A manually excluded row of this type remains excluded, without a duplicate.
             if any(r.get("finish_type") == finish and (r["id"] == base or r["id"].startswith(base + "_")) for r in block["rows"]):
@@ -199,17 +202,18 @@ def generate(raw):
     variants = {}
     for key, (_, brand) in VARIANTS.items():
         rowsets = {
-            "construction": [make_row("bowl_material", "Материалы для чаши"), make_row("bowl_work", "Строительство чаши")],
-            "embedded": [make_row("embedded_work", "Монтаж закладных", "шт.", "1", "embedded_work")],
+            "construction": [make_row("bowl_material", "Материалы для чаши")],
+            "embedded": [make_row("embedded_work", "Установка закладных элементов и обвязка", kind="work")],
             "equipment": [make_row("pump", "Фильтрационный насос", kind="pump", brand=brand), make_row("filter", "Фильтр", kind="filter", brand=brand),
                           make_row("treatment", "Обеззараживание: подобрать комплект"), make_row("piping", "Обвязка и автоматика"), make_row("equipment_work", "Монтаж и пусконаладка")],
-            "finish": finish_rows(inputs["finish"], metrics),
+            "finish": finish_rows(inputs["finish"], metrics, key),
             "options": [],
         }
         if inputs["heating"] != "none":
             rowsets["equipment"].insert(2, make_row("heater", "Подогрев: подобрать мощность и модель", kind="heater"))
         variants[key] = {"embedded_profile": embedded.DEFAULTS[key], "blocks": [{"id": bid, "title": title, "excluded": False, "reason": "", "rows": rowsets[bid]} for bid, title in BLOCKS.items()]}
     result = {"schema": 1, "inputs": inputs, "variants": variants, "geometry": metrics}
+    works.add_works(result, fresh=True)
     embedded.ensure_rows(result)
     embedded.update_quantities(result)
     return evaluate(result)
@@ -254,7 +258,7 @@ def normalize_catalog(raw):
 def normalize_snapshot(raw):
     if not isinstance(raw, dict) or raw.get("schema") != 1:
         raise EstimateInputError("Неизвестный формат расчёта.")
-    result = {"schema": 1, "inputs": normalize_inputs(raw.get("inputs")), "variants": {}}
+    result = {"schema": 1, "inputs": normalize_inputs(raw.get("inputs")), "variants": {}, "works_catalog": 1 if raw.get("works_catalog") == 1 else 0}
     variants = raw.get("variants")
     if not isinstance(variants, dict) or set(variants) != set(VARIANTS):
         raise EstimateInputError("В расчёте должны быть три варианта.")
@@ -293,7 +297,9 @@ def normalize_snapshot(raw):
                     item[field] = string(row.get(field, ""), field, limit, required=field in {"name", "unit"})
                 for field in ("excluded", "existing", "auto_quantity", "selection_locked"):
                     item[field] = boolean(row.get(field, False))
-                item["quantity"] = str(number(row.get("quantity"), "Количество", minimum=".001", maximum="1000000"))
+                item["work_code"] = string(row.get("work_code", ""), "Код работы", 80)
+                works.identify(item)
+                item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum=".001", maximum="1000000", optional=item["kind"] == "work"))
                 item["price"] = _optional(number(row.get("price"), "Цена", optional=True, places=2))
                 specs = row.get("specs", {})
                 if not isinstance(specs, dict):
@@ -317,7 +323,7 @@ def evaluate(raw):
     embedded.update_quantities(result)
     result["prices"] = price_summary(result)
     for key, variant in result["variants"].items():
-        total, missing, models = Decimal(0), 0, 0
+        total, missing, models, missing_quantities = Decimal(0), 0, 0, 0
         physical = []
         for block in variant["blocks"]:
             subtotal = Decimal(0)
@@ -326,11 +332,13 @@ def evaluate(raw):
                 if included or row["existing"]:
                     physical.append(row)
                 charged = included and not row["existing"]
-                amount = (Decimal(row["quantity"]) * Decimal(row["price"])).quantize(CENT, rounding=ROUND_HALF_UP) if charged and row["price"] is not None else None
+                amount = (Decimal(row["quantity"]) * Decimal(row["price"])).quantize(CENT, rounding=ROUND_HALF_UP) if charged and row["price"] is not None and row["quantity"] is not None else None
                 row["amount"] = _optional(amount)
                 if charged and row["price"] is None:
                     missing += 1
-                if charged and row["kind"] != "other" and not row["model"]:
+                if charged and row["quantity"] is None:
+                    missing_quantities += 1
+                if charged and row["kind"] not in {"other", "work"} and not row["model"]:
                     models += 1
                 if amount is not None:
                     subtotal += amount
@@ -373,6 +381,8 @@ def evaluate(raw):
                 warnings.append(f"{label}: тип подогрева не соответствует параметрам бассейна.")
             if row["kind"] == "heater" and result["heating"]["power"] and origin["heating_power"] and Decimal(origin["heating_power"]) < Decimal(result["heating"]["power"]):
                 warnings.append(f"{label}: мощность ниже заданной для подогрева.")
+        if missing_quantities:
+            warnings.append(f"Не указаны объёмы работ: {missing_quantities}. Заполните их по проекту; эти строки не включены в сумму.")
         if missing:
             warnings.append(f"Не указаны цены: {missing}. Показана только сумма заполненных строк.")
         if models:
@@ -414,7 +424,7 @@ def evaluate(raw):
             warnings.append("Выбран режим без подогрева, но нагреватель остался в составе. Исключите его, если он не нужен.")
         if result["inputs"]["finish"] and any(b["id"] == "finish" and not b["excluded"] for b in variant["blocks"]):
             warnings.append("Отделка: плёнка и геотекстиль с запасом 15%, работы без запаса; расчётные количества округляются вверх до целого м². Подготовка основания и расходники уточняются отдельно.")
-        variant.update(total=str(total.quantize(CENT)), missing_prices=missing, missing_models=models, warnings=warnings, title=VARIANTS[key][0], preferred_brand="Дорогие модели каталога" if key == "premium" else VARIANTS[key][1])
+        variant.update(total=str(total.quantize(CENT)), missing_prices=missing, missing_quantities=missing_quantities, missing_models=models, warnings=warnings, title=VARIANTS[key][0], preferred_brand="Дорогие модели каталога" if key == "premium" else VARIANTS[key][1])
     return result
 
 

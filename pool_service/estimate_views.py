@@ -143,6 +143,13 @@ def estimate_api(request):
                 return JsonResponse({'snapshot': snapshot, 'selected_count': count, 'catalog_status': catalog_status(catalog)})
             except CatalogUnavailable as exc:
                 return JsonResponse({'snapshot': snapshot, 'catalog_error': str(exc)})
+        if action == 'add_works':
+            from .services.estimate_works import add_works
+            from .services.pool_estimates import change_finish
+            snapshot = evaluate(data.get('snapshot'))
+            add_works(snapshot)
+            change_finish(snapshot, snapshot['inputs']['finish'], replace=False)
+            return JsonResponse({'snapshot': evaluate(snapshot)})
         if action == "validate":
             return JsonResponse({"snapshot": evaluate(data.get("snapshot"))})
         if action != "save":

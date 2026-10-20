@@ -42,3 +42,34 @@ test('all-quote actions match embedded roles across different materials, without
   setExcluded(s,'economy','embedded','skimmer_economy',false,true);
   assert.ok(Object.values(s.variants).every(v=>!v.blocks[0].rows[0].excluded && v.blocks[0].rows[1].excluded));
 });
+
+import {isWork, samePrice, workPriceTargets, setWorkPrice} from '../static/pool_service/estimates/state.js';
+function workSample() {
+  const s = sample();
+  for (const v of Object.values(s.variants)) v.blocks[0].rows = [{...emptyRow('labor'), kind:'work', work_code:'install', price:'10', quantity:'3'}, {...emptyRow('material'), price:'20'}];
+  return s;
+}
+test('work rate one/all propagates price only, including excluded counterparts', () => {
+  const s=workSample(), source=s.variants.economy.blocks[0].rows[0];
+  s.variants.premium.blocks[0].excluded=true;
+  s.variants.standard.blocks[0].rows[0].quantity='9';
+  setWorkPrice(s,'economy','equipment',source,'12');
+  assert.equal(s.variants.standard.blocks[0].rows[0].price,'10');
+  setWorkPrice(s,'economy','equipment',source,'0',true);
+  assert.ok(Object.values(s.variants).every(v=>v.blocks[0].rows[0].price==='0' && v.blocks[0].rows[1].price==='20'));
+  assert.equal(s.variants.standard.blocks[0].rows[0].quantity,'9');
+  assert.equal(s.variants.premium.blocks[0].excluded,true);
+  setWorkPrice(s,'economy','equipment',source,null,true);
+  assert.ok(Object.values(s.variants).every(v=>v.blocks[0].rows[0].price===null));
+});
+test('different units, finishes, materials and ambiguous duplicates are not overwritten', () => {
+  const s=workSample(), source=s.variants.economy.blocks[0].rows[0];
+  s.variants.standard.blocks[0].rows[0].unit='рейс';
+  s.variants.premium.blocks[0].rows[0].finish_type='tile';
+  assert.equal(workPriceTargets(s,'economy','equipment',source).length,1);
+  assert.equal(isWork(s.variants.economy.blocks[0].rows[1]),false);
+  assert.equal(samePrice('10','10.00'),true);assert.equal(samePrice(null,'0'),false);
+  const copy=structuredClone(source);copy.id='other';
+  s.variants.standard.blocks[0].rows=[copy,{...copy,id:'duplicate'}];
+  assert.equal(workPriceTargets(s,'economy','equipment',source).length,1);
+});
