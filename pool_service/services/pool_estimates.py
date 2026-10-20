@@ -444,6 +444,12 @@ def normalize_catalog(raw):
             raise EstimateInputError('Некорректная характеристика линии уровня.')
         result['level_' + key] = value
 
+    result['body_family'] = string(raw.get('body_family', ''), 'Семейство материала корпуса', 20)
+    denied = raw.get('lining_denied', [])
+    if result['body_family'] not in {'','plastic','steel','other_metal'} or not isinstance(denied, list) or len(denied) > 2 or any(x not in ('film','concrete') for x in denied):
+        raise EstimateInputError('Некорректные ограничения материала/отделки.')
+    result['lining_denied'] = denied[:]
+    result["filtration"] = None if raw.get("filtration") is None else boolean(raw["filtration"])
     result["image"] = safe_image_url(raw.get("image", ""))
     options = raw.get("power_options", [raw["power"]] if raw["power"] != "unknown" else [])
     if not isinstance(options, list) or len(options) > 2 or any(p not in ("230", "400") for p in options) or len(set(options)) != len(options):
@@ -528,7 +534,7 @@ def normalize_snapshot(raw):
                 item["finish_type"] = string(row.get("finish_type", ""), "Тип отделки", 20)
                 if item["finish_type"] not in {"", *FINISHES}:
                     raise EstimateInputError("Некорректный тип отделки строки.")
-                for field, limit in (("name", 200), ("unit", 20), ("brand", 80), ("model", 120), ("reason", 300), ("rate_source", 300), ("selection_note", 1000)):
+                for field, limit in (("name", 200), ("unit", 20), ("brand", 80), ("model", 120), ("reason", 300), ("rate_source", 300), ("selection_note", 1000), ("catalog_review_note", 1000)):
                     item[field] = string(row.get(field, ""), field, limit, required=field in {"name", "unit"})
                 for field in ("excluded", "existing", "auto_quantity", "selection_locked", "quantity_stale", "heating_unbound", "level_managed", "unit_price_manual", "construction_price_suspended"):
                     item[field] = boolean(row.get(field, False))
@@ -725,6 +731,8 @@ def evaluate(raw):
             warnings.append("Отделка: плёнка и геотекстиль с запасом 15%, работы без запаса; расчётные количества округляются вверх до целого м². Подготовка основания и расходники уточняются отдельно.")
         variant.update(total=str(total.quantize(CENT)), missing_prices=missing, missing_quantities=missing_quantities, missing_models=models, warnings=warnings, title=VARIANTS[key][0], preferred_brand={"economy": "Дешёвый подходящий", "standard": "Средний подходящий", "premium": "Дорогой подходящий"}[key])
         annotate(result, variant)
+        from .estimate_candidates import annotate as annotate_candidates
+        annotate_candidates(result, variant)
     return result
 
 

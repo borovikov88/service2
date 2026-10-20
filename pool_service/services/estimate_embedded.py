@@ -105,6 +105,8 @@ def update_quantities(snapshot, only=None):
 
 def specifications(name, description, brand):
     title = name.casefold().replace('ё', 'е')
+    from html import unescape
+    description = unescape(re.sub(r'<[^>]*>', ' ', description))
     text = (title + ' ' + description.casefold()).replace('ё', 'е')
     role = ''
     if re.match(r'^скиммер\b', title) and not re.search(r'навесн|intex|bestway|комплект|крышк[аи] для', title):
@@ -132,18 +134,45 @@ def specifications(name, description, brand):
     # Kripsol residential catalogue 2021, pp. 46-48 (see docs/ai/pool-estimates.md).
     if not material and not grades and brand.casefold() == 'kripsol' and re.search(r'\b(?:sksl?|skal?|srpl?|bor\s*20|bol\s*20|bof\s*21|bll|blrr|blre)\b', title):
         material = 'plastic'
-    lining = []
-    if re.search(r'лайнер|пленк', title):
-        lining.append('film')
-    if re.search(r'бетон|плитк|мозаик', title):
-        lining.append('concrete')
+    from .estimate_embedded_candidates import lining_claims, title_conflict
+    positive_lining, _ = lining_claims(title)
+    _, lining_denied = lining_claims(text)
+    lining = [kind for kind in ('film', 'concrete') if kind in positive_lining]
+    conflict_note = title_conflict(title)
+    if positive_lining & lining_denied:
+        conflict_note = 'Противоречивые указания отделки в названии/описании.'
+    # Explicit contradictory body claims are not missing data. Hardware can be
+    # another material; only an explicit body claim participates here.
+    body_metal = re.search(r'корпус\s*[:—-]?\s*(?:из\s+)?(?:нержав\w*|сталь|стали|бронз\w*|латун\w*)', text)
+    title_plastic = re.search(r'\babs\b|абс|пластик', title)
+    hardware = re.search(r'винт|болт|вставк|решетк|флан|рамк|накладк|крышк', title)
+    if (body_plastic and body_metal) or (grades and body_plastic and not body_uncertain) or (grades and title_plastic and not hardware):
+        conflict_note = 'Противоречивые указания материала корпуса в названии/описании.'
+    body_patterns = {
+        'plastic': r'(?:abs\b|абс\b|пласт\w*)',
+        'steel': r'(?:нержав\w*|сталь\w*|стали|aisi\s*[- ]?\s*(?:304|316))',
+        'other_metal': r'(?:бронз\w*|латун\w*|алюмин\w*|титан\w*|мед[ьи]\w*)',
+    }
+    body_prefix = r'(?:материал\s+корпуса|корпус)\s*[:—-]?\s*(?:(?:выполнен|изготовлен)\s+)?(?:из\s+)?'
+    body_families = {family for family, pattern in body_patterns.items()
+                     if re.search(body_prefix + pattern, text)
+                     or re.search(pattern + r'\s+корпус\b', text)}
+    if material:
+        body_families.add('plastic' if material == 'plastic' else 'steel')
+    body_family = next(iter(body_families)) if len(body_families) == 1 else ''
+    if len(body_families) > 1:
+        conflict_note = 'Противоречивые указания материала корпуса в названии/описании.'
     # SRP/SRPL concrete/liner designations are explicit in the same catalogue.
     if role == 'drain' and brand.casefold() == 'kripsol' and not lining:
         if re.search(r'\bsrp\b', title):
             lining = ['concrete']
         elif re.search(r'\bsrpl\b', title):
             lining = ['film']
-    return {'embedded_role': role, 'material': material, 'lining': lining}
+    result = {'embedded_role': role, 'material': material, 'lining': lining,
+              'body_family': body_family, 'lining_denied': sorted(lining_denied)}
+    if role and conflict_note:
+        result.update(material='', lining=[], specification_conflict=True, specification_note=conflict_note)
+    return result
 
 
 def matches(product, profile, finish):

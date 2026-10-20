@@ -84,7 +84,8 @@ class CatalogEngineTests(SimpleTestCase):
         s, _ = catalog.auto_select(generate({**INPUTS, "power": "230", "required_head": "8"}), f)
         self.assertEqual(block(s)["rows"][0]["catalog"]["id"], "5")
         s, _ = catalog.auto_select(generate({**INPUTS, "power": "230", "required_head": "10"}), f)
-        self.assertIsNone(block(s)["rows"][0]["price"])
+        self.assertEqual(block(s)["rows"][0]["catalog"]["id"], "4")
+        self.assertIn("рабочая Q–H точка", block(s)["rows"][0]["selection_note"])
 
     def test_recalculation_replaces_only_untouched_auto_and_sizes_filter_for_pump(self):
         s, _ = catalog.auto_select(generate(INPUTS), self.catalog)
