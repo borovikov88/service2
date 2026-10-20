@@ -71,3 +71,16 @@ export function automaticQuantity(snapshot, variantKey, row) {
 export function quantityRequired(row) {
   return !isWork(row) && !(row.basis && row.auto_quantity);
 }
+
+// Reorder visible rows only within this table/quote. Hidden slots stay in place.
+export function moveRow(snapshot, variantKey, blockId, rowId, direction) {
+  if (![1, -1].includes(direction)) return false;
+  const block = snapshot.variants[variantKey]?.blocks.find(b => b.id === blockId);
+  if (!block || block.excluded) return false;
+  const visible = block.rows.map((row, index) => ({row, index})).filter(({row}) => !row.excluded);
+  const from = visible.findIndex(({row}) => row.id === rowId), to = from + direction;
+  if (from < 0 || to < 0 || to >= visible.length) return false;
+  const a = visible[from].index, b = visible[to].index;
+  [block.rows[a], block.rows[b]] = [block.rows[b], block.rows[a]];
+  return true;
+}
