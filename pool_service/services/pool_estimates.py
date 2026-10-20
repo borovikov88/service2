@@ -450,6 +450,7 @@ def normalize_catalog(raw):
         raise EstimateInputError('Некорректные ограничения материала/отделки.')
     result['lining_denied'] = denied[:]
     result["filtration"] = None if raw.get("filtration") is None else boolean(raw["filtration"])
+    result["heater_purpose_note"] = string(raw.get("heater_purpose_note", ""), "Назначение нагревателя", 300)
     result["image"] = safe_image_url(raw.get("image", ""))
     options = raw.get("power_options", [raw["power"]] if raw["power"] != "unknown" else [])
     if not isinstance(options, list) or len(options) > 2 or any(p not in ("230", "400") for p in options) or len(set(options)) != len(options):
