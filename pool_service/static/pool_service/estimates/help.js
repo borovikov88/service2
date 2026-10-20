@@ -11,8 +11,11 @@ export function installHelp(root) {
   panel.setAttribute('role','region'); panel.setAttribute('aria-label','Подробности подсказки');
   root.append(panel);
   let active=null, pinned=false, timer, restoring=false;
-  function close(restore=false) {
+  function close(restore=false, dismissed=false) {
     clearTimeout(timer); const previous=active; active=null; pinned=false;
+    // Hiding an overlapping panel can deliver pointerenter/focus to its trigger
+    // again. Explicit dismissal lasts until a new pointer/focus visit or click.
+    if(dismissed && previous){previous.pointerDismissed=true;previous.focusDismissed=true;}
     previous?.button.setAttribute('aria-expanded','false');
     if(panel.matches(':popover-open'))panel.hidePopover();
     if(restore && previous?.button.isConnected) { restoring=true; previous.button.focus({preventScroll:true}); restoring=false; }
@@ -39,7 +42,7 @@ export function installHelp(root) {
     panel.replaceChildren();
     const dismiss=doc.createElement('button');dismiss.type='button';dismiss.className='pe-help-dismiss';
     dismiss.textContent='×';dismiss.setAttribute('aria-label','Закрыть подсказку');
-    dismiss.addEventListener('click',()=>close(true));panel.append(dismiss);
+    dismiss.addEventListener('click',()=>close(true,true));panel.append(dismiss);
     for(const source of group.sources) {
       const section=doc.createElement('div');section.className='pe-help-text';
       for(const node of source.childNodes)section.append(node.cloneNode(true));
@@ -78,7 +81,7 @@ export function installHelp(root) {
     }
   });
   doc.addEventListener('pointerdown',event=>{if(active&&!panel.contains(event.target)&&!active.button.contains(event.target))close();},true);
-  doc.addEventListener('keydown',event=>{if(event.key==='Escape'&&active){event.preventDefault();event.stopPropagation();close(true);}},true);
+  doc.addEventListener('keydown',event=>{if(event.key==='Escape'&&active){event.preventDefault();event.stopPropagation();close(true,true);}},true);
   doc.addEventListener('scroll',()=>{if(active)position();},true);
   window.addEventListener('resize',position);
   window.visualViewport?.addEventListener('resize',position);
@@ -147,11 +150,11 @@ export function installHelp(root) {
         button.setAttribute('aria-label',(warning?'Проверить: ':'Подсказка: ')+group.label);
         button.textContent=warning?(anchor.dataset.helpLabel || '! Проверить'):'?';
         attachHelp(anchor,button,warning);
-        button.addEventListener('pointerenter',event=>{if(event.pointerType==='mouse')open(group);});
-        button.addEventListener('pointerleave',laterClose);
-        button.addEventListener('focus',()=>{if(!restoring)open(group);});
-        button.addEventListener('blur',laterClose);
-        button.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();if(active===group&&pinned)close();else open(group,true);});
+        button.addEventListener('pointerenter',event=>{if(event.pointerType==='mouse'&&!group.pointerDismissed)open(group);});
+        button.addEventListener('pointerleave',()=>{group.pointerDismissed=false;laterClose();});
+        button.addEventListener('focus',()=>{if(!restoring&&!group.focusDismissed)open(group);});
+        button.addEventListener('blur',()=>{group.focusDismissed=false;laterClose();});
+        button.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();if(active===group&&pinned)close(false,true);else {group.pointerDismissed=false;group.focusDismissed=false;open(group,true);}});
         button.addEventListener('keydown',event=>{if(event.key==='Tab'&&!event.shiftKey&&active===group){event.preventDefault();panel.querySelector('button,a')?.focus();}});
       }
       group.sources=sources;
