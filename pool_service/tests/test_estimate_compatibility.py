@@ -109,7 +109,7 @@ class CompatibilityTests(SimpleTestCase):
         self.assertEqual(work(s, 'plaster')['price'], '0')
         self.assertIsNone(work(s, 'sand_base')['price'])
         self.assertIsNone(work(s, 'excavation')['price'])
-        self.assertIsNone(work(s, 'equipment_work', 'standard')['price'])
+        self.assertEqual(work(s, 'equipment_work', 'standard')['price'], '70000.00')
 
 
 class CompatibilityApiTests(TestCase):
