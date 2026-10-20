@@ -271,7 +271,8 @@ def apply_product(row, product, catalog, selection="manual"):
     old_kind = row['kind']
     row["selection_note"] = ""
     row['level_status'], row['level_evidence'] = 'unknown', ''
-    row.update(name=product["name"], brand=product["brand"], model=product["model"], price=product["price"], kind=product["kind"])
+    # A successful product selection explicitly adopts its catalogue price.
+    row.update(name=product["name"], brand=product["brand"], model=product["model"], price=product["price"], kind=product["kind"], unit_price_manual=False)
     if old_kind == 'level_inlet':
         row['kind'] = old_kind
         row['embedded_role'] = ''

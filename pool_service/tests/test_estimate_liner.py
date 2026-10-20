@@ -105,3 +105,26 @@ class LinerTests(SimpleTestCase):
             catalog.apply_product(r,c['products']['11'],c)
             self.assertEqual(r['price'],'123.00')
             self.assertNotIn('roll_area',r['catalog'])
+
+    def test_explicit_reselection_resets_price_origin_but_recalculation_does_not(self):
+        for product_id in ('1','2'):
+            c=stock();s=generate(INPUTS);r=film(s)
+            catalog.apply_product(r,c['products']['1'],c)
+            r.update(price='12.34',unit_price_manual=True)
+            unchanged=recalculate(s,s['inputs'])
+            self.assertTrue(film(unchanged)['unit_price_manual'])
+            self.assertEqual(film(unchanged)['price'],'12.34')
+            untouched,_,_=catalog.refresh_prices(unchanged,c,'economy')
+            self.assertEqual(film(untouched)['price'],'12.34')
+            r=film(unchanged);r.update(unit='рулон',quantity='2',auto_quantity=False)
+            catalog.apply_product(r,c['products'][product_id],c)
+            chosen=evaluate(unchanged)
+            self.assertFalse(film(chosen)['unit_price_manual'])
+            self.assertNotIn('roll_area',film(chosen)['catalog'])
+            self.assertEqual(film(chosen)['price'],c['products'][product_id]['price'])
+            c['products'][product_id]['price']='200001.00'
+            refreshed,updated,skipped=catalog.refresh_prices(chosen,c,'economy')
+            self.assertEqual((updated,skipped),(1,0))
+            self.assertEqual(film(refreshed)['price'],'200001.00')
+            self.assertEqual(film(refreshed)['amount'],'400002.00')
+            self.assertNotEqual(film(chosen)['price'],film(refreshed)['price'])
