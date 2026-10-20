@@ -30,7 +30,7 @@ class PoolEstimateEngineTests(SimpleTestCase):
         self.snapshot = evaluate(self.snapshot)
 
     def test_geometry_and_three_preferences(self):
-        self.assertEqual(self.snapshot["geometry"], {"volume": "48.000", "surface": "32.000", "perimeter": "24.000", "finish_area": "68.000", "finish_net": "68.000", "finish_stock": "79.000", "required_flow": "8.000"})
+        self.assertEqual({k:v for k,v in self.snapshot["geometry"].items() if not k.startswith("tech_")}, {"volume": "48.000", "surface": "32.000", "perimeter": "24.000", "finish_area": "68.000", "finish_net": "68.000", "finish_stock": "79.000", "required_flow": "8.000"})
         self.assertEqual([v["preferred_brand"] for v in self.snapshot["variants"].values()], ["Дешёвый подходящий", "Средний подходящий", "Дорогой подходящий"])
         sloped = generate({**INPUTS, "depth_end": "2.5"})
         self.assertEqual(sloped["geometry"]["volume"], "64.000")

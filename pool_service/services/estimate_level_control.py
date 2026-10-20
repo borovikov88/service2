@@ -1,4 +1,6 @@
 """One level-control system per bowl; never counted as filtration returns."""
+from decimal import Decimal
+
 ROLES = {'level_regulator':'Регулятор уровня воды: подобрать модель',
          'level_inlet':'Дополнительная форсунка регулятора уровня: подобрать модель'}
 OFF = 'Регулятор уровня включён в комплект выбранного скиммера'
@@ -13,11 +15,12 @@ def sync(snapshot, create=False):
         block = next(b for b in variant['blocks'] if b['id']=='embedded')
         rows = [r for b in variant['blocks'] for r in b['rows']]
         skimmers = [r for b in variant['blocks'] for r in b['rows'] if r['kind']=='skimmer' and
-                    ((not b['excluded'] and not r['excluded']) or r['existing']) and r['quantity'] is not None and float(r['quantity']) > 0]
-        included = any((r.get('catalog') or {}).get('level_control','unknown') == 'included' for r in skimmers)
+                    ((not b['excluded'] and not r['excluded']) or r['existing']) and r['quantity'] is not None and Decimal(r['quantity']) > 0]
+        included = any(status(r) == 'included' for r in skimmers)
         for kind, title in ROLES.items():
             candidates = [r for r in rows if r['kind']==kind]
-            if not candidates and create:
+            legacy_bundle = any(r['id'] == 'embedded_supply' for r in rows)
+            if not candidates and create and not legacy_bundle:
                 if len(block['rows']) >= 100:
                     raise EstimateInputError('В блоке недостаточно места для системы уровня воды.')
                 ids = {r['id'] for r in rows}
@@ -27,7 +30,7 @@ def sync(snapshot, create=False):
                 row['level_managed']=True
                 block['rows'].append(row);rows.append(row);candidates=[row]
             for row in candidates:
-                if not row.get('level_managed') or row['existing']:
+                if not row.get('level_managed') or row['existing'] or row.get('selection_locked') or not row['auto_quantity']:
                     continue
                 if included and not row['excluded']:
                     row.update(excluded=True,reason=OFF)
@@ -35,7 +38,7 @@ def sync(snapshot, create=False):
                     row.update(excluded=False,reason='')
                 if row['auto_quantity'] and row['basis']=='level_system':
                     row['quantity']='1.000'
-        variant['level_control_status'] = 'included' if included else 'absent' if skimmers and all((r.get('catalog') or {}).get('level_control')=='absent' for r in skimmers) else 'unknown'
+        variant['level_control_status'] = 'included' if included else 'absent' if skimmers and all(status(r)=='absent' for r in skimmers) else 'unknown'
 
 
 def warnings(variant):
@@ -45,3 +48,21 @@ def warnings(variant):
     if state == 'included':
         return ['В выбранном скиммере подтверждён регулятор уровня в комплекте; автоматически добавленная отдельная пара исключена. Проверьте, что он обслуживает общую чашу. Ручные и уже установленные позиции требуют отдельной проверки на дублирование.']
     return ['Отдельный регулятор уровня и его форсунка: одна система на чашу, без включения этой форсунки в расчёт фильтрации.'] if state else []
+
+
+def status(row):
+    # Explicit user evidence belongs to this row/model; never inferred from metal.
+    if row.get('level_evidence') and row.get('level_status') in STATES:
+        return row['level_status']
+    return (row.get('catalog') or {}).get('level_control', 'unknown')
+
+
+def classify(specs, name, brand, sku):
+    import re
+    models = {'16791': ('aquaviva', r'RO[- ]?7'), '528': ('kripsol', r'RGP[.]?C'),
+              '32304': ('hayward', r'3150')}
+    expected = models.get(sku)
+    if (expected and brand.casefold() == expected[0] and
+            re.search(r'(?<![a-z0-9])' + expected[1] + r'(?![a-z0-9])', name, re.I) and
+            re.search(r'регулятор.*уров', name, re.I) and not re.search(r'рамк|датчик', name, re.I)):
+        specs.update(kind='level_regulator', embedded_role='')

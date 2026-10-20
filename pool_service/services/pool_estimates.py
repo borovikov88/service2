@@ -225,7 +225,7 @@ def geometry(data):
     if data.get("bowl_height"):
         height = Decimal(data["bowl_height"])
         perimeter = 2 * (length + width)
-        area = length * width + perimeter * height
+        area = length * width + perimeter * height + (technology.band_area(data) or Decimal(0))
         metrics = {"volume": length * width * average, "surface": length * width,
                    "perimeter": perimeter, "finish_area": area,
                    "finish_net": Decimal(embedded.ceil_quantity(area)),
@@ -365,7 +365,7 @@ def make_row(key, name, unit="компл.", quantity="1", basis="", kind="other"
 def generate(raw):
     # Defaults belong only to new calculations; normalize/load never inject them.
     if isinstance(raw, dict):
-        raw = {"wall_thickness": "0.20", "slab_thickness": "0.20", **raw}
+        raw = technology.fresh_defaults({"wall_thickness": "0.20", "slab_thickness": "0.20", **raw})
     inputs = normalize_inputs(raw)
     metrics = geometry(inputs)
     variants = {}
@@ -490,6 +490,10 @@ def normalize_snapshot(raw):
                     item[field] = boolean(row.get(field, False))
                 if item["heating_parent"]:
                     item["heating_unbound"] = False
+                item['level_status'] = string(row.get('level_status', 'unknown'), 'Комплектация уровня', 20)
+                item['level_evidence'] = string(row.get('level_evidence', ''), 'Источник комплектации уровня', 500)
+                if item['level_status'] not in level_control.STATES or (item['level_status'] != 'unknown' and not item['level_evidence'].strip()):
+                    raise EstimateInputError('Укажите источник подтверждения комплектации регулятором уровня.')
                 item["work_code"] = string(row.get("work_code", ""), "Код работы", 80)
                 works.identify(item)
                 item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", optional=item["kind"] == "work" or item["basis"] in {"concrete_total", "exchanger_quantity", *technology.BASES}))

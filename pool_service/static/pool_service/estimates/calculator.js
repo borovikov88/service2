@@ -1,4 +1,4 @@
-import {setExcluded, emptyRow, isWork, samePrice, workPriceTargets, automaticQuantity, quantityRequired} from './state.js?v=5';
+import {setExcluded, emptyRow, isWork, samePrice, workPriceTargets, automaticQuantity, quantityRequired} from './state.js?v=6';
 
 const root = document.querySelector('#pool-estimator');
 const $ = selector => root.querySelector(selector);
@@ -90,6 +90,10 @@ function changed() {
   status('Есть несохранённые изменения');
 }
 function inputs() {
+  if (form.elements.tech_insulation_wall_height_mode.value === 'auto') {
+    const h = Number(form.elements.bowl_height.value);
+    form.elements.tech_insulation_wall_height.value = h > .1 ? String(Math.round((h-.1)*1000)/1000) : '';
+  }
   const data = new FormData(form);
   const heating_types = data.getAll('heating_types');
   return {...Object.fromEntries(data), heating_types, heating: heating_types[0] || 'none'};
@@ -244,6 +248,7 @@ async function generateNew() {
   });
 }
 form.addEventListener('input', event => {
+  if (event.target.name === 'bowl_height' && form.elements.tech_insulation_wall_height_mode.value === 'auto') inputs();
   parametersDirty = true; changed();
   heatingFields();
   status('Параметры изменены. Нажмите «Пересчитать параметры», чтобы обновить сметы.');
@@ -313,6 +318,9 @@ root.addEventListener('click', event => {
     for (const key of ['existing', 'auto_quantity']) edit.elements.namedItem(key).checked = rowBeingEdited[key];
     for (const key of ['flow', 'head', 'filter_flow', 'backwash_flow']) edit.elements.namedItem(key).value = rowBeingEdited.specs[key] ?? '';
     edit.elements.quantity.required = quantityRequired(rowBeingEdited);
+    $('#pe-level-fields').hidden = rowBeingEdited.kind !== 'skimmer';
+    edit.elements.level_status.value = rowBeingEdited.level_status || 'unknown';
+    edit.elements.level_evidence.value = rowBeingEdited.level_evidence || '';
     const accessory = ['circulation_pump','solenoid_valve'].includes(rowBeingEdited.kind);
     $('#pe-heating-parent-label').hidden = !accessory;
     const parentSelect = edit.elements.heating_parent;
@@ -342,6 +350,11 @@ $('#pe-row-form').addEventListener('submit', event => {
   if (['circulation_pump','solenoid_valve'].includes(row.kind)) {
     row.heating_parent = f.elements.heating_parent.value;
     row.heating_unbound = !row.heating_parent;
+  }
+  if (row.kind === 'skimmer') {
+    const identityChanged = ['name','brand','model','kind'].some(key => row[key] !== rowBeingEdited[key]);
+    row.level_status = identityChanged ? 'unknown' : f.elements.level_status.value;
+    row.level_evidence = identityChanged ? '' : f.elements.level_evidence.value.trim();
   }
   row.existing = f.elements.existing.checked;
   row.auto_quantity = Boolean(row.basis) && f.elements.auto_quantity.checked;
@@ -571,3 +584,5 @@ const initial = new URL(location.href).searchParams;
 $('#pe-project-search').value = initial.get('q') || '';
 if (initial.get('id')) await loadProject(initial.get('id'), initial.get('version') || '');
 else await generateNew();
+
+form.elements.tech_insulation_wall_height.addEventListener('input', () => { form.elements.tech_insulation_wall_height_mode.value = 'manual'; });

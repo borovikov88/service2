@@ -9,13 +9,13 @@ MODES = {
     'sand': {'', 'off', 'on'}, 'preparation': {'', 'off', 'on'},
     'formwork': {'', 'off', 'ground_two_sided'},
     'insulation_floor': {'', 'off', 'on'}, 'insulation_wall': {'', 'off', 'on'},
-    'outer_finish': {'', 'off', 'on'}, 'top_finish': {'', 'off', 'on'},
+    'outer_finish': {'', 'off', 'on'}, 'top_finish': {'', 'off', 'on', 'film_band'},
     'plaster': {'', 'off', 'walls', 'walls_floor'},
     'pit': {'', 'off', 'vertical'}, 'backfill': {'', 'off', 'vertical'},
 }
 DIMENSIONS = ('sand_thickness', 'sand_projection', 'preparation_thickness', 'preparation_projection',
               'insulation_floor_thickness', 'insulation_wall_thickness', 'insulation_wall_height',
-              'outer_finish_height', 'plaster_thickness', 'pit_gap', 'bowl_above_ground')
+              'outer_finish_height', 'top_band_width', 'plaster_thickness', 'pit_gap', 'bowl_above_ground')
 # code, mode, metric, title, unit, block, existing work code (None = new material)
 ROWS = (
     ('sand_material', 'sand', 'sand_volume', 'Песчаная подготовка: материал', 'м³', 'construction', None),
@@ -40,6 +40,27 @@ BASES = {'tech_' + r[2] for r in ROWS}
 OFF = 'Отключено в строительной технологии'
 
 
+def fresh_defaults(raw):
+    defaults = {'tech_sand':'on','tech_sand_thickness':'.10','tech_sand_projection':'0',
+        'tech_preparation':'on','tech_preparation_thickness':'.15','tech_preparation_projection':'0',
+        'tech_insulation_floor':'off','tech_insulation_floor_thickness':'.05',
+        'tech_insulation_wall':'on','tech_insulation_wall_thickness':'.05',
+        'tech_insulation_wall_height_mode':'auto' if 'tech_insulation_wall_height' not in raw else 'manual',
+        'tech_outer_finish':'off','tech_top_finish':'film_band' if raw.get('finish')=='film' else 'off',
+        'tech_top_band_width':'.05','tech_plaster':'walls_floor','tech_plaster_thickness':'.02',
+        'tech_pit':'vertical','tech_pit_gap':'.50','tech_bowl_above_ground':'.30','tech_backfill':'vertical'}
+    return {**defaults, **raw}
+
+
+def band_area(inputs):
+    if mode(inputs,'top_finish') != 'film_band' or inputs.get('finish') != 'film': return D(0)
+    vals = [inputs.get(k) for k in ('length','width','wall_thickness','bowl_height','tech_top_band_width')]
+    if any(v in (None,'') for v in vals): return None
+    L,W,t,H,w = map(D, vals)
+    if w > t: return None
+    return (L+2*w)*(W+2*w)-L*W
+
+
 def normalize(raw):
     from .pool_estimates import number, EstimateInputError
     result = {}
@@ -55,12 +76,24 @@ def normalize(raw):
             minimum = '0' if name.endswith('projection') or name in ('pit_gap', 'bowl_above_ground') else '.001'
             value = number(raw[key], 'Строительная геометрия: ' + name, optional=True, minimum=minimum, maximum='20')
             result[key] = str(value) if value is not None else None
+    if 'tech_insulation_wall_height_mode' in raw:
+        auto = raw['tech_insulation_wall_height_mode']
+        if auto not in ('','auto','manual'): raise EstimateInputError('Выберите режим высоты утепления.')
+        result['tech_insulation_wall_height_mode'] = auto
     height = raw.get('bowl_height')
     if height not in (None, ''):
         height = number(height, 'Высота чаши', minimum='.001', maximum='10')
+        if result.get('tech_insulation_wall_height_mode') == 'auto':
+            if height <= D('.10'): raise EstimateInputError('Для автоматической высоты утепления высота чаши должна быть больше 0,10 м.')
+            result['tech_insulation_wall_height'] = str(height-D('.10'))
         for name in ('insulation_wall_height', 'outer_finish_height', 'bowl_above_ground'):
             if result.get('tech_' + name) and D(result['tech_' + name]) > height:
                 raise EstimateInputError('Высота слоя/борта над грунтом не может превышать высоту чаши.')
+    elif result.get('tech_insulation_wall_height_mode') == 'auto':
+        result['tech_insulation_wall_height'] = None
+    if result.get('tech_top_finish') == 'film_band' and result.get('tech_top_band_width') and raw.get('wall_thickness'):
+        if D(result['tech_top_band_width']) > D(str(raw['wall_thickness'])):
+            raise EstimateInputError('Заход плёнки не может быть шире толщины стены.')
     return result
 
 
@@ -110,17 +143,26 @@ def quantities(inputs):
         put('plaster_area', area)
         thick = value('tech_plaster_thickness')
         if thick is not None: put('plaster_volume', area*thick)
-    # Explicit narrow model: vertical sides, no insulation or exterior layer displacement.
+    # Vertical prism; subtract insulation actually below ground, including corners.
     gap, z = value('tech_pit_gap'), value('tech_bowl_above_ground')
     simple = (mode(inputs,'pit') == 'vertical' and gap is not None and z is not None
-              and len(layers) == 2 and all(mode(inputs,k) == 'off' for k in ('insulation_floor','insulation_wall','outer_finish')))
+              and len(layers) == 2 and mode(inputs,'outer_finish') == 'off'
+              and all(mode(inputs,k) in ('on','off') for k in ('insulation_floor','insulation_wall')))
     if simple:
         sand, As = layers['sand']; concrete, Ac = layers['preparation']
         Ap = (Lo+2*gap)*(Wo+2*gap)
-        if As <= Ap and Ac <= Ap:
-            put('pit_volume', Ap*(H-z+b+concrete+sand))
+        floor = D(0) if mode(inputs,'insulation_floor') == 'off' else value('tech_insulation_floor_thickness')
+        wall = D(0) if mode(inputs,'insulation_wall') == 'off' else value('tech_insulation_wall_thickness')
+        wh = D(0) if mode(inputs,'insulation_wall') == 'off' else value('tech_insulation_wall_height')
+        if (floor is not None and wall is not None and wh is not None and wall <= gap
+                and As <= Ap and Ac <= Ap):
+            depth = H-z
+            put('pit_volume', Ap*(depth+b+concrete+sand+floor))
             if mode(inputs,'backfill') == 'vertical':
-                put('backfill_volume', (Ap-As)*sand+(Ap-Ac)*concrete+(Ap-Ao)*(b+H-z))
+                # Wall insulation starts at top of slab; only submerged height displaces fill.
+                displacement = ((Lo+2*wall)*(Wo+2*wall)-Ao)*min(wh,depth)
+                fill = (Ap-As)*sand+(Ap-Ac)*concrete+(Ap-Ao)*(floor+b+depth)-displacement
+                put('backfill_volume', fill if fill >= 0 else None)
     return values
 
 
@@ -156,6 +198,7 @@ def apply(snapshot, create=False):
     for variant in snapshot['variants'].values():
         for code, feature, metric, title, unit, block_id, work_code in ROWS:
             state, basis = mode(inputs, feature), 'tech_' + metric
+            if feature == 'top_finish' and state == 'film_band': state = 'off'  # Included once in main PVC finish rows.
             block = next(b for b in variant['blocks'] if b['id'] == block_id)
             matches = [r for r in block['rows'] if r['id'] == 'tech_'+code or
                        (work_code and r.get('work_code') == work_code)]
@@ -191,8 +234,10 @@ def warnings(inputs):
     if not active: return []
     result = ['Строительные количества — геометрия выбранной технологии, без подтверждения прочности/армирования. Цены материалов и расход сухих смесей не предполагаются.']
     metrics = quantities(inputs)
-    if any(metrics['tech_'+metric] is None for _,feature,metric,*_ in ROWS if mode(inputs,feature) not in ('','off')):
-        result.append('Часть строительных объёмов неизвестна: заполните размеры/слои и явно отключите отсутствующие. Для котлована/засыпки модель только с вертикальными стенками, без наружной отделки и утепления; подготовки должны помещаться внутри котлована.')
+    if mode(inputs,'top_finish') == 'film_band' and band_area(inputs) is None:
+        result.append('Заход плёнки пока не включён в количество: уточните высоту чаши, толщину стен и ширину полосы.')
+    if any(metrics['tech_'+metric] is None for _,feature,metric,*_ in ROWS if mode(inputs,feature) not in ('','off','film_band')):
+        result.append('Часть строительных объёмов неизвестна: заполните размеры/слои и явно отключите отсутствующие. Для котлована/засыпки модель только с вертикальными стенками, без наружной отделки; утепление стен от верха плиты, подготовки должны помещаться внутри котлована.')
     if 'pit' in active or 'backfill' in active:
         result.append('Котлован: только выбранная геометрическая модель вертикальных стенок. Устойчивость грунта, откосы, крепления, водопонижение и возможность работ требуют отдельного проекта; объём грунта без коэффициентов разрыхления/уплотнения.')
     return result
@@ -209,10 +254,12 @@ def summary(inputs):
         'preparation_thickness':'Толщина бетонной подготовки, м', 'preparation_projection':'Выпуск бетонной подготовки, м',
         'insulation_floor_thickness':'Толщина утеплителя под плитой, м', 'insulation_wall_thickness':'Толщина утеплителя стен, м',
         'insulation_wall_height':'Высота утепления стен, м', 'outer_finish_height':'Высота наружной отделки, м',
+        'top_band_width':'Ширина верхнего захода плёнки, м',
+        'insulation_wall_height_mode':'Режим высоты утепления',
         'plaster_thickness':'Толщина штукатурки, м', 'pit_gap':'Зазор котлована за плитой, м',
         'bowl_above_ground':'Верх чаши над грунтом, м',
     }
-    modes = {'off':'Не включать','on':'Включить','ground_two_sided':'Две стороны стен + торец плиты, плита на грунте',
+    modes = {'auto':'Автоматически H − 0,10 м','manual':'Ручная высота','film_band':'Полоса ПВХ в общей площади отделки', 'off':'Не включать','on':'Включить','ground_two_sided':'Две стороны стен + торец плиты, плита на грунте',
              'walls':'Стены','walls_floor':'Стены и дно','vertical':'Вертикальная прямоугольная модель'}
     return [{'label':label,'value':modes.get(inputs['tech_'+key],inputs['tech_'+key])}
             for key,label in labels.items() if inputs.get('tech_'+key) not in (None,'')]
