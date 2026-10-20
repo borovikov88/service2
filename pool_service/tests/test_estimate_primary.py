@@ -40,10 +40,8 @@ class PrimaryCircuitTests(SimpleTestCase):
         twice,_=catalog.auto_select(result,fixture())
         self.assertEqual([v['total'] for v in twice['variants'].values()],[v['total'] for v in result['variants'].values()])
 
-    def test_missing_connections_and_known_mismatches_never_guess_diameter(self):
-        for change,kind in (({'primary_pump_connection':''},'circulation_pump'),
-                            ({'primary_valve_connection':''},'solenoid_valve'),
-                            ({'primary_flow':'2.8'},'circulation_pump'),
+    def test_known_mismatches_never_select(self):
+        for change,kind in (({'primary_flow':'2.8'},'circulation_pump'),
                             ({'primary_head':'5'},'circulation_pump'),
                             ({'primary_temperature':'121'},'solenoid_valve')):
             s,_=catalog.auto_select(generate({**PRIMARY,**change}),fixture())
@@ -122,3 +120,85 @@ class PrimaryCircuitTests(SimpleTestCase):
                     r.pop('heating_unbound',None)
         legacy=recalculate(legacy,legacy['inputs'])
         self.assertTrue(all(next(r for r in block(legacy,variant=t)['rows'] if r['kind']=='solenoid_valve')['heating_parent'] for t in legacy['variants']))
+
+    def test_missing_connections_propose_without_inventing_object_parameters(self):
+        import json
+        base=generate({**PRIMARY,'primary_pump_connection':'','primary_valve_connection':''})
+        result,count=catalog.auto_select(base,fixture())
+        self.assertEqual(count,9)
+        for tier,pid,vid,delta in [('economy','91','94','601'),('standard','92','93','1000'),('premium','92','93','1000')]:
+            rows=block(result,variant=tier)['rows']
+            pump=next(r for r in rows if r['kind']=='circulation_pump')
+            valve=next(r for r in rows if r['kind']=='solenoid_valve')
+            self.assertEqual((pump['catalog']['id'],valve['catalog']['id']),(pid,vid))
+            for row in (pump,valve):
+                self.assertIn('Проверить:',row['selection_note'])
+                self.assertIn('присоединение на объекте',row['selection_note'])
+                self.assertIn('Источник характеристик:',row['selection_note'])
+                self.assertIn('совместимость не подтверждена',row['selection_note'])
+            self.assertEqual(Decimal(result['variants'][tier]['total'])-Decimal(base['variants'][tier]['total']),Decimal(delta))
+        self.assertEqual(result['inputs']['primary_pump_connection'],'')
+        self.assertEqual(result['inputs']['primary_valve_connection'],'')
+        loaded=evaluate(json.loads(json.dumps(result)))
+        again,filled=catalog.auto_select(loaded,fixture())
+        self.assertEqual(filled,0)
+        self.assertEqual(again['variants'],result['variants'])
+        # Once actual connection is supplied, a cheap incompatible valve cannot remain auto-selected.
+        changed,_=catalog.auto_select(recalculate(result,{**result['inputs'],'primary_valve_connection':'g1'}),fixture())
+        self.assertEqual(next(r for r in block(changed)['rows'] if r['kind']=='solenoid_valve')['catalog']['id'],'93')
+
+    def test_conflicts_unknown_identity_and_manual_data_are_protected(self):
+        from pool_service.services.estimate_primary import rejection
+        c=fixture()
+        for field,value in [('specification_conflict',True),('level_data_issue','conflict')]:
+            p={**c['products']['91'],field:value,'specification_note':'Тестовый конфликт'}
+            self.assertIn('Противоречивые',rejection(p,PRIMARY))
+        self.assertIsNotNone(rejection({**c['products']['91'],'sku':'999'},PRIMARY))
+        for update in [dict(auto_quantity=False,quantity='2'),dict(unit_price_manual=True),dict(excluded=True),dict(selection_locked=True)]:
+            s=generate(PRIMARY)
+            row=next(r for r in block(s)['rows'] if r['kind']=='circulation_pump')
+            row.update(update)
+            result,_=catalog.auto_select(s,c)
+            after=next(r for r in block(result)['rows'] if r['kind']=='circulation_pump')
+            self.assertIsNone(after['catalog'])
+            self.assertIsNone(after['price'])
+        c['products']['91']['specification_conflict']=True
+        result,_=catalog.auto_select(generate(PRIMARY),c)
+        self.assertEqual(next(r for r in block(result)['rows'] if r['kind']=='circulation_pump')['catalog']['id'],'92')
+
+    def test_changed_known_mismatch_with_no_alternative_withdraws_only_auto(self):
+        for change,kind in [({'primary_pump_connection':'g1'},'circulation_pump'),
+                            ({'primary_flow':'3'},'circulation_pump'),
+                            ({'primary_head':'6'},'circulation_pump'),
+                            ({'primary_temperature':'130'},'solenoid_valve')]:
+            s,_=catalog.auto_select(generate(PRIMARY),fixture())
+            old=next(r for r in block(s)['rows'] if r['kind']==kind)
+            amount=Decimal(old['amount'])
+            changed=recalculate(s,{**s['inputs'],**change})
+            result,_=catalog.auto_select(changed,fixture(),only_variant='economy')
+            target=next(r for r in block(result)['rows'] if r['kind']==kind)
+            self.assertIsNone(target['catalog'])
+            self.assertIsNone(target['price'])
+            self.assertIn('отклонён',target['selection_note'])
+            self.assertIsNone(target['amount'])
+            # Other rows may obtain valid alternatives; verify the entire total.
+            self.assertEqual(Decimal(result['variants']['economy']['total']), sum(
+                (Decimal(r['amount'] or '0') for b in result['variants']['economy']['blocks'] if not b['excluded']
+                 for r in b['rows'] if not r['excluded'] and not r['existing']), Decimal(0)))
+            old['catalog']['selection']='manual'
+            manual,_=catalog.auto_select(recalculate(s,{**s['inputs'],**change}),fixture(),only_variant='economy')
+            kept=next(r for r in block(manual)['rows'] if r['kind']==kind)
+            self.assertEqual(kept['catalog']['id'],old['catalog']['id'])
+            self.assertEqual(kept['price'],old['price'])
+
+    def test_new_live_catalog_conflict_withdraws_untouched_auto(self):
+        s,_=catalog.auto_select(generate(PRIMARY),fixture())
+        c=fixture()
+        for p in c['products'].values():
+            if p['kind']=='circulation_pump':
+                p.update(specification_conflict=True,specification_note='Явный конфликт обновлённого каталога')
+        result,_=catalog.auto_select(s,c)
+        row=next(r for r in block(result)['rows'] if r['kind']=='circulation_pump')
+        self.assertIsNone(row['catalog'])
+        self.assertIsNone(row['amount'])
+        self.assertIn('Явный конфликт обновлённого каталога',row['selection_note'])
