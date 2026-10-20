@@ -286,6 +286,19 @@ class CatalogViewsTests(TestCase):
         self.assertEqual(find(loaded)['finish_type'],'')
 
 
+    def test_construction_package_print_preserves_equipment_name_brand_and_model(self):
+        from pool_service.tests.test_estimate_construction import NEW, row
+        s = self.post(action='generate', inputs=NEW).json()['snapshot']
+        for tier in s['variants']:
+            row(s, 'pump', tier).update(
+                name='Насос фильтрации', brand='SyntheticBrand', model='SyntheticModel-42',
+            )
+        saved = self.post(action='save', snapshot=s, expected_revision=0).json()
+        printed = self.client.get(reverse('pool_estimate_print', args=[saved['id'], 1]))
+        self.assertContains(
+            printed, '<td>Насос фильтрации SyntheticBrand SyntheticModel-42</td>', count=3,
+        )
+
     def test_construction_package_print_blank_prices_shared_rates_and_tenant(self):
         from pool_service.tests.test_estimate_construction import NEW, row
         created=self.post(action='generate',inputs=NEW)
