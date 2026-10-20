@@ -133,7 +133,7 @@ def estimate_api(request):
             return JsonResponse({'images': {i: products[i].get('image', '') for i in set(ids) if i in products}})
         if action == "catalog_search":
             inputs = normalize_inputs(data.get("inputs"))
-            return JsonResponse(search_catalog(get_catalog(), data.get("q", ""), data.get("kind", ""), data.get("brand", ""), inputs, Decimal(geometry(inputs)["required_flow"]), variant=string(data.get("variant", "economy"), "Смета", 20)))
+            return JsonResponse(search_catalog(get_catalog(), data.get("q", ""), data.get("kind", ""), data.get("brand", ""), inputs, Decimal(geometry(inputs)["required_flow"]), variant=string(data.get("variant", "economy"), "Смета", 20), profile=data.get("embedded_profile")))
         if action == 'compatibility_auto':
             from .services.estimate_compatibility import repair
             variant = string(data.get('variant'), 'Вариант', 20)
@@ -174,7 +174,7 @@ def estimate_api(request):
             apply_product(row, product, catalog)
             return JsonResponse({"snapshot": evaluate(snapshot), "catalog_status": catalog_status(catalog)})
         if action == "recalculate":
-            previous_rows = {(k, r["id"]) for k, v in evaluate(data.get("snapshot"))["variants"].items() for b in v["blocks"] for r in b["rows"]}
+            previous_rows = {(k, r["id"]) for k, v in evaluate(data.get("snapshot"))["variants"].items() for b in v["blocks"] for r in b["rows"] if r["price"] is not None or r["existing"] or r.get("selection_locked") or r.get("rate_source") == "Ручная цена текущей сметы"}
             snapshot = apply_defaults(recalculate(data.get("snapshot"), data.get("inputs")), organization, only_new=previous_rows)
             try:
                 catalog = get_catalog()
@@ -195,7 +195,7 @@ def estimate_api(request):
             from .services.estimate_works import add_works, fill_missing_prices
             from .services.pool_estimates import change_finish
             snapshot = evaluate(data.get('snapshot'))
-            priced_rows = {(k, r["id"]) for k, v in snapshot["variants"].items() for b in v["blocks"] for r in b["rows"] if r['price'] is not None or r['existing']}
+            priced_rows = {(k, r["id"]) for k, v in snapshot["variants"].items() for b in v["blocks"] for r in b["rows"] if r['price'] is not None or r['existing'] or r.get('selection_locked') or r.get('rate_source') == 'Ручная цена текущей сметы'}
             add_works(snapshot)
             change_finish(snapshot, snapshot['inputs']['finish'], replace=False)
             filled = fill_missing_prices(snapshot)

@@ -124,6 +124,14 @@ def quantities(inputs):
     return values
 
 
+def bind_new_work(row):
+    """New work rows require an explicit scheme; historical rows never call this."""
+    for _, _, metric, _, unit, _, work_code in ROWS:
+        if work_code and row.get('work_code') == work_code and row['unit'] == unit:
+            row.update(basis='tech_' + metric, auto_quantity=True, quantity=None)
+            break
+
+
 def initialize_fresh(snapshot):
     """Bind only freshly generated work rows; never call for saved snapshots."""
     snapshot['technology_version'] = 1

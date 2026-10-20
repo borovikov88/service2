@@ -147,8 +147,9 @@ class HeatingFinishTests(SimpleTestCase):
         updated = recalculate(old, {**INPUTS, 'finish': 'mosaic', 'length': '10'})
         self.assertTrue(block(updated, 'finish')['excluded'])
         self.assertEqual(block(updated, 'finish')['rows'][0]['price'], '900.00')
-        self.assertEqual(len(block(updated, 'finish')['rows']), 5)
-        self.assertTrue(all(r['quantity'] == '82.000' for r in block(updated, 'finish')['rows']))
+        self.assertEqual(len(block(updated, 'finish')['rows']), 9)
+        self.assertTrue(all(r['quantity'] == '82.000' for r in block(updated, 'finish')['rows'] if r.get('finish_type') == 'mosaic'))
+        self.assertTrue(any(r.get('work_code')=='plaster' and r['quantity'] is None for r in block(updated,'finish')['rows']))
         self.assertEqual(evaluate(old)['inputs']['finish'], '')
         for value in ('wood', [], None):
             with self.assertRaises(EstimateInputError):
@@ -189,3 +190,21 @@ class HeatingFinishTests(SimpleTestCase):
         f = catalog.parse_catalog(feed(offer(91, 'Пленка для бассейна Test', description=''), offer(92, 'Плёнка ПВХ Test', description='')))
         found = catalog.search_catalog(f, 'плёнка', 'other', '', generate(INPUTS)['inputs'], Decimal('8'))
         self.assertEqual(found['total'], 2)
+
+    def test_unfilled_heater_explains_power_supply_and_keeps_manual_choice(self):
+        products=catalog.parse_catalog(feed(offer(201,'Электронагреватель Test 24 кВт 380В'),offer(202,'Электронагреватель Test 12 кВт 220В/380В')))
+        inputs={**HEATING,'heating_power':'18.096','power':'230'}
+        empty,_=catalog.auto_select(generate(inputs),products)
+        self.assertIsNone(heater(empty)['price'])
+        self.assertIn('18.096',heater(empty)['selection_note'])
+        self.assertIn('230',heater(empty)['selection_note'])
+        self.assertIn('Питание не соответствует',heater(empty)['selection_note'])
+        self.assertIn('Мощность ниже',heater(empty)['selection_note'])
+        old,_=catalog.auto_select(generate({**inputs,'power':'unknown'}),products)
+        self.assertEqual(heater(old)['catalog']['id'],'201')
+        changed,_=catalog.auto_select(recalculate(old,inputs),products)
+        self.assertEqual(heater(changed)['catalog']['id'],'201')
+        self.assertIn('НЕ подтверждена',heater(changed)['selection_note'])
+        smaller,_=catalog.auto_select(generate({**inputs,'heating_power':'9.5'}),products)
+        self.assertEqual(heater(smaller)['catalog']['id'],'202')
+        self.assertEqual(heater(smaller)['selection_note'],'')

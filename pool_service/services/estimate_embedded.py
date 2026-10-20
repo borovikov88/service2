@@ -152,6 +152,10 @@ def matches(product, profile, finish):
     lining = 'film' if finish == 'film' else 'concrete' if finish in ('tile', 'mosaic') else ''
     if not lining or lining not in product.get('lining', []):
         return False
+    return profile_matches(product, profile)
+
+
+def profile_matches(product, profile):
     material = product.get('material')
     if profile == 'plastic_budget':
         return material == 'plastic' and product['brand'].casefold() in {'aquaviva', 'aquant'}

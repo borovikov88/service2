@@ -63,7 +63,7 @@
         <button type="submit" data-no-loading class="pe-btn pe-primary pe-full">Пересчитать параметры</button>
         <p class="pe-help">Обновятся объёмы, автоматические количества и автоподбор. Ручные замены, цены и исключения сохранятся. Нагреватель подбирается по расчётной или заданной мощности.</p>
       </form>
-      <p class="pe-help">Работы из Excel включены в новые расчёты. Объёмы строительства, рейсы и командировки уточняются по проекту. Дополнительные работы находятся в исключённых строках.</p><button type="button" id="pe-add-works" class="pe-btn pe-full">Добавить работы и цены из Excel</button>
+      <p class="pe-help">Работы и известные базовые ставки включаются автоматически при создании и пересчёте. Ручные цены сохраняются; отсутствующие расценки остаются не заданными. Объёмы строительства, рейсы и командировки уточняются по проекту. Дополнительные работы находятся в исключённых строках.</p>
       <fieldset class="pe-scope"><legend>Состав работ</legend><label><input type="checkbox" data-scope="construction" checked> Строительство чаши</label><label><input type="checkbox" data-scope="embedded" checked> Закладные элементы</label><label><input type="checkbox" data-scope="equipment" checked> Оборудование</label><label><input type="checkbox" data-scope="finish" checked> Отделка</label><label><input type="checkbox" data-scope="options" checked> Дополнительные работы</label><p class="pe-help">При каждом изменении выберите: только текущее КП или все три.</p></fieldset>
     </aside>
     <section class="pe-results" aria-label="Сметы">
