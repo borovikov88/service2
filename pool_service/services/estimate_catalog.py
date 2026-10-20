@@ -20,7 +20,7 @@ from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requ
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
-CACHE_KEY = "pool-estimate-shop-v5"
+CACHE_KEY = "pool-estimate-shop-v6"
 CACHE_SECONDS = 900
 MAX_BYTES = 20_000_000
 FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
@@ -141,6 +141,20 @@ def parse_catalog(payload, checked_at=None):
                 break
         description = offer.findtext("description", "")[:12000]
         specs = {**_specifications(name, description), **embedded.specifications(name, description, brand)}
+        category = categories.get(offer.findtext("categoryId"), "")
+        circulation_section = (bool(re.search(r"циркуляцион\w* насос", category, re.I))
+                               or "/tsirkulyatsionnye-nasosy/" in url)
+        if circulation_section and specs["kind"] in {"pump", "other", "circulation_pump"}:
+            specs.update(kind="circulation_pump", nominal_flow=None, flow=None, head=None,
+                         filter_flow=None, filtration=False)
+        # Only explicit model-title evidence. Do not infer VFD or duty from SKU/Qmax/Hmax.
+        frequency = None
+        if specs["kind"] == "circulation_pump":
+            if re.search(r"без частот", name, re.I):
+                frequency = False
+            elif re.search(r"с частотн\w* (?:регулирован|преобразовател)", name, re.I):
+                frequency = True
+        specs["frequency_control"] = frequency
         if specs['embedded_role']:
             specs['kind'] = specs['embedded_role']
         model = re.sub(r"^(?:песочный )?(?:фильтр|насос)(?: для бассейна)?\s+", "", name, flags=re.I).split("(")[0].strip()[:120]
@@ -149,7 +163,7 @@ def parse_catalog(payload, checked_at=None):
                          "image": next((url for p in offer.findall("picture") if (url := safe_image_url(p.text))), ""),
                          "price": str(Decimal(price).quantize(Decimal(".01"))),
                          "available": offer.get("available") == "true",
-                         "category": categories.get(offer.findtext("categoryId"), ""), **specs}
+                         "category": category, **specs}
     if not products:
         raise CatalogUnavailable("В каталоге не найдены товары с рублёвой ценой и ссылкой на магазин.")
     return {"checked_at": checked_at or datetime.now(timezone.utc).isoformat(),
@@ -343,14 +357,16 @@ def search_text(value):
     return re.sub(r"(?:электромагнитн|соленоидн)\w*", "соленоидный", value)
 
 
-def search_catalog(catalog, query, kind, brand, inputs, required_flow):
+def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="economy"):
+    if variant not in VARIANTS:
+        raise EstimateInputError("Выберите смету.")
     query = search_text(string(query, "Поиск товара", 120)).split()
     kind = string(kind, "Тип товара", 20)
     brand = string(brand, "Бренд", 80)
     if kind not in {"", "other", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", *embedded.ROLES}:
         raise EstimateInputError("Неизвестный тип товара.")
     matches = [p for p in catalog["products"].values() if (not kind or p["kind"] == kind) and (not brand or p["brand"].casefold() == brand.casefold()) and all(q in search_text(p["name"] + " " + p["sku"] + " " + p["id"]) for q in query)]
-    matches.sort(key=lambda p: (bool(candidate_reason(p, inputs, required_flow)), not p["available"], Decimal(p["price"]), int(p["id"])))
+    matches.sort(key=lambda p: (bool(candidate_reason(p, inputs, required_flow)), not p["available"], bool(kind == "circulation_pump" and variant != "economy" and p.get("frequency_control") is not True), Decimal(p["price"]), int(p["id"])))
     return {"products": [{**p, "warning": candidate_reason(p, inputs, required_flow)} for p in matches[:40]], "total": len(matches), "status": catalog_status(catalog)}
 
 

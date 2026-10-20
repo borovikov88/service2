@@ -124,6 +124,27 @@ class MultiGeometryTests(SimpleTestCase):
         self.assertEqual(next(r for r in block(checked)['rows'] if r['kind'] == 'solenoid_valve')['price'], '100.00')
         self.assertTrue(any('Первичный контур' in w for w in checked['variants']['economy']['warnings']))
 
+    def test_circulation_section_classifies_generic_name_without_inventing_duty(self):
+        c = catalog.parse_catalog(feed(
+            offer(91, 'Насос Aquaviva Test Qmax 2.8м3/ч Hmax 4м', price='100',
+                  url='https://shop.aqualine22.ru/tsirkulyatsionnye-nasosy/test.html'),
+            offer(92, 'Циркуляционный насос Test с частотным регулированием', price='200'),
+            offer(93, 'Циркуляционный насос Test без частотного регулирования', price='150'),
+        ))
+        simple = c['products']['91']
+        self.assertEqual(simple['kind'], 'circulation_pump')
+        for field in ('flow', 'head', 'nominal_flow', 'frequency_control'):
+            self.assertIsNone(simple[field])
+        self.assertIs(c['products']['92']['frequency_control'], True)
+        self.assertIs(c['products']['93']['frequency_control'], False)
+        inputs = generate({**INPUTS, 'heating':'exchanger'})['inputs']
+        for tier, expected in (('economy','91'), ('standard','92'), ('premium','92')):
+            result = catalog.search_catalog(c, '', 'circulation_pump', '', inputs, Decimal('8'), variant=tier)
+            self.assertEqual(result['products'][0]['id'], expected)
+            self.assertTrue(all(p['warning'] for p in result['products']))
+        snapshot, _ = catalog.auto_select(generate({**INPUTS, 'heating':'exchanger'}), c)
+        self.assertIsNone(next(r for r in block(snapshot)['rows'] if r['kind']=='circulation_pump')['price'])
+
     def test_exact_geometry_controls_and_water_level_independence(self):
         s = generate(BOWL)
         g = s['geometry']

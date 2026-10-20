@@ -125,7 +125,7 @@ def estimate_api(request):
             return JsonResponse({'images': {i: products[i].get('image', '') for i in set(ids) if i in products}})
         if action == "catalog_search":
             inputs = normalize_inputs(data.get("inputs"))
-            return JsonResponse(search_catalog(get_catalog(), data.get("q", ""), data.get("kind", ""), data.get("brand", ""), inputs, Decimal(geometry(inputs)["required_flow"])))
+            return JsonResponse(search_catalog(get_catalog(), data.get("q", ""), data.get("kind", ""), data.get("brand", ""), inputs, Decimal(geometry(inputs)["required_flow"]), variant=string(data.get("variant", "economy"), "Смета", 20)))
         if action == 'compatibility_auto':
             from .services.estimate_compatibility import repair
             variant = string(data.get('variant'), 'Вариант', 20)
