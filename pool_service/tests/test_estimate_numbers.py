@@ -15,6 +15,7 @@ class NumberDisplayTests(SimpleTestCase):
             'Ручные количества не округляются; исторические сметы сохраняют свои правила.',
         ):
             self.assertIn(phrase, text)
+        self.assertRegex(text, r'<p class="pe-help" data-help-target="#pe-parameters-title">[^<]*арматуры — вверх до 0,5 т[^<]*</p>')
         self.assertNotIn('материалы считаются по расчётным объёмам без округления вверх', text)
 
     def test_display_only_print_and_exact_geometry(self):
