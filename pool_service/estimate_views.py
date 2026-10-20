@@ -110,6 +110,22 @@ def estimate_api(request):
         if action == "catalog_search":
             inputs = normalize_inputs(data.get("inputs"))
             return JsonResponse(search_catalog(get_catalog(), data.get("q", ""), data.get("kind", ""), data.get("brand", ""), inputs, Decimal(geometry(inputs)["required_flow"])))
+        if action == 'compatibility_auto':
+            from .services.estimate_compatibility import repair
+            variant = string(data.get('variant'), 'Вариант', 20)
+            bid = string(data.get('block'), 'Блок', 30)
+            rid = string(data.get('row'), 'Строка', 64)
+            snapshot = evaluate(data.get('snapshot'))
+            if variant not in VARIANTS:
+                raise EstimateInputError('Выберите смету.')
+            row = next((r for b in snapshot['variants'][variant]['blocks'] if b['id'] == bid for r in b['rows'] if r['id'] == rid), None)
+            if not row or not (row.get('compatibility') or {}).get('can_auto'):
+                raise EstimateInputError('Для этой позиции автоматическое исправление недоступно.')
+            catalog = get_catalog() if row['compatibility']['kind'] == 'filter' else None
+            response = {'snapshot': repair(snapshot, variant, bid, rid, catalog)}
+            if catalog:
+                response['catalog_status'] = catalog_status(catalog)
+            return JsonResponse(response)
         if action in ("catalog_auto", "catalog_apply", "catalog_prices"):
             snapshot = evaluate(data.get("snapshot"))
             catalog = get_catalog()
@@ -152,13 +168,14 @@ def estimate_api(request):
             except CatalogUnavailable as exc:
                 return JsonResponse({'snapshot': snapshot, 'catalog_error': str(exc)})
         if action == 'add_works':
-            from .services.estimate_works import add_works
+            from .services.estimate_works import add_works, fill_missing_prices
             from .services.pool_estimates import change_finish
             snapshot = evaluate(data.get('snapshot'))
-            previous_rows = {(k, r["id"]) for k, v in snapshot["variants"].items() for b in v["blocks"] for r in b["rows"]}
+            priced_rows = {(k, r["id"]) for k, v in snapshot["variants"].items() for b in v["blocks"] for r in b["rows"] if r['price'] is not None or r['existing']}
             add_works(snapshot)
             change_finish(snapshot, snapshot['inputs']['finish'], replace=False)
-            return JsonResponse({'snapshot': apply_defaults(snapshot, organization, only_new=previous_rows)})
+            filled = fill_missing_prices(snapshot)
+            return JsonResponse({'snapshot': apply_defaults(snapshot, organization, only_new=priced_rows), 'filled_prices': filled})
         if action == 'work_price':
             return JsonResponse(confirm_price(data, organization, request.user))
         if action == "validate":
