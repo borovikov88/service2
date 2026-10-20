@@ -1,0 +1,91 @@
+const {chromium}=require('playwright');
+(async()=>{
+ const browser=await chromium.launch({executablePath:'/usr/bin/chromium',headless:true,args:['--no-sandbox']});
+ const check=(ok,msg)=>{if(!ok)throw Error(msg);};
+ for(const mobile of [false,true]){
+  const context=await browser.newContext({viewport:mobile?{width:390,height:844}:{width:1365,height:1000},hasTouch:mobile});
+  const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));let requests=0;page.on('request',r=>{if(r.method()==='POST')requests++;});
+  await page.goto(process.env.ESTIMATE_BROWSER_URL||'http://127.0.0.1:8772/estimates/');await page.waitForSelector('#pe-blocks .pe-help-button');
+  const panel=page.locator('#pe-help-popover'), button=page.locator('#pe-parameters .pe-help-button').first();
+  const before=requests;
+  if(mobile)await button.tap();else await button.hover();
+  await panel.waitFor({state:'visible'});check((await panel.textContent()).includes('внутренние размеры'),'geometry help retained');
+  check(await button.getAttribute('aria-expanded')==='true','expanded accessibility');
+  await page.keyboard.press('Escape');check(!await panel.isVisible(),'Escape closes');
+  await page.locator('h1').click();await button.focus();await panel.waitFor({state:'visible'});await page.keyboard.press('Tab');
+  check(await page.locator('.pe-help-dismiss').evaluate(el=>el===document.activeElement),'keyboard enters help');
+  await page.keyboard.press('Shift+Tab');check(await button.evaluate(el=>el===document.activeElement),'Shift Tab returns to trigger');await page.keyboard.press('Tab');
+  await page.keyboard.press('Escape');check(!await panel.isVisible(),'Escape from panel does not reopen');
+  if(mobile)await button.tap();else await button.click();
+  await panel.waitFor({state:'visible'});await page.locator('h1').click();check(!await panel.isVisible(),'outside closes');
+  check(requests===before,'help does not submit or recalculate');
+  const material=page.locator('[data-row="material_sand"][data-field="price"]').locator('..').locator('.pe-help-button');
+  await material.scrollIntoViewIfNeeded();const rowHeight=await material.locator('xpath=ancestor::tr').evaluate(el=>el.getBoundingClientRect().height);check(rowHeight<180,'compact material row');if(mobile)await material.tap();else await material.click();
+  check((await panel.textContent()).includes('округление вверх'),'material rounding/source details');
+  check(!(await panel.textContent()).includes('количеству.Исходная'),'explanation fragments separated');
+  check(await material.locator('xpath=ancestor::tr').evaluate(el=>el.getBoundingClientRect().height)===rowHeight,'popover does not stretch row');
+  const bounds=await panel.boundingBox();check(bounds.x>=0&&bounds.y>=0&&bounds.x+bounds.width<=page.viewportSize().width+1&&bounds.y+bounds.height<=page.viewportSize().height+1,'popover inside screen');
+  await page.keyboard.press('Escape');
+  check(await page.locator('#pe-warnings .pe-help-warning').isVisible(),'visible warning indicator');
+  check(await page.locator('#pe-blocks .pe-help-source').evaluateAll(els=>els.every(el=>getComputedStyle(el).display==='none')),'row prose collapsed');
+  await page.locator('[data-variant="premium"]').click();
+  check(await page.locator('#pe-blocks .pe-help-button').count()>0,'dynamic variant rows enhanced');
+  const duplicate=await page.locator('#pe-blocks td').evaluateAll(cells=>cells.some(c=>c.querySelectorAll(':scope > .pe-help-button:not(.pe-help-warning)').length>1));check(!duplicate,'one information button per cell');
+  await page.locator('[data-edit="material_sand"]').click();
+  const dialogHelp=page.locator('#pe-row-form .pe-help-button').first();await dialogHelp.click();
+  check(await panel.evaluate(el=>el.parentElement.id==='pe-row-dialog'),'help stays interactive inside modal');
+  await page.keyboard.press('Escape');check(await page.locator('#pe-row-dialog').isVisible(),'Escape only closes help');
+  await page.locator('[data-close="pe-row-dialog"]').click();
+  await page.locator('[data-add="options"]').click();
+  await page.locator('#pe-row-form [name=name]').fill('Synthetic added item');
+  await page.locator('#pe-row-form [name=quantity]').fill('2');await page.locator('#pe-row-form [name=price]').fill('12.34');
+  await page.locator('#pe-row-form button[type=submit]').click();await page.locator('#pe-row-dialog').waitFor({state:'hidden'});
+  await page.getByText('Synthetic added item',{exact:true}).waitFor();
+  check(await page.locator('#pe-help-popover').count()===1,'dynamic added row retains single popover');
+  await page.evaluate(()=>document.documentElement.dataset.theme='dark');await material.click();
+  check(await panel.evaluate(el=>getComputedStyle(el).color)!=='rgb(23, 48, 58)','dark theme color');
+  if(mobile)await page.screenshot({path:'/tmp/estimate-help-mobile.png'});
+  await page.keyboard.press('Escape');
+  await page.route(url=>url.pathname.includes('/estimates/api/'),async route=>{
+    const data=route.request().postDataJSON();if(data?.action!=='catalog_search')return route.continue();
+    return route.fulfill({json:{total:1,status:{count:1,brands:{}},products:[{id:'test',name:'Synthetic candidate',brand:'Synthetic',kind:'pump',available:true,power:'400',price:'100',url:'https://shop.aqualine22.ru/test.html',warning:'Несовместимое питание 400 В '+(data.q||'first')}]}});
+  });
+  await page.locator('[data-shop="pump"]').click();
+  const candidate=page.locator('#pe-catalog-results .pe-help-warning');await candidate.waitFor();await candidate.click();
+  check((await panel.textContent()).includes('Несовместимое питание'),'candidate warning details preserved');
+  await page.locator('#pe-catalog-query').evaluate(el=>{el.value='second';el.dispatchEvent(new Event('input',{bubbles:true}));});
+  await page.waitForFunction(()=>document.querySelector('#pe-catalog-results [data-help-warning]')?.textContent.includes('second'));
+  if(await panel.isVisible())check((await panel.textContent()).includes('second'),'hovered replacement never shows obsolete help');
+  else await candidate.click();check((await panel.textContent()).includes('second'),'repeat search has current help');
+  check(await candidate.getAttribute('aria-label').then(x=>x.startsWith('Проверить:')),'candidate remains visibly critical');
+  check(errors.length===0,errors.join('\n'));console.log((mobile?'mobile':'desktop')+': hover/focus/tap/Escape/outside, modal, dynamic rows, bounds, dark theme PASS; no help API calls; JS errors 0');await context.close();
+ }
+ for(const mode of ['missing-api','missing-selector']){
+ const fallback=await browser.newContext({viewport:{width:390,height:844}});
+ await fallback.addInitScript(mode=>{
+   if(mode==='missing-api'){
+   Object.defineProperty(HTMLElement.prototype,'showPopover',{value:undefined,configurable:true});
+   Object.defineProperty(HTMLElement.prototype,'hidePopover',{value:undefined,configurable:true});
+   }
+   const supports=CSS.supports.bind(CSS);
+   if(mode==='missing-selector')CSS.supports=(...args)=>args[0]==='selector(:popover-open)'?false:supports(...args);
+   const matches=Element.prototype.matches;
+   Element.prototype.matches=function(selector){if(selector.includes(':popover-open'))throw new SyntaxError('unsupported selector');return matches.call(this,selector);};
+ },mode);
+ const oldPage=await fallback.newPage(), oldErrors=[];oldPage.on('pageerror',e=>oldErrors.push(e.message));
+ await oldPage.goto(process.env.ESTIMATE_BROWSER_URL||'http://127.0.0.1:8772/estimates/');
+ await oldPage.waitForSelector('[data-row="material_sand"][data-field="quantity"]');
+ check(await oldPage.locator('.pe-help-button,.pe-help-source,#pe-help-popover').count()===0,'unsupported API leaves originals intact');
+ check(await oldPage.locator('#pe-parameters p.pe-help').first().isVisible(),'fallback parameter help visible');
+ const oldNote=oldPage.locator('[data-construction-quantity="material_sand"]');
+ check(await oldNote.isVisible()&&(await oldNote.textContent()).includes('округление вверх'),'fallback material help visible');
+ check(await oldPage.locator('#pe-warnings').isVisible(),'fallback checks visible');
+ await oldPage.locator('[data-variant="premium"]').click();
+ check(await oldNote.isVisible(),'fallback dynamic help remains visible');
+ check(await oldPage.locator('[data-row="material_sand"][data-field="quantity"]').inputValue()==='6','fallback retains calculated quantities');
+ check(oldErrors.length===0,oldErrors.join('\n'));
+ console.log(mode+': original parameter/row/check help and dynamic variants accessible; JS errors 0');
+ await fallback.close();
+ }
+ await browser.close();
+})().catch(e=>{console.error(e);process.exit(1)});

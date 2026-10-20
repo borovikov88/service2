@@ -1,3 +1,4 @@
+import {installHelp} from './help.js?v=1';
 import {money, indivisible, exactNumber, cleanNote, bindNumber, rawValue, installNumbers} from './numbers.js?v=1';
 import {setExcluded, emptyRow, isWork, samePrice, workPriceTargets, automaticQuantity, quantityRequired} from './state.js?v=7';
 
@@ -7,6 +8,7 @@ const form = $('#pe-parameters');
 
 const titles = {economy: 'Эконом', standard: 'Стандарт', premium: 'Премиум'};
 installNumbers(root);
+const help = installHelp(root);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
 function safeImage(value) {
   try { const u = new URL(value); return u.protocol === 'https:' && u.hostname === 'shop.aqualine22.ru' && !u.username && !u.password && (!u.port || u.port === '443') && u.pathname.startsWith('/image/') ? u.href : ''; }
@@ -35,6 +37,7 @@ function heatingFields() {
 }
 function showCatalogStatus(data) {
   const s = data.catalog_status || data.status;
+  $('#pe-catalog-status').toggleAttribute('data-help-warning', Boolean(data.catalog_error));
   $('#pe-catalog-status').textContent = data.catalog_error || (s
     ? `Товаров: ${s.count}. ${Object.entries(s.brands).filter(([,count]) => !count).map(([brand]) => `${brand}: нет товаров в каталоге.`).join(' ')}`
     : 'В расчёте зафиксированы модели и цены выбранной версии. Новые цены применяются отдельной кнопкой к текущей смете; ручные цены и исключённые строки сохраняются.');
@@ -44,6 +47,7 @@ function showCatalogStatus(data) {
     catalogBrand.innerHTML = '<option value="">Все бренды</option>' + [...new Set(['Aquaviva', 'Aquant', 'Hayward', 'Kripsol', 'AstralPool', 'IML', ...brands])].map(b => `<option>${esc(b)}</option>`).join('');
     catalogBrand.value = previous;
   }
+  help.refresh();
 }
 function catalogInputsReady() {
   if (priceTarget) return false;
@@ -71,11 +75,13 @@ async function searchCatalog() {
   if (query) url.searchParams.set('catalog_q', query); else url.searchParams.delete('catalog_q');
   history.replaceState(null, '', url);
   $('#pe-catalog-results').textContent = 'Загружаем товары…';
+  help.refresh();
   try {
     const data = await api({action: 'catalog_search', variant: selected, embedded_profile: snapshot.variants[selected].embedded_profile, q: query, kind: $('#pe-catalog-kind').value, brand: $('#pe-catalog-brand').value, inputs: snapshot.inputs}, catalogAbort.signal);
     if (token !== catalogSequence || !$('#pe-catalog-dialog').open) return;
     showCatalogStatus(data);
-    $('#pe-catalog-results').innerHTML = `<p class="pe-help">Найдено: ${data.total}${data.total > 40 ? '. Показаны первые 40 — уточните поиск.' : ''}</p>` + data.products.map(p => `<article class="pe-catalog-item"><div class="pe-product-description">${thumbnail(p.image, p.name, true)}<strong>${esc(p.name)}</strong><span class="pe-row-detail">${esc(p.brand)}${p.sku ? ' · арт. ' + esc(p.sku) : ''} · ${p.available ? 'Доступен к заказу' : 'Доступность не подтверждена'}</span><span class="pe-row-detail">${p.kind === 'circulation_pump' ? (p.frequency_control === true ? 'Частотное регулирование указано в названии · ' : p.frequency_control === false ? 'Без частотного регулирования · ' : 'Регулирование не подтверждено · ') : ''}${p.nominal_flow ? money(p.nominal_flow) + ' м³/ч по каталогу · ' : ''}${p.head ? 'при ' + money(p.head) + ' м · ' : ''}${p.heating_power ? money(p.heating_power) + ' кВт · ' : ''}${p.power !== 'unknown' ? esc(p.power) + ' В' : ''}</span><p class="pe-help">${esc(p.warning || (p.kind === 'other' ? 'Назначение, единицу измерения и количество проверьте в карточке.' : 'Предварительный кандидат. Проверьте рабочий режим, совместимость и комплектацию.'))}</p><a class="pe-link" href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">Карточка товара ↗</a></div><div class="pe-catalog-price"><strong>${money(p.price)} ₽${p.roll_area ? " / рулон" : ""}</strong>${p.roll_area ? `<small>${esc(p.roll_area)} м² в рулоне; в смете пересчёт на м²</small>` : ""}<button class="pe-btn" type="button" data-catalog-product="${esc(p.id)}">Выбрать</button></div></article>`).join('') + (!data.total ? '<p>Товары не найдены. Измените бренд или запрос; строка сметы останется без замены.</p>' : '');
+    $('#pe-catalog-results').innerHTML = `<p class="pe-catalog-count">Найдено: ${data.total}${data.total > 40 ? '. Показаны первые 40 — уточните поиск.' : ''}</p>` + data.products.map(p => `<article class="pe-catalog-item"><div class="pe-product-description">${thumbnail(p.image, p.name, true)}<strong>${esc(p.name)}</strong><span class="pe-row-detail">${esc(p.brand)}${p.sku ? ' · арт. ' + esc(p.sku) : ''} · ${p.available ? 'Доступен к заказу' : 'Доступность не подтверждена'}</span><span class="pe-row-detail">${p.kind === 'circulation_pump' ? (p.frequency_control === true ? 'Частотное регулирование указано в названии · ' : p.frequency_control === false ? 'Без частотного регулирования · ' : 'Регулирование не подтверждено · ') : ''}${p.nominal_flow ? money(p.nominal_flow) + ' м³/ч по каталогу · ' : ''}${p.head ? 'при ' + money(p.head) + ' м · ' : ''}${p.heating_power ? money(p.heating_power) + ' кВт · ' : ''}${p.power !== 'unknown' ? esc(p.power) + ' В' : ''}</span><p class="pe-help" ${p.warning ? 'data-help-warning' : ''}>${esc(p.warning || (p.kind === 'other' ? 'Назначение, единицу измерения и количество проверьте в карточке.' : 'Предварительный кандидат. Проверьте рабочий режим, совместимость и комплектацию.'))}</p><a class="pe-link" href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">Карточка товара ↗</a></div><div class="pe-catalog-price"><strong>${money(p.price)} ₽${p.roll_area ? " / рулон" : ""}</strong>${p.roll_area ? `<small>${esc(p.roll_area)} м² в рулоне; в смете пересчёт на м²</small>` : ""}<button class="pe-btn" type="button" data-catalog-product="${esc(p.id)}">Выбрать</button></div></article>`).join('') + (!data.total ? '<p>Товары не найдены. Измените бренд или запрос; строка сметы останется без замены.</p>' : '');
+    help.refresh();
   } catch (error) { if (error.name !== 'AbortError' && token === catalogSequence) $('#pe-catalog-results').textContent = error.message; }
 }
 
@@ -179,7 +185,7 @@ function renderTotals() {
   $('#pe-embedded-summary').textContent = q ? `Скиммеры: ${q.skimmer}, возвратные форсунки: ${q.inlet}, донные сливы: ${q.drain}, пылесос: ${q.vacuum}. Количества предварительные; их можно изменить в строках. При смене материала прежние позиции переносятся в исключённые.` : 'Выберите материал и пересчитайте закладные. Сохранённая версия не меняется.';
   $('#pe-editor-title').textContent = `${titles[selected]} · состав сметы`;
   $('#pe-version-label').textContent = projectId ? `Открыта версия ${loadedVersion} · последняя сохранённая ${revision}` : 'Несохранённый расчёт';
-  $('#pe-warnings').innerHTML = `<details open><summary>Проверки и уточнения · ${variant.warnings.length}</summary><ul>${[...(variant.warnings || []), ...(variant.construction_notes || [])].map(text => `<li>${esc(cleanNote(text))}</li>`).join('')}${!variant.warnings.length ? '<li>Автоматические проверки пройдены. Полную проверку проекта выполняет инженер.</li>' : ''}</ul></details>`;
+  $('#pe-warnings').innerHTML = `<div data-help-source data-help-label="! Проверки · ${variant.warnings.length}"><strong>Проверки и уточнения · ${variant.warnings.length}</strong><ul>${[...(variant.warnings || []), ...(variant.construction_notes || [])].map(text => `<li>${esc(cleanNote(text))}</li>`).join('')}${!variant.warnings.length ? '<li>Автоматические проверки пройдены. Полную проверку проекта выполняет инженер.</li>' : ''}</ul></div>`;
   for (const block of variant.blocks) {
     const subtotal = root.querySelector(`[data-subtotal="${block.id}"]`);
     if (subtotal) subtotal.textContent = `${money(block.subtotal)} ₽`;
@@ -203,6 +209,7 @@ function renderTotals() {
     }
   }
   syncScope();
+  help.refresh();
 }
 function renderEditor() {
   const variant = snapshot.variants[selected];
