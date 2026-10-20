@@ -82,6 +82,10 @@ class ThemePreferenceTests(TestCase):
         self.assertIn('Full dark-theme audit: shared residual components.', css)
         self.assertIn('html[data-theme="dark"] .photo-picker-sheet__panel', css)
         self.assertIn('html[data-theme="dark"] .task-history', css)
+        self.assertIn('Dark theme: service journal dosing-station columns.', css)
+        self.assertIn('html[data-theme="dark"] .dosing-data', css)
+        self.assertIn('html[data-theme="dark"] .dosing-cell', css)
+        self.assertIn('html[data-theme="dark"] .dosing-head', css)
 
 
     def test_calendar_has_dark_theme_overrides(self):
