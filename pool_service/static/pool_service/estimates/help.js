@@ -19,13 +19,20 @@ export function installHelp(root) {
   }
   function position() {
     if(!active)return;
-    const r=active.button.getBoundingClientRect(), margin=8;
-    const width=Math.min(360,window.innerWidth-2*margin);
-    panel.style.width=width+'px';
-    panel.style.maxHeight=Math.max(100,window.innerHeight-2*margin)+'px';
-    const h=panel.getBoundingClientRect().height;
-    panel.style.left=Math.max(margin,Math.min(r.left,window.innerWidth-width-margin))+'px';
-    panel.style.top=Math.max(margin,Math.min(r.bottom+6,window.innerHeight-h-margin))+'px';
+    const r=active.button.getBoundingClientRect(), margin=8, win=doc.defaultView;
+    // innerWidth includes classic scrollbars. Use the visible intersection of
+    // the layout and visual viewports (also handles zoom / mobile keyboards).
+    const layoutWidth=Math.min(win.innerWidth,doc.documentElement.clientWidth||win.innerWidth);
+    const layoutHeight=Math.min(win.innerHeight,doc.documentElement.clientHeight||win.innerHeight);
+    const visual=win.visualViewport;
+    const left=Math.max(0,visual?.offsetLeft||0), top=Math.max(0,visual?.offsetTop||0);
+    const right=Math.min(layoutWidth,visual?visual.offsetLeft+visual.width:layoutWidth);
+    const bottom=Math.min(layoutHeight,visual?visual.offsetTop+visual.height:layoutHeight);
+    panel.style.width=Math.max(0,Math.min(360,right-left-2*margin))+'px';
+    panel.style.maxHeight=Math.max(0,bottom-top-2*margin)+'px';
+    const bounds=panel.getBoundingClientRect();
+    panel.style.left=Math.max(left+margin,Math.min(r.left,right-bounds.width-margin))+'px';
+    panel.style.top=Math.max(top+margin,Math.min(r.bottom+6,bottom-bounds.height-margin))+'px';
   }
   function content(group) {
     group.signature=group.sources.map(source=>source.innerHTML).join("\n");
@@ -74,15 +81,46 @@ export function installHelp(root) {
   doc.addEventListener('keydown',event=>{if(event.key==='Escape'&&active){event.preventDefault();event.stopPropagation();close(true);}},true);
   doc.addEventListener('scroll',()=>{if(active)position();},true);
   window.addEventListener('resize',position);
+  window.visualViewport?.addEventListener('resize',position);
+  window.visualViewport?.addEventListener('scroll',position);
   root.addEventListener('close',()=>close(),true);
   function anchorFor(source) {
+    if(source.dataset.helpTarget)return root.querySelector(source.dataset.helpTarget) || source;
     if(source.matches('[data-row-check], [data-help-source], [data-help-warning]'))return source;
     const cell=source.closest('td');if(cell)return cell;
     if(source.closest('label'))return source.closest('label');
+    const article=source.closest('.pe-catalog-item');if(article)return article.querySelector('strong');
     const previous=source.previousElementSibling;
-    if(previous?.matches('label,summary,legend,h2,h3'))return previous;
-    if(previous?.matches('.pe-grid2'))return previous.querySelector('label:last-of-type') || source;
-    return source;
+    if(previous?.matches('label'))return previous;
+    if(previous?.matches('summary,legend,h2,h3'))return previous;
+    // General prose belongs to its section, never the last field in a grid.
+    const section=source.closest('details,fieldset,dialog,section,aside');
+    return section?.querySelector('summary,legend,h2,h3') || source;
+  }
+  function attachHelp(anchor, button, warning) {
+    if(warning){anchor.before(button);return;}
+    const control=anchor.matches('td,label') ? anchor.querySelector('input:not([type=hidden]):not([type=checkbox]),select,textarea') : null;
+    if(control){
+      let shell=control.closest('.pe-help-field');
+      if(!shell){
+        shell=doc.createElement('span');shell.className='pe-help-field';
+        if(anchor.matches('td'))shell.style.width=control.getBoundingClientRect().width+'px';
+        control.before(shell);shell.append(control);
+      }
+      button.classList.add('pe-help-corner');shell.append(button);return;
+    }
+    if(anchor.matches('td')){
+      anchor.classList.add('pe-help-cell');button.classList.add('pe-help-corner');anchor.append(button);return;
+    }
+    // Keep the last word and icon together without making the whole title nowrap.
+    const textNodes=[...anchor.childNodes].filter(node=>node.nodeType===3 && node.textContent.trim());
+    const text=textNodes.at(-1);
+    if(text){
+      const match=text.textContent.match(/^(.*?)(\S+)(\s*)$/s);
+      const tail=doc.createElement('span');tail.className='pe-help-tail';
+      text.textContent=match[1];tail.append(doc.createTextNode(match[2]),button);text.after(tail);
+    }else if(anchor.matches('.pe-help-source'))anchor.before(button);
+    else anchor.append(button);
   }
   function refresh() {
     const next=new Map();
@@ -95,7 +133,7 @@ export function installHelp(root) {
       if(!next.has(anchor))next.set(anchor,[]);
       next.get(anchor).push(source);
     }
-    for(const [anchor,group] of groups)if(!next.has(anchor)||!anchor.isConnected){if(active===group)close();group.button.remove();groups.delete(anchor);}
+    for(const [anchor,group] of groups)if(!next.has(anchor)||!anchor.isConnected||!group.button.isConnected){if(active===group)close();group.button.remove();groups.delete(anchor);}
     for(const [anchor,sources] of next) {
       let group=groups.get(anchor);
       if(!group) {
@@ -108,9 +146,7 @@ export function installHelp(root) {
         group.label=name.trim();
         button.setAttribute('aria-label',(warning?'Проверить: ':'Подсказка: ')+group.label);
         button.textContent=warning?(anchor.dataset.helpLabel || '! Проверить'):'?';
-        if(anchor.matches('td'))(anchor.querySelector('.pe-row-name') || anchor).append(button);
-        else if(anchor===sources[0])anchor.before(button);
-        else anchor.append(button);
+        attachHelp(anchor,button,warning);
         button.addEventListener('pointerenter',event=>{if(event.pointerType==='mouse')open(group);});
         button.addEventListener('pointerleave',laterClose);
         button.addEventListener('focus',()=>{if(!restoring)open(group);});
