@@ -1,11 +1,22 @@
 from copy import deepcopy
 from django.test import SimpleTestCase
-from django.template.loader import render_to_string
+from django.template.loader import get_template, render_to_string
 from pool_service.templatetags.estimate_numbers import estimate_number, estimate_quantity, estimate_exact
 from pool_service.services.pool_estimates import generate, evaluate, EstimateInputError
 from .test_estimate_construction import NEW, row
 
 class NumberDisplayTests(SimpleTestCase):
+    def test_parameter_help_distinguishes_geometry_from_material_rounding(self):
+        text = get_template('pool_service/estimates/calculator.html').template.source
+        for phrase in (
+            'Геометрия и объём работ по чаше считаются точно.',
+            'В новых сметах автоматические количества песка (т) и бетона (м³) округляются вверх до целых',
+            'арматуры — вверх до 0,5 кг',
+            'Ручные количества не округляются; исторические сметы сохраняют свои правила.',
+        ):
+            self.assertIn(phrase, text)
+        self.assertNotIn('материалы считаются по расчётным объёмам без округления вверх', text)
+
     def test_display_only_print_and_exact_geometry(self):
         s=generate(NEW)
         for tier in s['variants']:
