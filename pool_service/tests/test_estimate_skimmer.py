@@ -152,10 +152,15 @@ class SkimmerEstimateTests(SimpleTestCase):
             self.assertEqual(embedded.specifications(name,'','Aquaviva')['embedded_role'],'')
         for name in ('Форсунка стеновая под лайнер AISI 304/316', 'Скиммер Test 304 под лайнер'):
             self.assertEqual(embedded.specifications(name,'','Aquaviva')['material'],'')
-        for name in ('Скиммер пластиковый под лайнер с крышкой AISI 316', 'Форсунка под лайнер с винтами AISI 316', 'Скиммер под лайнер AISI 316'):
+        for name in ('Скиммер пластиковый под лайнер с крышкой AISI 316', 'Форсунка под лайнер с винтами AISI 316'):
             spec = embedded.specifications(name,'Материал корпуса ABS','Aquaviva')
-            self.assertEqual(spec['material'],'')
+            # Explicit BODY ABS survives a different material of hardware.
+            self.assertEqual(spec['material'],'plastic')
             self.assertFalse(embedded.matches({**spec,'available':True,'brand':'Aquaviva'},'steel316','film'))
+        spec = embedded.specifications('Скиммер под лайнер AISI 316','Материал корпуса ABS','Aquaviva')
+        self.assertEqual(spec['material'],'')
+        self.assertTrue(spec['specification_conflict'])
+        self.assertFalse(embedded.matches({**spec,'available':True,'brand':'Aquaviva'},'steel316','film'))
         s=generate(INPUTS)
         for profile in ([],{},None,'wood'):
             with self.assertRaises(EstimateInputError):embedded.change_profile(s,'economy',profile)
@@ -178,8 +183,10 @@ class SkimmerEstimateTests(SimpleTestCase):
         self.assertIn('марка стали не подтверждены',byid['803']['warning'])
         self.assertIn('Материал',byid['804']['warning'])
         selected,_=catalog.auto_select(generate({**INPUTS,'finish':'film'}),products)
-        self.assertIsNone(fitting(selected,'inlet','premium')['price'])
-        self.assertIn('не подтверждены',fitting(selected,'inlet','premium')['selection_note'])
+        self.assertIsNotNone(fitting(selected,'inlet','premium')['price'])
+        self.assertEqual(fitting(selected,'inlet','premium')['catalog']['material'],'')
+        self.assertIn('марка стали корпуса AISI 316',fitting(selected,'inlet','premium')['selection_note'])
+        self.assertIn('Не подтверждены',fitting(selected,'inlet','premium')['selection_note'])
 
     def test_verified_exact_fitting_identity_enriches_only_material_and_lining(self):
         def item(pid,model,sku,brand='Aquaviva',extra=''):
@@ -204,7 +211,9 @@ class SkimmerEstimateTests(SimpleTestCase):
         self.assertEqual(nozzle['catalog']['id'],'901')
         self.assertEqual(nozzle['price'],'123.45')
         self.assertIn('не подтверждён',nozzle['catalog']['specification_note'])
-        self.assertIsNone(fitting(selected,'inlet','premium')['price'])
+        self.assertIsNotNone(fitting(selected,'inlet','premium')['price'])
+        self.assertEqual(fitting(selected,'inlet','premium')['catalog']['material'],'')
+        self.assertIn('марка стали корпуса AISI 316',fitting(selected,'inlet','premium')['selection_note'])
 
     def test_enrichment_does_not_override_explicit_body_or_lining_conflicts(self):
         from pool_service.services.estimate_fitting_facts import enrich
