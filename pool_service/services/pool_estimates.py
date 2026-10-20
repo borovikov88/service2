@@ -136,7 +136,7 @@ def number(value, label, *, minimum="0", maximum="1000000000", optional=False, p
         result = Decimal(str(value).replace(",", "."))
         if not result.is_finite() or not Decimal(minimum) <= result <= Decimal(maximum):
             raise InvalidOperation
-        return result.quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
+        return result if places is None else result.quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
     except (InvalidOperation, ValueError):
         raise EstimateInputError(f"{label}: допустимо от {minimum} до {maximum}.") from None
 
@@ -522,7 +522,10 @@ def normalize_snapshot(raw):
                     raise EstimateInputError('Укажите источник подтверждения комплектации регулятором уровня.')
                 item["work_code"] = string(row.get("work_code", ""), "Код работы", 80)
                 works.identify(item)
-                item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", optional=item["kind"] == "work" or item["basis"] in {"concrete_total", "exchanger_quantity", *technology.BASES, *construction.BASES}))
+                # Package quantities are exact geometry results. Turning off auto
+                # must not round that saved quantity and silently change the charge.
+                quantity_places = None if result.get("construction_version") and item["basis"] in construction.BASES else 3
+                item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", places=quantity_places, optional=item["kind"] == "work" or item["basis"] in {"concrete_total", "exchanger_quantity", *technology.BASES, *construction.BASES}))
                 item["price"] = _optional(number(row.get("price"), "Цена", optional=True, places=2))
                 specs = row.get("specs", {})
                 if not isinstance(specs, dict):

@@ -286,6 +286,20 @@ class CatalogViewsTests(TestCase):
         self.assertEqual(find(loaded)['finish_type'],'')
 
 
+    def test_construction_manual_quantity_precision_survives_save_and_load(self):
+        from pool_service.tests.test_estimate_construction import NEW, row
+        s = self.post(action='generate', inputs=NEW).json()['snapshot']
+        before = deepcopy(row(s, 'material_sand'))
+        row(s, 'material_sand')['auto_quantity'] = False
+        saved = self.post(action='save', snapshot=s, expected_revision=0).json()
+        loaded = self.client.get(self.url, {
+            'organization': self.org.pk, 'id': saved['id'], 'version': 1,
+        }).json()['snapshot']
+        self.assertEqual(row(loaded, 'material_sand')['quantity'], before['quantity'])
+        self.assertEqual(row(loaded, 'material_sand')['amount'], before['amount'])
+        self.assertEqual(loaded['variants']['economy']['total'], s['variants']['economy']['total'])
+        self.assertFalse(row(loaded, 'material_sand')['auto_quantity'])
+
     def test_construction_package_print_preserves_equipment_name_brand_and_model(self):
         from pool_service.tests.test_estimate_construction import NEW, row
         s = self.post(action='generate', inputs=NEW).json()['snapshot']

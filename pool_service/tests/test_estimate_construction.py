@@ -10,6 +10,32 @@ def row(s,rid,tier='economy'):
     return next(r for b in s['variants'][tier]['blocks'] for r in b['rows'] if r['id']==rid)
 
 class ConstructionTests(SimpleTestCase):
+    def test_manual_quantity_toggle_preserves_exact_package_quantities_and_amounts(self):
+        s = generate(NEW)
+        before = deepcopy(s)
+        for variant in s['variants'].values():
+            for b in variant['blocks']:
+                for r in b['rows']:
+                    if r['basis'] in package.BASES:
+                        r['auto_quantity'] = False
+        manual = evaluate(s)
+        for tier in s['variants']:
+            self.assertEqual(manual['variants'][tier]['total'], before['variants'][tier]['total'])
+            for b in manual['variants'][tier]['blocks']:
+                for r in b['rows']:
+                    if r['basis'] in package.BASES:
+                        original = row(before, r['id'], tier)
+                        self.assertEqual(r['quantity'], original['quantity'])
+                        self.assertEqual(r['amount'], original['amount'])
+        self.assertEqual(D(row(manual, 'material_sand')['quantity']), D('5.9136'))
+        self.assertEqual(evaluate(manual)['variants'], manual['variants'])
+        row(manual, 'material_sand')['quantity'] = '5.914'
+        self.assertEqual(row(evaluate(manual), 'material_sand')['quantity'], '5.914')
+        legacy = generate(INPUTS)
+        old = row(legacy, 'pump')
+        old.update(quantity='1.234', auto_quantity=False)
+        self.assertEqual(row(evaluate(legacy), 'pump')['quantity'], '1.234')
+
     def test_freeboard_defaults_and_legacy_do_not_add_twice(self):
         s=generate(NEW)
         self.assertEqual(D(s['inputs']['bowl_height']),D('1.65'))
