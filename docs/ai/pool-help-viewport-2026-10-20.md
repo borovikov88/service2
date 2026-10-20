@@ -1,0 +1,28 @@
+# Поповер: граница окна при вертикальной полосе прокрутки
+
+Отдельная ветка fix/estimate-help-viewport от 270252c (PR342).
+Новая партия регуляторов/арматуры находится в другой ветке и сюда не входит.
+
+Причина воспроизведена до исправления: innerWidth=1180, clientWidth=1165,
+панель left=812, width=360, right=1172. Расчёт по innerWidth включал 15 px
+полосы прокрутки; отступ 8 px оставлял 7 px панели за доступной границей.
+CSS border-box уже корректен.
+
+Исправление: пересечение доступного layout viewport (без scrollbar) и visual
+viewport. Позиция ограничивается фактическими размерами панели после задания
+ширины/max-height. Добавлены события изменения visual viewport. Обновлены
+версии загрузки calculator.js и его импорта help.js. Расчёты не менялись.
+
+Проверки Chromium:
+- Новая регрессия tools/estimate-browser/help-bounds.cjs падает на исходном коде
+  с теми же left812/right1172, что в live QA.
+- Исправление: inner1180/client1165/right1157, inner390/client375/right367,
+  inner320/client305/right297. Во всех случаях отступ 8 px внутри области.
+- Длинная подсказка прокручивается внутри; при высоте viewport 240 px не выходит
+  за экран. Снимок 320 px проверен визуально.
+- Полный help.cjs: desktop/mobile, клавиатура, модальные окна, обновление строк,
+  dark theme, fallback missing-api/missing-selector PASS; JS errors 0.
+- 3 Django tests отображения/печатной формы, 18 Node tests; system check PASS.
+
+Push этой отдельной UI-правки разрешён родительской задачей. Merge/deploy
+выполняет родитель только после PR/CI. Изменений production из рабочей среды нет.

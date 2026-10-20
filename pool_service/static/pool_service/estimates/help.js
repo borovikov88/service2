@@ -19,13 +19,20 @@ export function installHelp(root) {
   }
   function position() {
     if(!active)return;
-    const r=active.button.getBoundingClientRect(), margin=8;
-    const width=Math.min(360,window.innerWidth-2*margin);
-    panel.style.width=width+'px';
-    panel.style.maxHeight=Math.max(100,window.innerHeight-2*margin)+'px';
-    const h=panel.getBoundingClientRect().height;
-    panel.style.left=Math.max(margin,Math.min(r.left,window.innerWidth-width-margin))+'px';
-    panel.style.top=Math.max(margin,Math.min(r.bottom+6,window.innerHeight-h-margin))+'px';
+    const r=active.button.getBoundingClientRect(), margin=8, win=doc.defaultView;
+    // innerWidth includes classic scrollbars. Use the visible intersection of
+    // the layout and visual viewports (also handles zoom / mobile keyboards).
+    const layoutWidth=Math.min(win.innerWidth,doc.documentElement.clientWidth||win.innerWidth);
+    const layoutHeight=Math.min(win.innerHeight,doc.documentElement.clientHeight||win.innerHeight);
+    const visual=win.visualViewport;
+    const left=Math.max(0,visual?.offsetLeft||0), top=Math.max(0,visual?.offsetTop||0);
+    const right=Math.min(layoutWidth,visual?visual.offsetLeft+visual.width:layoutWidth);
+    const bottom=Math.min(layoutHeight,visual?visual.offsetTop+visual.height:layoutHeight);
+    panel.style.width=Math.max(0,Math.min(360,right-left-2*margin))+'px';
+    panel.style.maxHeight=Math.max(0,bottom-top-2*margin)+'px';
+    const bounds=panel.getBoundingClientRect();
+    panel.style.left=Math.max(left+margin,Math.min(r.left,right-bounds.width-margin))+'px';
+    panel.style.top=Math.max(top+margin,Math.min(r.bottom+6,bottom-bounds.height-margin))+'px';
   }
   function content(group) {
     group.signature=group.sources.map(source=>source.innerHTML).join("\n");
@@ -74,6 +81,8 @@ export function installHelp(root) {
   doc.addEventListener('keydown',event=>{if(event.key==='Escape'&&active){event.preventDefault();event.stopPropagation();close(true);}},true);
   doc.addEventListener('scroll',()=>{if(active)position();},true);
   window.addEventListener('resize',position);
+  window.visualViewport?.addEventListener('resize',position);
+  window.visualViewport?.addEventListener('scroll',position);
   root.addEventListener('close',()=>close(),true);
   function anchorFor(source) {
     if(source.matches('[data-row-check], [data-help-source], [data-help-warning]'))return source;
