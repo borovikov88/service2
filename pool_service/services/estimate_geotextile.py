@@ -24,7 +24,8 @@ def classify(specs, name, description='', category='', offer=None):
                 # 'для бассейна, не подходит для дорог' denies roads only.
                 suffix_denial = suffix and not re.match(
                     r'\s+(?:для|под)\b', clause[match.end()+suffix.end():])
-                negated = bool(re.search(negative + r'(?:\s+\w+){0,3}\s*$', before)
+                short_denial = re.search(r'\bне\s+(?:(?:для|под)\s+)?$', before)
+                negated = bool(short_denial or re.search(negative + r'(?:\s+\w+){0,3}\s*$', before)
                                or suffix_denial)
                 is_pool = bool(re.match(r'бассейн|под|для', match.group()))
                 if is_pool:

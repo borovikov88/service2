@@ -109,7 +109,9 @@ def sync(snapshot):
                     base = Decimal(q['inlet']) if item['basis'] == 'inlet' else max(Decimal(0), total - old_level)
                     item.update(filtration_quantity=f'{base:.3f}', level_quantity=f'{desired:.3f}', quantity=f'{base + desired:.3f}')
                 else:
-                    level = old_level if total >= old_level else Decimal(0)
+                    # Preserve the user's physical total, not a reservation for
+                    # a line that no longer exists (builtin/unlink/rebinding).
+                    level = old_level if desired and total >= old_level else Decimal(0)
                     item.update(filtration_quantity=f'{total-level:.3f}', level_quantity=f'{level:.3f}')
                     if level != desired:
                         notes.append('Проверить ручное количество форсунок: дополнительная единица для уровня не добавляется и не удаляется автоматически; укажите количество с учётом линии уровня.')

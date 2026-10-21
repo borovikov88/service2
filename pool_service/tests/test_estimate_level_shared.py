@@ -262,3 +262,68 @@ class SharedLevelInletTests(SimpleTestCase):
                 self.assertNotEqual(kept['catalog']['level_data_issue'], 'conflict')
                 self.assertIn('Текущая выгрузка', kept['catalog_review_note'])
                 self.assertIn('Противоречивые характеристики', ' '.join(result['variants']['economy']['warnings']))
+
+    def test_manual_allocation_cleared_on_builtin_without_changing_total_or_price(self):
+        s = estimates.generate(INPUTS)
+        inlet(s).update(auto_quantity=False, price='123.45', unit_price_manual=True)
+        pump = next(r for r in block(s)['rows'] if r['kind'] == 'pump')
+        pump['specs'].update(flow='9', head='8')
+        s = estimates.evaluate(s)
+        self.assertEqual(inlet(s)['quantity'], '4.000')
+        self.assertEqual(inlet(s)['filtration_quantity'], '3.000')
+        skimmer = next(r for r in block(s, 'embedded')['rows'] if r['kind'] == 'skimmer')
+        skimmer.update(level_status='included', level_evidence='Паспорт модели')
+        # Same request may turn on the builtin system and edit the physical total.
+        inlet(s)['quantity'] = '3'
+        for _ in range(2):
+            s = estimates.recalculate(json.loads(json.dumps(s)), s['inputs'])
+            self.assertEqual(inlet(s)['quantity'], '3.000')
+            self.assertEqual(inlet(s)['filtration_quantity'], '3.000')
+            self.assertEqual(inlet(s)['level_quantity'], '0.000')
+            self.assertEqual(inlet(s)['amount'], '370.35')
+            self.assertIsNone(inlet(s)['compatibility'])
+        skimmer = next(r for r in block(s, 'embedded')['rows'] if r['kind'] == 'skimmer')
+        skimmer.update(level_status='absent')
+        s = estimates.evaluate(s)
+        self.assertEqual(inlet(s)['quantity'], '3.000')
+        self.assertEqual(inlet(s)['filtration_quantity'], '3.000')
+        self.assertEqual(inlet(s)['level_quantity'], '0.000')
+        self.assertEqual(inlet(s)['amount'], '370.35')
+        self.assertIn('ручное количество', ' '.join(s['variants']['economy']['warnings']))
+        self.assertIsNone(inlet(s)['compatibility'])
+        # Explicitly returning quantity to automatic mode adds exactly one.
+        inlet(s)['auto_quantity'] = True
+        for _ in range(2):
+            s = estimates.recalculate(json.loads(json.dumps(s)), s['inputs'])
+            self.assertEqual(inlet(s)['quantity'], '4.000')
+            self.assertEqual(inlet(s)['filtration_quantity'], '3.000')
+            self.assertEqual(inlet(s)['level_quantity'], '1.000')
+            self.assertEqual(inlet(s)['amount'], '493.80')
+
+    def test_manual_allocation_cleared_on_unlink_and_moves_only_to_bound_row(self):
+        s = estimates.generate(INPUTS)
+        inlet(s).update(auto_quantity=False, price='100', unit_price_manual=True)
+        original_id = inlet(s)['id']
+        s = shared.apply_binding(s, 'economy', '')
+        for _ in range(2):
+            s = estimates.recalculate(json.loads(json.dumps(s)), s['inputs'])
+            self.assertEqual(inlet(s)['quantity'], '4.000')
+            self.assertEqual(inlet(s)['filtration_quantity'], '4.000')
+            self.assertEqual(inlet(s)['level_quantity'], '0.000')
+            self.assertEqual(inlet(s)['amount'], '400.00')
+        second = deepcopy(inlet(s))
+        second.update(id='second_model', auto_quantity=True, price='200', unit_price_manual=False)
+        block(s, 'embedded')['rows'].append(second)
+        s = shared.apply_binding(s, 'economy', second['id'])
+        for _ in range(2):
+            s = estimates.recalculate(json.loads(json.dumps(s)), s['inputs'])
+            rows = {r['id']: r for r in block(s, 'embedded')['rows'] if r['kind'] == 'inlet'}
+            self.assertEqual(rows[original_id]['quantity'], '4.000')
+            self.assertEqual(rows[original_id]['filtration_quantity'], '4.000')
+            self.assertEqual(rows[original_id]['level_quantity'], '0.000')
+            self.assertEqual(rows[original_id]['amount'], '400.00')
+            self.assertEqual(rows['second_model']['quantity'], '4.000')
+            self.assertEqual(rows['second_model']['filtration_quantity'], '3.000')
+            self.assertEqual(rows['second_model']['level_quantity'], '1.000')
+            self.assertEqual(rows['second_model']['amount'], '800.00')
+            self.assertEqual(sum(Decimal(r['level_quantity']) for r in rows.values()), 1)

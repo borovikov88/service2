@@ -5,7 +5,7 @@ No catalogue prices, latex densities or contact-layer coverage are inferred here
 """
 from decimal import Decimal as D, ROUND_CEILING
 
-from .estimate_technology import OFF, mode, quantities
+from .estimate_technology import OFF, mode
 
 SYSTEMS = {
     'standard': {
@@ -33,7 +33,13 @@ IDS = ('tech_plaster_material', 'tech_plaster_latex', 'tech_plaster_contact')
 def metrics(inputs, tier):
     """Exact net/stock quantities, with purchasing rounding only at the last step."""
     system = SYSTEMS[tier]
-    area = quantities(inputs).get('tech_plaster_area')
+    dimensions = [inputs.get(k) for k in ('length', 'width', 'bowl_height')]
+    area = None
+    if all(value not in (None, '') for value in dimensions):
+        length, width, height = map(D, dimensions)
+        area = 2 * (length + width) * height
+        if mode(inputs, 'plaster') == 'walls_floor':
+            area += length * width
     thickness = inputs.get('tech_plaster_thickness')
     result = dict.fromkeys(('area', 'thickness_mm', 'mix_net_kg', 'mix_stock_kg',
                            'mix_purchase_bags', 'latex_net', 'latex_stock', 'latex_quantity'))
@@ -60,11 +66,26 @@ def _untouched_placeholder(row):
             and not row.get('selection_locked'))
 
 
+def initialized_tiers(snapshot):
+    """Persist per-quote initialization so deleting components is not an instruction to rebuild."""
+    initialized = set(snapshot.get('plaster_initialized', []))
+    if snapshot.get('plaster_systems') == 1:
+        for tier, variant in snapshot.get('variants', {}).items():
+            if any(r.get('basis') in BASES for b in variant['blocks'] for r in b['rows']):
+                initialized.add(tier)
+        snapshot['plaster_initialized'] = sorted(initialized)
+    return initialized
+
+
+def _can_initialize(snapshot, tier, create):
+    return (create and tier not in initialized_tiers(snapshot)
+            and mode(snapshot['inputs'], 'plaster') in ('walls', 'walls_floor'))
+
+
 def apply(snapshot, create=False):
     """Update opted-in rows and return per-variant warnings.
 
-    Call after technology and construction annotations. Only create at initial
-    generation: subsequently deleted component rows must stay deleted.
+    Call after technology and construction annotations. Initialize on first activation only; subsequently deleted component rows stay deleted.
     """
     warnings = {tier: [] for tier in snapshot.get('variants', {})}
     if snapshot.get('plaster_systems') != 1:
@@ -76,7 +97,7 @@ def apply(snapshot, create=False):
             continue
         rows = [r for b in variant['blocks'] for r in b['rows']]
         original = next((r for r in rows if r['id'] == IDS[0]), None)
-        if create and original is not None and _untouched_placeholder(original):
+        if _can_initialize(snapshot, tier, create) and original is not None and _untouched_placeholder(original):
             original.update(name=system['mix'] + ' — основной штукатурный слой, мешок 25 кг',
                             unit='меш.', basis='plaster_mix_bags', quantity=None)
             block = next(b for b in variant['blocks'] if any(r is original for r in b['rows']))
@@ -135,6 +156,7 @@ def apply(snapshot, create=False):
             if tier == 'premium':
                 warnings[tier].append('Admix P: дозировка в литрах; закупка в кг требует подтверждённой плотности.')
     warnings['economy'] = _apply_economy(snapshot, create)
+    initialized_tiers(snapshot)
     return warnings
 
 
@@ -177,7 +199,7 @@ def _apply_economy(snapshot, create):
         return []
     all_rows = [r for b in variant['blocks'] for r in b['rows']]
     original = next((r for r in all_rows if r['id'] == IDS[0]), None)
-    if create and original is not None and _untouched_placeholder(original):
+    if _can_initialize(snapshot, 'economy', create) and original is not None and _untouched_placeholder(original):
         original.update(name=ECONOMY['plaster_wall_bags'][0], unit='меш.', basis='plaster_wall_bags', quantity=None)
         block = next(b for b in variant['blocks'] if any(r is original for r in b['rows']))
         insertion = block['rows'].index(original) + 1
