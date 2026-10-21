@@ -371,3 +371,65 @@ class CatalogViewsTests(TestCase):
         self.assertNotContains(printed,'обязательно проверить с конструктором')
         forbidden=self.post(action='work_price',snapshot=s,organization=self.other.pk,variant='economy',block='construction',row='bowl_package',price='100')
         self.assertEqual(forbidden.status_code,403)
+
+    def test_pvc_catalog_replacement_refresh_manual_overrides_and_history(self):
+        from .test_estimate_pvc import row
+        self.catalog=catalog.parse_catalog(feed(offer(99,'Комплект ПВХ Synthetic','999',description='')))
+        self.fetch.return_value=self.catalog
+        for identity,bid in [('piping','equipment'),('pvc_embedded','embedded')]:
+            with self.subTest(identity=identity):
+                self.catalog['products']['99']['price']='999.00'
+                s=self.post(action='generate',inputs=INPUTS).json()['snapshot']
+                chosen=self.post(action='catalog_apply',snapshot=s,variant='economy',block=bid,row=identity,product_id='99').json()['snapshot']
+                self.assertEqual(row(chosen,identity)['price'],'999.00')
+                self.assertFalse(row(chosen,identity)['unit_price_manual'])
+                self.assertIn('оценка ПВХ по площади не применяется',row(chosen,identity)['construction_quantity_note'])
+                saved=self.post(action='save',snapshot=chosen,expected_revision=0).json()
+                self.catalog['products']['99']['price']='1200.00'
+                recalculated=self.post(action='recalculate',snapshot=chosen,inputs={**chosen['inputs'],'length':'9'}).json()['snapshot']
+                self.assertEqual(row(recalculated,identity)['price'],'999.00')
+                self.assertFalse(row(recalculated,identity)['unit_price_manual'])
+                refreshed=self.post(action='catalog_prices',snapshot=recalculated,variant='economy').json()
+                self.assertEqual((refreshed['updated'],refreshed['skipped']),(1,0))
+                self.assertEqual(row(refreshed['snapshot'],identity)['amount'],'1200.00')
+                old=self.client.get(self.url,{'organization':self.org.pk,'id':saved['id'],'version':1}).json()['snapshot']
+                self.assertEqual(row(old,identity)['price'],'999.00')
+                self.assertFalse(row(old,identity)['unit_price_manual'])
+                for manual in ['0.00',None,'123.45']:
+                    for explicit_flag in [False,True]:
+                        overridden=deepcopy(chosen)
+                        row(overridden,identity).update(price=manual,unit_price_manual=explicit_flag)
+                        recalculated=self.post(action='recalculate',snapshot=overridden,inputs=overridden['inputs']).json()['snapshot']
+                        response=self.post(action='catalog_prices',snapshot=recalculated,variant='economy').json()
+                        self.assertEqual((response['updated'],response['skipped']),(0,1))
+                        self.assertEqual(row(response['snapshot'],identity)['price'],manual)
+                legacy=deepcopy(chosen);legacy.pop('pvc_area_version')
+                historical=self.post(action='recalculate',snapshot=legacy,inputs={**legacy['inputs'],'length':'10'}).json()['snapshot']
+                self.assertEqual(row(historical,identity)['price'],'999.00')
+                self.assertNotIn('pvc_area_version',historical)
+
+    def test_pvc_explicit_catalog_source_survives_equal_area_and_repeated_refresh(self):
+        from .test_estimate_pvc import row
+        self.catalog=catalog.parse_catalog(feed(offer(99,'Комплект ПВХ Synthetic','999',description='')))
+        self.fetch.return_value=self.catalog
+        for identity,bid,area_price in [('piping','equipment','38400.00'),('pvc_embedded','embedded','32000.00')]:
+            for selected_price in ['999.00',area_price]:
+                for manual_before in ['0.00',None,'123.45']:
+                    with self.subTest(identity=identity,selected_price=selected_price,manual_before=manual_before):
+                        self.catalog['products']['99']['price']=selected_price
+                        s=generate(INPUTS)
+                        row(s,identity).update(price=manual_before,unit_price_manual=True)
+                        s=self.post(action='catalog_apply',snapshot=s,variant='economy',block=bid,row=identity,product_id='99').json()['snapshot']
+                        self.assertFalse(row(s,identity)['unit_price_manual'])
+                        s=self.post(action='recalculate',snapshot=s,inputs={**s['inputs'],'length':'9'}).json()['snapshot']
+                        for _ in range(2):
+                            s=self.post(action='validate',snapshot=s).json()['snapshot']
+                            self.assertEqual(row(s,identity)['price'],selected_price)
+                            self.assertFalse(row(s,identity)['unit_price_manual'])
+                        for updated_price in ['1200.00','1300.00']:
+                            self.catalog['products']['99']['price']=updated_price
+                            response=self.post(action='catalog_prices',snapshot=s,variant='economy').json()
+                            self.assertEqual((response['updated'],response['skipped']),(1,0))
+                            s=response['snapshot']
+                            self.assertEqual(row(s,identity)['price'],updated_price)
+                            self.assertFalse(row(s,identity)['unit_price_manual'])

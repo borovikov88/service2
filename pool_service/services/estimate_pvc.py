@@ -31,6 +31,12 @@ def apply(snapshot):
             for row in block['rows']:
                 if row['id'] not in ROWS or ROWS[row['id']][0] != block['id']:
                     continue
+                # Explicit catalogue selection uses the catalogue price lifecycle.
+                # Its frozen price is not a manual override of the area allowance.
+                if row.get('catalog') or row.get('existing'):
+                    row['construction_quantity_note'] = ('Выбран товар каталога; укрупнённая оценка ПВХ по площади не применяется.'
+                        if row.get('catalog') else '')
+                    continue
                 rate = ROWS[row['id']][2]
                 computed = str((area * rate).quantize(Decimal('.01'), rounding=ROUND_HALF_UP))
                 previous = row.get('pvc_computed_price')
