@@ -252,10 +252,17 @@ from .communication_api import (
     website_request_create,
 )
 
+from .avito_services_feed import services_feed, services_feed_edit, services_feed_download, services_feed_publish, services_feed_public
+
 urlpatterns = [
+    path("api/communications/avito/services-feed/<uuid:public_key>/feed.xlsx", services_feed_public, name="avito_services_feed_public"),
+    path("avito/<int:connection_id>/services-feed/publish/", services_feed_publish, name="avito_services_feed_publish"),
     path("estimates/", estimate_page, name="pool_estimate_page"),
     path("estimates/api/", estimate_api, name="pool_estimate_api"),
     path("estimates/<uuid:estimate_id>/versions/<int:number>/print/", estimate_print, name="pool_estimate_print"),
+    path("avito/<int:connection_id>/services-feed/", services_feed, name="avito_services_feed"),
+    path("avito/<int:connection_id>/services-feed/<str:avito_id>/edit/", services_feed_edit, name="avito_services_feed_edit"),
+    path("avito/<int:connection_id>/services-feed/draft.xlsx", services_feed_download, name="avito_services_feed_download"),
     path("avito/", avito_dashboard, name="avito_dashboard"),
     path("avito/<int:connection_id>/autoload-auto/", avito_configure_autoload_auto, name="avito_configure_autoload_auto"),
     path("avito/<int:connection_id>/autoload-report.csv", avito_download_report, name="avito_download_report"),

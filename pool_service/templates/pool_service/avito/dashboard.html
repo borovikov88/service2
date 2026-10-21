@@ -15,6 +15,7 @@
     </div>
     <div class="d-flex flex-wrap gap-2">
       {% if local_analytics.available %}<a class="btn btn-outline-secondary" href="{% url 'communications_conversations' %}"><i class="bi bi-chat-dots me-1" aria-hidden="true"></i>Все диалоги</a>{% endif %}
+      {% if selected %}<a class="btn btn-outline-primary" href="{% url 'avito_services_feed' selected.connection.pk %}">Редактор услуг</a>{% endif %}
       {% if selected %}<a class="btn btn-outline-secondary" href="{% url 'communication_connection_edit' selected.connection.pk %}"><i class="bi bi-gear me-1" aria-hidden="true"></i>Настройки подключения</a>{% else %}<a class="btn btn-outline-secondary" href="{% url 'communications_channels' %}">Подключения</a>{% endif %}
     </div>
   </div>
