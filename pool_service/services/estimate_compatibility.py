@@ -2,6 +2,7 @@
 from decimal import Decimal
 
 from . import estimate_embedded as embedded
+from .estimate_level_shared import filtration_quantity
 
 
 def physical_rows(variant):
@@ -58,7 +59,7 @@ def annotate(snapshot, variant):
                 if any(r['unit'] != 'шт.' for r in rows):
                     row['compatibility'] = {'message': 'Проверьте единицу измерения закладных: для расчёта количества нужны штуки.', 'can_auto': False, 'kind': role}
                     continue
-                actual = sum(Decimal(r['quantity']) for r in rows)
+                actual = sum(filtration_quantity(r) for r in rows)
                 required = max(1 if role == 'skimmer' else 2,
                                int(embedded.ceil_quantity(flow / Decimal(snapshot['inputs']['skimmer_flow' if role == 'skimmer' else 'inlet_flow']))))
                 if role == 'skimmer':
@@ -94,9 +95,12 @@ def repair(raw, variant_key, block_id, row_id, catalog=None):
         required = max(1 if role == 'skimmer' else 2, int(embedded.ceil_quantity(flow / Decimal(result['inputs']['skimmer_flow' if role == 'skimmer' else 'inlet_flow']))))
         if role == 'skimmer':
             required = max(required, int(embedded.ceil_quantity(Decimal(result['geometry']['surface']) / Decimal(result['inputs']['skimmer_area']))))
-        others = sum(Decimal(r['quantity']) for r in physical_rows(variant)
+        others = sum(filtration_quantity(r) for r in physical_rows(variant)
                      if r['id'] != row_id and r['kind'] == role)
         row['quantity'] = embedded.ceil_quantity(Decimal(required) - others)
+        if role == 'inlet' and 'level_quantity' in row:
+            row['filtration_quantity'] = row['quantity']
+            row['quantity'] = str(Decimal(row['quantity']) + Decimal(row['level_quantity']))
         row['auto_quantity'] = False  # other existing/manual rows already contribute to the total
         row['selection_locked'] = True
     return evaluate(result)

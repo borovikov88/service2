@@ -1,0 +1,147 @@
+"""Synthetic dosing/control proposals, no live supplier requests or prices."""
+from copy import deepcopy
+from decimal import Decimal
+import json
+from xml.etree import ElementTree as ET
+
+from django.test import SimpleTestCase
+from pool_service.services import estimate_catalog as catalog, estimate_auxiliary as aux
+from pool_service.services.pool_estimates import generate, evaluate, recalculate, make_row, EstimateInputError
+from .test_estimate_catalog import feed, offer
+from .test_pool_estimates import INPUTS, block
+
+
+def row(snapshot,kind,tier='economy'):
+    return next(r for b in snapshot['variants'][tier]['blocks'] for r in b['rows'] if r['kind']==kind)
+
+
+def fixture(*extra):
+    return catalog.parse_catalog(feed(
+        offer(1,'Хлоратор-полуавтомат Synthetic 4 кг','100',description='Для бассейнов объемом до 100 м3'),
+        offer(2,'Система дозирующих насосов Synthetic PH/RX 5л/ч + Измерительный набор','200',description=''),
+        offer(3,'Система дозирующих насосов Synthetic PH/RX+Free Cl 5л/ч + Ячейка','300',description=''),
+        offer(4,'Панель управления фильтрацией Synthetic 230В 14A','50',description='Мощность насоса до 2 кВт'),
+        offer(5,'Насос Synthetic 8m3/h*8m 220V 1 кВт 5A','80'),*extra))
+
+
+class AuxiliaryTests(SimpleTestCase):
+    def test_purpose_identity_does_not_replace_measurement_with_rx_or_accessories(self):
+        products=fixture(offer(6,'Панель управления дозацией K800 PH-RX-CL','1'),
+            offer(7,'Перистальтический дозирующий насос PH/RX','1'),
+            offer(8,'Тестер PH/CL','1'),offer(9,'Ячейка PH/RX+Free Cl','1'),
+            offer(10,'Хлоргенератор Synthetic 20 г/ч','1'),
+            offer(11,'Панель управления аттракционами Synthetic','1'),
+            offer(12,'Панель управления доливом Synthetic','1'))['products']
+        self.assertEqual([products[str(i)]['kind'] for i in (1,2,3,4)],['treatment']*3+['control_panel'])
+        self.assertEqual(products['2']['auxiliary']['mode'],'rx_ph')
+        self.assertEqual(products['3']['auxiliary']['mode'],'cl_ph')
+        self.assertTrue(products['3']['auxiliary']['free_cl'])
+        self.assertTrue(all(products[str(i)]['kind'] not in aux.TITLES for i in range(6,13)))
+        snapshot=generate({**INPUTS,'power':'230'})
+        self.assertIsNotNone(aux.assess(products['2'],snapshot,snapshot['variants']['premium'],'premium')[0])
+        self.assertIsNone(aux.assess(products['3'],snapshot,snapshot['variants']['premium'],'premium')[0])
+
+    def test_tier_modes_control_limits_and_exact_new_totals(self):
+        original=generate({**INPUTS,'power':'230','required_head':'8'})
+        result,_=catalog.auto_select(original,fixture())
+        for tier,pid,total in [('economy','1','230'),('standard','2','330'),('premium','3','430')]:
+            self.assertEqual(row(result,'treatment',tier)['catalog']['id'],pid)
+            self.assertEqual(row(result,'control_panel',tier)['catalog']['id'],'4')
+            self.assertEqual(Decimal(result['variants'][tier]['total'])-Decimal(original['variants'][tier]['total']),Decimal(total))
+            self.assertIn('Проверить',row(result,'treatment',tier)['selection_note'])
+            self.assertIn('протоку',row(result,'treatment',tier)['selection_note'])
+            self.assertIn('схема защиты',row(result,'control_panel',tier)['selection_note'])
+        twice,count=catalog.auto_select(evaluate(json.loads(json.dumps(result))),fixture())
+        self.assertEqual(count,0)
+        self.assertEqual(twice['variants'],result['variants'])
+
+    def test_known_bad_volume_voltage_and_panel_load_are_rejected(self):
+        c=fixture(offer(6,'Хлоратор-полуавтомат Small','1',description='Для бассейнов объемом до 10 м3'),
+            offer(7,'Панель управления фильтрацией Small 230В 2A','1',description='Мощность насоса до 0.5 кВт'),
+            offer(8,'Панель управления фильтрацией Wrong 380В 20A','1',description=''),
+            offer(9,'Система дозирующих насосов PH/RX без датчиков','1',description=''))
+        result,_=catalog.auto_select(generate({**INPUTS,'power':'230'}),c)
+        self.assertEqual(row(result,'treatment')['catalog']['id'],'1')
+        for tier in result['variants']:
+            self.assertEqual(row(result,'control_panel',tier)['catalog']['id'],'4')
+        self.assertEqual(row(result,'treatment','standard')['catalog']['id'],'2')
+        wrong=catalog.parse_catalog(feed(offer(20,'Станция дозирования PH/RX для питьевой воды','1',description='')))
+        blocked,_=catalog.auto_select(generate(INPUTS),wrong)
+        self.assertIsNone(row(blocked,'treatment','standard')['catalog'])
+        allowed=catalog.parse_catalog(feed(offer(20,'Станция дозирования PH/RX для бассейна','1',description='Для питьевой воды не подходит.')))
+        accepted,_=catalog.auto_select(generate(INPUTS),allowed)
+        self.assertEqual(row(accepted,'treatment','standard')['catalog']['id'],'20')
+
+    def test_unknown_station_has_specific_warning_but_known_rx_never_premium(self):
+        c=catalog.parse_catalog(feed(offer(2,'Станция дозирования Synthetic','200',description=''),
+            offer(3,'Станция дозирования Synthetic PH/RX','1',description='')))
+        snapshot=generate(INPUTS)
+        result,_=catalog.auto_select(snapshot,c)
+        self.assertIsNone(row(result,'treatment')['catalog'])
+        self.assertEqual(row(result,'treatment','standard')['catalog']['id'],'3')
+        self.assertEqual(row(result,'treatment','premium')['catalog']['id'],'2')
+        self.assertIn('измерение свободного',row(result,'treatment','premium')['selection_note'])
+        self.assertIn('метод измерения',row(result,'treatment','premium')['selection_note'])
+
+    def test_conflicting_parameters_and_multiple_pumps_need_no_guess(self):
+        specs={'kind':'control_panel'}
+        xml=ET.fromstring('<offer><param name="Максимальная мощность насоса">3 кВт</param></offer>')
+        aux.classify(specs,'Панель управления фильтрацией Synthetic 230В','Мощность насоса до 2 кВт',xml)
+        self.assertTrue(specs['auxiliary']['conflict'])
+        specs={'kind':'other','power_options':['230']}
+        xml=ET.fromstring('<offer><param name="Измеряемые параметры">pH/Cl</param><param name="Напряжение питания">380 В</param></offer>')
+        aux.classify(specs,'Станция дозирования PH/RX 230В','',xml)
+        self.assertTrue(specs['auxiliary']['conflict'])
+        snapshot,_=catalog.auto_select(generate({**INPUTS,'power':'230'}),fixture())
+        block(snapshot)['rows'].append(dict(deepcopy(row(snapshot,'pump')),id='pump_two'))
+        result,_=catalog.auto_select(snapshot,fixture())
+        self.assertIsNone(row(result,'control_panel')['catalog'])
+        self.assertIn('нескольких',row(result,'control_panel')['selection_note'])
+        with self.assertRaises(EstimateInputError): aux.normalize_facts({'max_kw':'NaN'})
+        with self.assertRaises(EstimateInputError): aux.normalize_facts({'pump_count':'1.5'})
+
+    def test_manual_excluded_old_versions_and_frozen_price_are_preserved(self):
+        initial,_=catalog.auto_select(generate({**INPUTS,'power':'230'}),fixture())
+        current=fixture();current['products']['2']['price']='999'
+        refreshed,_=catalog.auto_select(initial,current)
+        self.assertEqual(row(refreshed,'treatment','standard')['price'],'200.00')
+        self.assertEqual(row(refreshed,'treatment','standard')['catalog']['price'],'200.00')
+        manual=deepcopy(initial);r=row(manual,'control_panel')
+        r.update(price='123.45',unit_price_manual=True,quantity='2')
+        current['products']['4']['auxiliary']['max_kw']='0.5'
+        kept,_=catalog.auto_select(manual,current)
+        self.assertEqual(row(kept,'control_panel')['price'],'123.45')
+        self.assertEqual(row(kept,'control_panel')['quantity'],'2.000')
+        self.assertIn('Текущая выгрузка',row(kept,'control_panel')['selection_note'])
+        self.assertEqual(row(kept,'control_panel')['amount'],'246.90')
+        excluded=deepcopy(initial);row(excluded,'treatment').update(excluded=True,reason='Ручное исключение')
+        kept,_=catalog.auto_select(excluded,current)
+        self.assertTrue(row(kept,'treatment')['excluded'])
+        old=deepcopy(initial);old.pop('auxiliary_version')
+        before=deepcopy(old)
+        self.assertEqual(aux.fill(old,current),0)
+        self.assertEqual(old,before)
+
+    def test_xml_units_define_limits_and_reject_undersized_panel(self):
+        panel=offer(20,'Панель управления фильтрацией Small 230В','1',description='').replace('</offer>','<param name="Максимальная мощность насоса" unit="кВт">0.5</param></offer>')
+        source=fixture(panel)
+        self.assertEqual(source['products']['20']['auxiliary']['max_kw'],'0.5')
+        result,_=catalog.auto_select(generate({**INPUTS,'power':'230'}),source)
+        for tier in result['variants']:
+            self.assertEqual(row(result,'control_panel',tier)['catalog']['id'],'4')
+        for label,unit,value,key in [
+            ('Максимальный объем бассейна','м³','10','max_volume'),
+            ('Максимальный ток насоса','A','2','max_current'),
+            ('Количество насосов','шт','2','pump_count'),
+            ('Мощность двигателя','кВт','1','motor_kw'),
+            ('Номинальный ток двигателя','А','5','motor_current'),
+        ]:
+            with self.subTest(label=label):
+                specs={'kind':'control_panel'}
+                xml=ET.fromstring(f'<offer><param name="{label}" unit="{unit}">{value}</param></offer>')
+                aux.classify(specs,'Панель управления фильтрацией Synthetic','',xml)
+                self.assertEqual(specs['auxiliary'][key],value)
+        specs={'kind':'control_panel'}
+        xml=ET.fromstring('<offer><param name="Максимальная мощность насоса" unit="Вт">0.5</param></offer>')
+        aux.classify(specs,'Панель управления фильтрацией Synthetic','',xml)
+        self.assertTrue(specs['auxiliary']['conflict'])

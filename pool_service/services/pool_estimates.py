@@ -9,12 +9,13 @@ from . import estimate_primary as primary
 from . import estimate_technology as technology
 from . import estimate_level_control as level_control
 from . import estimate_construction as construction
+from . import estimate_plaster_systems as plaster_systems
 
 from pool_service.services.permissions import organization_accesses_for_user
 
 VARIANTS = {"economy": ("Эконом", "Aquaviva"), "standard": ("Стандарт", "Hayward"), "premium": ("Премиум", "IML")}
 BLOCKS = {"construction": "Строительство чаши", "construction_materials": "Материалы для строительства чаши", "embedded": "Закладные элементы", "equipment": "Оборудование", "finish": "Отделка", "options": "Дополнительные работы"}
-KINDS = {"other", "work", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", *embedded.ROLES, *level_control.ROLES}
+KINDS = {"other", "work", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "treatment", "control_panel", "geotextile", *embedded.ROLES, *level_control.ROLES}
 FINISHES = {
     "film": ("Плёнка ПВХ для бассейна (+15% запас)", "Монтаж и сварка плёнки ПВХ"),
     "tile": ("Плитка для бассейна (без запаса)", "Облицовка бассейна плиткой"),
@@ -312,7 +313,7 @@ def finish_rows(finish, metrics, variant="economy", include_works=True):
         basis = 'finish_stock' if finish == 'film' and key == 'finish_material' else 'finish_net'
         rows.append(make_row(key, name, 'м²', embedded.ceil_quantity(metrics[basis]), basis))
     if finish == 'film':
-        rows.append(make_row('finish_geotextile', 'Геотекстиль под плёнку (+15% запас)', 'м²', embedded.ceil_quantity(metrics['finish_stock']), 'finish_stock'))
+        rows.append(make_row('finish_geotextile', 'Геотекстиль под плёнку (+15% запас)', 'м²', embedded.ceil_quantity(metrics['finish_stock']), 'finish_stock', 'geotextile'))
     for row in rows:
         row["finish_type"] = finish
     works.identify(rows[1])
@@ -384,12 +385,16 @@ def generate(raw):
     package = inputs.get("construction_scheme") == "package"
     variants = {}
     for key, (_, brand) in VARIANTS.items():
+        from .estimate_auxiliary import TITLES, treatment_title
         rowsets = {
             "construction": [] if package else [make_row("bowl_material", "Материалы для чаши")],
             "construction_materials": [],
             "embedded": [make_row("embedded_work", "Установка закладных элементов и обвязка", kind="work")],
             "equipment": [make_row("pump", "Фильтрационный насос", kind="pump", brand=brand), make_row("filter", "Фильтр", kind="filter", brand=brand),
-                          make_row("treatment", "Обеззараживание: подобрать комплект"), make_row("piping", "Обвязка и автоматика"), make_row("equipment_work", "Монтаж и пусконаладка")],
+                          make_row("treatment", treatment_title(key), kind="treatment"),
+                          make_row("control_panel", TITLES["control_panel"], kind="control_panel"),
+                          make_row("piping", "ПВХ-обвязка: трубы и фитинги — комплект по спецификации"),
+                          make_row("equipment_work", "Монтаж и пусконаладка")],
             "finish": finish_rows(inputs["finish"], metrics, key),
             "options": [],
         }
@@ -398,7 +403,7 @@ def generate(raw):
             row["heating_type"] = heating_types(inputs)[0]
             rowsets["equipment"].insert(2, row)
         variants[key] = {"embedded_profile": embedded.DEFAULTS[key], "blocks": [{"id": bid, "title": title, "excluded": False, "reason": "", "rows": rowsets[bid]} for bid, title in BLOCKS.items() if package or bid != construction.MATERIAL_BLOCK]}
-    result = {"schema": 1, "inputs": inputs, "variants": variants, "geometry": metrics, "heating_accessories": 1, "level_system": 1}
+    result = {"schema": 1, "inputs": inputs, "variants": variants, "geometry": metrics, "heating_accessories": 1, "level_system": 1, "level_shared_inlet": 1, "auxiliary_version": 1, "plaster_systems": 1}
     if package: result.update(construction_version=1, construction_quantity_version=2)
     ensure_heating_rows(result)
     works.add_works(result, fresh=True)
@@ -409,6 +414,7 @@ def generate(raw):
     embedded.update_quantities(result)
     level_control.sync(result, create=True)
     if package: construction.initialize(result)
+    plaster_systems.apply(result, create=True)
     return evaluate(result)
 
 
@@ -451,6 +457,10 @@ def normalize_catalog(raw):
     result['lining_denied'] = denied[:]
     result["filtration"] = None if raw.get("filtration") is None else boolean(raw["filtration"])
     result["heater_purpose_note"] = string(raw.get("heater_purpose_note", ""), "Назначение нагревателя", 300)
+    from .estimate_auxiliary import normalize_facts
+    from .estimate_geotextile import normalize as normalize_geotextile
+    result["auxiliary"] = normalize_facts(raw.get("auxiliary"))
+    result["geotextile"] = normalize_geotextile(raw.get("geotextile"))
     result["image"] = safe_image_url(raw.get("image", ""))
     options = raw.get("power_options", [raw["power"]] if raw["power"] != "unknown" else [])
     if not isinstance(options, list) or len(options) > 2 or any(p not in ("230", "400") for p in options) or len(set(options)) != len(options):
@@ -495,6 +505,8 @@ def normalize_snapshot(raw):
     expected_blocks=set(BLOCKS) if result.get("construction_version") else set(BLOCKS)-{construction.MATERIAL_BLOCK}
     if raw.get("level_system") == 1:
         result["level_system"] = 1
+    for marker in ("level_shared_inlet", "auxiliary_version", "plaster_systems"):
+        if raw.get(marker) == 1: result[marker] = 1
     if raw.get("technology_version") == 1:
         result["technology_version"] = 1
     variants = raw.get("variants")
@@ -521,7 +533,7 @@ def normalize_snapshot(raw):
                 if not isinstance(rid, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", rid) or rid in row_ids:
                     raise EstimateInputError("Строки должны иметь уникальные идентификаторы.")
                 row_ids.add(rid)
-                if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("basis", ""), str) or row.get("basis", "") not in {"", "finish_area", "finish_net", "finish_stock", "surface", "perimeter", "volume", "concrete_total", "exchanger_quantity", "embedded_work", "level_system", *embedded.ROLES, *technology.BASES, *construction.BASES}:
+                if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("basis", ""), str) or row.get("basis", "") not in {"", "finish_area", "finish_net", "finish_stock", "surface", "perimeter", "volume", "concrete_total", "exchanger_quantity", "embedded_work", "level_system", *embedded.ROLES, *technology.BASES, *construction.BASES, *plaster_systems.BASES}:
                     raise EstimateInputError("Некорректный тип строки.")
                 item = {"id": rid, "kind": row["kind"], "basis": row.get("basis", "")}
                 item["heating_parent"] = string(row.get("heating_parent", ""), "Связанный теплообменник", 64)
@@ -550,12 +562,15 @@ def normalize_snapshot(raw):
                 # Package quantities are exact geometry results. Turning off auto
                 # must not round that saved quantity and silently change the charge.
                 quantity_places = None if result.get("construction_version") and item["basis"] in construction.BASES else 3
-                item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", places=quantity_places, optional=item["kind"] == "work" or item["basis"] in {"concrete_total", "exchanger_quantity", *technology.BASES, *construction.BASES}))
+                item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", places=quantity_places, optional=item["kind"] == "work" or item["basis"] in {"concrete_total", "exchanger_quantity", *technology.BASES, *construction.BASES, *plaster_systems.BASES}))
                 if boolean(row.get("quantity_edited", False)) and not item["auto_quantity"] and re.fullmatch(r"(?:шт\.?|компл\.?|комплект(?:а|ов)?|упак\.?|пара|пар)", item["unit"], re.IGNORECASE):
                     entered = number(row.get("quantity"), "Количество", maximum="1000000", optional=True, places=None)
                     if entered is not None and entered != entered.to_integral_value():
                         raise EstimateInputError("Укажите целое количество для штучной позиции.")
                 item["price"] = _optional(number(row.get("price"), "Цена", optional=True, places=2))
+                if result.get("level_shared_inlet"):
+                    from .estimate_level_shared import normalize_row_split
+                    normalize_row_split(item, row)
                 specs = row.get("specs", {})
                 if not isinstance(specs, dict):
                     raise EstimateInputError("Некорректные характеристики.")
@@ -573,6 +588,11 @@ def normalize_snapshot(raw):
         if profile not in embedded.PROFILES:
             raise EstimateInputError('Выберите комплектацию закладных.')
         result["variants"][key] = {"blocks": cleaned, 'embedded_profile': profile}
+        if result.get("level_shared_inlet"):
+            link = string(variant.get("level_inlet_row_id", ""), "Форсунка линии уровня", 64)
+            if link and not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", link):
+                raise EstimateInputError("Некорректная связь форсунки уровня.")
+            result["variants"][key].update(level_inlet_row_id=link, level_inlet_link_manual=boolean(variant.get("level_inlet_link_manual", False)))
     return result
 
 
@@ -584,6 +604,7 @@ def evaluate(raw):
     result["geometry"] = geometry(result["inputs"])
     result["geometry"].update(technology.apply(result))
     construction.sync(result)
+    plaster_warnings = plaster_systems.apply(result)
     result["technology"] = technology.summary(result["inputs"])
     result["heating"] = heating_requirement(result["inputs"])
     embedded.update_quantities(result)
@@ -620,7 +641,7 @@ def evaluate(raw):
                     subtotal += amount
             block["subtotal"] = str(subtotal.quantize(CENT))
             total += subtotal
-        warnings = technology.warnings(result["inputs"]) + level_control.warnings(variant, result["inputs"])
+        warnings = technology.warnings(result["inputs"]) + level_control.warnings(variant, result["inputs"]) + plaster_warnings.get(key, [])
         if result.get('construction_version'):
             warnings = [w for w in warnings if 'прочности/армирования' not in w]
             warnings.append(construction.CLIENT_NOTE)
@@ -736,6 +757,10 @@ def evaluate(raw):
         annotate(result, variant)
         from .estimate_candidates import annotate as annotate_candidates
         annotate_candidates(result, variant)
+        from .estimate_auxiliary import annotate as annotate_auxiliary
+        from .estimate_geotextile import annotate as annotate_geotextile
+        annotate_auxiliary(result, variant, key)
+        annotate_geotextile(result, variant)
     return result
 
 

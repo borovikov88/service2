@@ -49,10 +49,13 @@ class CompatibilityTests(SimpleTestCase):
         self.assertEqual(fitting(result, 'inlet'), fitting(s, 'inlet'))
         for key in ('standard', 'premium'):
             self.assertEqual(result['variants'][key], s['variants'][key])
-        for role, expected in (('skimmer', '4.000'), ('inlet', '7.000')):
+        for role, expected in (('skimmer', '4.000'), ('inlet', '8.000')):
             before = fitting(result, role)
             result = repair(result, 'economy', 'embedded', before['id'])
             self.assertEqual(fitting(result, role)['quantity'], expected)
+            if role == 'inlet':
+                self.assertEqual(fitting(result, role)['filtration_quantity'], '7.000')
+                self.assertEqual(fitting(result, role)['level_quantity'], '1.000')
             self.assertEqual(fitting(result, role)['price'], '100.00')
             self.assertIsNone(fitting(result, role)['compatibility'])
         self.assertEqual(s, original)
