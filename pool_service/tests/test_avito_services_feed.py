@@ -136,8 +136,25 @@ class ServicesFeedTests(TestCase):
     def test_inventory_must_match_exactly_and_preserve_autoload_id(self, account, token, get, detail):
         data = parse_export(export_bytes())
         verify_inventory(self.connection, data)
+        get.assert_called_once_with('test', '/core/v1/items?per_page=100&page=1&status=active')
         get.return_value = {'resources': [{'id': 111}, {'id': 222}]}
         with self.assertRaises(ValueError): verify_inventory(self.connection, data)
         get.return_value = {'resources': [{'id': 111}]}
         detail.return_value = {'status': 'active', 'autoload_item_id': 'different'}
         with self.assertRaises(ValueError): verify_inventory(self.connection, data)
+
+    @patch('pool_service.avito_services_feed.verify_inventory')
+    def test_provider_failure_reports_only_safe_code(self, verify):
+        from pool_service.communication_avito import AvitoError
+        self.upload(); feed = AvitoServicesFeed.objects.get()
+        url = reverse('avito_services_feed_publish', args=[self.connection.pk])
+        verify.side_effect = AvitoError('provider_http_404')
+        response = self.client.post(url, {'revision': feed.revision})
+        self.assertContains(response, 'provider_http_404', status_code=400)
+        verify.side_effect = AvitoError('secret payload not for display')
+        response = self.client.post(url, {'revision': feed.revision})
+        self.assertContains(response, 'provider_check_failed', status_code=400)
+        self.assertNotContains(response, 'secret payload', status_code=400)
+        feed.refresh_from_db()
+        self.assertFalse(feed.enabled)
+        self.assertEqual(feed.published, [])
