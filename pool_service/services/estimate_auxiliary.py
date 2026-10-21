@@ -44,12 +44,28 @@ def normalize_facts(raw):
 _CHLORINE = r'(?<![a-z])(?:free\s*)?cl(?![a-z])|(?:свободн\w*\s+)?хлор\w*'
 
 
+def _evidence_clauses(text):
+    """Separate assertions, retaining component lists with one shared predicate."""
+    for sentence in re.split(r'[.;!?]|\bно\b|\bоднако\b', text):
+        start = 0
+        for separator in re.finditer(r',|\s+и\s+', sentence):
+            following = sentence[separator.end():].strip()
+            # Inspect only the immediate next phrase, not later list members.
+            phrase = re.split(r',|\s+и\s+', following, maxsplit=1)[0]
+            subject = re.match(r'(?:датчик\w*|сенсор\w*|электрод\w*|дозирование|измерение|контроль)\b', phrase)
+            predicate = re.search(r'\b(?:включен\w*|входит|предусмотрен\w*|отсутств\w*|нет|есть|поддержива\w*)\b', phrase)
+            action = re.match(r'(?:содержит|включает|измеряет|дозирует|с\s+датчиком)\b', phrase)
+            if action or (subject and predicate):
+                yield sentence[start:separator.start()]
+                start = separator.end()
+        yield sentence[start:]
+
+
 def _measurement_evidence(text):
     """Remove locally negated measurement claims before positive token matching."""
     denied = False
     cleaned = []
-    text=re.sub(r'(\b(?:включен\w*|входит\w*|предусмотрен\w*))\s*,(?=\s*(?:датчик|сенсор|электрод))',r'\1;',text)
-    for clause in re.split(r'[.;!?]|\bно\b|\bоднако\b|,(?=\s*(?:измерение|измеряет|контроль)\b)', text):
+    for clause in _evidence_clauses(text):
         # Lists remain in one claim: "без измерения pH, Rx и хлора".
         prefix = re.search(r'\b(?:без\s+(?:(?:измерени\w*|контрол\w*|датчик\w*|сенсор\w*)\s+|(?='+_CHLORINE+r'))|'
                            r'не\s+(?:измеря\w*|контролир\w*|определя\w*)\s+)', clause)
@@ -70,15 +86,11 @@ def _measurement_evidence(text):
 def _chlorine_completeness(text):
     """Explicit missing component/function, independent of measurement capability."""
     missing_sensor = denied_dosing = False
-    boundaries = r'[.;!?]|\bно\b|\bоднако\b|,(?=\s*(?:содержит|включает|с\s+датчиком|дозирует|дозирование|измеряет|измерение|контроль)\b)'
-    # A new sensor subject after an affirmative inclusion is a separate claim;
-    # do not split coordinated lists under one missing-components predicate.
-    text=re.sub(r'(\b(?:включен\w*|входит\w*|предусмотрен\w*))\s*,(?=\s*(?:датчик|сенсор|электрод))',r'\1;',text)
-    for clause in re.split(boundaries, text):
+    for clause in _evidence_clauses(text):
         # One negated list can include several sensors/functions.
         negative = re.search(r'\b(?:без|не\s+включает|не\s+содержит|не\s+комплектуется|не\s+поддерживает|не\s+дозирует)\b', clause)
         negative_text = clause[negative.end():] if negative else ''
-        suffix = re.search(r'\b(?:отсутств\w*|не\s+входит|не\s+включен\w*|не\s+предусмотр\w*|не\s+поддержива\w*)\b', clause)
+        suffix = re.search(r'\b(?:нет|отсутств\w*|не\s+входит|не\s+включен\w*|не\s+предусмотр\w*|не\s+поддержива\w*)\b', clause)
         if suffix:
             negative_text += ' ' + clause[:suffix.start()]
         if not re.search(_CHLORINE, negative_text):

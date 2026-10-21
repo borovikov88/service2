@@ -249,3 +249,22 @@ class AuxiliaryTests(SimpleTestCase):
                 source=catalog.parse_catalog(feed(offer(20,'Система дозирующих насосов PH/RX','1',description=description)))
                 result,_=catalog.auto_select(generate({**INPUTS,'power':'230'}),source)
                 self.assertIsNone(row(result,'treatment','standard')['catalog'])
+
+    def test_component_assertions_keep_negation_local_for_each_separator(self):
+        for separator in [', ', '; ', '. ', ' и ']:
+            for left,right,eligible in [
+                ('Без датчика температуры','датчик свободного хлора включен',True),
+                ('Датчик температуры включён','датчика хлора нет',False),
+                ('Датчик свободного хлора включён','датчика температуры нет',True),
+            ]:
+                with self.subTest(separator=separator,left=left,right=right):
+                    description=left+separator+right+'.'
+                    source=catalog.parse_catalog(feed(offer(20,'Станция дозирования PH/RX+Free Cl','1',description=description)))
+                    facts=source['products']['20']['auxiliary']
+                    self.assertEqual(facts['chlorine_sensor_missing'],not eligible)
+                    if eligible:
+                        self.assertFalse(facts['chlorine_denied'])
+                        self.assertFalse(facts['incomplete'])
+                        self.assertTrue(facts['free_cl'])
+                    result,_=catalog.auto_select(generate({**INPUTS,'power':'230'}),source)
+                    self.assertEqual(row(result,'treatment','premium')['catalog'] is not None,eligible)
