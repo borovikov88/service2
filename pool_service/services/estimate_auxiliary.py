@@ -22,8 +22,10 @@ def normalize_facts(raw):
     if not isinstance(raw, dict): raise EstimateInputError('Некорректные характеристики дозирования/панели.')
     result = {'mode':raw.get('mode',''), 'rx':raw.get('rx',False), 'free_cl':raw.get('free_cl',False),
               'incomplete':raw.get('incomplete',False), 'conflict':raw.get('conflict',False),
-              'wrong_purpose':raw.get('wrong_purpose',False), 'chlorine_denied':raw.get('chlorine_denied',False)}
-    if result['mode'] not in MODES or any(type(result[k]) is not bool for k in ('rx','free_cl','incomplete','conflict','wrong_purpose','chlorine_denied')):
+              'wrong_purpose':raw.get('wrong_purpose',False), 'chlorine_denied':raw.get('chlorine_denied',False),
+              'chlorine_sensor_missing':raw.get('chlorine_sensor_missing',False),
+              'chlorine_dosing_denied':raw.get('chlorine_dosing_denied',False)}
+    if result['mode'] not in MODES or any(type(result[k]) is not bool for k in ('rx','free_cl','incomplete','conflict','wrong_purpose','chlorine_denied','chlorine_sensor_missing','chlorine_dosing_denied')):
         raise EstimateInputError('Некорректное назначение дозирования/панели.')
     for key in NUMBERS:
         value=raw.get(key)
@@ -46,6 +48,7 @@ def _measurement_evidence(text):
     """Remove locally negated measurement claims before positive token matching."""
     denied = False
     cleaned = []
+    text=re.sub(r'(\b(?:включен\w*|входит\w*|предусмотрен\w*))\s*,(?=\s*(?:датчик|сенсор|электрод))',r'\1;',text)
     for clause in re.split(r'[.;!?]|\bно\b|\bоднако\b|,(?=\s*(?:измерение|измеряет|контроль)\b)', text):
         # Lists remain in one claim: "без измерения pH, Rx и хлора".
         prefix = re.search(r'\b(?:без\s+(?:(?:измерени\w*|контрол\w*|датчик\w*|сенсор\w*)\s+|(?='+_CHLORINE+r'))|'
@@ -64,6 +67,28 @@ def _measurement_evidence(text):
     return ' '.join(cleaned), denied
 
 
+def _chlorine_completeness(text):
+    """Explicit missing component/function, independent of measurement capability."""
+    missing_sensor = denied_dosing = False
+    boundaries = r'[.;!?]|\bно\b|\bоднако\b|,(?=\s*(?:содержит|включает|с\s+датчиком|дозирует|дозирование|измеряет|измерение|контроль)\b)'
+    # A new sensor subject after an affirmative inclusion is a separate claim;
+    # do not split coordinated lists under one missing-components predicate.
+    text=re.sub(r'(\b(?:включен\w*|входит\w*|предусмотрен\w*))\s*,(?=\s*(?:датчик|сенсор|электрод))',r'\1;',text)
+    for clause in re.split(boundaries, text):
+        # One negated list can include several sensors/functions.
+        negative = re.search(r'\b(?:без|не\s+включает|не\s+содержит|не\s+комплектуется|не\s+поддерживает|не\s+дозирует)\b', clause)
+        negative_text = clause[negative.end():] if negative else ''
+        suffix = re.search(r'\b(?:отсутств\w*|не\s+входит|не\s+включен\w*|не\s+предусмотр\w*|не\s+поддержива\w*)\b', clause)
+        if suffix:
+            negative_text += ' ' + clause[:suffix.start()]
+        if not re.search(_CHLORINE, negative_text):
+            continue
+        missing_sensor |= bool(re.search(r'датчик\w*|электрод\w*|сенсор\w*', negative_text))
+        denied_dosing |= bool(re.search(r'дозирован\w*|подач\w*|дозирующ\w*\s+насос\w*', negative_text)
+                              or (negative and re.search(r'не\s+дозирует',negative.group())))
+    return missing_sensor, denied_dosing
+
+
 def classify(specs, name, description='', offer=None):
     title=unescape(name).casefold().replace('ё','е').replace('рн','ph').replace('рх','rx')
     desc=unescape(re.sub(r'<[^>]*>',' ',description or '')).casefold().replace('ё','е')
@@ -71,6 +96,10 @@ def classify(specs, name, description='', offer=None):
     measurement_title, title_denied = _measurement_evidence(title)
     measurement_desc, desc_denied = _measurement_evidence(desc)
     chlorine_positive = False
+    for evidence in (title,desc):
+        sensor,dosing=_chlorine_completeness(evidence)
+        facts['chlorine_sensor_missing'] |= sensor
+        facts['chlorine_dosing_denied'] |= dosing
     # Identity from a complete device's title, never accessories or a broad category.
     accessory=bool(re.match(r'^(?:датчик|электрод|ячейка|запчаст|ремкомплект|крышка|тестер|реагент|набор\s+(?:датчик|электрод))',title))
     semi=bool(re.match(r'^(?:хлоратор[ -]*полуавтомат|полуавтоматическ\w*\s+(?:дозатор\s+хлора|хлоратор)|дозатор\s+хлора\s+полуавтомат)',title))
@@ -85,7 +114,10 @@ def classify(specs, name, description='', offer=None):
                      chlorine_denied=title_denied or desc_denied)
         chlorine_positive=cl or bool(re.search(r'(?:измерени\w*|измеря\w*|контрол\w*)\s+(?:свободн\w*\s+)?хлор',measurement_desc))
         facts['mode']='semi_chlorine' if semi else 'cl_ph' if ph and cl else 'rx_ph' if ph and rx else 'ph_only' if ph else 'rx_only' if rx else 'unknown'
-        facts['incomplete']=bool(re.search(r'без\s+(?:дозирующ\w*\s+)?насос|без\s+(?:измерительн\w*\s+)?(?:датчик|электрод|набор)',title+' '+desc))
+        component_text=re.sub(r'без\s+(?:датчика|сенсора)\s+температуры\b','',title+' '+desc)
+        if facts['mode']=='rx_ph':
+            component_text=re.sub(r'без\s+(?:датчика|сенсора|электрода)\s+(?:свободного\s+)?(?:хлора|cl)\b','',component_text)
+        facts['incomplete']=bool(re.search(r'без\s+(?:дозирующ\w*\s+)?насос|без\s+(?:измерительн\w*\s+)?(?:датчик|электрод|набор)',component_text))
     elif not accessory and panel:
         specs['kind']='control_panel'
     elif specs.get('kind')!='pump':
@@ -130,6 +162,12 @@ def classify(specs, name, description='', offer=None):
         for param in offer.findall('param'):
             label=(param.get('name') or '').casefold().replace('ё','е').strip()
             text=(param.text or '').casefold().strip().replace('рн','ph').replace('рх','rx')
+            if specs['kind']=='treatment':
+                evidence=label+' '+text if text in {'нет','отсутствует','не предусмотрено','не входит в комплект','не включен','false','0'} else text
+                if text in {'нет','false','0'}: evidence=label+' отсутствует'
+                sensor,dosing=_chlorine_completeness(evidence)
+                facts['chlorine_sensor_missing'] |= sensor
+                facts['chlorine_dosing_denied'] |= dosing
             if specs['kind']=='treatment' and re.fullmatch(r'(?:измерение|контроль)\s+(?:свободного\s+)?(?:хлора|cl)',label):
                 if text in {'нет','не предусмотрено','отсутствует','не поддерживается','false','0'}:
                     facts['chlorine_denied']=True
@@ -177,6 +215,8 @@ def classify(specs, name, description='', offer=None):
             value=str(Decimal(match.group(1).replace(',','.')))
             if facts[key] is not None and Decimal(facts[key])!=Decimal(value): facts['conflict']=True
             elif Decimal(value)>0: facts[key]=value
+    if specs['kind']=='treatment' and facts['chlorine_sensor_missing'] and facts['mode']=='cl_ph':
+        facts['incomplete']=True
     if specs['kind']=='treatment' and facts['chlorine_denied']:
         facts['conflict'] |= chlorine_positive
         facts['free_cl']=False
@@ -187,6 +227,10 @@ def assess(product, snapshot, variant, tier):
     facts=product.get('auxiliary') or {}
     if not product.get('available'): return 'Доступность товара не подтверждена.',[]
     if facts.get('wrong_purpose'): return 'Известное иное назначение оборудования; применение в бассейне не подтверждено.',[]
+    if facts.get('chlorine_sensor_missing') and (tier=='premium' or facts.get('mode')=='cl_ph'):
+        return 'В комплект не входит датчик хлора; полная станция Cl + pH не подтверждена.',[]
+    if facts.get('chlorine_dosing_denied'):
+        return 'Явно отсутствует функция дозирования хлора; станция Cl + pH не подтверждена.',[]
     if product.get('specification_conflict') or facts.get('conflict'):
         return 'Противоречивые характеристики оборудования; проверьте источник.',[]
     missing=[]
