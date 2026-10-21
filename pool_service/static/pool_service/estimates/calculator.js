@@ -318,7 +318,7 @@ root.addEventListener('change', event => {
     if (el.dataset.field === 'price' && isWork(row) && !samePrice(row.price, value)) {
       askWorkPrice(el.dataset.block, row, value); return;
     }
-    if (el.dataset.field === 'price' && (row.catalog?.roll_area || row.construction_price || row.id==='material_supplies')) row.unit_price_manual = true;
+    if (el.dataset.field === 'price' && (row.catalog?.roll_area || row.construction_price || row.id==='material_supplies' || row.pvc_computed_price != null)) row.unit_price_manual = true;
     row[el.dataset.field] = value;
     if (el.dataset.field === 'quantity') { row.quantity_edited = true; row.auto_quantity = false; row.quantity_stale = false; row.selection_locked = true; if (row.catalog) row.catalog.selection = 'manual'; }
     const mode = root.querySelector(`[data-quantity-mode="${row.id}"]`);
@@ -398,7 +398,7 @@ $('#pe-row-form').addEventListener('submit', event => {
   if ((row.quantity !== rowBeingEdited.quantity || row.unit !== rowBeingEdited.unit) && indivisible(row.unit) && row.quantity !== '' && !Number.isInteger(Number(row.quantity))) {
     f.elements.quantity.setCustomValidity('Укажите целое количество для штучной позиции.'); f.elements.quantity.reportValidity(); return;
   }
-  if (!samePrice(row.price, rowBeingEdited.price) && (row.catalog?.roll_area || row.construction_price || row.id==='material_supplies')) row.unit_price_manual = true;
+  if (!samePrice(row.price, rowBeingEdited.price) && (row.catalog?.roll_area || row.construction_price || row.id==='material_supplies' || row.pvc_computed_price != null)) row.unit_price_manual = true;
   if (row.kind === 'work' && !row.quantity) row.quantity = null;
   if (row.kind === 'work' && !row.work_code) row.work_code = row.id.startsWith('finish_work') ? 'finish_' + (row.finish_type || 'unknown') : row.id;
   if (['name', 'brand', 'model', 'kind'].some(key => row[key] !== rowBeingEdited[key])) row.catalog = null;
