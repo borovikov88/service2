@@ -509,6 +509,11 @@ def normalize_snapshot(raw):
         result["level_system"] = 1
     for marker in ("level_shared_inlet", "auxiliary_version", "plaster_systems", "pvc_area_version"):
         if raw.get(marker) == 1: result[marker] = 1
+    if result.get("plaster_systems") == 1:
+        initialized = raw.get("plaster_initialized", [])
+        if not isinstance(initialized, list) or any(not isinstance(tier, str) or tier not in VARIANTS for tier in initialized):
+            raise EstimateInputError("Некорректный состав систем штукатурки.")
+        result["plaster_initialized"] = sorted(set(initialized))
     if raw.get("technology_version") == 1:
         result["technology_version"] = 1
     variants = raw.get("variants")
@@ -812,7 +817,16 @@ def recalculate(raw, inputs):
                     row['quantity'] = embedded.ceil_quantity(metrics[row['basis']])
     ensure_heating_rows(result)
     update_construction_quantities(result)
+    # Capture deletions before technology can synthesize its legacy volume placeholder.
+    initialized_plaster = plaster_systems.initialized_tiers(result)
+    deleted_plaster = {tier for tier in initialized_plaster
+        if not any(r['id'] == 'tech_plaster_material'
+                   for b in result['variants'][tier]['blocks'] for r in b['rows'])}
     metrics.update(technology.apply(result, create=True))
+    for tier in deleted_plaster:
+        for block in result['variants'][tier]['blocks']:
+            block['rows'] = [r for r in block['rows'] if r['id'] != 'tech_plaster_material']
+    plaster_systems.apply(result, create=True)
     result['geometry'] = metrics
     embedded.ensure_rows(result)
     embedded.update_quantities(result)

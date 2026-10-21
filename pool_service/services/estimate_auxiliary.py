@@ -22,8 +22,8 @@ def normalize_facts(raw):
     if not isinstance(raw, dict): raise EstimateInputError('Некорректные характеристики дозирования/панели.')
     result = {'mode':raw.get('mode',''), 'rx':raw.get('rx',False), 'free_cl':raw.get('free_cl',False),
               'incomplete':raw.get('incomplete',False), 'conflict':raw.get('conflict',False),
-              'wrong_purpose':raw.get('wrong_purpose',False)}
-    if result['mode'] not in MODES or any(type(result[k]) is not bool for k in ('rx','free_cl','incomplete','conflict','wrong_purpose')):
+              'wrong_purpose':raw.get('wrong_purpose',False), 'chlorine_denied':raw.get('chlorine_denied',False)}
+    if result['mode'] not in MODES or any(type(result[k]) is not bool for k in ('rx','free_cl','incomplete','conflict','wrong_purpose','chlorine_denied')):
         raise EstimateInputError('Некорректное назначение дозирования/панели.')
     for key in NUMBERS:
         value=raw.get(key)
@@ -39,10 +39,38 @@ def normalize_facts(raw):
     return result
 
 
+_CHLORINE = r'(?<![a-z])(?:free\s*)?cl(?![a-z])|(?:свободн\w*\s+)?хлор\w*'
+
+
+def _measurement_evidence(text):
+    """Remove locally negated measurement claims before positive token matching."""
+    denied = False
+    cleaned = []
+    for clause in re.split(r'[.;!?]|\bно\b|\bоднако\b|,(?=\s*(?:измерение|измеряет|контроль)\b)', text):
+        # Lists remain in one claim: "без измерения pH, Rx и хлора".
+        prefix = re.search(r'\b(?:без\s+(?:(?:измерени\w*|контрол\w*|датчик\w*|сенсор\w*)\s+|(?='+_CHLORINE+r'))|'
+                           r'не\s+(?:измеря\w*|контролир\w*|определя\w*)\s+)', clause)
+        if prefix and re.search(_CHLORINE, clause[prefix.end():]):
+            denied = True
+            clause = clause[:prefix.start()]
+        postfix = re.search(r'(?:измерени\w*|контрол\w*|датчик\w*)[^.;!?]*?'
+                            r'(?:не\s+(?:предусмотр\w*|поддержива\w*|выполня\w*|осуществля\w*)|отсутств\w*)', clause)
+        if postfix and re.search(_CHLORINE, postfix.group()):
+            denied = True
+            clause = clause[:postfix.start()] + clause[postfix.end():]
+        if re.search(r'(?<!не )\bтолько\s+(?:rx|orp|redox|редокс|овп)\b', clause):
+            denied = True
+        cleaned.append(clause)
+    return ' '.join(cleaned), denied
+
+
 def classify(specs, name, description='', offer=None):
     title=unescape(name).casefold().replace('ё','е').replace('рн','ph').replace('рх','rx')
     desc=unescape(re.sub(r'<[^>]*>',' ',description or '')).casefold().replace('ё','е')
     facts=normalize_facts({})
+    measurement_title, title_denied = _measurement_evidence(title)
+    measurement_desc, desc_denied = _measurement_evidence(desc)
+    chlorine_positive = False
     # Identity from a complete device's title, never accessories or a broad category.
     accessory=bool(re.match(r'^(?:датчик|электрод|ячейка|запчаст|ремкомплект|крышка|тестер|реагент|набор\s+(?:датчик|электрод))',title))
     semi=bool(re.match(r'^(?:хлоратор[ -]*полуавтомат|полуавтоматическ\w*\s+(?:дозатор\s+хлора|хлоратор)|дозатор\s+хлора\s+полуавтомат)',title))
@@ -50,10 +78,12 @@ def classify(specs, name, description='', offer=None):
     panel=bool(re.match(r'^(?:панель|шкаф|щит)\s+управления\s+фильтрац',title))
     if not accessory and (semi or station):
         specs['kind']='treatment'
-        ph=bool(re.search(r'(?<![a-z])ph(?![a-z])',title))
-        rx=bool(re.search(r'(?<![a-z])(?:rx|orp|redox)(?![a-z])|редокс',title))
-        cl=bool(re.search(r'(?<![a-z])cl(?![a-z])|свободн\w*\s+хлор',title))
-        facts.update(rx=rx,free_cl=bool(re.search(r'free\s*cl|свободн\w*\s+хлор',title)))
+        ph=bool(re.search(r'(?<![a-z])ph(?![a-z])',measurement_title))
+        rx=bool(re.search(r'(?<![a-z])(?:rx|orp|redox)(?![a-z])|редокс',measurement_title))
+        cl=bool(re.search(r'(?<![a-z])cl(?![a-z])|свободн\w*\s+хлор',measurement_title))
+        facts.update(rx=rx,free_cl=bool(re.search(r'free\s*cl|свободн\w*\s+хлор',measurement_title)),
+                     chlorine_denied=title_denied or desc_denied)
+        chlorine_positive=cl or bool(re.search(r'(?:измерени\w*|измеря\w*|контрол\w*)\s+(?:свободн\w*\s+)?хлор',measurement_desc))
         facts['mode']='semi_chlorine' if semi else 'cl_ph' if ph and cl else 'rx_ph' if ph and rx else 'ph_only' if ph else 'rx_only' if rx else 'unknown'
         facts['incomplete']=bool(re.search(r'без\s+(?:дозирующ\w*\s+)?насос|без\s+(?:измерительн\w*\s+)?(?:датчик|электрод|набор)',title+' '+desc))
     elif not accessory and panel:
@@ -100,10 +130,19 @@ def classify(specs, name, description='', offer=None):
         for param in offer.findall('param'):
             label=(param.get('name') or '').casefold().replace('ё','е').strip()
             text=(param.text or '').casefold().strip().replace('рн','ph').replace('рх','rx')
+            if specs['kind']=='treatment' and re.fullmatch(r'(?:измерение|контроль)\s+(?:свободного\s+)?(?:хлора|cl)',label):
+                if text in {'нет','не предусмотрено','отсутствует','не поддерживается','false','0'}:
+                    facts['chlorine_denied']=True
+                elif text in {'да','есть','true','1'}:
+                    chlorine_positive=True
+                continue
             if label in {'измеряемые параметры','контролируемые параметры'} and specs['kind']=='treatment':
+                text, denied = _measurement_evidence(text)
+                facts['chlorine_denied'] |= denied
                 ph=bool(re.search(r'(?<![a-z])ph(?![a-z])',text))
                 rx=bool(re.search(r'(?<![a-z])(?:rx|orp|redox)(?![a-z])|редокс|овп',text))
                 cl=bool(re.search(r'(?<![a-z])cl(?![a-z])|хлор',text))
+                chlorine_positive |= cl
                 mode='cl_ph' if ph and cl else 'rx_ph' if ph and rx else 'ph_only' if ph else 'rx_only' if rx else 'unknown'
                 if mode!='unknown':
                     if facts['mode'] not in ('', 'unknown',mode): facts['conflict']=True
@@ -138,6 +177,9 @@ def classify(specs, name, description='', offer=None):
             value=str(Decimal(match.group(1).replace(',','.')))
             if facts[key] is not None and Decimal(facts[key])!=Decimal(value): facts['conflict']=True
             elif Decimal(value)>0: facts[key]=value
+    if specs['kind']=='treatment' and facts['chlorine_denied']:
+        facts['conflict'] |= chlorine_positive
+        facts['free_cl']=False
     specs['auxiliary']=facts
 
 
@@ -149,6 +191,8 @@ def assess(product, snapshot, variant, tier):
         return 'Противоречивые характеристики оборудования; проверьте источник.',[]
     missing=[]
     if product['kind']=='treatment':
+        if tier=='premium' and facts.get('chlorine_denied'):
+            return 'Явно указано отсутствие измерения хлора; Rx не заменяет Cl + pH.',[]
         mode=facts.get('mode','')
         desired={'economy':'semi_chlorine','standard':'rx_ph','premium':'cl_ph'}[tier]
         if tier=='economy' and mode!='semi_chlorine':

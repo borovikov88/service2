@@ -52,6 +52,8 @@ class GeotextileTests(SimpleTestCase):
     def test_explicit_description_purpose_and_local_negation(self):
         for description, purpose in [
             ('Не подходит для бассейна.', 'denied'),
+            ('Не для бассейнов.', 'denied'),
+            ('Не под плёнку.', 'denied'),
             ('Для бассейна не подходит.', 'denied'),
             ('Для бассейна, не подходит для дорожного строительства.', 'pool'),
             ('Не предназначен под плёнку.', 'denied'),
@@ -83,3 +85,12 @@ class GeotextileTests(SimpleTestCase):
             self.assertEqual(geo(result)['amount'],'246.90')
             self.assertIn('не подходит',geo(result)['selection_note'])
             self.assertIn('Текущая выгрузка',geo(result)['selection_note'])
+
+    def test_short_title_denials_do_not_become_pool_purpose(self):
+        for suffix in ['не для бассейнов', 'не под плёнку', 'для бассейнов', 'под плёнку']:
+            with self.subTest(suffix=suffix):
+                source=catalog.parse_catalog(feed(offer(1,'Геотекстиль '+suffix,'10',description='')))
+                expected='denied' if suffix.startswith('не ') else 'pool'
+                self.assertEqual(source['products']['1']['geotextile']['purpose'],expected)
+                selected,_=catalog.auto_select(generate({**INPUTS,'finish':'film'}),source)
+                self.assertEqual(geo(selected)['catalog'] is not None,expected=='pool')

@@ -145,3 +145,42 @@ class AuxiliaryTests(SimpleTestCase):
         xml=ET.fromstring('<offer><param name="Максимальная мощность насоса" unit="Вт">0.5</param></offer>')
         aux.classify(specs,'Панель управления фильтрацией Synthetic','',xml)
         self.assertTrue(specs['auxiliary']['conflict'])
+
+    def test_negated_chlorine_measurement_never_becomes_premium(self):
+        cases=[
+            ('Станция дозирования PH/RX без измерения свободного хлора','',''),
+            ('Станция дозирования PH/RX','Без измерения свободного хлора, только Rx.',''),
+            ('Станция дозирования PH/RX','Не измеряет pH, Rx и свободный хлор.',''),
+            ('Станция дозирования PH/RX','Измерение свободного хлора не предусмотрено.',''),
+            ('Станция дозирования PH/RX','','<param name="Измеряемые параметры">pH/Rx; без измерения свободного хлора</param>'),
+            ('Станция дозирования PH/RX','','<param name="Измерение свободного хлора">нет</param>'),
+            ('Станция дозирования PH/Free Cl','Без измерения свободного хлора, только Rx.',''),
+            ('Станция дозирования PH/RX без измерения свободного хлора','','<param name="Измеряемые параметры">pH/Free Cl</param>'),
+        ]
+        for title,description,params in cases:
+            with self.subTest(title=title,description=description,params=params):
+                item=offer(20,title,'1',description=description).replace('</offer>',params+'</offer>')
+                source=fixture(item)
+                facts=source['products']['20']['auxiliary']
+                self.assertTrue(facts['chlorine_denied'])
+                self.assertFalse(facts['free_cl'])
+                initial=generate({**INPUTS,'power':'230'})
+                result,_=catalog.auto_select(initial,source)
+                self.assertEqual(row(result,'treatment','premium')['catalog']['id'],'3')
+                again,_=catalog.auto_select(recalculate(evaluate(result),result['inputs']),source)
+                self.assertEqual(row(again,'treatment','premium')['catalog']['id'],'3')
+        confirmed=fixture()['products']['3']['auxiliary']
+        self.assertTrue(confirmed['free_cl'])
+        self.assertFalse(confirmed['chlorine_denied'])
+        self.assertFalse(confirmed['conflict'])
+
+    def test_chlorine_denial_is_local_and_conflicts_survive_normalization(self):
+        good=offer(20,'Система дозирующих насосов PH/RX+Free Cl','1',description='Без измерения температуры, измерение свободного хлора предусмотрено. Не только Rx, но и Cl.')
+        source=catalog.parse_catalog(feed(good))
+        result,_=catalog.auto_select(generate({**INPUTS,'power':'230'}),source)
+        self.assertEqual(row(result,'treatment','premium')['catalog']['id'],'20')
+        self.assertFalse(source['products']['20']['auxiliary']['chlorine_denied'])
+        bad=offer(20,'Станция дозирования PH/Free Cl','1',description='Без измерения свободного хлора, только Rx.')
+        facts=fixture(bad)['products']['20']['auxiliary']
+        self.assertTrue(facts['conflict'])
+        self.assertTrue(aux.normalize_facts(facts)['chlorine_denied'])

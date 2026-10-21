@@ -198,3 +198,102 @@ class PlasterIntegrationTests(SimpleTestCase):
         saved = deepcopy(rows(s, 'economy'))
         plaster.apply(s, create=True)
         self.assertEqual(rows(s, 'economy'), saved)
+
+
+from django.test import TestCase
+
+
+class PlasterActivationAPITests(TestCase):
+    def setUp(self):
+        from django.contrib.auth.models import User
+        from django.urls import reverse
+        from pool_service.models import Organization, OrganizationAccess
+        self.org = Organization.objects.create(name='Synthetic plaster activation tenant')
+        user = User.objects.create_user('plaster-activation-owner')
+        OrganizationAccess.objects.create(organization=self.org, user=user, role='owner')
+        self.client.force_login(user)
+        self.url = reverse('pool_estimate_api')
+
+    def post(self, **data):
+        import json
+        response = self.client.post(self.url, json.dumps({'organization': self.org.pk, **data}), content_type='application/json')
+        self.assertIn(response.status_code, (200, 201), response.content)
+        return response.json()
+
+    def system_rows(self, s, tier):
+        return [r for b in s['variants'][tier]['blocks'] for r in b['rows'] if r['basis'] in plaster.BASES]
+
+    def assert_systems(self, s):
+        for tier in s['variants']:
+            found = self.system_rows(s, tier)
+            self.assertEqual(len(found), 3)
+            self.assertEqual(len({r['id'] for r in found}), 3)
+            self.assertFalse(any(r['basis'] == 'tech_plaster_volume' for b in s['variants'][tier]['blocks'] for r in b['rows']))
+            self.assertFalse(any(r['excluded'] for r in found))
+        self.assertEqual(self.system_rows(s, 'standard')[0]['quantity'], '97')
+
+    def test_off_or_unknown_activation_recalculate_save_load_and_reactivation(self):
+        from .test_pool_estimates import INPUTS as CORE
+        for initial in ('off', ''):
+            s = self.post(action='generate', inputs={**CORE, **INPUTS, 'tech_plaster': initial})['snapshot']
+            s = self.post(action='recalculate', snapshot=s, inputs={**s['inputs'], 'tech_plaster': 'walls_floor'})['snapshot']
+            self.assert_systems(s)
+            self.system_rows(s, 'standard')[0]['price'] = '100'
+            s = self.post(action='recalculate', snapshot=s, inputs=s['inputs'])['snapshot']
+            self.assertEqual(self.system_rows(s, 'standard')[0]['amount'], '9700.00')
+            saved = self.post(action='save', snapshot=s, expected_revision=0)
+            loaded = self.client.get(self.url, {'organization': self.org.pk, 'id': saved['id']}).json()['snapshot']
+            s = self.post(action='recalculate', snapshot=loaded, inputs=loaded['inputs'])['snapshot']
+            self.assert_systems(s)
+            self.assertEqual(self.system_rows(s, 'standard')[0]['amount'], '9700.00')
+            off = self.post(action='recalculate', snapshot=s, inputs={**s['inputs'], 'tech_plaster': 'off'})['snapshot']
+            self.assertTrue(all(r['excluded'] for tier in off['variants'] for r in self.system_rows(off, tier)))
+            on = self.post(action='recalculate', snapshot=off, inputs={**off['inputs'], 'tech_plaster': 'walls_floor'})['snapshot']
+            self.assert_systems(on)
+            self.assertEqual(self.system_rows(on, 'standard')[0]['amount'], '9700.00')
+
+    def test_deleted_components_and_manual_placeholder_survive_api_recalculation(self):
+        from .test_pool_estimates import INPUTS as CORE
+        s = self.post(action='generate', inputs={**CORE, **INPUTS})['snapshot']
+        for tier, variant in s['variants'].items():
+            for block in variant['blocks']:
+                block['rows'] = [r for r in block['rows'] if r['basis'] not in plaster.BASES]
+        saved = self.post(action='save', snapshot=s, expected_revision=0)
+        s = self.client.get(self.url, {'organization': self.org.pk, 'id': saved['id']}).json()['snapshot']
+        for _ in range(2):
+            s = self.post(action='recalculate', snapshot=s, inputs=s['inputs'])['snapshot']
+            for tier in s['variants']:
+                self.assertFalse(self.system_rows(s, tier))
+                self.assertFalse(any(r['id'] == 'tech_plaster_material' for b in s['variants'][tier]['blocks'] for r in b['rows']))
+        s = self.post(action='generate', inputs={**CORE, **INPUTS, 'tech_plaster': ''})['snapshot']
+        for variant in s['variants'].values():
+            block = next(b for b in variant['blocks'] if b['id'] == 'finish')
+            row = make_row('tech_plaster_material', 'Ручной материал', 'м³', '3', 'tech_plaster_volume')
+            row.update(auto_quantity=False, price='100', unit_price_manual=True)
+            block['rows'].append(row)
+        s = self.post(action='recalculate', snapshot=s, inputs={**s['inputs'], 'tech_plaster': 'walls_floor'})['snapshot']
+        for tier in s['variants']:
+            self.assertFalse(self.system_rows(s, tier))
+            row = next(r for b in s['variants'][tier]['blocks'] for r in b['rows'] if r['id'] == 'tech_plaster_material')
+            self.assertEqual(row['amount'], '300.00')
+            self.assertEqual(row['unit'], 'м³')
+
+
+    def test_missing_concrete_thickness_does_not_remove_known_internal_plaster(self):
+        from .test_pool_estimates import INPUTS as CORE
+        from pool_service.services.pool_estimates import generate, evaluate, recalculate
+        for fields in (('wall_thickness',), ('slab_thickness',), ('wall_thickness', 'slab_thickness')):
+            inputs = {**CORE, **INPUTS, **{field: '' for field in fields}}
+            generated = generate(inputs)
+            for result in (generated, evaluate(generated), recalculate(generated, generated['inputs'])):
+                self.assert_systems(result)
+                self.assertEqual(self.system_rows(result, 'economy')[0]['quantity'], '56')
+                self.assertEqual(self.system_rows(result, 'standard')[1]['quantity'], '86.608')
+                self.assertEqual(self.system_rows(result, 'premium')[1]['quantity'], '48.116')
+                self.assertIsNone(result['geometry'].get('concrete_total'))
+            s = self.post(action='generate', inputs={**CORE, **INPUTS})['snapshot']
+            s = self.post(action='recalculate', snapshot=s, inputs={**s['inputs'], **{field: '' for field in fields}})['snapshot']
+            self.assert_systems(s)
+            self.assertEqual(self.system_rows(s, 'standard')[1]['quantity'], '86.608')
+            self.assertEqual(self.system_rows(s, 'premium')[1]['quantity'], '48.116')
+            self.assertIsNone(s['geometry'].get('concrete_total'))
