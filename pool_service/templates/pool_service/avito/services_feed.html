@@ -1,0 +1,31 @@
+{% extends 'pool_service/base.html' %}
+{% block title %}Объявления услуг{% endblock %}
+{% block content %}
+<h1>Объявления услуг · {{ connection.name }}</h1>
+<p>Аккаунт {{ connection.external_id }}. Импорт и редактирование сохраняют черновик в Service2.</p>
+<a href="{% url 'avito_dashboard' %}?account={{ connection.pk }}">К Авито</a>
+{% if error %}<div class="alert alert-danger" role="alert">{{ error }}</div>{% endif %}
+<form method="post" enctype="multipart/form-data" class="card card-body my-3">
+{% csrf_token %}<input type="hidden" name="action" value="import"><input type="hidden" name="revision" value="{{ feed.revision }}">
+<label for="export">Экспорт существующих объявлений Авито (.xlsx)</label>
+<input id="export" type="file" name="file" accept=".xlsx" required>
+<button class="btn btn-primary mt-2" type="submit">Импортировать черновик</button>
+</form>
+{% if feed %}
+<p>{{ rows|length }} объявлений. Версия {{ feed.revision }}. Последнее изменение: {{ feed.updated_at }}.</p>
+<a class="btn btn-outline-primary" href="{% url 'avito_services_feed_download' connection.pk %}">Скачать черновик Excel</a>
+<form method="post" action="{% url 'avito_services_feed_publish' connection.pk %}" class="my-3">{% csrf_token %}
+<input type="hidden" name="revision" value="{{ feed.revision }}">
+<p>Публикация делает весь файл доступным Авито по ссылке. Если ссылка уже подключена в Авито, изменения попадут в следующую загрузку по расписанию.</p>
+<button type="submit" class="btn btn-primary">Проверить аккаунт и опубликовать версию {{ feed.revision }}</button></form>
+{% if feed.enabled %}
+<p>Опубликована версия {{ feed.published_revision }}. Приём изменений нужно проверить в отчёте Авито.</p>
+{% if feed_url %}<label for="feed-url">Ссылка для автозагрузки в аккаунте {{ connection.external_id }}</label><input class="form-control" id="feed-url" value="{{ feed_url }}" readonly>{% endif %}
+<p>Укажите эту ссылку как источник в настройках автозагрузки выбранного аккаунта Авито. Публикация файла в Service2 сама по себе не подключает автозагрузку.</p>
+<form method="post">{% csrf_token %}<input type="hidden" name="revision" value="{{ feed.revision }}"><input type="hidden" name="action" value="disable"><button class="btn btn-outline-secondary" type="submit">Отключить доступ к файлу</button></form>
+{% else %}<p>Источник пока недоступен Авито.</p>{% endif %}
+<table class="table"><thead><tr><th>Объявление</th><th>AvitoId</th><th></th></tr></thead><tbody>
+{% for row in rows %}<tr><td>{{ row.Title }}</td><td>{{ row.AvitoId }}</td><td><a href="{% url 'avito_services_feed_edit' connection.pk row.AvitoId %}">Изменить текст и фото</a></td></tr>{% endfor %}
+</tbody></table>
+{% endif %}
+{% endblock %}

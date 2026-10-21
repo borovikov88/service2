@@ -1,0 +1,8 @@
+{% extends 'pool_service/base.html' %}
+{% block title %}Редактировать объявление{% endblock %}
+{% block content %}
+<h1>{{ row.Title }}</h1><p>Аккаунт {{ connection.name }} · AvitoId {{ row.AvitoId }}</p>
+<form method="post">{% csrf_token %}<input type="hidden" name="revision" value="{{ feed.revision }}">
+{{ form.as_p }}<button class="btn btn-primary" type="submit">Сохранить черновик</button>
+<a href="{% url 'avito_services_feed' connection.pk %}">Вернуться к списку</a></form>
+{% endblock %}
