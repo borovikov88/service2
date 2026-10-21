@@ -290,7 +290,7 @@ def verify_inventory(connection, sheets):
     token = access_token(connection)
     active = set()
     for page in range(1, 4):
-        response = _get(token, f'/core/v1/items/?per_page=100&page={page}&status=active')
+        response = _get(token, f'/core/v1/items?per_page=100&page={page}&status=active')
         resources = response.get('resources')
         if not isinstance(resources, list) or len(resources) > 100:
             raise AvitoError('provider_data_invalid')
@@ -323,7 +323,12 @@ def services_feed_publish(request, connection_id):
     try:
         verify_inventory(connection, feed.draft)
     except (ValueError, AvitoError) as error:
-        message = str(error) if isinstance(error, ValueError) else 'Не удалось проверить объявления через API Авито. Источник не изменён.'
+        if isinstance(error, ValueError):
+            message = str(error)
+        else:
+            code = str(error)
+            safe_code = code if re.fullmatch(r'provider_[a-z0-9_]{1,80}', code) else 'provider_check_failed'
+            message = f'Не удалось проверить объявления через API Авито ({safe_code}). Источник не изменён.'
         return render(request, 'pool_service/avito/services_feed.html', {
             'connection': connection, 'feed': feed, 'rows': entries(feed.draft), 'error': message,
         }, status=400)
