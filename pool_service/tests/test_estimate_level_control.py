@@ -1,9 +1,21 @@
 from copy import deepcopy
 from django.test import SimpleTestCase
-from pool_service.services.pool_estimates import generate, evaluate, recalculate, EstimateInputError
+from pool_service.services.pool_estimates import generate as generate_current, evaluate, recalculate, EstimateInputError
 from pool_service.services import estimate_catalog as catalog
 from .test_pool_estimates import INPUTS, block
 from .test_estimate_catalog import offer, feed
+
+
+def generate(inputs):
+    """Saved estimates retain their separate level-fitting configuration."""
+    snapshot = generate_current(inputs)
+    snapshot.pop('level_shared_inlet')
+    for variant in snapshot['variants'].values():
+        for block_ in variant['blocks']:
+            for row in block_['rows']:
+                row.pop('filtration_quantity', None)
+                row.pop('level_quantity', None)
+    return recalculate(snapshot, snapshot['inputs'])
 
 class LevelControlTests(SimpleTestCase):
     def pair(self, s):

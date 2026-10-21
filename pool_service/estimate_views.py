@@ -182,6 +182,9 @@ def estimate_api(request):
                 return JsonResponse({"snapshot": snapshot, "catalog_status": catalog_status(catalog), "selected_count": count})
             except CatalogUnavailable as exc:
                 return JsonResponse({"snapshot": snapshot, "catalog_error": str(exc)})
+        if action == 'level_inlet_binding':
+            from .services.estimate_level_shared import apply_binding
+            return JsonResponse({'snapshot': apply_binding(data.get('snapshot'), data.get('variant'), data.get('row_id', ''))})
         if action == 'embedded_profile':
             variant = string(data.get('variant'), 'Вариант', 20)
             snapshot = change_profile(data.get('snapshot'), variant, data.get('profile'))

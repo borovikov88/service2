@@ -194,10 +194,19 @@ class EmbeddedCandidateTests(SimpleTestCase):
             ('economy', item(1,'Форсунка ABS под пленку',price='100'),
              item(1,'Форсунка ABS не подходит для плитки и пленки',price='100')),
         ]
-        for tier, good_xml, bad_xml in cases:
-            with self.subTest(tier=tier):
-                initial,_=catalog.auto_select(generate({**INPUTS,'finish':'film'}),catalog.parse_catalog(feed(good_xml)))
-                self.assertEqual(target(initial,'inlet',tier)['amount'],'300.00')
+        from itertools import product
+        from .test_estimate_level_control import generate as generate_legacy
+        for shared_mode, (tier, good_xml, bad_xml) in product((False, True), cases):
+            with self.subTest(tier=tier, shared_mode=shared_mode):
+                # Saved three-inlet quotes retain their historical 300 total;
+                # new quotes add a fourth physical fitting for the level line.
+                factory = generate if shared_mode else generate_legacy
+                initial,_=catalog.auto_select(factory({**INPUTS,'finish':'film'}),catalog.parse_catalog(feed(good_xml)))
+                quantity = Decimal(4 if shared_mode else 3)
+                self.assertEqual(Decimal(target(initial,'inlet',tier)['amount']), quantity * 100)
+                if shared_mode:
+                    self.assertEqual(target(initial,'inlet',tier)['filtration_quantity'], '3.000')
+                    self.assertEqual(target(initial,'inlet',tier)['level_quantity'], '1.000')
                 before_total=Decimal(initial['variants'][tier]['total'])
                 changed=catalog.parse_catalog(feed(bad_xml))
                 # New project parameters and a save/load-like JSON roundtrip must
@@ -209,7 +218,7 @@ class EmbeddedCandidateTests(SimpleTestCase):
                 self.assertIsNone(row['price'])
                 self.assertIsNone(row['amount'])
                 self.assertIn('отклонён',row['selection_note'])
-                self.assertEqual(Decimal(result['variants'][tier]['total']),before_total-Decimal('300'))
+                self.assertEqual(Decimal(result['variants'][tier]['total']),before_total-quantity * 100)
                 roundtrip=evaluate(json.loads(json.dumps(recalculate(result,result['inputs']))))
                 self.assertIsNone(target(roundtrip,'inlet',tier)['amount'])
                 self.assertEqual(roundtrip['variants'][tier]['total'],result['variants'][tier]['total'])
@@ -220,7 +229,7 @@ class EmbeddedCandidateTests(SimpleTestCase):
                 kept,_=catalog.auto_select(manual,changed)
                 protected=target(kept,'inlet',tier)
                 self.assertEqual(protected['price'],'123.45')
-                self.assertEqual(protected['amount'],'370.35')
+                self.assertEqual(Decimal(protected['amount']),quantity * Decimal('123.45'))
                 self.assertIsNotNone(protected['catalog'])
                 self.assertIn('Текущая выгрузка',protected['selection_note'])
-                self.assertEqual(target(evaluate(kept),'inlet',tier)['amount'],'370.35')
+                self.assertEqual(Decimal(target(evaluate(kept),'inlet',tier)['amount']),quantity * Decimal('123.45'))

@@ -34,8 +34,10 @@ class SkimmerEstimateTests(SimpleTestCase):
         s, _ = catalog.auto_select(generate({**INPUTS, 'finish':'film'}), stock())
         self.assertEqual(s['variants']['economy']['embedded_counts'], {'skimmer':'2','inlet':'3','drain':'2','vacuum':'1','embedded_work':'8'})
         self.assertEqual([fitting(s,'skimmer',v)['catalog']['id'] for v in s['variants']], ['101','105','107'])
-        self.assertEqual(fitting(s,'inlet')['quantity'],'3.000')
-        self.assertEqual(block(s,'embedded')['subtotal'],'275.00')
+        self.assertEqual(fitting(s,'inlet')['quantity'],'4.000')
+        self.assertEqual(fitting(s,'inlet')['filtration_quantity'],'3.000')
+        self.assertEqual(fitting(s,'inlet')['level_quantity'],'1.000')
+        self.assertEqual(block(s,'embedded')['subtotal'],'285.00')  # extra fitting: 1 × 10
         c = stock(); del c['products']['107']
         missing, _ = catalog.auto_select(generate({**INPUTS,'finish':'film'}), c)
         self.assertIsNone(fitting(missing,'skimmer','premium')['price'])
@@ -133,7 +135,9 @@ class SkimmerEstimateTests(SimpleTestCase):
         block(s)['rows'][0]['specs']['flow']='40'
         changed = evaluate(s)
         self.assertEqual(fitting(changed,'skimmer')['quantity'],'8.000')
-        self.assertEqual(fitting(changed,'inlet')['quantity'],'14.000')
+        self.assertEqual(fitting(changed,'inlet')['quantity'],'15.000')
+        self.assertEqual(fitting(changed,'inlet')['filtration_quantity'],'14.000')
+        self.assertEqual(fitting(changed,'inlet')['level_quantity'],'1.000')
         self.assertEqual(fitting(changed,'drain')['quantity'],'1.000')
         self.assertEqual(fitting(changed,'vacuum')['quantity'],'2.000')
 

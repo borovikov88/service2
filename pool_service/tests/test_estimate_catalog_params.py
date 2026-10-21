@@ -4,7 +4,9 @@ from decimal import Decimal
 from xml.sax.saxutils import escape
 from django.test import SimpleTestCase
 from pool_service.services import estimate_catalog as catalog
-from pool_service.services.pool_estimates import generate, evaluate, recalculate
+from pool_service.services.pool_estimates import evaluate, recalculate
+# Pair-specific regressions exercise saved estimates, not the new shared inlet.
+from .test_estimate_level_control import generate as generate_legacy
 from .test_estimate_catalog import offer, feed
 from .test_pool_estimates import INPUTS, block
 
@@ -72,7 +74,7 @@ class StructuredFactsTests(SimpleTestCase):
             self.assertTrue(p['specification_source'])
 
     def test_builtin_param_roundtrip_and_manual_override(self):
-        s=generate(INPUTS)
+        s=generate_legacy(INPUTS)
         skimmer=next(r for r in block(s,'embedded')['rows'] if r['kind']=='skimmer')
         c=catalog.parse_catalog(feed(item(1,'Скиммер ABS под пленку',params=[('Встроенный регулятор уровня','да')])))
         catalog.apply_product(skimmer,c['products']['1'],c)
@@ -87,7 +89,7 @@ class StructuredFactsTests(SimpleTestCase):
 
 class LevelAutoTests(SimpleTestCase):
     def start(self):
-        s=generate({**INPUTS,'finish':'film'})
+        s=generate_legacy({**INPUTS,'finish':'film'})
         # Deliberately same fitting profile in all tiers to isolate price ranking.
         for v in s['variants'].values(): v['embedded_profile']='plastic_budget'
         return s
@@ -190,7 +192,7 @@ class HydraulicLevelTests(SimpleTestCase):
     def test_technical_match_without_sku_populates_distinct_row_and_roundtrips(self):
         from pool_service.services.estimate_level_control import fill
         c,p,r=self.products()
-        s=generate({**INPUTS,'finish':'film'})
+        s=generate_legacy({**INPUTS,'finish':'film'})
         before_total=Decimal(s['variants']['economy']['total'])
         before=[deepcopy(row) for row in block(s,'embedded')['rows'] if row['kind']=='inlet']
         self.assertEqual(fill(s,c,only='economy'),2)

@@ -18,6 +18,8 @@ def sync(snapshot, create=False):
                     ((not b['excluded'] and not r['excluded']) or r['existing']) and r['quantity'] is not None and Decimal(r['quantity']) > 0]
         included = any(status(r) == 'included' for r in skimmers)
         for kind, title in ROLES.items():
+            if snapshot.get('level_shared_inlet') == 1 and kind == 'level_inlet':
+                continue
             candidates = [r for r in rows if r['kind']==kind]
             legacy_bundle = any(r['id'] == 'embedded_supply' and not (r['excluded'] and r['reason'] == 'Состав закладных детализирован') for r in rows)
             if not candidates and create and not legacy_bundle:
@@ -40,8 +42,13 @@ def sync(snapshot, create=False):
                     row['quantity']='1.000'
         variant['level_control_status'] = 'included' if included else 'absent' if skimmers and all(status(r)=='absent' for r in skimmers) else 'unknown'
 
+    if snapshot.get('level_shared_inlet') == 1:
+        from .estimate_level_shared import sync as sync_shared
+        sync_shared(snapshot)
 
 def warnings(variant, inputs=None):
+    if variant.get('level_shared_inlet') == 1:
+        return variant.get('level_shared_warnings', [])
     state = variant.get('level_control_status')
     if not state: return []
     rows = [r for b in variant['blocks'] for r in b['rows'] if r['kind'] in ROLES and
@@ -196,6 +203,9 @@ def fill(snapshot, catalog, only=None):
     """
     from .estimate_catalog import apply_product, select_price_tier
     sync(snapshot)
+    if snapshot.get('level_shared_inlet') == 1:
+        from .estimate_level_shared import fill as fill_shared
+        return fill_shared(snapshot, catalog, only)
     filled = 0
     products = list(catalog['products'].values())
     for tier, variant in snapshot['variants'].items():
