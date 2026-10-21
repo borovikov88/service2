@@ -184,3 +184,68 @@ class AuxiliaryTests(SimpleTestCase):
         facts=fixture(bad)['products']['20']['auxiliary']
         self.assertTrue(facts['conflict'])
         self.assertTrue(aux.normalize_facts(facts)['chlorine_denied'])
+
+    def test_missing_chlorine_sensor_or_dosing_rejects_incomplete_station(self):
+        base='Станция дозирования PH/RX+Free Cl'
+        cases=[
+            (base,'Комплект не включает датчик свободного хлора.','','chlorine_sensor_missing'),
+            (base,'Без дозирования хлора, только pH.','','chlorine_dosing_denied'),
+            (base+' без датчика свободного хлора','','','chlorine_sensor_missing'),
+            (base+' без дозирования хлора','','','chlorine_dosing_denied'),
+            (base,'Комплект не включает датчики pH, Rx и свободного хлора.','','chlorine_sensor_missing'),
+            (base,'Датчики pH, Rx и свободного хлора отсутствуют.','','chlorine_sensor_missing'),
+            (base,'Не поддерживает дозирование pH и хлора.','','chlorine_dosing_denied'),
+            (base,'Датчик свободного хлора не входит в комплект.','','chlorine_sensor_missing'),
+            (base,'Дозирование хлора не предусмотрено.','','chlorine_dosing_denied'),
+            (base,'Не дозирует хлор.','','chlorine_dosing_denied'),
+            (base,'','<param name="Комплектация">Комплект не включает датчик свободного хлора.</param>','chlorine_sensor_missing'),
+            (base,'','<param name="Датчик свободного хлора">нет</param>','chlorine_sensor_missing'),
+            (base,'','<param name="Дозирование хлора">отсутствует</param>','chlorine_dosing_denied'),
+        ]
+        for title,description,params,key in cases:
+            with self.subTest(title=title,description=description,params=params):
+                item=offer(20,title,'1',description=description).replace('</offer>',params+'</offer>')
+                source=catalog.parse_catalog(feed(item))
+                facts=source['products']['20']['auxiliary']
+                self.assertTrue(facts[key])
+                self.assertTrue(aux.normalize_facts(facts)[key])
+                if key=='chlorine_sensor_missing': self.assertTrue(facts['incomplete'])
+                result,_=catalog.auto_select(generate({**INPUTS,'power':'230'}),source)
+                self.assertIsNone(row(result,'treatment','premium')['catalog'])
+                reason=aux.search_reason(source['products']['20'],result['inputs'],Decimal('8'),'premium')
+                self.assertIn('датчик' if key=='chlorine_sensor_missing' else 'дозирования',reason)
+                again,_=catalog.auto_select(recalculate(evaluate(result),result['inputs']),source)
+                self.assertIsNone(row(again,'treatment','premium')['catalog'])
+
+    def test_complete_chlorine_station_and_unrelated_missing_component_remain_eligible(self):
+        for description in [
+            'Комплект включает датчик свободного хлора. Дозирование хлора предусмотрено.',
+            'Без датчика температуры, измеряет свободный хлор.',
+            'Датчик свободного хлора включен, датчик температуры отсутствует.',
+            'Комплект не включает датчик температуры, но включает датчик свободного хлора.',
+            'Без дозирования альгицида, дозирование хлора предусмотрено.',
+            'Датчик температуры не входит в комплект. Датчик свободного хлора включен.',
+        ]:
+            with self.subTest(description=description):
+                source=catalog.parse_catalog(feed(offer(20,'Система дозирующих насосов PH/RX+Free Cl','1',description=description)))
+                facts=source['products']['20']['auxiliary']
+                self.assertFalse(facts['chlorine_sensor_missing'])
+                self.assertFalse(facts['chlorine_dosing_denied'])
+                result,_=catalog.auto_select(generate({**INPUTS,'power':'230'}),source)
+                self.assertEqual(row(result,'treatment','premium')['catalog']['id'],'20')
+
+    def test_rx_station_needs_rx_sensor_not_optional_chlorine_sensor(self):
+        for description in ['Датчик свободного хлора не входит в комплект.', 'Без датчика свободного хлора.']:
+            with self.subTest(description=description):
+                source=catalog.parse_catalog(feed(offer(20,'Система дозирующих насосов PH/RX','1',description=description)))
+                facts=source['products']['20']['auxiliary']
+                self.assertTrue(facts['chlorine_sensor_missing'])
+                self.assertFalse(facts['incomplete'])
+                result,_=catalog.auto_select(generate({**INPUTS,'power':'230'}),source)
+                self.assertEqual(row(result,'treatment','standard')['catalog']['id'],'20')
+                self.assertIsNone(row(result,'treatment','premium')['catalog'])
+        for description in ['Без датчиков pH и Rx.', 'Без дозирования хлора, только pH.']:
+            with self.subTest(description=description):
+                source=catalog.parse_catalog(feed(offer(20,'Система дозирующих насосов PH/RX','1',description=description)))
+                result,_=catalog.auto_select(generate({**INPUTS,'power':'230'}),source)
+                self.assertIsNone(row(result,'treatment','standard')['catalog'])
