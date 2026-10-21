@@ -17,6 +17,14 @@ import unittest
 from unittest.mock import patch
 
 
+def matching_proc_namespace():
+    """Only inspect PIDs when procfs describes this process namespace."""
+    try:
+        return int(Path("/proc/self/stat").read_text().split(" ", 1)[0]) == os.getpid()
+    except (OSError, ValueError):
+        return False
+
+
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("avito_cron", ROOT / "scripts/avito_monitor_cron.py")
 cron = importlib.util.module_from_spec(spec)
@@ -333,8 +341,24 @@ Path("workers.json").write_text(json.dumps({
             value = Path(f"/proc/{pid}/stat").read_text()
         except (FileNotFoundError, ProcessLookupError):
             return False
-        # Killed descendants can briefly await reaping by the host's init.
-        return value.rsplit(")", 1)[1].split()[0] != "Z"
+        # Linux can expose both zombie and dead states during exit/reaping.
+        return value.rsplit(")", 1)[1].split()[0] not in {"Z", "X", "x"}
+
+    def test_process_state_recognizes_dead_and_live_processes(self):
+        for state in ("Z", "X", "x", "R", "S", "D", "T"):
+            with self.subTest(state=state), patch.object(
+                Path, "read_text", return_value=f"123 (worker (test)) {state} 1 123"
+            ):
+                self.assertEqual(self.process_is_running(123), state not in {"Z", "X", "x"})
+        with patch.object(Path, "read_text", side_effect=FileNotFoundError):
+            self.assertFalse(self.process_is_running(123))
+
+    def test_proc_namespace_must_match_current_process(self):
+        for pid in (os.getpid(), os.getpid() + 1):
+            with self.subTest(pid=pid), patch.object(
+                Path, "read_text", return_value=f"{pid} (python) R 1"
+            ):
+                self.assertEqual(matching_proc_namespace(), pid == os.getpid())
 
     def assert_workers_stopped(self):
         workers = json.loads((self.app / "workers.json").read_text())
@@ -357,7 +381,7 @@ Path("workers.json").write_text(json.dumps({
                 except ProcessLookupError:
                     pass
 
-    @unittest.skipUnless(Path("/proc").exists(), "Linux process-state regression")
+    @unittest.skipUnless(matching_proc_namespace(), "requires procfs in the current PID namespace")
     def test_real_outer_watchdog_stops_worker_and_descendant_in_both_modes(self):
         self.real_worker_fixture()
         original = cron.bounded
@@ -374,7 +398,7 @@ Path("workers.json").write_text(json.dumps({
                             self.manager.readiness()
                 self.assert_workers_stopped()
 
-    @unittest.skipUnless(Path("/proc").exists(), "Linux process-state regression")
+    @unittest.skipUnless(matching_proc_namespace(), "requires procfs in the current PID namespace")
     def test_supervisor_stops_descendant_when_worker_exits_before_outer_deadline(self):
         self.real_worker_fixture(exit_worker=True)
         self.assertEqual(self.manager.tick(), 0)
