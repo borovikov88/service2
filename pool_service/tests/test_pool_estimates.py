@@ -147,7 +147,10 @@ class PoolEstimateViewsTests(TestCase):
     def test_lighting_api_save_load_off_on_and_deleted_row(self):
         from .test_estimate_lighting import rows, fixture
         from pool_service.services.estimate_catalog import auto_select
-        self.snapshot=auto_select(generate({**INPUTS,'lighting':'yes','light_count':'2'}),fixture())[0]
+        from unittest.mock import patch
+        stock=fixture()
+        catalog_read=self.enterContext(patch('pool_service.estimate_views.get_catalog',return_value=stock))
+        self.snapshot=auto_select(generate({**INPUTS,'lighting':'yes','light_count':'2'}),stock)[0]
         target=next(b for b in self.snapshot['variants']['economy']['blocks'] if b['id']=='embedded')
         target['rows'].remove(rows(self.snapshot)['light_box'])
         saved=self.save().json()
@@ -156,6 +159,7 @@ class PoolEstimateViewsTests(TestCase):
         off=self.post(action='recalculate',snapshot=loaded,inputs={**loaded['inputs'],'lighting':'no'}).json()['snapshot']
         on=self.post(action='recalculate',snapshot=off,inputs={**off['inputs'],'lighting':'yes'}).json()['snapshot']
         self.assertNotIn('light_box',rows(on))
+        self.assertEqual(catalog_read.call_count,2)
         self.assertEqual(rows(on)['pool_light']['catalog']['id'],rows(loaded)['pool_light']['catalog']['id'])
         original=self.client.get(self.url,{'organization':self.org.pk,'id':saved['id'],'version':1}).json()['snapshot']
         self.assertEqual(original,loaded)
