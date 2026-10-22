@@ -14,11 +14,11 @@ def work(s, code, variant='economy'):
 class EstimateWorkTests(SimpleTestCase):
     def test_all_operations_with_rates_units_and_no_old_project_quantities(self):
         s = generate({**INPUTS, 'finish': 'film'})
-        expected = {x[0] for x in works.WORKS} | {'embedded_work', 'equipment_work', 'finish_film', 'underlay_film', 'liner_steps'}
+        expected = {x[0] for x in works.WORKS} | {'embedded_work', 'equipment_work', 'finish_film', 'underlay_film', 'liner_steps', 'contact_layer'}
         for key, variant in s['variants'].items():
             rows = [r for b in variant['blocks'] for r in b['rows'] if r['kind'] == 'work']
             self.assertEqual({r['work_code'] for r in rows}, expected)
-            self.assertEqual(len(rows), 28)
+            self.assertEqual(len(rows), 29)
             self.assertEqual(work(s, 'excavation', key)['quantity'], None)
             self.assertIsNone(work(s, 'embedded_work', key)['price'])  # Formula depends on the old fitting set.
         self.assertEqual(work(s, 'equipment_work')['price'], '70000.00')

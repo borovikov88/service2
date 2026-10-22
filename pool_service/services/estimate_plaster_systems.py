@@ -12,8 +12,8 @@ SYSTEMS = {
         'mix': 'Litokol CR30', 'latex': 'IDROKOL X20', 'unit': 'кг',
         'dose': D('.9'), 'minimum_mm': D('8'),
         'source': 'https://www.litokol.ru/catalog/litokol-cr30/',
-        'contact_source': 'https://www.litokol.ru/catalog/idrokol-x20/',
-        'contact': 'Контактное молочко IDROKOL X20 : цемент : вода = 1:1:1 по массе. Расход на м² не подтверждён.',
+        'contact_source': 'https://www.litokol.ru/catalog/litokol-cr30/',
+        'contact': 'Контактное молочко: IDROKOL X20 — 1 кг, цемент М400–М500 — 1 кг, вода — 1 л. CR30 не заменяет цемент молочка; основной слой CR30 + IDROKOL наносят свежее на свежее. Расход на м² не подтверждён.',
     },
     'premium': {
         'mix': 'Mapei Nivoplan Plus', 'latex': 'Admix P', 'unit': 'л',
@@ -105,7 +105,7 @@ def apply(snapshot, create=False):
             for identity, name, unit, basis in (
                 (IDS[1], system['latex'] + ' — добавка основного слоя', system['unit'],
                  'plaster_latex_kg' if tier == 'standard' else 'plaster_latex_l'),
-                (IDS[2], system['mix'] + ' — контактный слой (уточнить расход)', 'компл.', 'plaster_contact'),
+                (IDS[2], ('IDROKOL X20 + цемент М400–М500 — контактное молочко (уточнить расход)' if tier=='standard' else system['mix'] + ' — контактный слой (уточнить расход)'), 'компл.', 'plaster_contact'),
             ):
                 if not any(r['id'] == identity for r in rows):
                     block['rows'].insert(insertion, make_row(identity, name, unit, None, basis))

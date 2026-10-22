@@ -30,7 +30,7 @@ def apply_defaults(snapshot, organization, *, only_new=None):
                 if base and row['price'] is not None and Decimal(row['price']) == price:
                     sources = sorted({VARIANTS[r.variant][0] for r in candidates if r.price == price and r.variant in VARIANTS})
                     row['rate_source'] = ('Общая повышенная ставка организации: максимум сохранённых ставок; источник: ' + ', '.join(sources)
-                                          if price > Decimal(base) else 'Общая базовая ставка, утверждена владельцем 20.10.2026')
+                                          if price > Decimal(base) else 'Общая базовая ставка, утверждена владельцем '+('22.10.2026' if row.get('work_code')=='contact_layer' else '20.10.2026'))
     return evaluate(snapshot)
 
 
