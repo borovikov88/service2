@@ -18,10 +18,13 @@ def normalize_row_split(item, raw):
         raise EstimateInputError('Некорректное разделение количества форсунок фильтрации и уровня.')
     # A normal quantity edit carries the previous split. Respect the new total;
     # never silently add another item to a manual quantity, including zero.
+    credit=number(raw.get('level_quantity_credit','0'),'Резерв форсунки уровня',maximum='1',places=None)
+    if credit not in (0,1): raise EstimateInputError('Некорректный резерв форсунки уровня.')
     if filtration + level != total:
+        credit=Decimal(0)
         level = level if total >= level else Decimal(0)
         filtration = total - level
-    item.update(filtration_quantity=f'{filtration:.3f}', level_quantity=f'{level:.3f}')
+    item.update(filtration_quantity=f'{filtration:.3f}',level_quantity=f'{level:.3f}',level_quantity_credit=str(credit if total>=credit else 0))
 
 
 def filtration_quantity(row):
@@ -113,10 +116,17 @@ def sync(snapshot):
                 desired = Decimal(1 if wanted and item is row else 0)
                 if item['auto_quantity'] and not item['existing']:
                     base = Decimal(q['inlet']) if item['basis'] == 'inlet' else max(Decimal(0), total - old_level)
-                    item.update(filtration_quantity=f'{base:.3f}', level_quantity=f'{desired:.3f}', quantity=f'{base + desired:.3f}')
+                    item.update(filtration_quantity=f'{base:.3f}', level_quantity=f'{desired:.3f}', quantity=f'{base + desired:.3f}',level_quantity_credit='0')
                 else:
                     if automatic and not item['existing'] and item['unit']=='шт.':
-                        if desired>old_level and total>0: total+=desired-old_level
+                        credit=Decimal(item.get('level_quantity_credit','0'))
+                        if desired>old_level and total>0:
+                            needed=desired-old_level
+                            total+=max(Decimal(0),needed-credit)
+                            credit=max(Decimal(0),credit-needed)
+                        elif desired<old_level:
+                            credit=min(Decimal(1),credit+old_level-desired)
+                        item['level_quantity_credit']=str(credit if total>=credit else 0)
                         item['quantity']=f'{total:.3f}'
                         old_level=desired
                     # Preserve the user's physical total, not a reservation for
@@ -190,6 +200,8 @@ def apply_binding(raw, tier, row_id):
     snapshot = evaluate(raw)
     if snapshot.get('level_shared_inlet') != 1 or tier not in snapshot['variants']:
         raise EstimateInputError('Связь форсунки уровня доступна только в новом расчёте.')
+    if snapshot.get('level_shared_quantity_version')==2:
+        raise EstimateInputError('В текущей схеме форсунка уровня назначается автоматически.')
     variant = snapshot['variants'][tier]
     if row_id and not any(r['id'] == row_id and r['unit'] == 'шт.' for r in active(variant, 'inlet')):
         raise EstimateInputError('Выберите активную строку форсунки в штуках.')

@@ -108,3 +108,20 @@ class TwoStageTests(SimpleTestCase):
         for b in s['variants']['economy']['blocks']:b['rows'][:]=[r for r in b['rows'] if r['id']!='liner_corner_2m']
         s=engine.recalculate(s,s['inputs'])
         self.assertFalse(any(r['id']=='liner_corner_2m' for b in s['variants']['economy']['blocks'] for r in b['rows']))
+
+    def test_manual_level_builtin_cycles_do_not_accumulate_quantity_or_money(self):
+        s=engine.generate(NEW);row(s,'inlet').update(auto_quantity=False,quantity='4',price='100',unit_price_manual=True)
+        for _ in range(3):
+            row(s,'skimmer').update(level_status='included',level_evidence='Synthetic model passport')
+            s=engine.evaluate(s)
+            self.assertEqual(row(s,'inlet')['quantity'],'4.000')
+            self.assertEqual(row(s,'inlet')['level_quantity'],'0.000')
+            row(s,'skimmer')['level_status']='absent'
+            s=engine.recalculate(s,s['inputs'])
+            self.assertEqual(row(s,'inlet')['quantity'],'4.000')
+            self.assertEqual(row(s,'inlet')['level_quantity'],'1.000')
+            self.assertEqual(row(s,'inlet')['amount'],'400.00')
+        row(s,'skimmer')['level_status']='included';s=engine.evaluate(s)
+        row(s,'inlet')['quantity']='3';s=engine.evaluate(s)
+        row(s,'skimmer')['level_status']='absent';s=engine.evaluate(s)
+        self.assertEqual(row(s,'inlet')['quantity'],'4.000')
