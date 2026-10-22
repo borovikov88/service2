@@ -144,6 +144,24 @@ class PoolEstimateViewsTests(TestCase):
     def save(self, **overrides):
         return self.post(**{"action": "save", "snapshot": self.snapshot, "expected_revision": 0, **overrides})
 
+    def test_new_material_and_work_all_quotes_roundtrip(self):
+        from pool_service.services.pool_estimates import make_row
+        from pool_service.services.estimate_layout import sections
+        for tier in self.snapshot['variants']:
+            b=block(self.snapshot,'options',tier)
+            b['rows'] += [dict(make_row('custom_material','Новый материал','шт.','2'),price='123'),
+                          dict(make_row('custom_work','Новая работа','м²','3',kind='work'),price=None,work_code='custom_work')]
+        result=self.post(action='work_price',snapshot=self.snapshot,variant='economy',block='options',row='custom_work',price='1000',all=True)
+        self.assertEqual(result.status_code,200)
+        self.snapshot=result.json()['snapshot']
+        saved=self.save().json()
+        loaded=self.client.get(self.url,{'organization':self.org.pk,'id':saved['id']}).json()['snapshot']
+        for tier in loaded['variants']:
+            items={r['id']:r for r in block(loaded,'options',tier)['rows']}
+            self.assertEqual(items['custom_material']['amount'],'246.00')
+            self.assertEqual(items['custom_work']['amount'],'3000.00')
+            self.assertTrue(all(b['rows'] for stage in sections(loaded['variants'][tier],client=True) for b in stage['blocks']))
+
     def test_consumables_history_and_captions_save_load_recalculate_print(self):
         from unittest.mock import patch
         from pool_service.services.estimate_catalog import CatalogUnavailable

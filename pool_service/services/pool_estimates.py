@@ -526,6 +526,7 @@ def normalize_snapshot(raw):
         raise EstimateInputError("Неизвестный формат расчёта.")
     result = {"schema": 1, "inputs": normalize_inputs(raw.get("inputs")), "variants": {}, "works_catalog": 1 if raw.get("works_catalog") == 1 else 0, "heating_accessories": 1 if raw.get("heating_accessories") == 1 else 0}
     if raw.get("construction_version") == 1: result["construction_version"] = 1
+    if raw.get('pvc_rate_version') == 2: result['pvc_rate_version'] = 2
     if result.get("construction_version") and raw.get("construction_quantity_version") in (1, 2):
         result["construction_quantity_version"] = raw["construction_quantity_version"]
     expected_blocks=set(BLOCKS) if result.get("construction_version") else set(BLOCKS)-{construction.MATERIAL_BLOCK}
@@ -821,6 +822,7 @@ def recalculate(raw, inputs):
                 if row["kind"] == "heater":
                     row["heating_type"] = row_heating_type(row, result["inputs"])
     result["inputs"] = normalize_inputs(inputs)
+    pvc.upgrade_rates(result)
     installation.initialize(result)
     corner.initialize(result)
     consumables.initialize(result)

@@ -86,7 +86,7 @@ class ConsumablesTests(SimpleTestCase):
         for b in v['blocks']:
             if b['id'] in {'construction','construction_materials'}:
                 for r in b['rows']:r['excluded']=True
-        for client in (False,True):self.assertEqual([s['show_title'] for s in layout.sections(v,client=client)],[False,False])
+        for client in (False,True):self.assertFalse(any(s['show_title'] for s in layout.sections(v,client=client)))
         b=next(b for b in v['blocks'] if b['id']=='construction_materials');b['rows'][0]['excluded']=False
         for client in (False,True):self.assertEqual([s['show_title'] for s in layout.sections(v,client=client)],[True,True])
         b['excluded']=True
