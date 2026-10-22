@@ -1,8 +1,15 @@
-"""Owner-confirmed catalogue price per m²; no roll conversion or extra stock."""
+"""Geotextile units: confirmed 26930 roll is 2 × 50 m; other prices stay per m²."""
 import re
 
 PREFERRED_URL="https://shop.aqualine22.ru/basseini/297-otdelochnye-materialy/307-lajner/geotekstil-aquaviva-300-gm2-50-m.html"
 from html import unescape
+from copy import deepcopy
+from decimal import Decimal, InvalidOperation
+
+# Supplier SKU 26930: https://aquapolis.ru/geotekstil-aquaviva-300-g-m2-50-m.html
+# 2 m × 50 m = 100 m², price per roll. No price is hardcoded.
+def confirmed_roll(name, sku, url):
+    return url == PREFERRED_URL or (sku == "26930" and "aquaviva" in name.casefold() and name.casefold().startswith("геотекстиль"))
 
 
 def classify(specs, name, description='', category='', offer=None):
@@ -35,28 +42,47 @@ def classify(specs, name, description='', category='', offer=None):
                     pool |= not negated
                 else:
                     other |= not negated
-    unit = 'm2'
+    known_roll = offer is not None and confirmed_roll(name, offer.findtext('vendorCode', ''), offer.findtext('url', ''))
+    unit = 'roll' if known_roll else 'm2'
     for p in offer.findall('param') if offer is not None else []:
         if (p.get('name') or '').casefold().strip() in {'единица цены', 'единица продажи', 'единица измерения'}:
             value = (p.text or '').casefold().replace(' ', '')
-            if value not in {'м²', 'м2', 'm2', 'm²', 'кв.м', 'кв.м.'}:
-                unit = 'conflict'
-    specs.update(kind='geotextile', geotextile={'purpose': 'denied' if denied else 'pool' if pool else 'other' if other else 'unknown', 'price_unit': unit})
+            if value in {'м²', 'м2', 'm2', 'm²', 'кв.м', 'кв.м.'}:
+                if known_roll: unit = 'conflict'
+            elif value in {'рулон', 'рул.', 'рул'}:
+                if not known_roll: unit = 'conflict'
+            else: unit = 'conflict'
+    if known_roll:
+        for param in offer.findall('param'):
+            key=(param.get('name') or '').casefold().strip()
+            expected = '2' if key in {'ширина рулона', 'ширина рулона, м'} else '50' if key in {'длина рулона', 'длина рулона, м'} else '100' if key in {'площадь рулона', 'площадь рулона, м²', 'площадь рулона, м2'} else None
+            if expected:
+                value=re.sub(r'\s*(?:м²|м2|м)\s*$', '', (param.text or '').strip()).replace(',', '.')
+                try:
+                    if Decimal(value) != Decimal(expected): unit='conflict'
+                except InvalidOperation: unit='conflict'
+    specs.update(kind='geotextile', geotextile={'purpose': 'denied' if denied else 'pool' if pool else 'other' if other else 'unknown', 'price_unit': unit, **({'area': '100'} if known_roll else {})})
 
 
 def normalize(raw):
     from .pool_estimates import EstimateInputError
     if raw is None or raw == {}: return {}
-    if not isinstance(raw, dict) or raw.get('purpose') not in {'pool','other','unknown','denied'} or raw.get('price_unit') not in {'m2','conflict'}:
+    if not isinstance(raw, dict) or raw.get('purpose') not in {'pool','other','unknown','denied'} or raw.get('price_unit') not in {'m2','roll','conflict'}:
         raise EstimateInputError('Некорректные характеристики геотекстиля.')
-    return {key:raw[key] for key in ('purpose','price_unit')}
+    result = {key:raw[key] for key in ('purpose','price_unit')}
+    if raw.get('area') is not None:
+        if str(raw['area']) != '100': raise EstimateInputError('Неподтверждённая площадь рулона геотекстиля.')
+        result['area'] = '100'
+    if result['price_unit'] == 'roll' and not result.get('area'):
+        raise EstimateInputError('Не указана площадь рулона геотекстиля.')
+    return result
 
 
 def assess(product):
     facts=product.get('geotextile') or {}
     if not product.get('available'): return 'Доступность товара не подтверждена.'
     if product.get('specification_conflict'): return 'Противоречивые характеристики товара.'
-    if facts.get('price_unit') != 'm2': return 'Единица цены противоречит согласованной цене геотекстиля за м².'
+    if facts.get('price_unit') not in {'m2','roll'}: return 'Единица цены противоречит согласованной цене геотекстиля за м².'
     if facts.get('purpose') == 'denied': return 'Явно указано: геотекстиль не подходит для бассейна или под плёнку.'
     if facts.get('purpose') == 'other': return 'Указано другое назначение геотекстиля.'
     return None
@@ -64,7 +90,7 @@ def assess(product):
 
 def fill(snapshot, catalog, only_variant=None):
     if not snapshot.get('auxiliary_version'): return 0
-    from .estimate_catalog import apply_product, refresh_auto_facts, select_price_tier
+    from .estimate_catalog import apply_product, select_price_tier
     count=0
     for tier, variant in snapshot['variants'].items():
         if only_variant and tier != only_variant: continue
@@ -87,7 +113,14 @@ def fill(snapshot, catalog, only_variant=None):
                 chosen=select_price_tier(preferred or known or choices,tier)
                 if chosen:
                     row['catalog_review_note']=''
-                    if auto and chosen['id']==origin['id']: refresh_auto_facts(row,chosen,catalog)
+                    if auto and chosen['id']==origin['id']:
+                        # Keep the frozen source price. An explicit recalculation may
+                        # correct old automatic per-m² interpretation of this roll;
+                        # evaluate/load alone never reprices historical snapshots.
+                        frozen_product=deepcopy(chosen)
+                        frozen_product['price']=origin.get('roll_price',origin['price'])
+                        frozen_catalog={**catalog,'checked_at':origin['checked_at'],'feed_date':origin['feed_date']}
+                        apply_product(row,frozen_product,frozen_catalog,'auto')
                     else: apply_product(row,chosen,catalog,'auto');count+=1
                 elif auto:
                     current=catalog['products'].get(origin['id']) or origin
@@ -106,7 +139,8 @@ def annotate(snapshot, variant):
             if row['kind']!='geotextile' or row['excluded'] or not row.get('catalog'): continue
             origin=row['catalog'];issue=assess(origin)
             note=row.get('catalog_review_note') or issue or ('Назначение и пригодность материала под плёнку бассейна не подтверждены.' if origin.get('geotextile',{}).get('purpose')!='pool' else '')
-            row['price_conversion_note']='Цена каталога за м², без деления на рулон. Запас 15% уже включён в количество материала; повторно не начисляется.'
+            from .estimate_liner import note as roll_note
+            row['price_conversion_note']=((roll_note(row) or 'Ручная цена за единицу строки; автоматический пересчёт цены рулона отключён.') if origin.get('roll_area') else 'Цена каталога за м², без деления на рулон.') + ' Запас 15% уже включён в количество материала; повторно не начисляется.'
             if note:
                 row['selection_note']='Проверить: '+note+' Источник: '+origin['url']+'; дата цены '+origin['checked_at']+'.'
                 row['compatibility']={'message':row['selection_note'],'can_auto':False,'kind':'geotextile'}

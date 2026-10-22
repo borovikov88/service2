@@ -9,6 +9,8 @@ ROLLS = {'34500': ('economy', '41.58'), '34501': ('economy', '51.66'),
 
 
 def area(product):
+    geo=product.get('geotextile') or {}
+    if geo.get('price_unit')=='roll':return geo.get('area')
     facts=product.get('liner') or {}
     if facts.get('conflict') or facts.get('wrong_purpose'):return None
     if facts.get('area'):return facts['area']
@@ -22,6 +24,8 @@ def area(product):
 
 def validate_selection(row, product):
     from .pool_estimates import EstimateInputError
+    if product.get('kind')=='geotextile' and product.get('geotextile',{}).get('area') and row['unit'] not in ('м²','рулон','рул.'):
+        raise EstimateInputError('Для геотекстиля с ценой за рулон выберите м² для пересчёта либо рулон.')
     is_liner = (product.get('kind')=='liner' or product.get('sku') in ROLLS or bool(re.search(r'^(?:(?:армированная|пвх)\s+)*(?:лайнер|пл[её]нка)\b', product['name'], re.I)))
     film_target = row['id'].startswith('finish_material') and row.get('finish_type') == 'film'
     if not is_liner and not film_target: return
@@ -42,6 +46,10 @@ def set_conversion(row, product):
     facts=product.get('liner') or {}
     if row['unit'] != 'м²':return
     if facts.get('price_unit')=='m2' and not facts.get('conflict'):
+        return
+    if product.get('kind')=='geotextile' and product.get('geotextile',{}).get('price_unit')=='conflict':
+        row['price']=None
+        row['selection_note']='Проверить: противоречивые размеры или единица цены геотекстиля; цена за м² не определена.'
         return
     if not size or facts.get('unit_explicit') and facts.get('price_unit')=='unknown':
         if product.get('kind')=='liner':

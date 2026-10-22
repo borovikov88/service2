@@ -13,7 +13,7 @@ const {chromium}=require('playwright');
   const included=rows.filter(id=>wanted.includes(id));check(included.join()===wanted.join(),'screen work order: '+included.join());
   await page.locator('[data-variant=standard]').click();
   check(find('finish_geotextile').catalog.url.includes('geotekstil-aquaviva-300-gm2-50-m.html'),'preferred geotextile linked');
-  check(find('finish_geotextile').price==='100.00','geotextile price is per m2 without roll division');
+  check(find('finish_geotextile').price==='1.00','geotextile roll price normalized to m2');
   check(find('tech_plaster_material').catalog.id==='3','CR30 linked');check(find('tech_plaster_latex').catalog.id==='4','kg latex selected before cheap litres');
   await page.locator('[data-shop=tech_plaster_material]').click();await page.locator('[data-catalog-product="3"]').waitFor();
   check(await page.locator('#pe-catalog-kind').inputValue()==='plaster_component','Litokol catalogue category');

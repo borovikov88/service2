@@ -80,7 +80,7 @@ class LitokolCatalogueTests(SimpleTestCase):
         for tier in s['variants']:
             g=row(s,'finish_geotextile',tier)
             self.assertEqual(g['catalog']['url'],geotextile.PREFERRED_URL)
-            self.assertEqual(g['price'],'100.00');self.assertEqual(D(g['amount']),D(g['quantity'])*100)
+            self.assertEqual(g['price'],'1.00');self.assertEqual(D(g['amount']),D(g['quantity']))
         mix=row(s,'tech_plaster_material');latex=row(s,'tech_plaster_latex')
         self.assertEqual((mix['catalog']['id'],mix['quantity'],mix['price'],mix['amount']),('3','98','1000.00','98000.00'))
         self.assertEqual((latex['catalog']['id'],latex['price']),('4','1000.00'))
@@ -140,6 +140,21 @@ class ContactWorkApiTests(TestCase):
     def post(self,**data):
         response=self.client.post(self.url,json.dumps({'organization':self.org.pk,**data}),content_type='application/json')
         self.assertIn(response.status_code,(200,201),response.content[:500]);return response.json()
+
+    def test_geotextile_roll_api_saved_history_recalc_and_refresh(self):
+        self.data['products']['1']['price']='16606.00'
+        s=self.post(action='generate',inputs=PARAMS)['snapshot']
+        for tier in s['variants']:self.assertEqual(row(s,'finish_geotextile',tier)['price'],'166.06')
+        saved=self.post(action='save',snapshot=s,expected_revision=0)
+        loaded=self.client.get(self.url,{'organization':self.org.pk,'id':saved['id']}).json()['snapshot']
+        self.assertEqual(row(loaded,'finish_geotextile')['amount'],row(s,'finish_geotextile')['amount'])
+        self.data['products']['1']['price']='20000.00'
+        checked=self.post(action='recalculate',snapshot=loaded,inputs=loaded['inputs'])['snapshot']
+        self.assertEqual(row(checked,'finish_geotextile')['price'],'166.06')
+        fresh=self.post(action='catalog_prices',snapshot=checked,variant='standard')['snapshot']
+        self.assertEqual(row(fresh,'finish_geotextile')['price'],'200.00')
+        old=self.client.get(self.url,{'organization':self.org.pk,'id':saved['id'],'version':1}).json()['snapshot']
+        self.assertEqual(old,loaded)
 
     def test_work_order_versions_price_one_all_clear_and_shared_future_rate(self):
         s=self.post(action='generate',inputs=PARAMS)['snapshot']
