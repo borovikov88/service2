@@ -163,3 +163,22 @@ class GeotextileRollTests(SimpleTestCase):
                 self.assertIsNone(geo(s)['catalog'])
                 original=self.selected();fresh,n,skipped=catalog.refresh_prices(original,source,'economy')
                 self.assertEqual(n,0);self.assertEqual(skipped,1);self.assertEqual(geo(fresh)['price'],'166.06')
+
+    def test_explicit_title_description_dimensions_override_known_identity(self):
+        from pool_service.services.estimate_geotextile import PREFERRED_URL
+        for title, description, conflict in [
+            ('Геотекстиль Aquaviva 300 г/м2 рулон 3×50 м','Для бассейна.',True),
+            ('Геотекстиль Aquaviva 300 г/м2 (50 м)','Ширина рулона: 3 м. Длина рулона: 50 м.',True),
+            ('Геотекстиль Aquaviva 300 г/м2 (50 м)','Размер рулона: 3х50 м.',True),
+            ('Геотекстиль Aquaviva 300 г/м2 (50 м)','В рулоне 150 м2.',True),
+            ('Геотекстиль Aquaviva 300 г/м2 (50 м)','Площадь рулона: 150 м².',True),
+            ('Геотекстиль Aquaviva 300 г/м2 2×50 м','Ширина рулона: 2 м. Длина рулона: 50 м. В рулоне 100 м2.',False),
+            ('Геотекстиль Aquaviva 300 г/м2 (50 м)','Рекомендуется для бассейна размером 3×50 м.',False),
+        ]:
+            with self.subTest(title=title,description=description):
+                source=catalog.parse_catalog(feed(offer(26930,title,'16606',description=description+' Для бассейна.',url=PREFERRED_URL)))
+                self.assertEqual(source['products']['26930']['geotextile']['price_unit']=='conflict',conflict)
+                s,_=catalog.auto_select(generate({**INPUTS,'finish':'film'}),source)
+                self.assertEqual(geo(s)['catalog'] is None,conflict)
+                fresh,n,_=catalog.refresh_prices(self.selected(),source,'economy')
+                self.assertEqual(n,0 if conflict else 1);self.assertEqual(geo(fresh)['price'],'166.06')

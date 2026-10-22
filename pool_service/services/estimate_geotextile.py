@@ -61,6 +61,20 @@ def classify(specs, name, description='', category='', offer=None):
                 try:
                     if Decimal(value) != Decimal(expected): unit='conflict'
                 except InvalidOperation: unit='conflict'
+    if known_roll:
+        from .estimate_liner_facts import metres
+        n=r'(\d+(?:[.,]\d+)?)'
+        for index, source in enumerate(sources[:2]):
+            for field, expected in (('ширина',Decimal('2')),('длина',Decimal('50'))):
+                for m in re.finditer(field+r'\s+рулона\s*[:=]?\s*'+n+r'\s*(мм|см|м)\b',source):
+                    if metres(m[1]+m[2]) != expected: unit='conflict'
+            for m in re.finditer(r'(?:площадь рулона|в рулоне)\s*[:=]?\s*'+n+r'\s*(?:м²|м2)\b',source):
+                if Decimal(m[1].replace(',','.')) != Decimal('100'): unit='conflict'
+            for m in re.finditer(r'(?<![\d.,xх×])'+n+r'\s*[xх×*]\s*'+n+r'\s*(мм|см|м)\b',source):
+                if re.search(r'[xх×*]\s*$',source[:m.start()]) or re.match(r'\s*[xх×*]',source[m.end():]):continue
+                if index and not re.search(r'(?:размер\w*\s+рулона|размер\w*\s*[:=])\s*[:=]?\s*$',source[:m.start()]):continue
+                dimensions=sorted([metres(m[1]+m[3]),metres(m[2]+m[3])])
+                if dimensions != [Decimal('2'),Decimal('50')]:unit='conflict'
     specs.update(kind='geotextile', geotextile={'purpose': 'denied' if denied else 'pool' if pool else 'other' if other else 'unknown', 'price_unit': unit, **({'area': '100'} if known_roll else {})})
 
 
