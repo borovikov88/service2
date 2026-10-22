@@ -32,6 +32,23 @@ export function emptyRow(id) {
     specs: {flow: null, head: null, filter_flow: null, backwash_flow: null}};
 }
 
+// Check all destinations before mutating; clones never share nested row data.
+export function addRow(snapshot,variantKey,blockId,row,all=false){
+ const result=structuredClone(snapshot);
+ const targets=Object.entries(result.variants).filter(([key])=>all||key===variantKey);
+ if(!targets.length)throw Error('Выберите смету.');
+ for(const [,variant] of targets){
+  const block=variant.blocks.find(b=>b.id===blockId);
+  if(!block||block.rows.length>=100)throw Error('В одном из выбранных блоков нет места для новой строки (максимум 100).');
+  if(variant.blocks.some(b=>b.rows.some(r=>r.id===row.id)))throw Error('Позиция уже добавлена.');
+ }
+ for(const [key,variant] of targets){
+  variant.blocks.find(b=>b.id===blockId).rows.push(structuredClone(row));
+  setExcluded(result,key,blockId,row.id,false);
+ }
+ return result;
+}
+
 export function isWork(row) {
   return row.kind === 'work' || ['bowl_work', 'embedded_work', 'equipment_work'].includes(row.id) || row.id.startsWith('finish_work');
 }

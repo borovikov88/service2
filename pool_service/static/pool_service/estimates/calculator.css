@@ -48,3 +48,5 @@
 #pool-estimator .pe-row-warning-icon{min-height:18px;position:relative}#pool-estimator .pe-row-warning-icon::before{content:"";position:absolute;inset:-3px}.pe-stage>h2{font-size:18px;margin:18px 0 8px;padding:0 22px}
 
 .pe-product-link{color:var(--pe-teal);text-decoration:underline;text-underline-offset:2px}.pe-product-link:focus-visible{outline:2px solid var(--pe-teal);outline-offset:2px}
+
+.pe-add-destination{padding:18px 22px;display:flex;align-items:end;gap:12px;flex-wrap:wrap}.pe-add-destination label{flex:1;min-width:180px}.pe-add-destination .pe-btn{margin-bottom:12px}

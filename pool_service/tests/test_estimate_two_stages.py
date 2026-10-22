@@ -42,9 +42,10 @@ class TwoStageTests(SimpleTestCase):
             if b['id'] in {'construction','construction_materials'}:b['excluded']=True
         s=engine.recalculate(s,s['inputs'])
         sections=layout.sections(s['variants']['economy'],client=True)
-        self.assertTrue(all(not b['rows'] for b in sections[0]['blocks']))
-        self.assertEqual(sections[1]['blocks'][4]['rows'][0]['id'],'custom_material')
-        self.assertEqual(sections[1]['blocks'][5]['rows'][0]['id'],'custom_work')
+        self.assertNotIn('stage1',[st['id'] for st in sections])
+        stage2=next(st for st in sections if st['id']=='stage2')
+        self.assertEqual(next(b for b in stage2['blocks'] if b['id']=='extra_materials')['rows'][0]['id'],'custom_material')
+        self.assertEqual(next(b for b in stage2['blocks'] if b['id']=='extra_work')['rows'][0]['id'],'custom_work')
         self.assertEqual(byid(s,'custom_material')['amount'],'246.00')
         self.assertEqual(byid(s,'custom_work')['amount'],'1368.00')
         self.assertEqual(s['variants']['standard']['total'],original['variants']['standard']['total'])

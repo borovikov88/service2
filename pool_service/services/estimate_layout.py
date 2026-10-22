@@ -47,6 +47,8 @@ def sections(variant, client=False):
             if client: entries=[(b,r) for b,r in entries if not b['excluded'] and not r['excluded'] and not r['existing']]
             rows=[{**r,'source_block':b['id'],'source_excluded':b['excluded']} for b,r in entries]
             total=sum((Decimal(r['amount']) for b,r in entries if not b['excluded'] and not r['excluded'] and r.get('amount') is not None),Decimal(0))
-            tables.append({'id':key,'title':label,'rows':rows,'subtotal':str(total)})
-        result.append({'id':stage,'title':title,'show_title':show_title,'blocks':tables})
+            if not client or rows:
+                tables.append({'id':key,'title':label,'rows':rows,'subtotal':str(total)})
+        if not client or tables:
+            result.append({'id':stage,'title':title,'show_title':show_title,'blocks':tables})
     return result

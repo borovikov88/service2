@@ -47,6 +47,15 @@ class Handler(SimpleHTTPRequestHandler):
             from pool_service.services.estimate_level_shared import apply_binding
             out={'snapshot':apply_binding(data['snapshot'],data['variant'],data['row_id'])}
         elif action=='validate':out={'snapshot':evaluate(data['snapshot'])}
+        elif action=='work_price':
+            result=data['snapshot']
+            for key,v in result['variants'].items():
+                if not data.get('all') and key!=data['variant']:continue
+                for b in v['blocks']:
+                    if b['id']==data['block']:
+                        for r in b['rows']:
+                            if r['id']==data['row']:r['price']=data['price']
+            out={'snapshot':evaluate(result),'remembered':0}
         elif action=='catalog_search':out={'products':[], 'total':0,'status':{'count':0,'brands':{}}}
         elif action=='catalog_images':out={'images':{}}
         else:out={}

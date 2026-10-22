@@ -37,7 +37,7 @@ class SkimmerEstimateTests(SimpleTestCase):
         self.assertEqual(fitting(s,'inlet')['quantity'],'4.000')
         self.assertEqual(fitting(s,'inlet')['filtration_quantity'],'3.000')
         self.assertEqual(fitting(s,'inlet')['level_quantity'],'1.000')
-        self.assertEqual(block(s,'embedded')['subtotal'],'32285.00')  # fittings285 + PVC materials32 ×1000
+        self.assertEqual(block(s,'embedded')['subtotal'],'48285.00')  # fittings285 + PVC materials32 ×1500
         c = stock(); del c['products']['107']
         missing, _ = catalog.auto_select(generate({**INPUTS,'finish':'film'}), c)
         self.assertIsNone(fitting(missing,'skimmer','premium')['price'])

@@ -2,14 +2,21 @@
 from decimal import Decimal, ROUND_HALF_UP
 
 ROWS = {
-    'pvc_embedded': ('embedded', 'ПВХ: трубы и фитинги закладных', Decimal('1000')),
-    'piping': ('equipment', 'ПВХ: обвязка оборудования', Decimal('1200')),
+    'pvc_embedded': ('embedded', 'ПВХ: трубы и фитинги закладных', Decimal('1500')),
+    'piping': ('equipment', 'ПВХ: обвязка оборудования', Decimal('1800')),
 }
+LEGACY_RATES = {'pvc_embedded': Decimal('1000'), 'piping': Decimal('1200')}
+
+
+def upgrade_rates(snapshot):
+    if snapshot.get('pvc_area_version') == 1:
+        snapshot['pvc_rate_version'] = 2
 
 
 def initialize(snapshot):
     from .pool_estimates import make_row
     snapshot['pvc_area_version'] = 1
+    upgrade_rates(snapshot)
     for variant in snapshot['variants'].values():
         for identity, (block_id, title, _) in ROWS.items():
             block = next(b for b in variant['blocks'] if b['id'] == block_id)
@@ -37,7 +44,7 @@ def apply(snapshot):
                     row['construction_quantity_note'] = ('Выбран товар каталога; укрупнённая оценка ПВХ по площади не применяется.'
                         if row.get('catalog') else '')
                     continue
-                rate = ROWS[row['id']][2]
+                rate = ROWS[row['id']][2] if snapshot.get('pvc_rate_version') == 2 else LEGACY_RATES[row['id']]
                 computed = str((area * rate).quantize(Decimal('.01'), rounding=ROUND_HALF_UP))
                 previous = row.get('pvc_computed_price')
                 if previous is not None and row['price'] != previous and (not row.get('pvc_price_suspended') or row['price'] is not None):

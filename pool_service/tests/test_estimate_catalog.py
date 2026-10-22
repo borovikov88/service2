@@ -71,7 +71,7 @@ class CatalogEngineTests(SimpleTestCase):
         self.assertEqual(block(s)["rows"][0]["catalog"]["id"], "1")
         self.assertEqual(block(s, variant="standard")["rows"][0]["brand"], "Hayward")
         self.assertIsNotNone(block(s, variant="premium")["rows"][0]["price"])
-        self.assertEqual(sum(Decimal(r["amount"] or 0) for r in block(s)["rows"] if r["kind"] != "work"), Decimal("38600.20"))  # equipment plus 32 m² × 1200 PVC materials
+        self.assertEqual(sum(Decimal(r["amount"] or 0) for r in block(s)["rows"] if r["kind"] != "work"), Decimal("57800.20"))  # equipment plus 32 m² × 1800 PVC materials
 
     def test_spa_unavailable_wrong_voltage_and_wrong_head_not_auto_selected(self):
         f = catalog.parse_catalog(feed(
@@ -412,7 +412,7 @@ class CatalogViewsTests(TestCase):
         from .test_estimate_pvc import row
         self.catalog=catalog.parse_catalog(feed(offer(99,'Комплект ПВХ Synthetic','999',description='')))
         self.fetch.return_value=self.catalog
-        for identity,bid,area_price in [('piping','equipment','38400.00'),('pvc_embedded','embedded','32000.00')]:
+        for identity,bid,area_price in [('piping','equipment','57600.00'),('pvc_embedded','embedded','48000.00')]:
             for selected_price in ['999.00',area_price]:
                 for manual_before in ['0.00',None,'123.45']:
                     with self.subTest(identity=identity,selected_price=selected_price,manual_before=manual_before):

@@ -25,9 +25,9 @@ const {chromium}=require('playwright');
    const table=page.locator(`table:has([data-drag-row=${rid}])`);check(await table.locator('tbody tr').last().getAttribute('data-order-row')===rid,'PVC last '+rid);
   }
   await page.locator('[data-scope=construction]').click();await page.locator('[data-scope-choice=one]').click();await page.waitForTimeout(400);
-  check(await page.locator('.pe-stage').first().locator('tbody tr').count()===0,'construction work and materials both excluded');check(await page.locator('[data-drag-row=pump]').count()===1,'equipment preserved');
-  await page.locator('[data-variant=standard]').click();check(await page.locator('.pe-stage').first().locator('tbody tr').count()>0,'other quote preserved');
-  await page.locator('[data-variant=economy]').click();await page.locator('[data-scope=construction]').click();await page.locator('[data-scope-choice=one]').click();await page.waitForTimeout(400);check(await page.locator('.pe-stage').first().locator('tbody tr').count()>0,'construction restored');
+  check(await page.locator('[data-estimate-stage=stage1]').locator('tbody tr').count()===0,'construction work and materials both excluded');check(await page.locator('[data-drag-row=pump]').count()===1,'equipment preserved');
+  await page.locator('[data-variant=standard]').click();check(await page.locator('[data-estimate-stage=stage1]').locator('tbody tr').count()>0,'other quote preserved');
+  await page.locator('[data-variant=economy]').click();await page.locator('[data-scope=construction]').click();await page.locator('[data-scope-choice=one]').click();await page.waitForTimeout(400);check(await page.locator('[data-estimate-stage=stage1]').locator('tbody tr').count()>0,'construction restored');
   await page.locator('[name=light_color]').selectOption('white');await page.getByRole('button',{name:'Пересчитать параметры',exact:true}).click();await page.waitForTimeout(500);
   check(await page.locator('[data-drag-row=light_controller_0]').count()===0,'white disables controller');check(await page.locator('#pe-excluded-content').textContent().then(s=>s.includes('RC-01')),'controller retained in exclusions');
   check(!errors.length,errors.join('\n'));await page.screenshot({path:`/workspace/lighting-links-${width}.png`,fullPage:true});console.log(JSON.stringify({width,passed:true}));await page.close();
