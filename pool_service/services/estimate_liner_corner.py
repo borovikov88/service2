@@ -30,3 +30,30 @@ def sync(snapshot,create=False):
 def initialize(snapshot):
     snapshot['liner_corner_version']=1
     sync(snapshot,create=True)
+
+
+def classify(specs,name,brand,offer,url):
+    import re
+    sku=offer.findtext('vendorCode','')
+    if url==URL or (brand.casefold()=='aquaviva' and (sku in {'0050032','0050032M'} or re.search(r'(?<!\d)0050032(?!\d)',name)) and re.search(r'угол',name,re.I)):
+        specs['kind']='liner_corner'
+
+
+def fill(snapshot,catalog,only_variant=None):
+    from .estimate_catalog import apply_product
+    count=0
+    for tier,v in snapshot['variants'].items():
+        if only_variant and tier!=only_variant:continue
+        for b in v['blocks']:
+            if b['excluded']:continue
+            for row in b['rows']:
+                if row['id']!=ID or row['excluded'] or row['existing'] or row.get('selection_locked') or row.get('unit_price_manual'):continue
+                if row.get('catalog') or row['price'] is not None or row['model'] or row['unit']!='шт.':continue
+                choices=[p for p in catalog['products'].values() if p['kind']=='liner_corner' and p['available'] and not p.get('specification_conflict')]
+                exact=[p for p in choices if p['url']==URL]
+                if not choices:
+                    row['selection_note']='Проверить: указанный крепёжный уголок не найден среди доступных товаров выгрузки. Цена и изображение не выдумываются.'
+                    continue
+                product=min(exact or choices,key=lambda p:int(p['id']))
+                apply_product(row,product,catalog,'auto');count+=1
+    return count

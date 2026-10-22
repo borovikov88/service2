@@ -23,7 +23,7 @@ from pool_service.services.permissions import organization_accesses_for_user
 
 VARIANTS = {"economy": ("Эконом", "Aquaviva"), "standard": ("Стандарт", "Hayward"), "premium": ("Премиум", "IML")}
 BLOCKS = {"construction": "Строительство чаши", "construction_materials": "Материалы для строительства чаши", "embedded": "Закладные элементы", "equipment": "Оборудование", "finish": "Отделка", "options": "Дополнительные работы"}
-KINDS = {*lighting.ROLES, "thermostat", "filter_media", "other", "work", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "treatment", "control_panel", "geotextile", *embedded.ROLES, *level_control.ROLES}
+KINDS = {*lighting.ROLES, "thermostat", "filter_media", "liner", "liner_corner", "other", "work", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "treatment", "control_panel", "geotextile", *embedded.ROLES, *level_control.ROLES}
 FINISHES = {
     "film": ("Плёнка ПВХ для бассейна (+15% запас)", "Монтаж и сварка плёнки ПВХ"),
     "tile": ("Плитка для бассейна (без запаса)", "Облицовка бассейна плиткой"),
@@ -493,6 +493,8 @@ def normalize_catalog(raw):
     result['temperature'] = temperature.normalize(raw.get('temperature'))
     result['filter_loading'] = filter_media.normalize(raw.get('filter_loading'), loading=True)
     result['filter_media'] = filter_media.normalize(raw.get('filter_media'))
+    from .estimate_liner_facts import normalize as normalize_liner
+    result['liner'] = normalize_liner(raw.get('liner'))
     result["geotextile"] = normalize_geotextile(raw.get("geotextile"))
     result["image"] = safe_image_url(raw.get("image", ""))
     options = raw.get("power_options", [raw["power"]] if raw["power"] != "unknown" else [])
@@ -519,9 +521,10 @@ def normalize_catalog(raw):
     if raw.get('roll_area') is not None or raw.get('roll_price') is not None:
         from .estimate_liner import ROLLS
         fact = ROLLS.get(result['sku'])
-        if not fact or raw.get('roll_area') != fact[1]:
+        known = (result['liner'].get('area') or (fact[1] if fact else None)) if not result['liner'].get('conflict') else None
+        if not known or number(raw.get('roll_area'), 'Площадь рулона', minimum='.001', maximum='100000', places=None) != Decimal(known):
             raise EstimateInputError('Неподтверждённая площадь рулона.')
-        result['roll_area'] = fact[1]
+        result['roll_area'] = str(known)
         result['roll_price'] = str(number(raw.get('roll_price'), 'Цена рулона', minimum='.01', places=2))
     for field in ("available", "missing"):
         result[field] = boolean(raw.get(field, False))
@@ -686,6 +689,8 @@ def evaluate(raw):
                 charged = included and not row["existing"]
                 from . import estimate_liner
                 row["price_conversion_note"] = estimate_liner.note(row)
+                if row["kind"]=="liner" and row.get("catalog_review_note"):
+                    row["price_conversion_note"]=row["catalog_review_note"]+" "+row["price_conversion_note"]
                 amount = (Decimal(row["quantity"]) * Decimal(row["price"])).quantize(CENT, rounding=ROUND_HALF_UP) if charged and row["price"] is not None and row["quantity"] is not None else None
                 if charged and row['quantity'] is not None and estimate_liner.active(row):
                     amount = estimate_liner.amount(row)
