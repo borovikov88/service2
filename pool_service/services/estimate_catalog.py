@@ -18,11 +18,12 @@ from django.core.cache import cache
 from . import estimate_embedded as embedded
 from . import estimate_lighting as lighting
 from . import estimate_temperature_control as temperature
+from . import estimate_filter_media as filter_media
 from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requirement, heating_types, row_heating_type, ensure_heating_rows, make_row, string
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
-CACHE_KEY = "pool-estimate-shop-v19"
+CACHE_KEY = "pool-estimate-shop-v20"
 CACHE_SECONDS = 900
 MAX_BYTES = 20_000_000
 FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
@@ -174,6 +175,7 @@ def parse_catalog(payload, checked_at=None):
         lighting.classify(specs, name, description, category_path(offer.findtext("categoryId")), offer)
         classify_auxiliary(specs, name, description, offer)
         temperature.classify(specs,name,brand,description,offer,url)
+        filter_media.classify(specs,name,description,category_path(offer.findtext("categoryId")),offer,url)
         classify_geotextile(specs, name, description, category_path(offer.findtext("categoryId")), offer)
         from .estimate_heater_purpose import purpose_note
         specs['heater_purpose_note'] = purpose_note(name, category_path(offer.findtext('categoryId')), url, description) if specs['heater_type'] == 'heatpump' else ''
@@ -324,6 +326,8 @@ def apply_product(row, product, catalog, selection="manual"):
     row["catalog"]["lighting"] = deepcopy(product.get("lighting", {}))
     row["catalog"]["auxiliary"] = deepcopy(product.get("auxiliary", {}))
     row['catalog']['temperature'] = deepcopy(product.get('temperature',{}))
+    row['catalog']['filter_loading'] = deepcopy(product.get('filter_loading',{}))
+    row['catalog']['filter_media'] = deepcopy(product.get('filter_media',{}))
     row["catalog"]["geotextile"] = deepcopy(product.get("geotextile", {}))
     row["catalog"]["body_family"] = product.get("body_family", "")
     row["catalog"]["lining_denied"] = product.get("lining_denied", [])
@@ -337,14 +341,22 @@ def apply_product(row, product, catalog, selection="manual"):
 
     from .estimate_liner import set_conversion
     set_conversion(row, product)
+    filter_media.selected(row, product)
 
 
 def refresh_auto_facts(row, product, catalog):
     # Automatic selection can refresh technical evidence, never frozen prices.
     frozen = {key: row['catalog'][key] for key in ('price','checked_at','feed_date')}
+    media_origin = deepcopy(row['catalog'].get('filter_media',{})) if row['kind']=='filter_media' else None
+    media_note = row.get('catalog_review_note','')
+    media_unit = row.get('unit')
     apply_product(row, product, catalog, 'auto')
     row['catalog'].update(frozen)
     row['price'] = frozen['price']
+    if media_origin is not None:
+        row['catalog']['filter_media']=media_origin
+        row['unit']=media_unit
+        row['catalog_review_note']=media_note
 
 
 def select_price_tier(choices, tier):
@@ -452,6 +464,7 @@ def auto_select(snapshot, catalog, only_variant=None):
     from .estimate_geotextile import fill as fill_geotextile
     filled += fill_auxiliary(result, catalog, only_variant)
     filled += temperature.fill(result, catalog, only_variant)
+    filled += filter_media.fill(result, catalog, only_variant)
     filled += fill_geotextile(result, catalog, only_variant)
     filled += lighting.fill(result, catalog, only_variant)
     from .estimate_level_control import fill as fill_level
@@ -510,6 +523,8 @@ def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="
         if product['kind'] == 'geotextile':
             from .estimate_geotextile import assess
             return assess(product) or ('Цена за м². Пригодность под плёнку бассейна требует проверки.' if product.get('geotextile', {}).get('purpose') != 'pool' else 'Цена за м²; запас 15% уже учтён в количестве материала.')
+        if product['kind']=='filter_media':
+            return filter_media.assess(product) or 'Проверить массу загрузки и фракцию по паспорту выбранного фильтра; фасовка и единица цены — по карточке песка.'
         if product['kind']=='thermostat':
             return 'Проверить схему коммутации, датчик и нагрузку контактов; панель с регулированием температуры может заменить термостат.'
         issue = profile_reason(product, inputs, required_flow, profile)
@@ -521,7 +536,7 @@ def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="
     query = search_text(string(query, "Поиск товара", 120)).split()
     kind = string(kind, "Тип товара", 20)
     brand = string(brand, "Бренд", 80)
-    if kind not in {*lighting.ROLES, "thermostat", "", "other", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "level_regulator", "level_inlet", "treatment", "control_panel", "geotextile", *embedded.ROLES}:
+    if kind not in {*lighting.ROLES, "thermostat", "filter_media", "", "other", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "level_regulator", "level_inlet", "treatment", "control_panel", "geotextile", *embedded.ROLES}:
         raise EstimateInputError("Неизвестный тип товара.")
     matches = [p for p in catalog["products"].values() if (not kind or (p['kind'] in {'inlet', 'vacuum'} if kind == 'level_inlet' else p['kind'] == kind)) and (not brand or p["brand"].casefold() == brand.casefold()) and all(q in search_text(p["name"] + " " + p["sku"] + " " + p["id"]) for q in query)]
     matches.sort(key=lambda p: (bool(reason(p)), not p["available"], bool(kind == "circulation_pump" and variant != "economy" and p.get("frequency_control") is not True), Decimal(p["price"]), int(p["id"])))
@@ -554,6 +569,15 @@ def refresh_prices(snapshot, catalog, variant_key):
                 origin.update(available=product['available'], missing=False, checked_at=catalog['checked_at'], feed_date=catalog['feed_date'])
                 updated += 1
                 continue
+            if row['kind']=='filter_media':
+                old=origin.get('filter_media') or {};new=product.get('filter_media') or {}
+                if not row.get('auto_quantity') and any(old.get(k)!=new.get(k) for k in ('bag_kg','price_unit')):
+                    row['catalog_review_note']='Фасовка/единица цены изменились; ручное количество защищено. Перевыберите товар и подтвердите количество.'
+                    skipped+=1
+                    continue
+                origin['filter_media']=deepcopy(new)
+                filter_media.selected(row,product)
+                row['catalog_review_note']=''
             row["price"] = product["price"]
             origin.update(price=product["price"], available=product["available"], missing=False, checked_at=catalog["checked_at"], feed_date=catalog["feed_date"])
             updated += 1
