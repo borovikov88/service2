@@ -18,14 +18,36 @@ class TwoStageTests(SimpleTestCase):
         s=engine.generate(NEW)
         for v in s['variants'].values():
             sections=layout.sections(v)
-            self.assertEqual([[b['title'] for b in st['blocks']] for st in sections],[['Работы','Материалы для чаши бассейна'],['Закладные элементы','Оборудование','Материалы','Работы']])
-            work=sections[1]['blocks'][-1]['rows']
-            for rid in ('embedded_work','equipment_work','finish_work','work_accommodation','work_finish_travel'):
+            self.assertEqual([[b['title'] for b in st['blocks']] for st in sections],[['Работы по строительству чаши','Материалы для строительства чаши'],['Закладные элементы','Оборудование','Отделочные материалы','Отделочные работы, установка закладных и монтаж оборудования','Дополнительные материалы','Дополнительные работы']])
+            work=sections[1]['blocks'][3]['rows']
+            for rid in ('embedded_work','equipment_work','finish_work','work_finish_travel'):
                 self.assertIn(rid,[r['id'] for r in work])
+            self.assertIn('work_accommodation',[r['id'] for r in sections[1]['blocks'][5]['rows']])
+            self.assertIn('delivery_concrete',[r['id'] for r in sections[0]['blocks'][0]['rows']])
             self.assertIn('piping',[r['id'] for r in sections[1]['blocks'][2]['rows']])
             ids=[r['id'] for st in sections for b in st['blocks'] for r in b['rows']]
             self.assertEqual(len(ids),len(set(ids)))
             self.assertEqual(sum(Decimal(b['subtotal']) for st in sections for b in st['blocks']),Decimal(v['total']))
+
+    def test_additional_rows_roundtrip_and_stage_one_exclusion(self):
+        s=engine.generate(NEW)
+        for v in s['variants'].values():
+            b=next(b for b in v['blocks'] if b['id']=='options')
+            b['rows'] += [dict(engine.make_row('custom_material','Материал'),price='123',quantity='2'),
+                          dict(engine.make_row('custom_work','Работа',kind='work'),price='456',quantity='3')]
+            v['view_order']={'extra_materials':['custom_material'],'extra_work':['custom_work']}
+        s=engine.evaluate(s)
+        original=deepcopy(s)
+        for b in s['variants']['economy']['blocks']:
+            if b['id'] in {'construction','construction_materials'}:b['excluded']=True
+        s=engine.recalculate(s,s['inputs'])
+        sections=layout.sections(s['variants']['economy'],client=True)
+        self.assertTrue(all(not b['rows'] for b in sections[0]['blocks']))
+        self.assertEqual(sections[1]['blocks'][4]['rows'][0]['id'],'custom_material')
+        self.assertEqual(sections[1]['blocks'][5]['rows'][0]['id'],'custom_work')
+        self.assertEqual(byid(s,'custom_material')['amount'],'246.00')
+        self.assertEqual(byid(s,'custom_work')['amount'],'1368.00')
+        self.assertEqual(s['variants']['standard']['total'],original['variants']['standard']['total'])
 
     def test_installation_actual_six_including_manual_and_excluded(self):
         s=engine.generate(NEW)
@@ -72,11 +94,11 @@ class TwoStageTests(SimpleTestCase):
 
     def test_view_order_survives_recalc_and_deleted_entries_are_pruned(self):
         s=engine.generate(NEW);v=s['variants']['economy']
-        ids=[r['id'] for r in layout.sections(v)[1]['blocks'][-1]['rows']]
+        ids=[r['id'] for r in layout.sections(v)[1]['blocks'][3]['rows']]
         v['view_order']={'installation_work':list(reversed(ids))}
-        s=engine.recalculate(s,s['inputs']);self.assertEqual([r['id'] for r in layout.sections(s['variants']['economy'])[1]['blocks'][-1]['rows']],list(reversed(ids)))
-        for b in s['variants']['economy']['blocks']:b['rows'][:]=[r for r in b['rows'] if r['id']!='work_accommodation']
-        self.assertNotIn('work_accommodation',engine.evaluate(s)['variants']['economy']['view_order']['installation_work'])
+        s=engine.recalculate(s,s['inputs']);self.assertEqual([r['id'] for r in layout.sections(s['variants']['economy'])[1]['blocks'][3]['rows']],list(reversed(ids)))
+        for b in s['variants']['economy']['blocks']:b['rows'][:]=[r for r in b['rows'] if r['id']!='work_finish_travel']
+        self.assertNotIn('work_finish_travel',engine.evaluate(s)['variants']['economy']['view_order']['installation_work'])
 
     def test_legacy_package_price_is_never_multiplied_by_points(self):
         s=engine.generate(NEW)

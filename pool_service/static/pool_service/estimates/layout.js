@@ -1,10 +1,11 @@
 import {isWork} from './state.js?v=11';
 export const groups=[
- {id:'stage1',title:'Этап 1. Строительство чаши',blocks:[['bowl_work','Работы'],['bowl_materials','Материалы для чаши бассейна']]},
- {id:'stage2',title:'Этап 2. Монтаж оборудования и отделка',blocks:[['embedded','Закладные элементы'],['equipment','Оборудование'],['materials','Материалы'],['installation_work','Работы']]},
+ {id:'stage1',title:'Этап 1. Строительство чаши',blocks:[['bowl_work','Работы по строительству чаши'],['bowl_materials','Материалы для строительства чаши']]},
+ {id:'stage2',title:'Этап 2. Монтаж оборудования и отделка',blocks:[['embedded','Закладные элементы'],['equipment','Оборудование'],['materials','Отделочные материалы'],['installation_work','Отделочные работы, установка закладных и монтаж оборудования'],['extra_materials','Дополнительные материалы'],['extra_work','Дополнительные работы']]},
 ];
 export function groupFor(block,row){
- if(isWork(row))return block.id==='construction'&&!/transport|travel|handling|delivery/.test(row.work_code||'')?'bowl_work':'installation_work';
+ if(block.id==='options')return isWork(row)?'extra_work':'extra_materials';
+ if(isWork(row))return ['construction','construction_materials'].includes(block.id)?'bowl_work':'installation_work';
  if(['construction','construction_materials'].includes(block.id))return 'bowl_materials';
  if(['light_transformer','light_controller'].includes(row.kind))return 'equipment';
  if(row.id==='piping')return 'materials';

@@ -170,16 +170,16 @@ class PoolEstimateViewsTests(TestCase):
         from pool_service.services.estimate_layout import sections
         self.snapshot=generate({**INPUTS,'finish':'film'})
         variant=self.snapshot['variants']['economy']
-        ids=[r['id'] for r in sections(variant)[1]['blocks'][-1]['rows']]
+        ids=[r['id'] for r in sections(variant)[1]['blocks'][3]['rows']]
         variant['view_order']={'installation_work':list(reversed(ids))}
         saved=self.save().json()
         loaded=self.client.get(self.url,{'organization':self.org.pk,'id':saved['id']}).json()['snapshot']
         with patch('pool_service.estimate_views.get_catalog',side_effect=CatalogUnavailable('Synthetic offline')):
             recalculated=self.post(action='recalculate',snapshot=loaded,inputs=loaded['inputs']).json()['snapshot']
-        actual=[r['id'] for r in sections(recalculated['variants']['economy'])[1]['blocks'][-1]['rows']]
+        actual=[r['id'] for r in sections(recalculated['variants']['economy'])[1]['blocks'][3]['rows']]
         self.assertEqual(actual,list(reversed(ids)))
         printed=self.client.get(reverse('pool_estimate_print',args=[saved['id'],1])).content.decode()
-        active=[r['id'] for r in sections(loaded['variants']['economy'],client=True)[1]['blocks'][-1]['rows']]
+        active=[r['id'] for r in sections(loaded['variants']['economy'],client=True)[1]['blocks'][3]['rows']]
         self.assertEqual(sorted(active,key=lambda rid:printed.index('data-row="'+rid+'"')),active)
         self.assertLess(printed.index('<h2>Эконом</h2>'),printed.index('<h2>Стандарт</h2>'))
         self.assertLess(printed.index('<h2>Стандарт</h2>'),printed.index('<h2>Премиум</h2>'))

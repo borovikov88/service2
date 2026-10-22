@@ -1,5 +1,5 @@
 import {productDetails,productTitle} from './product-details.js?v=1';
-import {sections as viewSections, groupFor, moveViewRow} from './layout.js?v=2';
+import {sections as viewSections, groupFor, moveViewRow} from './layout.js?v=3';
 import {installHelp} from './help.js?v=5';
 import {displayNumber, money, indivisible, exactNumber, cleanNote, bindNumber, rawValue, installNumbers} from './numbers.js?v=3';
 import {constructionScope, setConstructionExcluded, setExcluded, emptyRow, isWork, samePrice, workPriceTargets, automaticQuantity, quantityRequired, moveRow} from './state.js?v=11';
@@ -416,7 +416,7 @@ root.addEventListener('click', event => {
   if (el.dataset.variant) { selected = el.dataset.variant; renderEditor(); }
   if (el.dataset.version) loadProject(projectId, el.dataset.version);
   if(el.dataset.excludeView){askScope(null,null,true,el.dataset.excludeView);return;}
-  const destinations={bowl_work:'construction',bowl_materials:snapshot.construction_version?'construction_materials':'construction',embedded:'embedded',equipment:'equipment',materials:'finish',installation_work:'finish'};
+  const destinations={bowl_work:'construction',bowl_materials:snapshot.construction_version?'construction_materials':'construction',embedded:'embedded',equipment:'equipment',materials:'finish',installation_work:'finish',extra_materials:'options',extra_work:'options'};
   if(el.dataset.addView){el.dataset.add=destinations[el.dataset.addView];el.dataset.addWork=String(el.dataset.addView.endsWith('_work'));}
   const blockId = el.dataset.excludeBlock || el.dataset.restoreBlock || el.dataset.block;
   if (el.dataset.excludeBlock || el.dataset.restoreBlock || el.dataset.excludeRow || el.dataset.restoreRow) {

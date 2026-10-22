@@ -3,16 +3,17 @@ from decimal import Decimal
 import re
 
 GROUPS = (
-    ('stage1', 'Этап 1. Строительство чаши', (('bowl_work','Работы'),('bowl_materials','Материалы для чаши бассейна'))),
-    ('stage2', 'Этап 2. Монтаж оборудования и отделка', (('embedded','Закладные элементы'),('equipment','Оборудование'),('materials','Материалы'),('installation_work','Работы'))),
+    ('stage1', 'Этап 1. Строительство чаши', (('bowl_work','Работы по строительству чаши'),('bowl_materials','Материалы для строительства чаши'))),
+    ('stage2', 'Этап 2. Монтаж оборудования и отделка', (('embedded','Закладные элементы'),('equipment','Оборудование'),('materials','Отделочные материалы'),('installation_work','Отделочные работы, установка закладных и монтаж оборудования'),('extra_materials','Дополнительные материалы'),('extra_work','Дополнительные работы'))),
 )
 IDS={key for _,_,groups in GROUPS for key,_ in groups}
 
 
 def group_for(block, row):
     from .estimate_works import is_work
+    if block['id']=='options': return 'extra_work' if is_work(row) else 'extra_materials'
     if is_work(row):
-        return 'bowl_work' if block['id']=='construction' and not re.search(r'transport|travel|handling|delivery',row.get('work_code','')) else 'installation_work'
+        return 'bowl_work' if block['id'] in {'construction','construction_materials'} else 'installation_work'
     if block['id'] in {'construction','construction_materials'}: return 'bowl_materials'
     if row['kind'] in {'light_transformer','light_controller'}: return 'equipment'
     if row['id']=='piping': return 'materials'
