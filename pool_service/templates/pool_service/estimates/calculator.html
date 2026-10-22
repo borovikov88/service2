@@ -1,7 +1,7 @@
 {% extends 'pool_service/base.html' %}
 {% load static %}
 {% block title %}Расчёт бассейна · {{ brand_name }}{% endblock %}
-{% block extra_head %}<link rel="stylesheet" href="{% static 'pool_service/estimates/calculator.css' %}?v=row-order-1">{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="{% static 'pool_service/estimates/calculator.css' %}?v=compact-drag-1">{% endblock %}
 {% block content %}
 <main class="pe" id="pool-estimator" data-api="{% url 'pool_estimate_api' %}" data-organization="{{ estimate_organization.pk }}">
   {% csrf_token %}
@@ -99,5 +99,5 @@
   <dialog id="pe-scope-dialog" class="pe-dialog"><h2 id="pe-scope-title">Изменить состав</h2><p id="pe-scope-target"></p><div class="pe-dialog-actions"><button type="button" class="pe-btn pe-primary" data-scope-choice="one">Только в этом КП</button><button type="button" class="pe-btn" data-scope-choice="all">Во всех трёх КП</button><button type="button" class="pe-btn" data-close="pe-scope-dialog">Отмена</button></div></dialog>
   <dialog id="pe-new-dialog" class="pe-dialog"><h2>Начать новый расчёт?</h2><p>Сохранить текущий расчёт перед созданием нового или удалить текущие несохранённые изменения? Сохранённые версии останутся в истории.</p><p id="pe-new-error" class="pe-error" role="alert"></p><div class="pe-dialog-actions"><button type="button" class="pe-btn pe-primary" data-new-action="save">Сохранить и создать новый</button><button type="button" class="pe-btn" data-new-action="discard">Удалить несохранённое и создать новый</button><button type="button" class="pe-btn" data-close="pe-new-dialog">Отмена — вернуться к расчёту</button></div></dialog>
 </main>
-<script type="module" src="{% static 'pool_service/estimates/calculator.js' %}?v=pvc-area-1"></script>
+<script type="module" src="{% static 'pool_service/estimates/calculator.js' %}?v=compact-drag-1"></script>
 {% endblock %}

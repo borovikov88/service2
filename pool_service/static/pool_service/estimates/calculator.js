@@ -219,7 +219,7 @@ function renderEditor() {
   const variant = snapshot.variants[selected];
   $('#pe-blocks').innerHTML = variant.blocks.filter(b => !b.excluded).map(block => {
     const rows = block.rows.filter(r => !r.excluded);
-    return `<section class="pe-block"><div class="pe-block-head"><h3>${esc(block.title)}</h3><span class="pe-subtotal" data-subtotal="${block.id}">${money(block.subtotal)} ₽</span><button type="button" class="pe-link" data-exclude-block="${block.id}">Исключить</button></div>${rows.length ? `<div class="pe-table-wrap"><table><thead><tr><th>Позиция</th><th>Кол-во</th><th>Цена, ₽</th><th>Сумма, ₽</th><th><span class="visually-hidden">Действия</span></th></tr></thead><tbody>${rows.map((row, index) => `<tr><td>${thumbnail(row.catalog?.image || productImages[row.catalog?.id], row.name)}<span class="pe-row-name">${esc(row.name)}</span><span class="pe-row-detail">${esc([({electric:'Электронагреватель', exchanger:'Теплообменник', heatpump:'Тепловой насос'})[row.heating_type], row.brand, row.model].filter(Boolean).join(' · '))}${row.existing ? ' · уже установлено' : ''}${row.selection_status === 'preliminary_primary' ? ' · предварительный подбор — проверить первичный контур' : ''}</span>${row.catalog?.specification_note ? `<small class="pe-help">${esc(row.catalog.specification_note)}${row.catalog.specification_source === 'https://aquaviva.nt-rt.ru/images/manuals/2-zakladnye-dlya-basseinov.pdf' ? ' <a href="https://aquaviva.nt-rt.ru/images/manuals/2-zakladnye-dlya-basseinov.pdf" target="_blank" rel="noopener">Источник</a>' : ''}</small>` : ''}${row.selection_note ? `<small class="pe-help">${esc(row.selection_note)}</small>` : ''}<div class="pe-row-check" data-row-check="${row.id}" aria-live="polite"${row.compatibility ? '' : ' hidden'}>${renderRowCheck(row, block.id)}</div></td><td><input class="pe-qty" data-field="quantity" data-block="${block.id}" data-row="${row.id}" type="number" min="0" max="1000000" step="any" value="${esc(row.quantity)}" placeholder="Уточнить" aria-label="Количество: ${esc(row.name)}"><span class="pe-row-detail">${esc(row.unit)} · <span data-quantity-mode="${row.id}">${quantityMode(row)}</span></span></td><td><input class="pe-price" data-field="price" data-block="${block.id}" data-row="${row.id}" type="number" min="0" max="1000000000" step="0.01" value="${esc(row.price)}" placeholder="Уточнить" aria-label="Цена: ${esc(row.name)}"><small>${esc(row.rate_source || '')}</small><small data-construction-quantity="${row.id}">${esc(cleanNote([row.construction_quantity_note, row.level_quantity_note].filter(Boolean).join(' ')))}</small><small data-construction-price="${row.id}">${esc(cleanNote(row.construction_price_note))}</small><small data-price-conversion="${row.id}">${esc(cleanNote(row.price_conversion_note))}</small></td><td class="pe-row-amount" data-amount="${row.id}">${money(row.amount)}</td><td class="pe-row-actions"><span class="pe-row-order" role="group" aria-label="Порядок строки"><button type="button" data-move-row="${row.id}" data-block="${block.id}" data-direction="-1" aria-label="Выше: ${esc(row.name)}"${index === 0 ? ' disabled' : ''}>↑</button><button type="button" data-move-row="${row.id}" data-block="${block.id}" data-direction="1" aria-label="Ниже: ${esc(row.name)}"${index === rows.length-1 ? ' disabled' : ''}>↓</button></span>${!isWork(row) ? `<button type="button" class="pe-link" data-shop="${row.id}" data-block="${block.id}" aria-label="Выбрать товар: ${esc(row.name)}">Каталог</button>` : ''}<button type="button" class="pe-link" data-edit="${row.id}" data-block="${block.id}" aria-label="Изменить: ${esc(row.name)}">✎</button><button type="button" class="pe-link" data-exclude-row="${row.id}" data-block="${block.id}" aria-label="Исключить: ${esc(row.name)}">×</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="pe-empty">В этом блоке пока нет активных позиций.</div>'}<button type="button" class="pe-link pe-add" data-add="${block.id}">+ Добавить позицию</button></section>`;
+    return `<section class="pe-block"><div class="pe-block-head"><h3>${esc(block.title)}</h3><span class="pe-subtotal" data-subtotal="${block.id}">${money(block.subtotal)} ₽</span><button type="button" class="pe-link" data-exclude-block="${block.id}">Исключить</button></div>${rows.length ? `<div class="pe-table-wrap"><table><thead><tr><th>Позиция</th><th>Кол-во</th><th>Цена, ₽</th><th>Сумма, ₽</th><th><span class="visually-hidden">Действия</span></th></tr></thead><tbody>${rows.map(row => `<tr data-order-row="${row.id}"><td class="pe-position-cell"><button type="button" class="pe-drag-handle" data-drag-row="${row.id}" data-block="${block.id}" aria-label="Переместить: ${esc(row.name)}" aria-description="Перетащите строку или используйте стрелки вверх и вниз" title="Перетащите строку; с клавиатуры — стрелки вверх/вниз">⠿</button>${thumbnail(row.catalog?.image || productImages[row.catalog?.id], row.name)}<span class="pe-row-name">${esc(row.name)}</span><span class="pe-row-detail">${esc([({electric:'Электронагреватель', exchanger:'Теплообменник', heatpump:'Тепловой насос'})[row.heating_type], row.brand, row.model].filter(Boolean).join(' · '))}${row.existing ? ' · уже установлено' : ''}${row.selection_status === 'preliminary_primary' ? ' · предварительный подбор — проверить первичный контур' : ''}</span>${row.catalog?.specification_note ? `<small class="pe-help">${esc(row.catalog.specification_note)}${row.catalog.specification_source === 'https://aquaviva.nt-rt.ru/images/manuals/2-zakladnye-dlya-basseinov.pdf' ? ' <a href="https://aquaviva.nt-rt.ru/images/manuals/2-zakladnye-dlya-basseinov.pdf" target="_blank" rel="noopener">Источник</a>' : ''}</small>` : ''}${row.selection_note ? `<small class="pe-help">${esc(row.selection_note)}</small>` : ''}<div class="pe-row-check" data-row-check="${row.id}" aria-live="polite"${row.compatibility ? '' : ' hidden'}>${renderRowCheck(row, block.id)}</div></td><td><input class="pe-qty" data-field="quantity" data-block="${block.id}" data-row="${row.id}" type="number" min="0" max="1000000" step="any" value="${esc(row.quantity)}" placeholder="Уточнить" aria-label="Количество: ${esc(row.name)}"><span class="pe-row-detail">${esc(row.unit)} · <span data-quantity-mode="${row.id}">${quantityMode(row)}</span></span></td><td><input class="pe-price" data-field="price" data-block="${block.id}" data-row="${row.id}" type="number" min="0" max="1000000000" step="0.01" value="${esc(row.price)}" placeholder="Уточнить" aria-label="Цена: ${esc(row.name)}"><small>${esc(row.rate_source || '')}</small><small data-construction-quantity="${row.id}">${esc(cleanNote([row.construction_quantity_note, row.level_quantity_note].filter(Boolean).join(' ')))}</small><small data-construction-price="${row.id}">${esc(cleanNote(row.construction_price_note))}</small><small data-price-conversion="${row.id}">${esc(cleanNote(row.price_conversion_note))}</small></td><td class="pe-row-amount" data-amount="${row.id}">${money(row.amount)}</td><td class="pe-row-actions"><div class="pe-actions-inline">${!isWork(row) ? `<button type="button" class="pe-link" data-shop="${row.id}" data-block="${block.id}" aria-label="Выбрать товар: ${esc(row.name)}" title="Каталог"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/></svg></button>` : ''}<button type="button" class="pe-link" data-edit="${row.id}" data-block="${block.id}" aria-label="Изменить: ${esc(row.name)}">✎</button><button type="button" class="pe-link" data-exclude-row="${row.id}" data-block="${block.id}" aria-label="Исключить: ${esc(row.name)}">×</button></div></td></tr>`).join('')}</tbody></table></div>` : '<div class="pe-empty">В этом блоке пока нет активных позиций.</div>'}<button type="button" class="pe-link pe-add" data-add="${block.id}">+ Добавить позицию</button></section>`;
   }).join('');
   const excluded = variant.blocks.filter(b => b.excluded || b.rows.some(r => r.excluded));
   $('#pe-excluded-count').textContent = `(${excluded.reduce((sum, b) => sum + (b.excluded ? 1 : b.rows.filter(r => r.excluded).length), 0)})`;
@@ -296,6 +296,76 @@ form.addEventListener('submit', async event => {
   });
 });
 // A blur may open the price dialog during the same click on another action.
+// One handle supports mouse/touch dragging and keyboard arrows; no cross-table moves.
+let rowDrag = null;
+function orderReady() {
+  if (!snapshot || busy || priceTarget) return false;
+  const invalid = root.querySelector('[data-field]:invalid');
+  if (invalid) { invalid.reportValidity(); invalid.focus(); return false; }
+  return true;
+}
+function finishOrder(blockId, rowId, targetIndex) {
+  const rows = snapshot.variants[selected].blocks.find(b => b.id === blockId)?.rows.filter(r => !r.excluded) || [];
+  let from = rows.findIndex(r => r.id === rowId);
+  if (from < 0 || targetIndex < 0 || targetIndex >= rows.length || targetIndex === from) return;
+  const direction = targetIndex > from ? 1 : -1;
+  while (from !== targetIndex && moveRow(snapshot, selected, blockId, rowId, direction)) from += direction;
+  clearTimeout(timer); sequence++; changed(); renderEditor(); queueValidation();
+  [...root.querySelectorAll('[data-drag-row]')].find(b => b.dataset.dragRow === rowId && b.dataset.block === blockId)?.focus({preventScroll:true});
+  status('Строка перемещена в текущей таблице этого КП. Есть несохранённые изменения.');
+}
+function endRowDrag(commit) {
+  const drag = rowDrag;
+  if (!drag) return;
+  rowDrag = null;
+  root.classList.remove('pe-is-dragging');
+  root.querySelectorAll('.pe-dragging,.pe-drop-before,.pe-drop-after').forEach(el => el.classList.remove('pe-dragging','pe-drop-before','pe-drop-after'));
+  if (root.hasPointerCapture(drag.pointerId)) root.releasePointerCapture(drag.pointerId);
+  if (commit && drag.moved && drag.target !== null && drag.variant === selected) finishOrder(drag.block, drag.id, drag.target);
+  queueValidation();
+}
+root.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && rowDrag) { endRowDrag(false); event.preventDefault(); return; }
+  const handle = event.target.closest('[data-drag-row]');
+  if (!handle || !['ArrowUp','ArrowDown'].includes(event.key)) return;
+  event.preventDefault();
+  if (!orderReady()) return;
+  const rows = snapshot.variants[selected].blocks.find(b => b.id === handle.dataset.block).rows.filter(r => !r.excluded);
+  finishOrder(handle.dataset.block, handle.dataset.dragRow, rows.findIndex(r => r.id === handle.dataset.dragRow) + (event.key === 'ArrowUp' ? -1 : 1));
+});
+root.addEventListener('pointerdown', event => {
+  const handle = event.target.closest('[data-drag-row]');
+  if (!handle || event.button !== 0 || rowDrag) return;
+  if (document.activeElement?.matches('[data-field]')) document.activeElement.blur();
+  if (!orderReady()) return;
+  event.preventDefault(); handle.focus({preventScroll:true});
+  clearTimeout(timer); sequence++;
+  rowDrag = {id:handle.dataset.dragRow, block:handle.dataset.block, variant:selected, table:handle.closest('table'), pointerId:event.pointerId, x:event.clientX, y:event.clientY, moved:false, target:null};
+  root.setPointerCapture(event.pointerId);
+});
+root.addEventListener('pointermove', event => {
+  if (!rowDrag || event.pointerId !== rowDrag.pointerId) return;
+  const drag = rowDrag;
+  if (!drag.moved && Math.hypot(event.clientX-drag.x,event.clientY-drag.y) < 5) return;
+  drag.moved = true; event.preventDefault(); root.classList.add('pe-is-dragging');
+  const rows = [...drag.table.querySelectorAll('tbody tr[data-order-row]')];
+  rows.forEach(tr => {tr.classList.remove('pe-drop-before','pe-drop-after');tr.classList.toggle('pe-dragging',tr.dataset.orderRow === drag.id);});
+  const target = document.elementFromPoint(event.clientX,event.clientY)?.closest('tr[data-order-row]');
+  drag.target = null;
+  if (!target || target.closest('table') !== drag.table) return;
+  const bounds = target.getBoundingClientRect(), after = event.clientY > bounds.top + bounds.height/2;
+  const from = rows.findIndex(tr => tr.dataset.orderRow === drag.id);
+  let to = rows.indexOf(target) + (after ? 1 : 0);
+  if (to > from) to--;
+  drag.target = to;
+  target.classList.add(after ? 'pe-drop-after' : 'pe-drop-before');
+  if (event.clientY < 65) window.scrollBy(0,-18);
+  else if (event.clientY > window.innerHeight-65) window.scrollBy(0,18);
+});
+root.addEventListener('pointerup', event => {if (event.pointerId === rowDrag?.pointerId) endRowDrag(true);});
+root.addEventListener('pointercancel', () => endRowDrag(false));
+root.addEventListener('lostpointercapture', () => endRowDrag(false));
+
 root.addEventListener('click', event => {
   if (priceTarget && !event.target.closest('#pe-price-dialog')) {
     event.preventDefault(); event.stopImmediatePropagation();
@@ -342,17 +412,6 @@ root.addEventListener('click', event => {
   const blockId = el.dataset.excludeBlock || el.dataset.restoreBlock || el.dataset.block;
   if (el.dataset.excludeBlock || el.dataset.restoreBlock || el.dataset.excludeRow || el.dataset.restoreRow) {
     askScope(blockId, el.dataset.excludeRow || el.dataset.restoreRow || null, Boolean(el.dataset.excludeBlock || el.dataset.excludeRow));
-  }
-  if (el.dataset.moveRow) {
-    const invalid = root.querySelector('[data-field]:invalid');
-    if (invalid) { invalid.reportValidity(); invalid.focus(); return; }
-    if (moveRow(snapshot, selected, el.dataset.block, el.dataset.moveRow, Number(el.dataset.direction))) {
-      clearTimeout(timer); changed(); renderEditor(); queueValidation();
-      const buttons = [...root.querySelectorAll('[data-move-row]')].filter(b => b.dataset.moveRow === el.dataset.moveRow && b.dataset.block === el.dataset.block);
-      (buttons.find(b => b.dataset.direction === el.dataset.direction && !b.disabled) || buttons.find(b => !b.disabled))?.focus({preventScroll:true});
-      status('Строка перемещена в текущей таблице этого КП. Есть несохранённые изменения.');
-    }
-    return;
   }
   if (el.dataset.autoRow) { repairRow(el.dataset.block, el.dataset.autoRow); return; }
   if (el.dataset.shop) { openCatalog(el.dataset.block, el.dataset.shop); return; }
