@@ -347,7 +347,7 @@ class CatalogViewsTests(TestCase):
         saved = self.post(action='save', snapshot=s, expected_revision=0).json()
         printed = self.client.get(reverse('pool_estimate_print', args=[saved['id'], 1]))
         self.assertContains(
-            printed, '<td>Насос фильтрации SyntheticBrand SyntheticModel-42', count=3,
+            printed, '<td>Насос фильтрации · SyntheticModel-42<br><small>SyntheticBrand', count=3,
         )
 
     def test_construction_package_print_blank_prices_shared_rates_and_tenant(self):

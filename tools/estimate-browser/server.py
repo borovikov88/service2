@@ -19,6 +19,8 @@ if os.environ.get('ESTIMATE_BROWSER_CATALOG') == 'preliminary':
                                   offer(902, 'Фильтр Synthetic unknown', price='200')))
 if os.environ.get('ESTIMATE_BROWSER_CATALOG') == 'auxiliary':
     from pool_service.tests.test_estimate_auxiliary import fixture as stock
+if os.environ.get('ESTIMATE_BROWSER_CATALOG') == 'lighting':
+    from pool_service.tests.test_estimate_lighting_color import fixture as stock
 source=(ROOT / 'pool_service/templates/pool_service/estimates/calculator.html').read_text()
 source=re.sub(r'{% extends .*?%}|{% block .*?%}|{% endblock %}', '', source)
 html=Template(source).render(Context({'estimate_organization':{'pk':1}, 'csrf_token':'test-only'}))
@@ -37,7 +39,10 @@ class Handler(SimpleHTTPRequestHandler):
         data=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         action=data['action']
         if action=='generate': out={'snapshot':auto_select(generate(data['inputs']),stock())[0], 'selected_count':3}
-        elif action=='recalculate':out={'snapshot':recalculate(data['snapshot'],data['inputs'])}
+        elif action=='recalculate':
+            result=recalculate(data['snapshot'],data['inputs'])
+            if os.environ.get('ESTIMATE_BROWSER_CATALOG') == 'lighting': result=auto_select(result,stock())[0]
+            out={'snapshot':result}
         elif action=='level_inlet_binding':
             from pool_service.services.estimate_level_shared import apply_binding
             out={'snapshot':apply_binding(data['snapshot'],data['variant'],data['row_id'])}

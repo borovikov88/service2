@@ -50,3 +50,13 @@ def estimate_sections(variant):
 @register.filter
 def estimate_variants(variants):
     return [(key,variants[key]) for key in ('economy','standard','premium') if key in variants]
+
+@register.filter
+def estimate_title(row):
+    name,model=row.get('name',''),row.get('model','')
+    return name+' · '+model if model and model.casefold() not in name.casefold() else name
+
+@register.filter
+def estimate_shop_url(value):
+    from pool_service.services.estimate_catalog import safe_shop_url
+    return safe_shop_url(value)

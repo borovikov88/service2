@@ -14,6 +14,7 @@ def group_for(block, row):
     if is_work(row):
         return 'bowl_work' if block['id']=='construction' and not re.search(r'transport|travel|handling|delivery',row.get('work_code','')) else 'installation_work'
     if block['id'] in {'construction','construction_materials'}: return 'bowl_materials'
+    if row['kind'] in {'light_transformer','light_controller'}: return 'equipment'
     if row['id']=='piping': return 'materials'
     return block['id'] if block['id'] in {'embedded','equipment'} else 'materials'
 
@@ -40,7 +41,7 @@ def sections(variant, client=False):
         for key,label in groups:
             order=variant.get('view_order',{}).get(key,[])
             rank={rid:i for i,rid in enumerate(order)}
-            entries=sorted(grouped[key],key=lambda pair:rank.get(pair[1]['id'],len(rank)))
+            entries=sorted(grouped[key],key=lambda pair:(pair[1]['id'] in {'pvc_embedded','piping'},rank.get(pair[1]['id'],len(rank))))
             if client: entries=[(b,r) for b,r in entries if not b['excluded'] and not r['excluded'] and not r['existing']]
             rows=[{**r,'source_block':b['id'],'source_excluded':b['excluded']} for b,r in entries]
             total=sum((Decimal(r['amount']) for b,r in entries if not b['excluded'] and not r['excluded'] and r.get('amount') is not None),Decimal(0))

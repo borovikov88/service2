@@ -205,6 +205,12 @@ def normalize_inputs(raw):
             data[field] = _optional(number(raw[field], label, optional=True, minimum=".001", maximum=maximum))
     data.update(technology.normalize(raw))
     if raw.get("level_inlet_mode")=="automatic": data["level_inlet_mode"]="automatic"
+    if 'drain_scheme' in raw:
+        data['drain_scheme']=string(raw['drain_scheme'],'Назначение донного слива',20)
+        if data['drain_scheme'] not in {'empty_only','suction','unknown'}: raise EstimateInputError('Выберите схему донного слива.')
+    if 'light_color' in raw and raw['light_color']!='':
+        data['light_color']=string(raw['light_color'],'Цвет освещения',10)
+        if data['light_color'] not in {'white','rgb'}: raise EstimateInputError('Выберите белый свет или RGB.')
     if 'lighting' in raw:
         data['lighting'] = string(raw['lighting'], 'Освещение', 10)
         if data['lighting'] not in {'yes','no'}: raise EstimateInputError('Выберите наличие освещения.')
@@ -615,6 +621,7 @@ def normalize_snapshot(raw):
         result["variants"][key] = {"blocks": cleaned, 'embedded_profile': profile}
         result["variants"][key]["view_order"]=layout.normalize_order(variant.get("view_order",{}),row_ids)
         if variant.get("liner_corner_initialized") is True: result["variants"][key]["liner_corner_initialized"]=True
+        if variant.get("light_controller_initialized") is True: result["variants"][key]["light_controller_initialized"]=True
         if variant.get("lighting_initialized") is True: result["variants"][key]["lighting_initialized"]=True
         if result.get("level_shared_inlet"):
             link = string(variant.get("level_inlet_row_id", ""), "Форсунка линии уровня", 64)
@@ -693,7 +700,7 @@ def evaluate(raw):
             unresolved = [embedded.ROLES[r['embedded_role']] for r in embedded_block['rows'] if not r['excluded'] and not r['existing'] and r.get('embedded_role') and not r['model']]
             if unresolved:
                 warnings.append('Закладные: не найдены подходящие товары для ' + embedded.PROFILES[variant['embedded_profile']] + ' и выбранной отделки: ' + ', '.join(unresolved) + '. Количества рассчитаны, цены требуют уточнения.')
-            warnings.append('Количество закладных предварительное: по площади зеркала и расходу фильтрации. Проверьте пропускную способность конкретных моделей и размещение форсунок. Два донных слива не заменяют проверку безопасной схемы всасывания и расстояния между ними.')
+            warnings.append('Количество закладных предварительное: по площади зеркала и расходу фильтрации. Проверьте пропускную способность конкретных моделей и размещение форсунок. Количество сливов — предварительная комплектация, не подтверждение безопасности всасывания.')
         variant['embedded_counts'] = embedded.counts(result['inputs'], result['geometry'], variant)
         for row in physical:
             origin = row.get("catalog")

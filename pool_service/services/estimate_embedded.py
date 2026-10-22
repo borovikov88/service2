@@ -36,7 +36,7 @@ def counts(inputs, geometry, variant=None):
         'skimmer': max(1, int(ceil_quantity(Decimal(geometry['surface']) / Decimal(inputs['skimmer_area']))),
                        int(ceil_quantity(flow / Decimal(inputs['skimmer_flow'])))),
         'inlet': max(2, int(ceil_quantity(flow / Decimal(inputs['inlet_flow'])))),
-        'drain': 2, 'vacuum': 1,
+        'drain': 1 if inputs.get('drain_scheme')=='empty_only' and Decimal(geometry['volume'])<=50 else 2, 'vacuum': 1,
     }
     return {**{k: str(v) for k, v in result.items()}, 'embedded_work': str(sum(result.values()))}
 

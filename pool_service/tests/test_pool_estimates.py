@@ -184,6 +184,40 @@ class PoolEstimateViewsTests(TestCase):
         self.assertLess(printed.index('<h2>Эконом</h2>'),printed.index('<h2>Стандарт</h2>'))
         self.assertLess(printed.index('<h2>Стандарт</h2>'),printed.index('<h2>Премиум</h2>'))
 
+    def test_rgb_controller_history_roundtrip_is_hermetic_and_idempotent(self):
+        from unittest.mock import patch
+        from pool_service.services.estimate_catalog import auto_select
+        from .test_estimate_lighting_color import fixture
+        from .test_estimate_lighting import rows
+        stock=fixture();self.enterContext(patch('pool_service.estimate_views.get_catalog',return_value=stock))
+        self.snapshot=auto_select(generate({**INPUTS,'lighting':'yes','light_color':'rgb','light_count':'2'}),stock)[0]
+        first=self.save().json()
+        loaded=self.client.get(self.url,{'organization':self.org.pk,'id':first['id']}).json()['snapshot']
+        self.assertEqual(rows(loaded)['light_controller']['catalog']['id'],'958')
+        white=self.post(action='recalculate',snapshot=loaded,inputs={**loaded['inputs'],'light_color':'white'}).json()['snapshot']
+        self.assertTrue(rows(white)['light_controller']['excluded'])
+        rgb=self.post(action='recalculate',snapshot=white,inputs={**white['inputs'],'light_color':'rgb'}).json()['snapshot']
+        self.assertEqual(rgb['variants']['economy']['total'],loaded['variants']['economy']['total'])
+        for tier,v in rgb['variants'].items():
+            self.assertEqual(len([r for b in v['blocks'] for r in b['rows'] if r['kind']=='light_controller']),1)
+        original=self.client.get(self.url,{'organization':self.org.pk,'id':first['id'],'version':1}).json()['snapshot']
+        self.assertEqual(original,loaded)
+        printed=self.client.get(reverse('pool_estimate_print',args=[first['id'],1])).content.decode()
+        self.assertIn('https://shop.aqualine22.ru/product-955.html',printed)
+
+    def test_entire_construction_scope_persists_without_changing_other_quotes(self):
+        from .test_estimate_construction import NEW
+        self.snapshot=generate(NEW)
+        for block in self.snapshot['variants']['economy']['blocks']:
+            if block['id'] in {'construction','construction_materials'}:block.update(excluded=True,reason='Исключено пользователем')
+        saved=self.save().json()
+        loaded=self.client.get(self.url,{'organization':self.org.pk,'id':saved['id']}).json()['snapshot']
+        for tier,v in loaded['variants'].items():
+            for block in v['blocks']:
+                if block['id'] in {'construction','construction_materials'}:
+                    self.assertEqual(block['excluded'],tier=='economy')
+                    if tier=='economy':self.assertEqual(block['subtotal'],'0.00')
+
     def test_row_order_survives_save_load_recalculate_and_print(self):
         self.snapshot = generate({**INPUTS, 'heating_types':['exchanger','electric'],
                                   'heating':'exchanger', 'construction_scheme':'package',

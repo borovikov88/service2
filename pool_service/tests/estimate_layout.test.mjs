@@ -5,7 +5,7 @@ const fixture=()=>({blocks:[{id:'construction',excluded:false,rows:[row('bowl')]
 test('two stages have exactly two then four tables and unified works',()=>{
  const v=fixture(),s=sections(v);assert.deepEqual(s.map(x=>x.blocks.length),[2,4]);
  assert.deepEqual(s[1].blocks[3].rows.map(r=>r.id),['install','hidden','commission','finish']);
- assert.deepEqual(s[1].blocks[2].rows.map(r=>r.id),['piping','liner']);
+ assert.deepEqual(s[1].blocks[2].rows.map(r=>r.id),['liner','piping']);
 });
 test('move across sources within unified work table preserves hidden slots and source data',()=>{
  const v=fixture(),before=structuredClone(v.blocks);

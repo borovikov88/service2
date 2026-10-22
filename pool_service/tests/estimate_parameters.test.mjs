@@ -55,7 +55,7 @@ test('server-linked exclusions refresh structure but quantity edits preserve the
 test('loading an old version clears technology dimensions and schemes from the newer form', () => {
   const controls = {tech_sand:{value:'on'},tech_sand_thickness:{value:'0.2'}};
   const fallback = {value:''};
-  const context = vm.createContext({form:{querySelectorAll:()=>Object.values(controls), elements:{lighting:{value:'yes'},light_count:{value:'2'},construction_scheme:{value:''},height_mode:{value:''},freeboard:{value:''},namedItem:key=>controls[key]||fallback}},
+  const context = vm.createContext({form:{querySelectorAll:()=>Object.values(controls), elements:{light_color:{value:'rgb'},drain_scheme:{value:'empty_only'},lighting:{value:'yes'},light_count:{value:'2'},construction_scheme:{value:''},height_mode:{value:''},freeboard:{value:''},namedItem:key=>controls[key]||fallback}},
     snapshot:{inputs:{}}, setHeating:()=>{}, heatingFields:()=>{}, parametersDirty:true});
   vm.runInContext(fn('fillParameters')+';fillParameters()',context);
   assert.equal(controls.tech_sand.value,'');
