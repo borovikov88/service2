@@ -1,5 +1,7 @@
 """Owner-confirmed catalogue price per m²; no roll conversion or extra stock."""
 import re
+
+PREFERRED_URL="https://shop.aqualine22.ru/basseini/297-otdelochnye-materialy/307-lajner/geotekstil-aquaviva-300-gm2-50-m.html"
 from html import unescape
 
 
@@ -39,7 +41,7 @@ def classify(specs, name, description='', category='', offer=None):
             value = (p.text or '').casefold().replace(' ', '')
             if value not in {'м²', 'м2', 'm2', 'm²', 'кв.м', 'кв.м.'}:
                 unit = 'conflict'
-    specs.update(kind='geotextile', geotextile={'purpose': 'denied' if denied else 'other' if other else 'pool' if pool else 'unknown', 'price_unit': unit})
+    specs.update(kind='geotextile', geotextile={'purpose': 'denied' if denied else 'pool' if pool else 'other' if other else 'unknown', 'price_unit': unit})
 
 
 def normalize(raw):
@@ -81,7 +83,8 @@ def fill(snapshot, catalog, only_variant=None):
                 if not auto and (origin or row['price'] is not None or row['model']): continue
                 choices=[p for p in catalog['products'].values() if p['kind']=='geotextile' and not assess(p)]
                 known=[p for p in choices if p['geotextile']['purpose']=='pool']
-                chosen=select_price_tier(known or choices,tier)
+                preferred=[p for p in choices if p['url']==PREFERRED_URL]
+                chosen=select_price_tier(preferred or known or choices,tier)
                 if chosen:
                     row['catalog_review_note']=''
                     if auto and chosen['id']==origin['id']: refresh_auto_facts(row,chosen,catalog)

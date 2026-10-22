@@ -34,7 +34,8 @@ class TechnologyTests(SimpleTestCase):
                              ('strip_formwork','90.000'),('plaster','41.000'),('excavation','94.000'),('backfill','26.000')]:
                 self.assertEqual(row(new,code,tier)['quantity'],qty)
                 self.assertEqual(len([r for r in rows(new,tier) if r.get('work_code')==code]),1)
-            self.assertEqual(Decimal(new['variants'][tier]['total'])-Decimal(old['variants'][tier]['total']),Decimal('113500'))
+            self.assertEqual(Decimal(new['variants'][tier]['total'])-Decimal(old['variants'][tier]['total']),Decimal('113500')+Decimal('41')*Decimal('250'))
+            self.assertEqual(row(new,'contact_layer',tier)['amount'],'10250.00')
             self.assertIsNone(row(new,'tech_plaster_material',tier)['price'])
             self.assertIsNone(row(new,'bowl_rebar',tier)['quantity'])
         twice=recalculate(new,new['inputs'])

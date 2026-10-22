@@ -15,6 +15,7 @@ from . import estimate_lighting as lighting
 from . import estimate_embedded_installation as installation
 from . import estimate_layout as layout
 from . import estimate_liner_corner as corner
+from . import estimate_finishing_work as finishing_work
 from . import estimate_consumables as consumables
 from . import estimate_temperature_control as temperature
 from . import estimate_filter_media as filter_media
@@ -23,7 +24,7 @@ from pool_service.services.permissions import organization_accesses_for_user
 
 VARIANTS = {"economy": ("Эконом", "Aquaviva"), "standard": ("Стандарт", "Hayward"), "premium": ("Премиум", "IML")}
 BLOCKS = {"construction": "Строительство чаши", "construction_materials": "Материалы для строительства чаши", "embedded": "Закладные элементы", "equipment": "Оборудование", "finish": "Отделка", "options": "Дополнительные работы"}
-KINDS = {*lighting.ROLES, "thermostat", "filter_media", "liner", "liner_corner", "other", "work", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "treatment", "control_panel", "geotextile", *embedded.ROLES, *level_control.ROLES}
+KINDS = {*lighting.ROLES, "thermostat", "filter_media", "liner", "liner_corner", "plaster_component", "other", "work", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "treatment", "control_panel", "geotextile", *embedded.ROLES, *level_control.ROLES}
 FINISHES = {
     "film": ("Плёнка ПВХ для бассейна (+15% запас)", "Монтаж и сварка плёнки ПВХ"),
     "tile": ("Плитка для бассейна (без запаса)", "Облицовка бассейна плиткой"),
@@ -444,6 +445,7 @@ def generate(raw):
     temperature.initialize(result)
     filter_media.initialize(result)
     result["level_shared_quantity_version"]=2
+    finishing_work.initialize(result)
     return evaluate(result)
 
 
@@ -495,6 +497,10 @@ def normalize_catalog(raw):
     result['filter_media'] = filter_media.normalize(raw.get('filter_media'))
     from .estimate_liner_facts import normalize as normalize_liner
     result['liner'] = normalize_liner(raw.get('liner'))
+    from .estimate_plaster_catalog import normalize as normalize_plaster
+    result['plaster_product']=normalize_plaster(raw.get('plaster_product'))
+    if raw.get('material_source_price') is not None:
+        result['material_source_price']=str(number(raw['material_source_price'],'Цена упаковки Litokol',minimum='.01',places=2))
     result["geotextile"] = normalize_geotextile(raw.get("geotextile"))
     result["image"] = safe_image_url(raw.get("image", ""))
     options = raw.get("power_options", [raw["power"]] if raw["power"] != "unknown" else [])
@@ -545,7 +551,7 @@ def normalize_snapshot(raw):
     if raw.get("level_shared_quantity_version")==2: result["level_shared_quantity_version"]=2
     if raw.get("level_system") == 1:
         result["level_system"] = 1
-    for marker in ("level_shared_inlet", "auxiliary_version", "plaster_systems", "pvc_area_version", "embedded_installation_version", "liner_corner_version", "installation_services_version", "consumables_version"):
+    for marker in ("level_shared_inlet", "auxiliary_version", "plaster_systems", "pvc_area_version", "embedded_installation_version", "liner_corner_version", "installation_services_version", "consumables_version", "finishing_work_version"):
         if raw.get(marker) == 1: result[marker] = 1
     if result.get("plaster_systems") == 1:
         initialized = raw.get("plaster_initialized", [])
@@ -578,7 +584,7 @@ def normalize_snapshot(raw):
                 if not isinstance(rid, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", rid) or rid in row_ids:
                     raise EstimateInputError("Строки должны иметь уникальные идентификаторы.")
                 row_ids.add(rid)
-                if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("basis", ""), str) or row.get("basis", "") not in {"", "filter_load", "lighting", "liner_corner", "finish_area", "finish_net", "finish_stock", "surface", "perimeter", "volume", "concrete_total", "exchanger_quantity", "embedded_work", "level_system", *embedded.ROLES, *technology.BASES, *construction.BASES, *plaster_systems.BASES}:
+                if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("basis", ""), str) or row.get("basis", "") not in {"", "contact_work", "filter_load", "lighting", "liner_corner", "finish_area", "finish_net", "finish_stock", "surface", "perimeter", "volume", "concrete_total", "exchanger_quantity", "embedded_work", "level_system", *embedded.ROLES, *technology.BASES, *construction.BASES, *plaster_systems.BASES}:
                     raise EstimateInputError("Некорректный тип строки.")
                 item = {"id": rid, "kind": row["kind"], "basis": row.get("basis", "")}
                 item["filter_parent"] = string(row.get("filter_parent", ""), "Связанный фильтр", 64)
@@ -595,7 +601,7 @@ def normalize_snapshot(raw):
                     raise EstimateInputError("Некорректный тип отделки строки.")
                 for field, limit in (("name", 200), ("unit", 20), ("brand", 80), ("model", 120), ("reason", 300), ("rate_source", 300), ("selection_note", 1000), ("catalog_review_note", 1000)):
                     item[field] = string(row.get(field, ""), field, limit, required=field in {"name", "unit"})
-                for field in ("excluded", "existing", "auto_quantity", "selection_locked", "quantity_stale", "heating_unbound", "level_managed", "unit_price_manual", "construction_price_suspended", "pvc_price_suspended", "consumables_price_suspended"):
+                for field in ("excluded", "existing", "auto_quantity", "selection_locked", "quantity_stale", "heating_unbound", "level_managed", "unit_price_manual", "construction_price_suspended", "pvc_price_suspended", "consumables_price_suspended", "material_price_suspended"):
                     item[field] = boolean(row.get(field, False))
                 if item["heating_parent"]:
                     item["heating_unbound"] = False
@@ -608,7 +614,7 @@ def normalize_snapshot(raw):
                 # Package quantities are exact geometry results. Turning off auto
                 # must not round that saved quantity and silently change the charge.
                 quantity_places = None if result.get("construction_version") and item["basis"] in construction.BASES else 3
-                item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", places=quantity_places, optional=item["kind"] in {"work", "filter_media", *lighting.ROLES} or item["basis"] in {"concrete_total", "exchanger_quantity", "liner_corner", *technology.BASES, *construction.BASES, *plaster_systems.BASES}))
+                item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", places=quantity_places, optional=item["kind"] in {"work", "filter_media", *lighting.ROLES} or item["basis"] in {"concrete_total", "exchanger_quantity", "liner_corner", "contact_work", *technology.BASES, *construction.BASES, *plaster_systems.BASES}))
                 if boolean(row.get("quantity_edited", False)) and not item["auto_quantity"] and re.fullmatch(r"(?:шт\.?|компл\.?|комплект(?:а|ов)?|упак\.?|пара|пар)", item["unit"], re.IGNORECASE):
                     entered = number(row.get("quantity"), "Количество", maximum="1000000", optional=True, places=None)
                     if entered is not None and entered != entered.to_integral_value():
@@ -645,6 +651,7 @@ def normalize_snapshot(raw):
         if not isinstance(initialized,list) or len(initialized)>100 or any(not isinstance(x,str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}',x) for x in initialized):
             raise EstimateInputError('Некорректный состав термостатов.')
         result['variants'][key]['thermostat_parents']=list(dict.fromkeys(initialized))
+        if variant.get("contact_work_initialized") is True: result["variants"][key]["contact_work_initialized"]=True
         if variant.get("liner_corner_initialized") is True: result["variants"][key]["liner_corner_initialized"]=True
         if variant.get("light_controller_initialized") is True: result["variants"][key]["light_controller_initialized"]=True
         if variant.get("lighting_initialized") is True: result["variants"][key]["lighting_initialized"]=True
@@ -676,6 +683,9 @@ def evaluate(raw):
     level_control.sync(result)
     installation.apply(result)
     corner.sync(result)
+    finishing_work.sync(result)
+    from .estimate_plaster_catalog import suspend as suspend_material_prices
+    suspend_material_prices(result)
     result["prices"] = price_summary(result)
     for key, variant in result["variants"].items():
         total, missing, models, missing_quantities = Decimal(0), 0, 0, 0
@@ -689,6 +699,8 @@ def evaluate(raw):
                 charged = included and not row["existing"]
                 from . import estimate_liner
                 row["price_conversion_note"] = estimate_liner.note(row)
+                from . import estimate_plaster_catalog
+                if row["kind"]=="plaster_component":row["price_conversion_note"]=estimate_plaster_catalog.note(row)
                 if row["kind"]=="liner" and row.get("catalog_review_note"):
                     row["price_conversion_note"]=row["catalog_review_note"]+" "+row["price_conversion_note"]
                 amount = (Decimal(row["quantity"]) * Decimal(row["price"])).quantize(CENT, rounding=ROUND_HALF_UP) if charged and row["price"] is not None and row["quantity"] is not None else None
@@ -696,6 +708,8 @@ def evaluate(raw):
                     amount = estimate_liner.amount(row)
                 if charged and row['quantity'] is not None and construction.price_active(row):
                     amount = construction.amount(row)
+                if charged and row["quantity"] is not None and estimate_plaster_catalog.active(row):
+                    amount=estimate_plaster_catalog.amount(row)
                 if charged and row.get('construction_unit_conflict'):
                     amount=None
                     if row['price'] is not None: missing+=1
@@ -902,4 +916,5 @@ def recalculate(raw, inputs):
     embedded.ensure_rows(result)
     embedded.update_quantities(result)
     level_control.sync(result, create=True)
+    finishing_work.initialize(result)
     return evaluate(result)

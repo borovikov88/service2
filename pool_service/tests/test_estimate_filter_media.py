@@ -72,7 +72,7 @@ class FilterMediaTests(SimpleTestCase):
         v=s['variants']['economy'];v['view_order']={'equipment':[row(s)['id'],'filter','pump']}
         row(s)['excluded']=True
         s=catalog.auto_select(engine.recalculate(s,s['inputs']),fixture())[0]
-        self.assertTrue(row(s)['excluded']);self.assertEqual(v['view_order'],s['variants']['economy']['view_order'])
+        self.assertTrue(row(s)['excluded']);self.assertEqual(v['view_order']['equipment'],s['variants']['economy']['view_order']['equipment'])
         bid=block(s);bid['rows']=[r for r in bid['rows'] if r['kind']!='filter_media']
         s=engine.recalculate(s,s['inputs']);self.assertFalse(any(r['kind']=='filter_media' for r in block(s)['rows']))
         old=deepcopy(original);old.pop('filter_media_version')

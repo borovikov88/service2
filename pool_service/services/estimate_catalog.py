@@ -23,7 +23,7 @@ from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requ
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
-CACHE_KEY = "pool-estimate-shop-v21"
+CACHE_KEY = "pool-estimate-shop-v22"
 CACHE_SECONDS = 900
 MAX_BYTES = 20_000_000
 FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
@@ -180,6 +180,8 @@ def parse_catalog(payload, checked_at=None):
         from .estimate_liner_corner import classify as classify_corner
         classify_liner(specs,name,description,category_path(offer.findtext("categoryId")),offer)
         classify_corner(specs,name,brand,offer,url)
+        from .estimate_plaster_catalog import classify as classify_plaster
+        classify_plaster(specs,name,brand,description,offer)
         classify_geotextile(specs, name, description, category_path(offer.findtext("categoryId")), offer)
         from .estimate_heater_purpose import purpose_note
         specs['heater_purpose_note'] = purpose_note(name, category_path(offer.findtext('categoryId')), url, description) if specs['heater_type'] == 'heatpump' else ''
@@ -333,6 +335,7 @@ def apply_product(row, product, catalog, selection="manual"):
     row['catalog']['filter_loading'] = deepcopy(product.get('filter_loading',{}))
     row['catalog']['filter_media'] = deepcopy(product.get('filter_media',{}))
     row['catalog']['liner'] = deepcopy(product.get('liner',{}))
+    row['catalog']['plaster_product'] = deepcopy(product.get('plaster_product',{}))
     row["catalog"]["geotextile"] = deepcopy(product.get("geotextile", {}))
     row["catalog"]["body_family"] = product.get("body_family", "")
     row["catalog"]["lining_denied"] = product.get("lining_denied", [])
@@ -347,6 +350,8 @@ def apply_product(row, product, catalog, selection="manual"):
     from .estimate_liner import set_conversion
     set_conversion(row, product)
     filter_media.selected(row, product)
+    from .estimate_plaster_catalog import conversion as plaster_conversion
+    plaster_conversion(row,product)
 
 
 def refresh_auto_facts(row, product, catalog):
@@ -473,6 +478,8 @@ def auto_select(snapshot, catalog, only_variant=None):
     filled += temperature.fill(result, catalog, only_variant)
     filled += filter_media.fill(result, catalog, only_variant)
     filled += fill_geotextile(result, catalog, only_variant)
+    from .estimate_plaster_catalog import fill as fill_plaster
+    filled += fill_plaster(result,catalog,only_variant)
     filled += lighting.fill(result, catalog, only_variant)
     from .estimate_level_control import fill as fill_level
     filled += fill_level(result, catalog, only_variant)
@@ -530,6 +537,8 @@ def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="
         if product['kind'] == 'geotextile':
             from .estimate_geotextile import assess
             return assess(product) or ('Цена за м². Пригодность под плёнку бассейна требует проверки.' if product.get('geotextile', {}).get('purpose') != 'pool' else 'Цена за м²; запас 15% уже учтён в количестве материала.')
+        if product['kind']=='plaster_component':
+            return 'Проверьте фасовку и единицу цены: CR30 — мешок 25 кг; IDROKOL для дозировки в кг не пересчитывается из литров без плотности.'
         if product['kind']=='liner':
             from .estimate_liner import search_note
             return search_note(product)
@@ -548,7 +557,7 @@ def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="
     query = search_text(string(query, "Поиск товара", 120)).split()
     kind = string(kind, "Тип товара", 20)
     brand = string(brand, "Бренд", 80)
-    if kind not in {*lighting.ROLES, "thermostat", "filter_media", "liner", "liner_corner", "", "other", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "level_regulator", "level_inlet", "treatment", "control_panel", "geotextile", *embedded.ROLES}:
+    if kind not in {*lighting.ROLES, "thermostat", "filter_media", "liner", "liner_corner", "plaster_component", "", "other", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "level_regulator", "level_inlet", "treatment", "control_panel", "geotextile", *embedded.ROLES}:
         raise EstimateInputError("Неизвестный тип товара.")
     matches = [p for p in catalog["products"].values() if (not kind or (p['kind'] in {'inlet', 'vacuum'} if kind == 'level_inlet' else p['kind'] == kind)) and (not brand or p["brand"].casefold() == brand.casefold()) and all(q in search_text(p["name"] + " " + p["sku"] + " " + p["id"]) for q in query)]
     matches.sort(key=lambda p: (bool(reason(p)), not p["available"], bool(kind == "circulation_pump" and variant != "economy" and p.get("frequency_control") is not True), Decimal(p["price"]), int(p["id"])))
@@ -572,6 +581,16 @@ def refresh_prices(snapshot, catalog, variant_key):
             if not product:
                 origin["missing"] = True
                 continue
+            if origin.get('material_source_price'):
+                from .estimate_plaster_catalog import factor,conversion
+                oldfactor=factor(row,origin);newfactor=factor(row,product)
+                if oldfactor is None or newfactor is None or oldfactor!=newfactor:
+                    row['catalog_review_note']='Фасовка/единица Litokol изменилась. Прежняя цена сохранена; перевыберите товар.'
+                    skipped+=1;continue
+                origin['plaster_product']=deepcopy(product.get('plaster_product',{}))
+                conversion(row,product)
+                origin.update(checked_at=catalog['checked_at'],feed_date=catalog['feed_date'],available=product['available'],missing=False)
+                row['catalog_review_note']='';updated+=1;continue
             if product['kind']=='liner' and row['unit'] in {'рулон','рул.'} and (product.get('liner',{}).get('price_unit')=='m2' or product.get('liner',{}).get('unit_explicit') and product.get('liner',{}).get('price_unit')=='unknown'):
                 row['catalog_review_note']='Единица цены каталога больше не подтверждает цену за рулон; прежняя цена сохранена.'
                 skipped+=1

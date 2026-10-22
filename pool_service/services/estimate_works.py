@@ -84,6 +84,7 @@ def source_rate(row, variant):
     Оборудование G148:G153. Never treat cached package totals as unit rates.
     """
     code = row.get('work_code')
+    if code=='contact_layer' and row['unit']=='м²':return '250'
     for item_code, _, _, unit, economy, standard, _, _ in WORKS:
         if item_code != code:
             continue
@@ -110,7 +111,7 @@ def fill_missing_prices(snapshot):
     for key, variant in snapshot['variants'].items():
         for block in variant['blocks']:
             for row in block['rows']:
-                if not is_work(row) or row['price'] is not None or row['existing'] or row.get('selection_locked') or row.get('rate_source') == 'Ручная цена текущей сметы':
+                if not is_work(row) or row['price'] is not None or row['existing'] or row.get('selection_locked') or row.get('unit_price_manual') or row.get('rate_source') == 'Ручная цена текущей сметы':
                     continue
                 rate = source_rate(row, key)
                 if rate is not None:
@@ -166,6 +167,7 @@ def add_works(snapshot, *, fresh=False):
 
 
 def shared_base(row):
+    if row.get('work_code')=='contact_layer' and row.get('unit')=='м²':return '250'
     if row.get('work_code') == 'equipment_work' and row.get('unit') == 'компл.': return EQUIPMENT_BASE
     if row.get('work_code') == 'bowl_package' and row.get('unit') == 'м³': return '20000'
     if row.get('work_code') == 'handling_package' and row.get('unit') == 'т': return '300'
