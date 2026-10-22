@@ -17,12 +17,13 @@ from . import estimate_layout as layout
 from . import estimate_liner_corner as corner
 from . import estimate_consumables as consumables
 from . import estimate_temperature_control as temperature
+from . import estimate_filter_media as filter_media
 
 from pool_service.services.permissions import organization_accesses_for_user
 
 VARIANTS = {"economy": ("Эконом", "Aquaviva"), "standard": ("Стандарт", "Hayward"), "premium": ("Премиум", "IML")}
 BLOCKS = {"construction": "Строительство чаши", "construction_materials": "Материалы для строительства чаши", "embedded": "Закладные элементы", "equipment": "Оборудование", "finish": "Отделка", "options": "Дополнительные работы"}
-KINDS = {*lighting.ROLES, "thermostat", "other", "work", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "treatment", "control_panel", "geotextile", *embedded.ROLES, *level_control.ROLES}
+KINDS = {*lighting.ROLES, "thermostat", "filter_media", "other", "work", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "treatment", "control_panel", "geotextile", *embedded.ROLES, *level_control.ROLES}
 FINISHES = {
     "film": ("Плёнка ПВХ для бассейна (+15% запас)", "Монтаж и сварка плёнки ПВХ"),
     "tile": ("Плитка для бассейна (без запаса)", "Облицовка бассейна плиткой"),
@@ -441,6 +442,7 @@ def generate(raw):
     corner.initialize(result)
     consumables.initialize(result)
     temperature.initialize(result)
+    filter_media.initialize(result)
     result["level_shared_quantity_version"]=2
     return evaluate(result)
 
@@ -489,6 +491,8 @@ def normalize_catalog(raw):
     result["lighting"] = lighting.normalize(raw.get("lighting"))
     result["auxiliary"] = normalize_facts(raw.get("auxiliary"))
     result['temperature'] = temperature.normalize(raw.get('temperature'))
+    result['filter_loading'] = filter_media.normalize(raw.get('filter_loading'), loading=True)
+    result['filter_media'] = filter_media.normalize(raw.get('filter_media'))
     result["geotextile"] = normalize_geotextile(raw.get("geotextile"))
     result["image"] = safe_image_url(raw.get("image", ""))
     options = raw.get("power_options", [raw["power"]] if raw["power"] != "unknown" else [])
@@ -531,6 +535,7 @@ def normalize_snapshot(raw):
     if raw.get("construction_version") == 1: result["construction_version"] = 1
     if raw.get('pvc_rate_version') == 2: result['pvc_rate_version'] = 2
     if raw.get('temperature_control_version') == 1: result['temperature_control_version'] = 1
+    if raw.get('filter_media_version') == 1: result['filter_media_version'] = 1
     if result.get("construction_version") and raw.get("construction_quantity_version") in (1, 2):
         result["construction_quantity_version"] = raw["construction_quantity_version"]
     expected_blocks=set(BLOCKS) if result.get("construction_version") else set(BLOCKS)-{construction.MATERIAL_BLOCK}
@@ -570,9 +575,10 @@ def normalize_snapshot(raw):
                 if not isinstance(rid, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", rid) or rid in row_ids:
                     raise EstimateInputError("Строки должны иметь уникальные идентификаторы.")
                 row_ids.add(rid)
-                if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("basis", ""), str) or row.get("basis", "") not in {"", "lighting", "liner_corner", "finish_area", "finish_net", "finish_stock", "surface", "perimeter", "volume", "concrete_total", "exchanger_quantity", "embedded_work", "level_system", *embedded.ROLES, *technology.BASES, *construction.BASES, *plaster_systems.BASES}:
+                if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("basis", ""), str) or row.get("basis", "") not in {"", "filter_load", "lighting", "liner_corner", "finish_area", "finish_net", "finish_stock", "surface", "perimeter", "volume", "concrete_total", "exchanger_quantity", "embedded_work", "level_system", *embedded.ROLES, *technology.BASES, *construction.BASES, *plaster_systems.BASES}:
                     raise EstimateInputError("Некорректный тип строки.")
                 item = {"id": rid, "kind": row["kind"], "basis": row.get("basis", "")}
+                item["filter_parent"] = string(row.get("filter_parent", ""), "Связанный фильтр", 64)
                 item["heating_parent"] = string(row.get("heating_parent", ""), "Связанный теплообменник", 64)
                 item["heating_type"] = string(row.get("heating_type", ""), "Тип нагрева строки", 20)
                 if item["heating_type"] not in {"", *HEATING_TYPES}:
@@ -599,7 +605,7 @@ def normalize_snapshot(raw):
                 # Package quantities are exact geometry results. Turning off auto
                 # must not round that saved quantity and silently change the charge.
                 quantity_places = None if result.get("construction_version") and item["basis"] in construction.BASES else 3
-                item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", places=quantity_places, optional=item["kind"] in {"work", *lighting.ROLES} or item["basis"] in {"concrete_total", "exchanger_quantity", "liner_corner", *technology.BASES, *construction.BASES, *plaster_systems.BASES}))
+                item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", places=quantity_places, optional=item["kind"] in {"work", "filter_media", *lighting.ROLES} or item["basis"] in {"concrete_total", "exchanger_quantity", "liner_corner", *technology.BASES, *construction.BASES, *plaster_systems.BASES}))
                 if boolean(row.get("quantity_edited", False)) and not item["auto_quantity"] and re.fullmatch(r"(?:шт\.?|компл\.?|комплект(?:а|ов)?|упак\.?|пара|пар)", item["unit"], re.IGNORECASE):
                     entered = number(row.get("quantity"), "Количество", maximum="1000000", optional=True, places=None)
                     if entered is not None and entered != entered.to_integral_value():
@@ -628,6 +634,10 @@ def normalize_snapshot(raw):
             raise EstimateInputError('Выберите комплектацию закладных.')
         result["variants"][key] = {"blocks": cleaned, 'embedded_profile': profile}
         result["variants"][key]["view_order"]=layout.normalize_order(variant.get("view_order",{}),row_ids)
+        media_parents=variant.get('filter_media_parents',[])
+        if not isinstance(media_parents,list) or len(media_parents)>100 or any(not isinstance(x,str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}',x) for x in media_parents):
+            raise EstimateInputError('Некорректный состав загрузки фильтров.')
+        result['variants'][key]['filter_media_parents']=list(dict.fromkeys(media_parents))
         initialized=variant.get('thermostat_parents',[])
         if not isinstance(initialized,list) or len(initialized)>100 or any(not isinstance(x,str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}',x) for x in initialized):
             raise EstimateInputError('Некорректный состав термостатов.')
@@ -655,6 +665,7 @@ def evaluate(raw):
     pvc.apply(result)
     consumables.apply(result)
     temperature.sync(result)
+    filter_media.sync(result)
     lighting.sync(result)
     result["technology"] = technology.summary(result["inputs"])
     result["heating"] = heating_requirement(result["inputs"])
@@ -816,6 +827,7 @@ def evaluate(raw):
         annotate_geotextile(result, variant)
         lighting.annotate(result, variant)
         temperature.annotate(variant)
+        filter_media.annotate(result, variant)
     return result
 
 
@@ -837,6 +849,7 @@ def recalculate(raw, inputs):
     corner.initialize(result)
     consumables.initialize(result)
     temperature.initialize(result)
+    filter_media.initialize(result)
     if result.get("level_shared_inlet") and inputs.get("level_inlet_mode")=="automatic": result["level_shared_quantity_version"]=2
     # Upgrade only the editable copy; saved versions are never passed through here on load.
     works.add_works(result)

@@ -10,7 +10,7 @@ export function setExcluded(snapshot, variantKey, blockId, rowId, excluded, all 
     if (target) {
       target.excluded = excluded;
       target.reason = excluded ? 'Исключено пользователем' : '';
-      if(rowId && target.kind==='thermostat')target.selection_locked=true;
+      if(rowId && ['thermostat','filter_media'].includes(target.kind))target.selection_locked=true;
     }
     // Restoring a row inside an excluded block restores only that row.
     if (rowId && target && !excluded && block.excluded) {
@@ -76,6 +76,7 @@ export function setWorkPrice(snapshot, variantKey, blockId, source, price, all =
 }
 
 export function automaticQuantity(snapshot, variantKey, row) {
+  if (row.basis === 'filter_load') return row.quantity; // Server uses saved filter/media facts.
   if (row.basis?.startsWith('pkg_')) return row.quantity; // Server owns exact construction quantities and handling scope.
   if (row.basis === 'liner_corner') return String(Math.ceil(Number(snapshot.geometry.perimeter)/2));
   if (row.basis === 'lighting') return ['light_transformer','light_controller'].includes(row.kind) ? '1' : snapshot.inputs.light_count;
