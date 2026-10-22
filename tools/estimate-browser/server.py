@@ -24,6 +24,8 @@ if os.environ.get('ESTIMATE_BROWSER_CATALOG') == 'lighting':
 if os.environ.get('ESTIMATE_BROWSER_CATALOG') == 'temperature':
     from pool_service.tests.test_estimate_temperature_control import fixture as temperature_stock
     def stock():return temperature_stock(True)
+if os.environ.get('ESTIMATE_BROWSER_CATALOG') == 'media':
+    from pool_service.tests.test_estimate_filter_media import fixture as stock
 source=(ROOT / 'pool_service/templates/pool_service/estimates/calculator.html').read_text()
 source=re.sub(r'{% extends .*?%}|{% block .*?%}|{% endblock %}', '', source)
 html=Template(source).render(Context({'estimate_organization':{'pk':1}, 'csrf_token':'test-only'}))
@@ -44,7 +46,7 @@ class Handler(SimpleHTTPRequestHandler):
         if action=='generate': out={'snapshot':auto_select(generate(data['inputs']),stock())[0], 'selected_count':3}
         elif action=='recalculate':
             result=recalculate(data['snapshot'],data['inputs'])
-            if os.environ.get('ESTIMATE_BROWSER_CATALOG') in {'lighting','temperature'}: result=auto_select(result,stock())[0]
+            if os.environ.get('ESTIMATE_BROWSER_CATALOG') in {'lighting','temperature','media'}: result=auto_select(result,stock())[0]
             out={'snapshot':result}
         elif action=='level_inlet_binding':
             from pool_service.services.estimate_level_shared import apply_binding
@@ -59,7 +61,18 @@ class Handler(SimpleHTTPRequestHandler):
                         for r in b['rows']:
                             if r['id']==data['row']:r['price']=data['price']
             out={'snapshot':evaluate(result),'remembered':0}
-        elif action=='catalog_search':out={'products':[], 'total':0,'status':{'count':0,'brands':{}}}
+        elif action=='catalog_search':
+            from pool_service.services.estimate_catalog import search_catalog
+            from pool_service.services.pool_estimates import normalize_inputs, geometry
+            from decimal import Decimal
+            inputs=normalize_inputs(data['inputs'])
+            out=search_catalog(stock(),data.get('q',''),data.get('kind',''),data.get('brand',''),inputs,Decimal(geometry(inputs)['required_flow']))
+        elif action=='catalog_apply':
+            from pool_service.services.estimate_catalog import apply_product
+            result=data['snapshot'];catalog=stock()
+            row=next(r for b in result['variants'][data['variant']]['blocks'] if b['id']==data['block'] for r in b['rows'] if r['id']==data['row'])
+            apply_product(row,catalog['products'][data['product_id']],catalog)
+            out={'snapshot':evaluate(result)}
         elif action=='catalog_images':out={'images':{}}
         else:out={}
         self.respond(out)
