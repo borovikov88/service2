@@ -105,7 +105,7 @@ class LightingTests(SimpleTestCase):
             sections=estimate_sections(v)
             ids=[r['id'] for section in sections for b in section['blocks'] for r in b['rows']]
             self.assertEqual(len(ids),len(set(ids)))
-            self.assertEqual(sum((b['subtotal'] for section in sections for b in section['blocks']),Decimal(0)),Decimal(v['total']))
+            self.assertEqual(sum((Decimal(b['subtotal']) for section in sections for b in section['blocks']),Decimal(0)),Decimal(v['total']))
         self.assertEqual(s,before)
 
     def test_review_explicit_grade_and_suffix_niche_denial(self):

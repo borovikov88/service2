@@ -3,23 +3,57 @@ import re
 from decimal import Decimal
 
 ROLES = {'pool_light': 'Прожектор бассейна', 'light_niche': 'Закладная прожектора',
-         'light_transformer': 'Трансформатор освещения', 'light_box': 'Распределительная коробка освещения'}
+         'light_transformer': 'Трансформатор освещения', 'light_box': 'Распределительная коробка освещения', 'light_controller': 'Контроллер RGB-освещения'}
 OFF = 'Освещение отключено'
 INCLUDED = 'Закладная входит в комплект прожектора'
+RGB_OFF='Выбран белый свет — контроллер RGB не требуется'
+
+
+def fountain_purpose(text):
+    text=re.sub(r'\bне\s+(?:(?:подходит|предназначен\w*)\s+)?(?:для|под)\s+(?:фонтан\w*|fountains?)',' ',text or '',flags=re.I)
+    text=re.sub(r'(?:для|под)\s+(?:фонтан\w*|fountains?)\s+не\s+(?:подходит|предназначен\w*)',' ',text,flags=re.I)
+    return bool(re.search(r'фонтан|\bfountains?\b',text,re.I))
+
+
+def color_claims(evidence, description):
+    """Keep a denial attached to its color, without consuming another clause."""
+    colors={}
+    denied={}
+    tokens={'rgb':r'\bRGB(?:W|X)?\b', 'white':r'\bWhite\b|бел\w*\s+(?:свет\w*|свечени\w*)'}
+    cleaned=[]
+    for source in (evidence, description):
+        for clause in re.split(r'[;,.!?\n]+',source):
+            for color,token in tokens.items():
+                component='(?:'+token+')'
+                prefix=r'(?:без|не\s+поддерживает(?:ся)?|не)\s+'+component
+                suffix=component+r'\s+(?:не\s+(?:поддержива\w*|предусмотр\w*|доступ\w*)|отсутствует)'
+                pattern='(?:'+prefix+'|'+suffix+')'
+                if re.search(pattern,clause,re.I): denied[color]=True
+                clause=re.sub(pattern,' ',clause,flags=re.I)
+            cleaned.append(clause)
+    color_text='; '.join(cleaned)
+    color_text=re.sub(r'(?:корпус|рамка|body|housing)\s*[:—-]?\s*White\b|\bWhite\s+(?:body|housing)\b',' ',color_text,flags=re.I)
+    colors['rgb']=bool(re.search(tokens['rgb'],color_text,re.I))
+    colors['white']=bool(re.search(r'\b(?:White|NW|CW|WW)\b|бел(?:ый|ого)\s+(?:свет|свечени)|цвет\s+свечения\s*[:—-]\s*бел',color_text,re.I))
+    return colors,denied
 
 
 def normalize(raw):
     from .pool_estimates import string, number, boolean
-    raw = raw or {}
-    return {**{k: string(raw.get(k, ''), 'Характеристика освещения', 300) for k in ('material', 'models', 'supply', 'note')},
+    raw = {} if raw is None else raw
+    if not isinstance(raw,dict):
+        from .pool_estimates import EstimateInputError
+        raise EstimateInputError('Некорректные характеристики освещения.')
+    return {**{k: string(raw.get(k, ''), 'Характеристика освещения', 300) for k in ('material', 'models', 'supply', 'note', 'purpose', 'color')},
             **{k: str(number(raw[k], 'Характеристика освещения', minimum='0', maximum='100000', places=3)) if raw.get(k) is not None else None for k in ('watts', 'volts', 'leds')},
-            **{k: boolean(raw.get(k, False)) for k in ('conflict', 'niche_included', 'denied')}}
+            **{k: boolean(raw.get(k, False)) for k in ('conflict', 'niche_included', 'denied','rgb_denied','white_denied')}}
 
 
 def classify(specs, name, description, category, offer):
     text = name.casefold()
     scope = ' '.join((name, description, category)).casefold()
-    kind = ('light_niche' if re.match(r'^закладн\w*.*прожектор', text) else
+    kind = ('light_controller' if re.match(r'^(?:пульт|контроллер)\b',text) and re.search(r'RC[ -]?01\b',name,re.I) and re.search(r'прожектор|освещ',scope) else
+            'light_niche' if re.match(r'^закладн\w*.*прожектор', text) else
             'light_transformer' if text.startswith('трансформатор') and re.search(r'освещ|прожектор|бассейн', scope) else
             'light_box' if re.match(r'^(?:дозов\w*|распределительн\w*|распаечн\w*) коробк', text) and re.search(r'освещ|прожектор|бассейн', scope) else
             'pool_light' if re.match(r'^прожектор\b', text) and re.search(r'освещ.*бассейн|для бассейн|подводн', scope) else '')
@@ -48,9 +82,13 @@ def classify(specs, name, description, category, offer):
     specs['lining_denied']=sorted(denied_lining)
     denied = bool(re.search(r'(?:не подходит|не предназначен|не для)\s*(?:для\s+)?(?:бассейн|подводн)', scope))
     specs.update(kind=kind, embedded_role='')
-    specs['lighting'] = dict(material=next(iter(materials)) if len(materials)==1 else '', watts=watts, volts=volts, leds=leds,
+    purpose='fountain' if fountain_purpose(scope) else ''
+    colors,color_denied=color_claims(evidence,description)
+    rgb,white=colors['rgb'],colors['white']
+    rgb_denied,white_denied=bool(color_denied.get('rgb')),bool(color_denied.get('white'))
+    specs['lighting'] = dict(rgb_denied=rgb_denied,white_denied=white_denied,purpose=purpose,color='rgb' if rgb else 'white' if white else '',material=next(iter(materials)) if len(materials)==1 else '', watts=watts, volts=volts, leds=leds,
         supply=next(iter(supplies)).upper() if len(supplies)==1 else '', models=' '.join(sorted(set(re.findall(r'\b(?:LED\d+|HT\d+[A-Z]*|SS\d+[A-Z]*)\b', evidence, re.I)))).upper(),
-        conflict=niche_conflict or bool(positive & denied_lining) or len(materials)>1 or wc or vc or lc or len(supplies)>1, niche_included=included, denied=denied, note='Название и параметры карточки магазина; схема подключения требует проверки.')
+        conflict=(rgb and white) or (rgb and rgb_denied) or (white and white_denied) or niche_conflict or bool(positive & denied_lining) or len(materials)>1 or wc or vc or lc or len(supplies)>1, niche_included=included, denied=denied, note='Название и параметры карточки магазина; схема подключения требует проверки.')
 
 
 def sync(snapshot, create=False):
@@ -60,14 +98,22 @@ def sync(snapshot, create=False):
         block = next(b for b in variant['blocks'] if b['id']=='embedded')
         if enabled and create and not variant.get('lighting_initialized'):
             for kind, title in ROLES.items():
+                if kind=='light_controller': continue
                 if any(r['kind']==kind for b in variant['blocks'] for r in b['rows']): continue
                 if len(block['rows'])>=100: raise EstimateInputError('Недостаточно места для освещения.')
                 ids={r['id'] for b in variant['blocks'] for r in b['rows']}
                 rid=next((f'{kind}_{i}' for i in range(100) if f'{kind}_{i}' not in ids), None)
                 row=make_row(rid,title+': подобрать модель','шт.',snapshot['inputs'].get('light_count'),'lighting',kind)
-                if kind=='light_transformer': row['quantity']='1'
+                if kind in {'light_transformer','light_controller'}: row['quantity']='1'
                 block['rows'].append(row)
             variant['lighting_initialized']=True
+        if enabled and create and snapshot['inputs'].get('light_color')=='rgb' and not variant.get('light_controller_initialized'):
+            if not any(r['kind']=='light_controller' for b in variant['blocks'] for r in b['rows']):
+                if len(block['rows'])>=100: raise EstimateInputError('Недостаточно места для контроллера освещения.')
+                ids={r['id'] for b in variant['blocks'] for r in b['rows']}
+                rid=next(f'light_controller_{i}' for i in range(100) if f'light_controller_{i}' not in ids)
+                block['rows'].append(make_row(rid,ROLES['light_controller']+': подобрать модель','шт.','1','lighting','light_controller'))
+            variant['light_controller_initialized']=True
         lights=[r for r in block['rows'] if r['kind']=='pool_light' and not r['excluded']]
         for row in block['rows']:
             if row['kind'] not in ROLES or row['existing']: continue
@@ -75,7 +121,10 @@ def sync(snapshot, create=False):
             elif enabled and row['excluded'] and row['reason']==OFF: row.update(excluded=False, reason='')
             if row['auto_quantity'] and row['unit']!='шт.': row['quantity']=None
             if row['auto_quantity'] and row['unit']=='шт.':
-                row['quantity']='1' if row['kind']=='light_transformer' else snapshot['inputs'].get('light_count')
+                row['quantity']='1' if row['kind'] in {'light_transformer','light_controller'} else snapshot['inputs'].get('light_count')
+            if row['kind']=='light_controller' and enabled:
+                if snapshot['inputs'].get('light_color')!='rgb' and not row['excluded']: row.update(excluded=True,reason=RGB_OFF)
+                elif snapshot['inputs'].get('light_color')=='rgb' and row['excluded'] and row['reason']==RGB_OFF: row.update(excluded=False,reason='')
             if row['kind']=='light_niche' and len(lights)==1:
                 included=(lights[0].get('catalog') or {}).get('lighting',{}).get('niche_included')
                 if included and not row['excluded'] and row['auto_quantity'] and (row['price'] is None and not row.get('catalog') or row.get('catalog') and row['price']==row['catalog']['price']) and not row.get('selection_locked') and not row.get('unit_price_manual') and (row.get('catalog') or {}).get('selection')!='manual':
@@ -86,25 +135,35 @@ def sync(snapshot, create=False):
         # protected manual lamp count, never a stale parameter-form count.
         active=[r for r in block['rows'] if r['kind']=='pool_light' and not r['excluded']]
         for row in block['rows']:
-            if row['kind'] in {'light_niche','light_box'} and row['auto_quantity'] and row['unit']=='шт.' and not row['existing']:
+            if row['kind'] in {'light_transformer','light_controller'} and row['auto_quantity'] and row['unit']=='шт.' and not row['existing']:
+                row['quantity']='0' if not active else (None if any(r['quantity'] is None or r['unit']!='шт.' for r in active) else ('1' if any(Decimal(r['quantity'])>0 for r in active) else '0'))
+            if row['kind']=='light_box' and row['auto_quantity'] and row['unit']=='шт.' and not row['existing']:
+                row['quantity']=str(sum(Decimal(r['quantity']) for r in active)) if active and all(r['quantity'] is not None and r['unit']=='шт.' for r in active) else None
+            if row['kind']=='light_niche' and row['auto_quantity'] and row['unit']=='шт.' and not row['existing']:
                 row['quantity']=active[0]['quantity'] if len(active)==1 and active[0]['unit']=='шт.' else None
 
 
-def assess(product, profile, parent=None, quantity=None, finish=None):
+def assess(product, profile, parent=None, quantity=None, finish=None, color=None):
     f=product.get('lighting',{})
     if f.get('conflict') or product.get('specification_conflict'): return 'Противоречивые характеристики освещения.', []
+    if f.get('purpose')=='fountain' or fountain_purpose(product.get('name','')): return 'Фонтанный светильник не подбирается как прожектор бассейна.', []
     if f.get('denied'): return 'Известен запрет использования в бассейне.', []
     notes=[]
     lining='film' if finish=='film' else 'concrete' if finish in {'tile','mosaic'} else None
     if lining in product.get('lining_denied',[]): return 'Запрещена выбранная отделка бассейна.', []
     if lining and product.get('lining') and lining not in product['lining']: return 'Товар указан для другой отделки бассейна.', []
     if product['kind']=='pool_light':
+        if color and f.get(color+'_denied'): return 'Выбранный цвет освещения прямо исключён карточкой товара.', []
+        if color and f.get('color') and f['color']!=color: return 'Цвет освещения не соответствует выбранному белому/RGB.', []
+        if color and not f.get('color'): notes.append('Не подтверждён цвет освещения: '+color+'.')
         material='plastic' if profile.startswith('plastic') else profile
         if f.get('material') and f['material']!=material: return 'Материал прожектора не соответствует выбранному типу закладных.', []
         if not f.get('material'): notes.append('Не подтверждён материал корпуса.')
         if f.get('volts') and Decimal(f['volts'])>24: return 'Не подтверждена безопасная схема подводного освещения с этим напряжением.', []
         for field,label in (('watts','мощность'),('volts','напряжение'),('supply','AC/DC'),('leds','число светодиодов')):
             if not f.get(field): notes.append('Не указано: '+label+'.')
+    if product['kind']=='light_controller':
+        notes.append('Проверить протокол контроллера, подключение и допустимую нагрузку с выбранными RGB-прожекторами.')
     if product['kind']=='light_niche':
         pf=(parent or {}).get('lighting',{})
         if f.get('models') and pf.get('models') and not set(f['models'].split())&set(pf['models'].split()): return 'Закладная указана для другой серии прожектора.', []
@@ -145,12 +204,12 @@ def fill(snapshot, catalog, only=None):
                 choices=[]
                 for p in catalog['products'].values():
                     if p['kind']!=kind or not p['available']: continue
-                    issue,notes=assess(p,v['embedded_profile'],parent,light_quantity,snapshot['inputs']['finish'])
+                    issue,notes=assess(p,v['embedded_profile'],parent,light_quantity,snapshot['inputs']['finish'],snapshot['inputs'].get('light_color'))
                     if not issue: choices.append((p,notes))
                 if not choices:
                     if origin and origin['selection']=='auto':
                         current=catalog['products'].get(origin['id']) or {**origin,'kind':kind}
-                        issue,_=assess(current,v['embedded_profile'],parent,light_quantity,snapshot['inputs']['finish'])
+                        issue,_=assess(current,v['embedded_profile'],parent,light_quantity,snapshot['inputs']['finish'],snapshot['inputs'].get('light_color'))
                         if issue: row.update(catalog=None, price=None, model='', name=ROLES[kind]+': подобрать модель')
                     row['selection_note']='Проверить: подходящий '+ROLES[kind].lower()+' в каталоге не найден.'
                     continue
@@ -178,7 +237,7 @@ def annotate(snapshot, variant):
     quantity=lights[0]['quantity'] if len(lights)==1 and lights[0]['unit']=='шт.' else None
     for row in physical:
         if row['kind'] not in ROLES: continue
-        issue,notes=assess({**(row.get('catalog') or {}),'kind':row['kind']},variant['embedded_profile'],parent,quantity,snapshot['inputs']['finish'])
+        issue,notes=assess({**(row.get('catalog') or {}),'kind':row['kind'],'name':row['name']},variant['embedded_profile'],parent,quantity,snapshot['inputs']['finish'],snapshot['inputs'].get('light_color'))
         if len(lights)!=1: notes.append('Для нескольких моделей нужна явная схема связей; автоматическая совместимость не подтверждена.')
         if row['quantity'] is None: notes.append('Укажите количество по схеме размещения.')
         if row['unit']!='шт.': notes.append('Расчёт количества освещения требует единицы шт.; текущая единица сохранена.')

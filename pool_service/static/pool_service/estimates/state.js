@@ -59,7 +59,8 @@ export function setWorkPrice(snapshot, variantKey, blockId, source, price, all =
 
 export function automaticQuantity(snapshot, variantKey, row) {
   if (row.basis?.startsWith('pkg_')) return row.quantity; // Server owns exact construction quantities and handling scope.
-  if (row.basis === 'lighting') return row.kind==='light_transformer' ? '1' : snapshot.inputs.light_count;
+  if (row.basis === 'liner_corner') return String(Math.ceil(Number(snapshot.geometry.perimeter)/2));
+  if (row.basis === 'lighting') return ['light_transformer','light_controller'].includes(row.kind) ? '1' : snapshot.inputs.light_count;
   if (row.basis === 'level_system') return '1';
   const variant = snapshot.variants[variantKey];
   const value = row.basis === 'exchanger_quantity'
@@ -84,4 +85,17 @@ export function moveRow(snapshot, variantKey, blockId, rowId, direction, visible
   const a = visible[from].index, b = visible[to].index;
   [block.rows[a], block.rows[b]] = [block.rows[b], block.rows[a]];
   return true;
+}
+
+export function constructionScope(variant){
+ return variant.blocks.filter(b=>['construction','construction_materials'].includes(b.id));
+}
+export function setConstructionExcluded(snapshot,variantKey,excluded,all=false){
+ for(const [key,variant] of Object.entries(snapshot.variants)){
+  if(!all&&key!==variantKey)continue;
+  for(const block of constructionScope(variant)){
+   block.excluded=excluded;block.reason=excluded?'Исключено пользователем':'';
+  }
+ }
+ return snapshot;
 }

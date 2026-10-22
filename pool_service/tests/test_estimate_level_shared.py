@@ -10,13 +10,20 @@ from .test_pool_estimates import INPUTS, block
 from .test_estimate_catalog import offer, feed
 
 
+def legacy_snapshot(inputs):
+    # Retain regression coverage of saved v1 line bindings and manual totals.
+    result=estimates.generate(inputs)
+    result.pop('level_shared_quantity_version',None)
+    return estimates.evaluate(result)
+
+
 def inlet(snapshot, tier='economy'):
     return next(r for r in block(snapshot, 'embedded', tier)['rows'] if r['kind'] == 'inlet')
 
 
 class SharedLevelInletTests(SimpleTestCase):
     def test_one_row_total_and_duty_roundtrip_recalculation(self):
-        s = estimates.generate(INPUTS)
+        s = legacy_snapshot(INPUTS)
         row = inlet(s)
         self.assertEqual(row['quantity'], '4.000')
         self.assertEqual(row['filtration_quantity'], '3.000')
@@ -35,7 +42,7 @@ class SharedLevelInletTests(SimpleTestCase):
         self.assertIn('Проверить', ' '.join(s['variants']['economy']['warnings']))
 
     def test_builtin_toggle_and_exclusion_do_not_charge_extra(self):
-        s = estimates.generate(INPUTS)
+        s = legacy_snapshot(INPUTS)
         inlet(s)['price'] = '100'
         s = estimates.evaluate(s)
         baseline = Decimal(s['variants']['economy']['total'])
@@ -55,7 +62,7 @@ class SharedLevelInletTests(SimpleTestCase):
         self.assertEqual(Decimal(s['variants']['economy']['total']), baseline - 100)
 
     def test_manual_quantity_price_zero_and_split_validation(self):
-        s = estimates.generate(INPUTS)
+        s = legacy_snapshot(INPUTS)
         inlet(s).update(auto_quantity=False, quantity='7', price='123.45', unit_price_manual=True)
         s = estimates.evaluate(s)
         self.assertEqual(inlet(s)['quantity'], '7.000')
@@ -72,7 +79,7 @@ class SharedLevelInletTests(SimpleTestCase):
             estimates.evaluate(s)
 
     def test_two_models_need_binding_and_binding_is_variant_local(self):
-        s = estimates.generate(INPUTS)
+        s = legacy_snapshot(INPUTS)
         other = deepcopy(inlet(s)); other['id'] = 'other_inlet'; other['name'] = 'Другая модель'
         block(s, 'embedded')['rows'].append(other)
         s = estimates.evaluate(s)
@@ -87,7 +94,7 @@ class SharedLevelInletTests(SimpleTestCase):
         self.assertTrue(all(r['level_quantity'] == '0.000' for r in block(s, 'embedded')['rows'] if r['kind'] == 'inlet'))
 
     def test_known_incompatible_retains_manual_model_without_auto_extra(self):
-        s = estimates.generate(INPUTS)
+        s = legacy_snapshot(INPUTS)
         c = catalog.parse_catalog(feed(offer(21, 'Форсунка Aquaviva ABS под пленку', price='100')))
         p = c['products']['21']; p.update(level_passage='no')
         catalog.apply_product(inlet(s), p, c, 'manual')
@@ -99,7 +106,7 @@ class SharedLevelInletTests(SimpleTestCase):
         self.assertIn('свободного прохода', ' '.join(s['variants']['economy']['warnings']))
 
     def test_legacy_pair_is_not_migrated_on_recalculate(self):
-        s = estimates.generate(INPUTS)
+        s = legacy_snapshot(INPUTS)
         s.pop('level_shared_inlet')
         for v in s['variants'].values():
             for b in v['blocks']:
@@ -112,7 +119,7 @@ class SharedLevelInletTests(SimpleTestCase):
 
     def test_reserved_inlet_does_not_supply_filtration_and_repair_preserves_split(self):
         from pool_service.services.estimate_compatibility import repair
-        s = estimates.generate(INPUTS)
+        s = legacy_snapshot(INPUTS)
         pump = next(r for r in block(s)['rows'] if r['kind'] == 'pump')
         pump['specs'].update(flow='9', head='8')
         inlet(s).update(quantity='3', auto_quantity=False, price='100')
@@ -129,7 +136,7 @@ class SharedLevelInletTests(SimpleTestCase):
         c = catalog.parse_catalog(feed(
             offer(21, 'Форсунка Aquaviva ABS под пленку', price='100'),
             offer(22, 'Регулятор уровня Aquaviva RO-7', price='4000').replace('</offer>', '<vendorCode>16791</vendorCode></offer>')))
-        s = estimates.generate(INPUTS)
+        s = legacy_snapshot(INPUTS)
         catalog.apply_product(inlet(s), c['products']['21'], c, 'manual')
         inlet(s).update(price='123.45', unit_price_manual=True)
         from pool_service.services.estimate_level_control import fill
@@ -147,7 +154,7 @@ class SharedLevelInletTests(SimpleTestCase):
         self.assertFalse(any(r['kind'] == 'level_inlet' for r in block(s, 'embedded')['rows']))
 
     def test_manual_quantity_before_binding_and_existing_separate_row_preserved(self):
-        s = estimates.generate(INPUTS)
+        s = legacy_snapshot(INPUTS)
         row = inlet(s)
         row.update(auto_quantity=False, quantity='5', filtration_quantity='5', level_quantity='0', price='100')
         s = shared.apply_binding(s, 'economy', row['id'])
@@ -169,7 +176,7 @@ class SharedLevelInletTests(SimpleTestCase):
             offer(22, 'Регулятор уровня Aquaviva RO-7', price='4000').replace('</offer>', '<vendorCode>16791</vendorCode></offer>')))
         for fact, inlet_value, regulator_value in [('level_diameter', '50 mm', '40 mm'), ('level_connection', 'glue_socket', 'bsp_female')]:
             with self.subTest(fact=fact):
-                s = estimates.generate(INPUTS)
+                s = legacy_snapshot(INPUTS)
                 c['products']['21'][fact] = inlet_value
                 c['products']['22'][fact] = regulator_value
                 catalog.apply_product(inlet(s), c['products']['21'], c, 'manual')
@@ -180,7 +187,7 @@ class SharedLevelInletTests(SimpleTestCase):
                 self.assertEqual(inlet(s)['catalog']['id'], '21')
                 self.assertIn('несовпадение соединений', ' '.join(s['variants']['economy']['warnings']))
                 c['products']['21'].pop(fact); c['products']['22'].pop(fact)
-        s = estimates.generate(INPUTS)
+        s = legacy_snapshot(INPUTS)
         inlet(s).update(excluded=True, reason='Исключено пользователем', price='100')
         s = estimates.evaluate(s)
         self.assertTrue(inlet(s)['excluded'])
@@ -189,7 +196,7 @@ class SharedLevelInletTests(SimpleTestCase):
             shared.apply_binding(s, 'economy', inlet(s)['id'])
 
     def test_existing_regulator_is_physical_but_not_repriced_or_duplicated(self):
-        s = estimates.generate(INPUTS)
+        s = legacy_snapshot(INPUTS)
         reg = next(r for r in block(s, 'embedded')['rows'] if r['kind'] == 'level_regulator')
         reg.update(existing=True, excluded=True, price='4000', auto_quantity=False)
         inlet(s)['price'] = '100'
@@ -213,7 +220,7 @@ class SharedLevelInletTests(SimpleTestCase):
             return result
         def reg(s):
             return next(r for r in block(s, 'embedded')['rows'] if r['kind'] == 'level_regulator')
-        initial, _ = catalog.auto_select(estimates.generate(INPUTS), stock())
+        initial, _ = catalog.auto_select(legacy_snapshot(INPUTS), stock())
         self.assertEqual(reg(initial)['amount'], '4000.00')
         before = Decimal(initial['variants']['economy']['total'])
         updated = stock(price='5500')
@@ -238,7 +245,7 @@ class SharedLevelInletTests(SimpleTestCase):
 
     def test_live_regulator_conflict_preserves_protected_price_quantity_and_warning(self):
         c = catalog.parse_catalog(feed(offer(22, 'Регулятор уровня Aquaviva RO-7', price='4000').replace('</offer>', '<vendorCode>16791</vendorCode></offer>')))
-        initial, _ = catalog.auto_select(estimates.generate(INPUTS), c)
+        initial, _ = catalog.auto_select(legacy_snapshot(INPUTS), c)
         bad = deepcopy(c)
         bad['products']['22'].update(level_data_issue='conflict', specification_note='Диаметр 50 мм / 40 мм противоречив.')
         for protection in ('manual_price', 'manual_selection', 'manual_quantity'):
@@ -264,7 +271,7 @@ class SharedLevelInletTests(SimpleTestCase):
                 self.assertIn('Противоречивые характеристики', ' '.join(result['variants']['economy']['warnings']))
 
     def test_manual_allocation_cleared_on_builtin_without_changing_total_or_price(self):
-        s = estimates.generate(INPUTS)
+        s = legacy_snapshot(INPUTS)
         inlet(s).update(auto_quantity=False, price='123.45', unit_price_manual=True)
         pump = next(r for r in block(s)['rows'] if r['kind'] == 'pump')
         pump['specs'].update(flow='9', head='8')
@@ -301,7 +308,7 @@ class SharedLevelInletTests(SimpleTestCase):
             self.assertEqual(inlet(s)['amount'], '493.80')
 
     def test_manual_allocation_cleared_on_unlink_and_moves_only_to_bound_row(self):
-        s = estimates.generate(INPUTS)
+        s = legacy_snapshot(INPUTS)
         inlet(s).update(auto_quantity=False, price='100', unit_price_manual=True)
         original_id = inlet(s)['id']
         s = shared.apply_binding(s, 'economy', '')

@@ -21,7 +21,7 @@ from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requ
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
-CACHE_KEY = "pool-estimate-shop-v16"
+CACHE_KEY = "pool-estimate-shop-v18"
 CACHE_SECONDS = 900
 MAX_BYTES = 20_000_000
 FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
@@ -498,7 +498,7 @@ def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="
         raise EstimateInputError('Выберите комплектацию закладных.')
     def reason(product):
         if product['kind'] in lighting.ROLES:
-            issue,notes=lighting.assess(product,profile or embedded.DEFAULTS[variant],finish=inputs['finish'])
+            issue,notes=lighting.assess(product,profile or embedded.DEFAULTS[variant],finish=inputs['finish'],color=inputs.get('light_color'))
             return issue or 'Проверить: '+' '.join(notes)
         if product['kind'] in {'treatment', 'control_panel'}:
             from .estimate_auxiliary import search_reason

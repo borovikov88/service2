@@ -18,10 +18,13 @@ def normalize_row_split(item, raw):
         raise EstimateInputError('Некорректное разделение количества форсунок фильтрации и уровня.')
     # A normal quantity edit carries the previous split. Respect the new total;
     # never silently add another item to a manual quantity, including zero.
-    if filtration + level != total:
+    credit=number(raw.get('level_quantity_credit','0'),'Резерв форсунки уровня',maximum='1',places=None)
+    if credit not in (0,1): raise EstimateInputError('Некорректный резерв форсунки уровня.')
+    if filtration + level + credit != total:
+        credit=Decimal(0)
         level = level if total >= level else Decimal(0)
         filtration = total - level
-    item.update(filtration_quantity=f'{filtration:.3f}', level_quantity=f'{level:.3f}')
+    item.update(filtration_quantity=f'{filtration:.3f}',level_quantity=f'{level:.3f}',level_quantity_credit=str(credit if total>=credit else 0))
 
 
 def filtration_quantity(row):
@@ -36,8 +39,13 @@ def active(variant, kind):
             and r['quantity'] is not None and Decimal(r['quantity']) > 0]
 
 
-def linked(variant):
+def linked(variant, automatic=False):
     rows = [r for r in active(variant, 'inlet') if r['unit'] == 'шт.']
+    if automatic:
+        row=next((r for r in rows if r['id']==variant.get('level_inlet_row_id')),None) or next(iter(sorted(rows,key=lambda r:r['id'])),None)
+        variant['level_inlet_row_id']=row['id'] if row else ''
+        variant['level_inlet_link_manual']=False
+        return row
     if variant.get('level_inlet_link_manual'):
         return next((r for r in rows if r['id'] == variant.get('level_inlet_row_id')), None)
     if len(rows) == 1:
@@ -75,7 +83,8 @@ def sync(snapshot):
     for variant in snapshot['variants'].values():
         variant['level_shared_inlet'] = 1
         notes = []
-        row = linked(variant)
+        automatic=snapshot.get('level_shared_quantity_version')==2
+        row = linked(variant, automatic)
         regs = active(variant, 'level_regulator')
         notes.extend('Регулятор уровня: ' + reg['catalog_review_note'] for reg in regs if reg.get('catalog_review_note'))
         included = variant.get('level_control_status') == 'included'
@@ -91,8 +100,8 @@ def sync(snapshot):
             regulator = regs[0].get('catalog') or {}
             issue = regs[0].get('catalog_review_note') or blocked(row, regulator, variant, snapshot['inputs'])
             if issue:
-                wanted = False
-                notes.append('Проверить линию уровня: ' + issue + ' Выбранная модель сохранена; дополнительная единица автоматически не добавлена.')
+                if not automatic: wanted = False
+                notes.append('Проверить линию уровня: ' + issue + (' Дополнительная форсунка учтена только в количестве; инженерная совместимость не подтверждена.' if automatic else ' Выбранная модель сохранена; дополнительная единица автоматически не добавлена.'))
             else:
                 reason = inlet_reason(evidence(row), regulator, snapshot['inputs'], variant['embedded_profile'])
                 if reason:
@@ -107,17 +116,31 @@ def sync(snapshot):
                 desired = Decimal(1 if wanted and item is row else 0)
                 if item['auto_quantity'] and not item['existing']:
                     base = Decimal(q['inlet']) if item['basis'] == 'inlet' else max(Decimal(0), total - old_level)
-                    item.update(filtration_quantity=f'{base:.3f}', level_quantity=f'{desired:.3f}', quantity=f'{base + desired:.3f}')
+                    item.update(filtration_quantity=f'{base:.3f}', level_quantity=f'{desired:.3f}', quantity=f'{base + desired:.3f}',level_quantity_credit='0')
                 else:
+                    if automatic and not item['existing'] and item['unit']=='шт.':
+                        credit=Decimal(item.get('level_quantity_credit','0'))
+                        if desired>old_level and total>0:
+                            needed=desired-old_level
+                            total+=max(Decimal(0),needed-credit)
+                            credit=max(Decimal(0),credit-needed)
+                        elif desired<old_level:
+                            credit=min(Decimal(1),credit+old_level-desired)
+                        item['level_quantity_credit']=str(credit if total>=credit else 0)
+                        item['quantity']=f'{total:.3f}'
+                        old_level=desired
                     # Preserve the user's physical total, not a reservation for
                     # a line that no longer exists (builtin/unlink/rebinding).
                     level = old_level if desired and total >= old_level else Decimal(0)
-                    item.update(filtration_quantity=f'{total-level:.3f}', level_quantity=f'{level:.3f}')
+                    credit=Decimal(item.get('level_quantity_credit','0'))
+                    item.update(filtration_quantity=f'{max(Decimal(0),total-level-credit):.3f}', level_quantity=f'{level:.3f}')
                     if level != desired:
                         notes.append('Проверить ручное количество форсунок: дополнительная единица для уровня не добавляется и не удаляется автоматически; укажите количество с учётом линии уровня.')
                 item['level_quantity_note'] = (
                     f"Фильтрация: {Decimal(item['filtration_quantity']).normalize():f} шт.; линия уровня: {Decimal(item['level_quantity']).normalize():f} шт."
                 )
+                if Decimal(item.get('level_quantity_credit','0')):
+                    item['level_quantity_note']+=' Резерв линии уровня: 1 шт.; не участвует в фильтрации.'
         if included:
             notes.append('Регулятор уровня подтверждён в комплекте скиммера; автоматическая дополнительная форсунка не требуется.')
             if regs:
@@ -134,7 +157,7 @@ def fill(snapshot, catalog, only=None):
     for tier, variant in snapshot['variants'].items():
         if only and tier != only:
             continue
-        regs, row = active(variant, 'level_regulator'), linked(variant)
+        regs, row = active(variant, 'level_regulator'), linked(variant, snapshot.get('level_shared_quantity_version')==2)
 
         def rejection(product):
             if product.get('kind', 'level_regulator') != 'level_regulator':
@@ -180,6 +203,8 @@ def apply_binding(raw, tier, row_id):
     snapshot = evaluate(raw)
     if snapshot.get('level_shared_inlet') != 1 or tier not in snapshot['variants']:
         raise EstimateInputError('Связь форсунки уровня доступна только в новом расчёте.')
+    if snapshot.get('level_shared_quantity_version')==2:
+        raise EstimateInputError('В текущей схеме форсунка уровня назначается автоматически.')
     variant = snapshot['variants'][tier]
     if row_id and not any(r['id'] == row_id and r['unit'] == 'шт.' for r in active(variant, 'inlet')):
         raise EstimateInputError('Выберите активную строку форсунки в штуках.')
