@@ -11,8 +11,8 @@ from .test_pool_estimates import INPUTS, block
 from .test_estimate_catalog import offer, feed
 
 
-def param_offer(pid,name,price='100',description='',params='',url=None):
-    return offer(pid,name,price,description=description,url=url).replace('</offer>',params+'</offer>')
+def param_offer(pid,name,price='100',description='',params='',url=None,brand='Aquaviva'):
+    return offer(pid,name,price,description=description,url=url,brand=brand).replace('</offer>',params+'</offer>')
 
 
 def fixture():
@@ -20,7 +20,7 @@ def fixture():
         param_offer(1,'Фильтр Synthetic 12 м3/ч','1000','Загрузка песка: 75 кг. Загрузка стеклянного песка: 60 кг. Фракция песка: 0.4–1.5 мм.'),
         param_offer(2,'Песок кварцевый 25 кг, 0.5–1.0 мм','100',description='Для фильтров бассейна.',url=media.QUARTZ_URL),
         param_offer(3,'Песок стеклянный 20 кг, 0.5–1.5 мм','200',description='Для фильтров бассейна.',url=media.GLASS_URL),
-        param_offer(4,'Кварцевый песок 10 кг, 0.5–1.0 мм','60',description='Для фильтров бассейна.'),
+        param_offer(4,'Кварцевый песок 10 кг, 0.5–1.0 мм','60',description='Для фильтров бассейна.',brand='Waterco'),
     ),checked_at='2026-10-22T00:00:00+00:00')
 
 

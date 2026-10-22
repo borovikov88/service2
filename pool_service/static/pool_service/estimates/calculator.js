@@ -63,9 +63,9 @@ function openCatalog(block, row) {
   $('#pe-catalog-target').textContent = `${titles[selected]} · заменить «${item.name}». Количество и исключения сохранятся.`;
   const q = new URL(location.href).searchParams;
   const finishQuery = item.id.startsWith('finish_material') ? {film: 'пленка', tile: 'плитка', mosaic: 'мозаика'}[item.finish_type] : '';
-  $('#pe-catalog-query').value = (item.id==='liner_corner_2m'?'0050032':'') || finishQuery || q.get('catalog_q') || '';
+  $('#pe-catalog-query').value = (item.id==='liner_corner_2m'?'0050032':'') || finishQuery || (item.kind==='filter_media'?'':q.get('catalog_q')) || '';
   $('#pe-catalog-kind').value = item.kind === 'other' ? '' : item.kind;
-  $('#pe-catalog-brand').value = [...$('#pe-catalog-brand').options].some(o => o.value === item.brand) ? item.brand : '';
+  $('#pe-catalog-brand').value = item.kind!=='filter_media' && [...$('#pe-catalog-brand').options].some(o => o.value === item.brand) ? item.brand : '';
   $('#pe-catalog-dialog').showModal();
   searchCatalog();
 }
