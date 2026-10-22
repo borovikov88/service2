@@ -1,6 +1,7 @@
 from io import BytesIO
 from zipfile import ZipFile
 import re
+from xml.etree import ElementTree as ET
 from unittest.mock import patch
 from openpyxl import Workbook, load_workbook
 from django.contrib.auth.models import User
@@ -10,6 +11,7 @@ from django.urls import reverse
 from pool_service.models import Organization, OrganizationAccess
 from pool_service.communication_models import ChannelConnection, CommunicationChannel
 from pool_service.avito_feed_models import AvitoServicesFeed
+from pool_service.avito_services_xml import xml_bytes
 from pool_service.avito_services_feed import parse_export, workbook_bytes, verify_inventory, images
 
 
@@ -64,7 +66,10 @@ class ServicesFeedTests(TestCase):
         public = reverse('avito_services_feed_public', args=[feed.public_key])
         response = Client().get(public)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(parse_export(response.content)[0]['rows'][0]['Title'], 'Тест услуги')
+        self.assertEqual(ET.fromstring(response.content).findtext('Ad/Title'), 'Тест услуги')
+        self.assertEqual(response['Content-Type'], 'application/xml; charset=utf-8')
+        legacy = reverse('avito_services_feed_public_xlsx', args=[feed.public_key])
+        self.assertEqual(parse_export(Client().get(legacy).content)[0]['rows'][0]['Title'], 'Тест услуги')
         self.connection.external_id = '456'; self.connection.save()
         self.assertEqual(Client().get(public).status_code, 404)
         self.assertEqual(self.client.get(self.url).status_code, 409)
@@ -158,3 +163,37 @@ class ServicesFeedTests(TestCase):
         feed.refresh_from_db()
         self.assertFalse(feed.enabled)
         self.assertEqual(feed.published, [])
+
+    def test_xml_nested_fields_escape_content_and_omit_export_metadata(self):
+        data = parse_export(export_bytes())
+        data[0]['rows'][0].update(Payment='Полная предоплата | Поэтапная оплата',
+            WorkDays='пн. | вт.', Title='Вода & <монтаж>',
+            Description='<p>Текст</p> & детали', ImageUrls='https://example.org/a?a=1&b=2',
+            CompanyName='Export only', EMail='export@example.invalid', AvitoDateEnd='2026-01-01')
+        root = ET.fromstring(xml_bytes(data)); ad = root.find('Ad')
+        self.assertEqual(root.attrib, {'formatVersion': '3', 'target': 'Avito.ru'})
+        self.assertEqual(ad.findtext('Id'), '111'); self.assertEqual(ad.findtext('AvitoId'), '111')
+        self.assertEqual(ad.findtext('Title'), 'Вода & <монтаж>')
+        self.assertEqual(ad.findtext('Description'), '<p>Текст</p> & детали')
+        self.assertEqual(ad.find('Images/Image').attrib['url'], 'https://example.org/a?a=1&b=2')
+        self.assertEqual([o.text for o in ad.findall('Payment/Option')], ['Полная предоплата', 'Поэтапная оплата'])
+        self.assertEqual([o.text for o in ad.findall('WorkDays/Option')], ['пн.', 'вт.'])
+        service = ad.find('PriceList/Service')
+        self.assertEqual({c.tag: c.text for c in service}, {'ServiceName': 'Своя услуга',
+            'ServiceTitle': 'Тест', 'ServicePrice': '100', 'ServiceStartingPrice': 'Да', 'ServicePriceType': 'за услугу'})
+        for tag in ('AvitoStatus', 'AvitoDateEnd', 'CompanyName', 'EMail', 'ImageUrls'):
+            self.assertIsNone(ad.find(tag))
+
+    def test_xml_rejects_unknown_fields_and_bad_price_rows_before_publication(self):
+        for change in ({'Promo': 'XL'}, {'PriceList': 'Своя услуга||100|Да|за услугу'},
+                       {'PriceList': 'Услуга||от 100||за услугу'}, {'Description': 'bad\x01text'}):
+            with self.subTest(change=change):
+                data = parse_export(export_bytes()); data[0]['rows'][0].update(change)
+                with self.assertRaises(ValueError): xml_bytes(data)
+        self.upload(); feed = AvitoServicesFeed.objects.get()
+        feed.draft[0]['rows'][0]['PriceList'] = 'broken'; feed.save()
+        with patch('pool_service.avito_services_feed.verify_inventory') as verify:
+            result = self.client.post(reverse('avito_services_feed_publish', args=[self.connection.pk]),
+                                     {'revision': feed.revision})
+        self.assertEqual(result.status_code, 400); verify.assert_not_called()
+        feed.refresh_from_db(); self.assertFalse(feed.enabled)

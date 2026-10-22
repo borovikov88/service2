@@ -20,8 +20,8 @@
 <button type="submit" class="btn btn-primary">Проверить аккаунт и опубликовать версию {{ feed.revision }}</button></form>
 {% if feed.enabled %}
 <p>Опубликована версия {{ feed.published_revision }}. Приём изменений нужно проверить в отчёте Авито.</p>
-{% if feed_url %}<label for="feed-url">Ссылка для автозагрузки в аккаунте {{ connection.external_id }}</label><input class="form-control" id="feed-url" value="{{ feed_url }}" readonly>{% endif %}
-<p>Укажите эту ссылку как источник в настройках автозагрузки выбранного аккаунта Авито. Публикация файла в Service2 сама по себе не подключает автозагрузку.</p>
+{% if feed_url %}<label for="feed-url">Ссылка XML для автозагрузки в аккаунте {{ connection.external_id }}</label><input class="form-control" id="feed-url" value="{{ feed_url }}" readonly>{% endif %}
+<p>Если раньше был подключён feed.xlsx, замените его на эту ссылку feed.xml. Укажите эту ссылку как источник в настройках автозагрузки выбранного аккаунта Авито. Публикация файла в Service2 сама по себе не подключает автозагрузку.</p>
 <form method="post">{% csrf_token %}<input type="hidden" name="revision" value="{{ feed.revision }}"><input type="hidden" name="action" value="disable"><button class="btn btn-outline-secondary" type="submit">Отключить доступ к файлу</button></form>
 {% else %}<p>Источник пока недоступен Авито.</p>{% endif %}
 <table class="table"><thead><tr><th>Объявление</th><th>AvitoId</th><th></th></tr></thead><tbody>

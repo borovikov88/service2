@@ -23,6 +23,7 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_GET, require_http_methods
 
 from .avito_feed_models import AvitoServicesFeed
+from .avito_services_xml import xml_bytes
 from .avito_management import _scope
 from .communication_models import ChannelConnection
 
@@ -321,6 +322,7 @@ def services_feed_publish(request, connection_id):
     if not bound(feed, connection) or request.POST.get('revision') != str(feed.revision):
         return HttpResponse('Данные изменились. Обновите страницу.', status=409)
     try:
+        xml_bytes(feed.draft)
         verify_inventory(connection, feed.draft)
     except (ValueError, AvitoError) as error:
         if isinstance(error, ValueError):
@@ -348,12 +350,16 @@ def services_feed_publish(request, connection_id):
 
 @never_cache
 @require_GET
-def services_feed_public(request, public_key):
+def services_feed_public(request, public_key, output_format="xml"):
     feed = get_object_or_404(AvitoServicesFeed.objects.select_related('connection__channel'), public_key=public_key, enabled=True)
     connection = feed.connection
     if not feed.published or not bound(feed, connection) or not connection.is_active or not connection.channel.is_active or connection.channel.kind != 'avito':
         raise Http404
-    response = HttpResponse(workbook_bytes(feed.published), content_type=MIME)
-    response['Content-Disposition'] = 'attachment; filename="avito-services.xlsx"'
+    try:
+        content = workbook_bytes(feed.published) if output_format == 'xlsx' else xml_bytes(feed.published)
+    except ValueError:
+        return HttpResponse('Источник временно недоступен: требуется проверка данных.', status=503)
+    response = HttpResponse(content, content_type=MIME if output_format == 'xlsx' else 'application/xml; charset=utf-8')
+    response['Content-Disposition'] = f'attachment; filename="avito-services.{output_format}"'
     response['X-Robots-Tag'] = 'noindex, nofollow, noarchive'
     return response
