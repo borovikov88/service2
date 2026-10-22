@@ -497,6 +497,9 @@ def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="
     if not isinstance(profile, str) or profile not in embedded.PROFILES:
         raise EstimateInputError('Выберите комплектацию закладных.')
     def reason(product):
+        if product['kind'] in lighting.ROLES:
+            issue,notes=lighting.assess(product,profile or embedded.DEFAULTS[variant],finish=inputs['finish'])
+            return issue or 'Проверить: '+' '.join(notes)
         if product['kind'] in {'treatment', 'control_panel'}:
             from .estimate_auxiliary import search_reason
             return search_reason(product, inputs, required_flow, variant)

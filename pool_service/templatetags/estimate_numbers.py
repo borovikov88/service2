@@ -51,7 +51,7 @@ def estimate_sections(variant):
         for block in variant['blocks']:
             if block['excluded']: continue
             rows=[r for r in block['rows'] if not r['excluded'] and not r['existing'] and
-                  (not is_work(r) if mode=='material' else is_work(r) and (block['id']=='construction')==(mode=='construction'))]
+                  (not is_work(r) if mode=='material' else is_work(r) and (block['id']=='construction' and not re.search(r'transport|travel|handling|delivery',r.get('work_code',''))) == (mode=='construction'))]
             if rows: blocks.append({**block,'rows':rows,'subtotal':sum((Decimal(r['amount']) for r in rows if r.get('amount') is not None),Decimal(0))})
         if blocks: sections.append({'title':title,'blocks':blocks})
     return sections

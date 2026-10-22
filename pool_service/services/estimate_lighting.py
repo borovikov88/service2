@@ -25,16 +25,14 @@ def classify(specs, name, description, category, offer):
             'pool_light' if re.match(r'^прожектор\b', text) and re.search(r'освещ.*бассейн|для бассейн|подводн', scope) else '')
     if not kind: return
     params = ' '.join(f'{p.get("name", "")}: {p.text or ""}' for p in offer.findall('param'))
-    evidence = name + '; ' + params
+    from .estimate_embedded_candidates import without_hardware_grades, body_grade_claims, lining_claims
+    evidence = without_hardware_grades(name) + '; ' + params
     materials = set()
     if re.search(r'\bABS\b|пластик', evidence, re.I): materials.add('plastic')
     for grade in ('304', '316', '201'):
         if re.search(r'AISI\s*' + grade, evidence, re.I): materials.add('steel' + grade)
-    # Description is scoped to an explicit body-material assertion.
-    for clause in re.findall(r'(?:материал корпуса|корпус)\s*[:—-]?\s*([^.;\n]+)', description, re.I):
-        if re.search(r'\bABS\b|пластик', clause, re.I): materials.add('plastic')
-        for grade in ('304', '316', '201'):
-            if re.search(r'AISI\s*'+grade, clause, re.I): materials.add('steel'+grade)
+    materials.update('steel'+grade for grade in body_grade_claims(description))
+    if re.search(r'(?:материал корпуса|корпус)\s*[:—-]?\s*(?:из\s+)?(?:ABS|пластик)',description,re.I): materials.add('plastic')
     def one(pattern):
         values = {Decimal(x.replace(',', '.')) for x in re.findall(pattern, evidence, re.I)}
         return (str(next(iter(values))) if len(values)==1 else None), len(values)>1
@@ -43,11 +41,15 @@ def classify(specs, name, description, category, offer):
     leds,lc=one(r'(\d+)\s*(?:LED|светодиод)')
     supplies = set(re.findall(r'\b(?:AC|DC)\b', evidence, re.I))
     included = bool(re.search(r'(?:\+|в комплекте|с)\s*закладн', name, re.I))
+    if re.search(r'(?:без|не включает|не входит)\s+закладн',scope): included=False
+    positive, denied_lining=lining_claims(name+' '+description+' '+params)
+    specs['lining']=sorted(positive)
+    specs['lining_denied']=sorted(denied_lining)
     denied = bool(re.search(r'(?:не подходит|не предназначен|не для)\s*(?:для\s+)?(?:бассейн|подводн)', scope))
     specs.update(kind=kind, embedded_role='')
     specs['lighting'] = dict(material=next(iter(materials)) if len(materials)==1 else '', watts=watts, volts=volts, leds=leds,
         supply=next(iter(supplies)).upper() if len(supplies)==1 else '', models=' '.join(sorted(set(re.findall(r'\b(?:LED\d+|HT\d+[A-Z]*|SS\d+[A-Z]*)\b', evidence, re.I)))).upper(),
-        conflict=len(materials)>1 or wc or vc or lc or len(supplies)>1, niche_included=included, denied=denied, note='Название и параметры карточки магазина; схема подключения требует проверки.')
+        conflict=bool(positive & denied_lining) or len(materials)>1 or wc or vc or lc or len(supplies)>1, niche_included=included, denied=denied, note='Название и параметры карточки магазина; схема подключения требует проверки.')
 
 
 def sync(snapshot, create=False):
@@ -78,13 +80,22 @@ def sync(snapshot, create=False):
                     row.update(excluded=True, reason=INCLUDED)
                 elif not included and row['excluded'] and row['reason']==INCLUDED: row.update(excluded=False,reason='')
 
+        # Accessory quantities follow the actual single lamp row, including a
+        # protected manual lamp count, never a stale parameter-form count.
+        active=[r for r in block['rows'] if r['kind']=='pool_light' and not r['excluded']]
+        for row in block['rows']:
+            if row['kind'] in {'light_niche','light_box'} and row['auto_quantity'] and row['unit']=='шт.' and not row['existing']:
+                row['quantity']=active[0]['quantity'] if len(active)==1 and active[0]['unit']=='шт.' else None
 
-def assess(product, profile, parent=None, quantity=None):
+
+def assess(product, profile, parent=None, quantity=None, finish=None):
     f=product.get('lighting',{})
     if f.get('conflict') or product.get('specification_conflict'): return 'Противоречивые характеристики освещения.', []
     if f.get('denied'): return 'Известен запрет использования в бассейне.', []
     notes=[]
-    if product.get('lining_denied'): return 'Есть явное ограничение по отделке бассейна; требуется ручной подбор.', []
+    lining='film' if finish=='film' else 'concrete' if finish in {'tile','mosaic'} else None
+    if lining in product.get('lining_denied',[]): return 'Запрещена выбранная отделка бассейна.', []
+    if lining and product.get('lining') and lining not in product['lining']: return 'Товар указан для другой отделки бассейна.', []
     if product['kind']=='pool_light':
         material='plastic' if profile.startswith('plastic') else profile
         if f.get('material') and f['material']!=material: return 'Материал прожектора не соответствует выбранному типу закладных.', []
@@ -132,15 +143,17 @@ def fill(snapshot, catalog, only=None):
                 choices=[]
                 for p in catalog['products'].values():
                     if p['kind']!=kind or not p['available']: continue
-                    issue,notes=assess(p,v['embedded_profile'],parent,light_quantity)
+                    issue,notes=assess(p,v['embedded_profile'],parent,light_quantity,snapshot['inputs']['finish'])
                     if not issue: choices.append((p,notes))
                 if not choices:
                     if origin and origin['selection']=='auto':
                         current=catalog['products'].get(origin['id']) or {**origin,'kind':kind}
-                        issue,_=assess(current,v['embedded_profile'],parent,light_quantity)
+                        issue,_=assess(current,v['embedded_profile'],parent,light_quantity,snapshot['inputs']['finish'])
                         if issue: row.update(catalog=None, price=None, model='', name=ROLES[kind]+': подобрать модель')
                     row['selection_note']='Проверить: подходящий '+ROLES[kind].lower()+' в каталоге не найден.'
                     continue
+                best=min(len(n) for p,n in choices)
+                choices=[(p,n) for p,n in choices if len(n)==best]
                 if kind=='pool_light' and tier=='standard':
                     known=[p for p,n in choices if p.get('lighting',{}).get('leds')]
                     if known:
@@ -154,3 +167,18 @@ def fill(snapshot, catalog, only=None):
                 if kind=='pool_light': parent=row['catalog']
             sync(snapshot)
     return count
+
+
+def annotate(snapshot, variant):
+    physical=[r for b in variant['blocks'] for r in b['rows'] if not b['excluded'] and not r['excluded']]
+    lights=[r for r in physical if r['kind']=='pool_light']
+    parent=lights[0].get('catalog') if len(lights)==1 else None
+    quantity=lights[0]['quantity'] if len(lights)==1 and lights[0]['unit']=='шт.' else None
+    for row in physical:
+        if row['kind'] not in ROLES: continue
+        issue,notes=assess({**(row.get('catalog') or {}),'kind':row['kind']},variant['embedded_profile'],parent,quantity,snapshot['inputs']['finish'])
+        if len(lights)!=1: notes.append('Для нескольких моделей нужна явная схема связей; автоматическая совместимость не подтверждена.')
+        if row['quantity'] is None: notes.append('Укажите количество по схеме размещения.')
+        if row['unit']!='шт.': notes.append('Расчёт количества освещения требует единицы шт.; текущая единица сохранена.')
+        if row['kind']=='light_niche' and (parent or {}).get('lighting',{}).get('niche_included'): notes.append('Закладная уже входит в прожектор; проверьте необходимость отдельной ручной позиции.')
+        row['compatibility']={'message':'Проверить: '+ ' '.join(([issue] if issue else [])+notes),'can_auto':False}

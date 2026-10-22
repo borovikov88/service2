@@ -192,8 +192,8 @@ function renderTotals() {
   $('#pe-warnings').innerHTML = `<div data-help-source data-help-label="! Проверки · ${variant.warnings.length}"><strong>Проверки и уточнения · ${variant.warnings.length}</strong><ul>${[...(variant.warnings || []), ...(variant.construction_notes || [])].map(text => `<li>${esc(cleanNote(text))}</li>`).join('')}${!variant.warnings.length ? '<li>Автоматические проверки пройдены. Полную проверку проекта выполняет инженер.</li>' : ''}</ul></div>`;
   for (const block of variant.blocks) {
     for(const subtotal of root.querySelectorAll(`[data-subtotal="${block.id}"]`)) {
-      const work=subtotal.dataset.workSubtotal==='true';
-      subtotal.textContent=`${money(block.rows.filter(r=>!r.excluded && isWork(r)===work).reduce((sum,r)=>sum+Number(r.amount||0),0))} ₽`;
+      const stage=subtotal.dataset.workSubtotal;
+      subtotal.textContent=`${money(block.rows.filter(r=>!r.excluded && workStage(block,r)===stage).reduce((sum,r)=>sum+Number(r.amount||0),0))} ₽`;
     }
     for (const row of block.rows) {
       const quantity = root.querySelector(`[data-row="${row.id}"][data-field="quantity"]`);
@@ -217,17 +217,18 @@ function renderTotals() {
   syncScope();
   help.refresh();
 }
+function workStage(block,row){return isWork(row) ? (block.id==='construction' && !/transport|travel|handling|delivery/.test(row.work_code||'') ? 'construction' : 'installation') : 'material';}
 function renderEditor() {
   const variant = snapshot.variants[selected];
   const visibleBlocks=variant.blocks.filter(b=>!b.excluded);
   const sections=[
-    {title:'Материалы и оборудование', blocks:visibleBlocks.map(b=>({...b,rows:b.rows.filter(r=>!isWork(r))}))},
-    {title:'Этап 1. Строительство чаши — работы', blocks:visibleBlocks.filter(b=>b.id==='construction').map(b=>({...b,rows:b.rows.filter(isWork)}))},
-    {title:'Этап 2. Монтаж оборудования и отделка — работы', blocks:visibleBlocks.filter(b=>b.id!=='construction').map(b=>({...b,rows:b.rows.filter(isWork)}))},
+    {title:'Материалы и оборудование', blocks:visibleBlocks.map(b=>({...b,stage:'material',rows:b.rows.filter(r=>!isWork(r))}))},
+    {title:'Этап 1. Строительство чаши — работы', blocks:visibleBlocks.map(b=>({...b,stage:'construction',rows:b.rows.filter(r=>workStage(b,r)==='construction')}))},
+    {title:'Этап 2. Монтаж оборудования и отделка — работы', blocks:visibleBlocks.map(b=>({...b,stage:'installation',rows:b.rows.filter(r=>workStage(b,r)==='installation')}))},
   ];
   $('#pe-blocks').innerHTML = sections.map(section=>`<section class="pe-stage"><h2>${section.title}</h2>`+section.blocks.filter(b=>b.rows.length).map(block => {
     const rows = block.rows.filter(r => !r.excluded);
-    return `<section class="pe-block"><div class="pe-block-head"><h3>${esc(block.title)}</h3><span class="pe-subtotal" data-subtotal="${block.id}" data-work-subtotal="${Boolean(rows[0] && isWork(rows[0]))}">${money(block.subtotal)} ₽</span><button type="button" class="pe-link" data-exclude-block="${block.id}">Исключить исходный блок</button></div>${rows.length ? `<div class="pe-table-wrap"><table><thead><tr><th>Позиция</th><th>Кол-во</th><th>Цена, ₽</th><th>Сумма, ₽</th><th><span class="visually-hidden">Действия</span></th></tr></thead><tbody>${rows.map(row => `<tr data-order-row="${row.id}"><td class="pe-position-cell"><button type="button" class="pe-drag-handle" data-drag-row="${row.id}" data-block="${block.id}" aria-label="Переместить: ${esc(row.name)}" aria-description="Перетащите строку или используйте стрелки вверх и вниз" title="Перетащите строку; с клавиатуры — стрелки вверх/вниз">⠿</button>${thumbnail(row.catalog?.image || productImages[row.catalog?.id], row.name)}<span class="pe-row-name">${esc(row.name)}</span><span class="pe-row-detail">${esc([({electric:'Электронагреватель', exchanger:'Теплообменник', heatpump:'Тепловой насос'})[row.heating_type], row.brand, row.model].filter(Boolean).join(' · '))}${row.existing ? ' · уже установлено' : ''}${row.selection_status === 'preliminary_primary' ? ' · предварительный подбор — проверить первичный контур' : ''}</span>${row.catalog?.specification_note ? `<small class="pe-help">${esc(row.catalog.specification_note)}${row.catalog.specification_source === 'https://aquaviva.nt-rt.ru/images/manuals/2-zakladnye-dlya-basseinov.pdf' ? ' <a href="https://aquaviva.nt-rt.ru/images/manuals/2-zakladnye-dlya-basseinov.pdf" target="_blank" rel="noopener">Источник</a>' : ''}</small>` : ''}${row.selection_note ? `<small class="pe-help">${esc(row.selection_note)}</small>` : ''}<div class="pe-row-check" data-row-check="${row.id}" aria-live="polite"${row.compatibility ? '' : ' hidden'}>${renderRowCheck(row, block.id)}</div></td><td><input class="pe-qty" data-field="quantity" data-block="${block.id}" data-row="${row.id}" type="number" min="0" max="1000000" step="any" value="${esc(row.quantity)}" placeholder="Уточнить" aria-label="Количество: ${esc(row.name)}"><span class="pe-row-detail">${esc(row.unit)} · <span data-quantity-mode="${row.id}">${quantityMode(row)}</span></span></td><td><input class="pe-price" data-field="price" data-block="${block.id}" data-row="${row.id}" type="number" min="0" max="1000000000" step="0.01" value="${esc(row.price)}" placeholder="Уточнить" aria-label="Цена: ${esc(row.name)}"><small>${esc(row.rate_source || '')}</small><small data-construction-quantity="${row.id}">${esc(cleanNote([row.construction_quantity_note, row.level_quantity_note].filter(Boolean).join(' ')))}</small><small data-construction-price="${row.id}">${esc(cleanNote(row.construction_price_note))}</small><small data-price-conversion="${row.id}">${esc(cleanNote(row.price_conversion_note))}</small></td><td class="pe-row-amount" data-amount="${row.id}">${money(row.amount)}</td><td class="pe-row-actions"><div class="pe-actions-inline">${!isWork(row) ? `<button type="button" class="pe-link" data-shop="${row.id}" data-block="${block.id}" aria-label="Выбрать товар: ${esc(row.name)}" title="Каталог"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/></svg></button>` : ''}<button type="button" class="pe-link" data-edit="${row.id}" data-block="${block.id}" aria-label="Изменить: ${esc(row.name)}">✎</button><button type="button" class="pe-link" data-exclude-row="${row.id}" data-block="${block.id}" aria-label="Исключить: ${esc(row.name)}">×</button></div></td></tr>`).join('')}</tbody></table></div>` : '<div class="pe-empty">В этом блоке пока нет активных позиций.</div>'}<button type="button" class="pe-link pe-add" data-add="${block.id}" data-add-work="${Boolean(rows[0] && isWork(rows[0]))}">+ Добавить позицию</button></section>`;
+    return `<section class="pe-block"><div class="pe-block-head"><h3>${esc(block.title)}</h3><span class="pe-subtotal" data-subtotal="${block.id}" data-work-subtotal="${block.stage}">${money(block.subtotal)} ₽</span><button type="button" class="pe-link" data-exclude-block="${block.id}" data-stage="${block.stage}">Исключить</button></div>${rows.length ? `<div class="pe-table-wrap"><table><thead><tr><th>Позиция</th><th>Кол-во</th><th>Цена, ₽</th><th>Сумма, ₽</th><th><span class="visually-hidden">Действия</span></th></tr></thead><tbody>${rows.map(row => `<tr data-order-row="${row.id}"><td class="pe-position-cell"><button type="button" class="pe-drag-handle" data-drag-row="${row.id}" data-block="${block.id}" aria-label="Переместить: ${esc(row.name)}" aria-description="Перетащите строку или используйте стрелки вверх и вниз" title="Перетащите строку; с клавиатуры — стрелки вверх/вниз">⠿</button>${thumbnail(row.catalog?.image || productImages[row.catalog?.id], row.name)}<span class="pe-row-name">${esc(row.name)}</span><span class="pe-row-detail">${esc([({electric:'Электронагреватель', exchanger:'Теплообменник', heatpump:'Тепловой насос'})[row.heating_type], row.brand, row.model].filter(Boolean).join(' · '))}${row.existing ? ' · уже установлено' : ''}${row.selection_status === 'preliminary_primary' ? ' · предварительный подбор — проверить первичный контур' : ''}</span>${row.catalog?.specification_note ? `<small class="pe-help">${esc(row.catalog.specification_note)}${row.catalog.specification_source === 'https://aquaviva.nt-rt.ru/images/manuals/2-zakladnye-dlya-basseinov.pdf' ? ' <a href="https://aquaviva.nt-rt.ru/images/manuals/2-zakladnye-dlya-basseinov.pdf" target="_blank" rel="noopener">Источник</a>' : ''}</small>` : ''}${row.selection_note ? `<small class="pe-help">${esc(row.selection_note)}</small>` : ''}<div class="pe-row-check" data-row-check="${row.id}" aria-live="polite"${row.compatibility ? '' : ' hidden'}>${renderRowCheck(row, block.id)}</div></td><td><input class="pe-qty" data-field="quantity" data-block="${block.id}" data-row="${row.id}" type="number" min="0" max="1000000" step="any" value="${esc(row.quantity)}" placeholder="Уточнить" aria-label="Количество: ${esc(row.name)}"><span class="pe-row-detail">${esc(row.unit)} · <span data-quantity-mode="${row.id}">${quantityMode(row)}</span></span></td><td><input class="pe-price" data-field="price" data-block="${block.id}" data-row="${row.id}" type="number" min="0" max="1000000000" step="0.01" value="${esc(row.price)}" placeholder="Уточнить" aria-label="Цена: ${esc(row.name)}"><small>${esc(row.rate_source || '')}</small><small data-construction-quantity="${row.id}">${esc(cleanNote([row.construction_quantity_note, row.level_quantity_note].filter(Boolean).join(' ')))}</small><small data-construction-price="${row.id}">${esc(cleanNote(row.construction_price_note))}</small><small data-price-conversion="${row.id}">${esc(cleanNote(row.price_conversion_note))}</small></td><td class="pe-row-amount" data-amount="${row.id}">${money(row.amount)}</td><td class="pe-row-actions"><div class="pe-actions-inline">${!isWork(row) ? `<button type="button" class="pe-link" data-shop="${row.id}" data-block="${block.id}" aria-label="Выбрать товар: ${esc(row.name)}" title="Каталог"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/></svg></button>` : ''}<button type="button" class="pe-link" data-edit="${row.id}" data-block="${block.id}" aria-label="Изменить: ${esc(row.name)}">✎</button><button type="button" class="pe-link" data-exclude-row="${row.id}" data-block="${block.id}" aria-label="Исключить: ${esc(row.name)}">×</button></div></td></tr>`).join('')}</tbody></table></div>` : '<div class="pe-empty">В этом блоке пока нет активных позиций.</div>'}<button type="button" class="pe-link pe-add" data-add="${block.id}" data-add-work="${Boolean(rows[0] && isWork(rows[0]))}">+ Добавить позицию</button></section>`;
   }).join('')+'</section>').join('');
   const excluded = variant.blocks.filter(b => b.excluded || b.rows.some(r => r.excluded));
   $('#pe-excluded-count').textContent = `(${excluded.reduce((sum, b) => sum + (b.excluded ? 1 : b.rows.filter(r => r.excluded).length), 0)})`;
@@ -423,7 +424,7 @@ root.addEventListener('click', event => {
   if (el.dataset.version) loadProject(projectId, el.dataset.version);
   const blockId = el.dataset.excludeBlock || el.dataset.restoreBlock || el.dataset.block;
   if (el.dataset.excludeBlock || el.dataset.restoreBlock || el.dataset.excludeRow || el.dataset.restoreRow) {
-    askScope(blockId, el.dataset.excludeRow || el.dataset.restoreRow || null, Boolean(el.dataset.excludeBlock || el.dataset.excludeRow));
+    askScope(blockId, el.dataset.excludeRow || el.dataset.restoreRow || null, Boolean(el.dataset.excludeBlock || el.dataset.excludeRow), el.dataset.stage);
   }
   if (el.dataset.autoRow) { repairRow(el.dataset.block, el.dataset.autoRow); return; }
   if (el.dataset.shop) { openCatalog(el.dataset.block, el.dataset.shop); return; }
@@ -565,9 +566,9 @@ async function searchProjects() {
 }
 $('#pe-open').addEventListener('click', () => { $('#pe-projects-dialog').showModal(); searchProjects(); });
 $('#pe-project-search').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(searchProjects, 300); });
-function askScope(blockId, rowId, excluded) {
+function askScope(blockId, rowId, excluded, stage=null) {
   const block = snapshot.variants[selected].blocks.find(b => b.id === blockId);
-  scopeTarget = {variant: selected, blockId, rowId, excluded};
+  scopeTarget = {variant: selected, blockId, rowId, excluded, stage};
   $('#pe-scope-title').textContent = excluded ? 'Исключить из сметы?' : 'Восстановить в смете?';
   $('#pe-scope-target').textContent = `${rowId ? block.rows.find(r => r.id === rowId).name : block.title} · ${titles[selected]}`;
   $('#pe-scope-dialog').showModal();
@@ -576,7 +577,13 @@ root.addEventListener('click', event => {
   const button = event.target.closest('[data-scope-choice]');
   if (!button || busy || !scopeTarget) return;
   const t = scopeTarget;
-  setExcluded(snapshot, t.variant, t.blockId, t.rowId, t.excluded, button.dataset.scopeChoice === 'all');
+  if(t.stage){
+    for(const [key,v] of Object.entries(snapshot.variants)){
+      if(button.dataset.scopeChoice!=='all' && key!==t.variant)continue;
+      const block=v.blocks.find(b=>b.id===t.blockId);
+      for(const row of block.rows)if(!row.excluded && workStage(block,row)===t.stage)setExcluded(snapshot,key,t.blockId,row.id,true,false);
+    }
+  }else setExcluded(snapshot, t.variant, t.blockId, t.rowId, t.excluded, button.dataset.scopeChoice === 'all');
   $('#pe-scope-dialog').close(); scopeTarget = null;
   changed(); renderEditor(); queueValidation();
 });

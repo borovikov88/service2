@@ -781,6 +781,7 @@ def evaluate(raw):
         from .estimate_geotextile import annotate as annotate_geotextile
         annotate_auxiliary(result, variant, key)
         annotate_geotextile(result, variant)
+        lighting.annotate(result, variant)
     return result
 
 

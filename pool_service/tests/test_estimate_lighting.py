@@ -81,3 +81,29 @@ class LightingTests(SimpleTestCase):
         self.assertEqual(rows(s)['pool_light']['price'],'999.00')
         self.assertEqual(rows(s)['light_box']['quantity'],'7.000')
         self.assertNotIn('light_niche',rows(s))
+
+    def test_body_evidence_finish_and_power_rejections(self):
+        data=shop.parse_catalog(feed(
+            offer(911,'Прожектор для бассейна ABS LED003 100LED 10W 12V AC','100',description='Не для плитки и пленки.'),
+            offer(912,'Прожектор для бассейна ABS LED003 100LED 10W 12V AC','100',description='Материал корпуса: AISI 316.'),
+            offer(913,'Прожектор для бассейна ABS LED003 100LED 10W 12V AC','100',description='Крепеж AISI316.'),
+        ))
+        self.assertTrue(lighting.assess(data['products']['911'],'plastic_budget',finish='film')[0])
+        self.assertTrue(lighting.assess(data['products']['912'],'plastic_budget')[0])
+        self.assertFalse(lighting.assess(data['products']['913'],'plastic_budget')[0])
+        s,_=shop.auto_select(engine.generate({**NEW,'lighting':'yes','light_count':'2'}),fixture())
+        rows(s)['pool_light'].update(quantity='11',auto_quantity=False)
+        s,_=shop.auto_select(s,fixture())
+        self.assertIsNone(rows(s)['light_transformer']['price'])
+        self.assertEqual(rows(s)['light_box']['quantity'],'11.000')
+
+    def test_sections_partition_cost_without_changing_history(self):
+        from pool_service.templatetags.estimate_numbers import estimate_sections
+        from decimal import Decimal
+        s=engine.generate(NEW); before=deepcopy(s)
+        for v in s['variants'].values():
+            sections=estimate_sections(v)
+            ids=[r['id'] for section in sections for b in section['blocks'] for r in b['rows']]
+            self.assertEqual(len(ids),len(set(ids)))
+            self.assertEqual(sum((b['subtotal'] for section in sections for b in section['blocks']),Decimal(0)),Decimal(v['total']))
+        self.assertEqual(s,before)

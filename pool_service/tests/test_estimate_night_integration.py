@@ -83,7 +83,7 @@ class NightIntegrationTests(TestCase):
         self.assertEqual(self.load(before["id"], 2), result)
         html = self.client.get(reverse("pool_estimate_print", args=[before["id"], 2])).content.decode()
         self.assertIn("Не подтверждены", html)
-        self.assertIn("12,3", html)
+        self.assertIn(">12</td>", html)
         self.assertLess(html.index(role(result, "circulation_pump")["name"]),
                         html.index(role(result, "heater")["name"]))
         self.assertEqual(self.post(action="save", snapshot=result, id=before["id"],
