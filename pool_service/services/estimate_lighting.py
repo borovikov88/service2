@@ -11,7 +11,31 @@ RGB_OFF='Выбран белый свет — контроллер RGB не тр
 
 def fountain_purpose(text):
     text=re.sub(r'\bне\s+(?:(?:подходит|предназначен\w*)\s+)?(?:для|под)\s+(?:фонтан\w*|fountains?)',' ',text or '',flags=re.I)
+    text=re.sub(r'(?:для|под)\s+(?:фонтан\w*|fountains?)\s+не\s+(?:подходит|предназначен\w*)',' ',text,flags=re.I)
     return bool(re.search(r'фонтан|\bfountains?\b',text,re.I))
+
+
+def color_claims(evidence, description):
+    """Keep a denial attached to its color, without consuming another clause."""
+    colors={}
+    denied={}
+    tokens={'rgb':r'\bRGB(?:W|X)?\b', 'white':r'\bWhite\b|бел\w*\s+(?:свет\w*|свечени\w*)'}
+    cleaned=[]
+    for source in (evidence, description):
+        for clause in re.split(r'[;,.!?\n]+',source):
+            for color,token in tokens.items():
+                component='(?:'+token+')'
+                prefix=r'(?:без|не\s+поддерживает(?:ся)?|не)\s+'+component
+                suffix=component+r'\s+(?:не\s+(?:поддержива\w*|предусмотр\w*|доступ\w*)|отсутствует)'
+                pattern='(?:'+prefix+'|'+suffix+')'
+                if re.search(pattern,clause,re.I): denied[color]=True
+                clause=re.sub(pattern,' ',clause,flags=re.I)
+            cleaned.append(clause)
+    color_text='; '.join(cleaned)
+    color_text=re.sub(r'(?:корпус|рамка|body|housing)\s*[:—-]?\s*White\b|\bWhite\s+(?:body|housing)\b',' ',color_text,flags=re.I)
+    colors['rgb']=bool(re.search(tokens['rgb'],color_text,re.I))
+    colors['white']=bool(re.search(r'\b(?:White|NW|CW|WW)\b|бел(?:ый|ого)\s+(?:свет|свечени)|цвет\s+свечения\s*[:—-]\s*бел',color_text,re.I))
+    return colors,denied
 
 
 def normalize(raw):
@@ -59,13 +83,9 @@ def classify(specs, name, description, category, offer):
     denied = bool(re.search(r'(?:не подходит|не предназначен|не для)\s*(?:для\s+)?(?:бассейн|подводн)', scope))
     specs.update(kind=kind, embedded_role='')
     purpose='fountain' if fountain_purpose(scope) else ''
-    color_scope=name+'; '+description+'; '+params
-    rgb_denied=bool(re.search(r'(?:без|не\s+поддерживает|не)\s+RGB\b',color_scope,re.I))
-    white_denied=bool(re.search(r'(?:без|не\s+поддерживает|не)\s+(?:White|бел\w*\s+свет)',color_scope,re.I))
-    color_text=re.sub(r'(?:без|не\s+поддерживает|не)\s+(?:RGB|White|бел\w*\s+свет)\b',' ',evidence,flags=re.I)
-    color_text=re.sub(r'(?:корпус|рамка|body|housing)\s*[:—-]?\s*White\b|\bWhite\s+(?:body|housing)\b',' ',color_text,flags=re.I)
-    rgb=bool(re.search(r'\bRGB(?:W|X)?\b',color_text,re.I))
-    white=bool(re.search(r'\b(?:White|NW|CW|WW)\b|бел(?:ый|ого)\s+(?:свет|свечени)|цвет\s+свечения\s*:\s*бел',color_text,re.I))
+    colors,color_denied=color_claims(evidence,description)
+    rgb,white=colors['rgb'],colors['white']
+    rgb_denied,white_denied=bool(color_denied.get('rgb')),bool(color_denied.get('white'))
     specs['lighting'] = dict(rgb_denied=rgb_denied,white_denied=white_denied,purpose=purpose,color='rgb' if rgb else 'white' if white else '',material=next(iter(materials)) if len(materials)==1 else '', watts=watts, volts=volts, leds=leds,
         supply=next(iter(supplies)).upper() if len(supplies)==1 else '', models=' '.join(sorted(set(re.findall(r'\b(?:LED\d+|HT\d+[A-Z]*|SS\d+[A-Z]*)\b', evidence, re.I)))).upper(),
         conflict=(rgb and white) or (rgb and rgb_denied) or (white and white_denied) or niche_conflict or bool(positive & denied_lining) or len(materials)>1 or wc or vc or lc or len(supplies)>1, niche_included=included, denied=denied, note='Название и параметры карточки магазина; схема подключения требует проверки.')

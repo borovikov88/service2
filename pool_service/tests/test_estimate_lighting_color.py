@@ -26,6 +26,34 @@ def fixture():
     ))
 
 class LightingColorTests(SimpleTestCase):
+    def test_description_colors_and_suffix_denials_full_auto(self):
+        cases=[
+            ('Цвет свечения: белый.','rgb',False),
+            ('RGB не поддерживается.','rgb',False),
+            ('Цвет свечения: RGB.','rgb',True),
+            ('Цвет свечения: белый. RGB не поддерживается.','white',True),
+            ('Корпус белый, цвет свечения: RGB.','rgb',True),
+            ('Белый свет не поддерживается.','white',False),
+            ('Для бассейнов. Для фонтанов не подходит. Цвет свечения: белый.','white',True),
+            ('Для фонтанов. Не подходит для бассейнов.','white',False),
+        ]
+        for description,color,allowed in cases:
+            with self.subTest(description=description,color=color):
+                data=shop.parse_catalog(feed(offer(976,'Прожектор подводный ABS LED003 100LED 10W 12V AC','100',description=description)))
+                s,_=shop.auto_select(engine.generate({**NEW,'lighting':'yes','light_color':color,'light_count':'2'}),data)
+                self.assertEqual(bool(rows(s)['pool_light']['catalog']),allowed)
+                self.assertEqual(rows(s)['pool_light']['amount'],'200.00' if allowed else None)
+
+    def test_description_conflict_and_body_white_are_not_color_confirmation(self):
+        data=shop.parse_catalog(feed(
+            offer(977,'Прожектор подводный ABS RGB 10W 12V AC','100',description='Цвет свечения: белый.'),
+            offer(978,'Прожектор подводный ABS 10W 12V AC','100',description='Корпус белый.'),
+            offer(979,'Прожектор подводный ABS White 10W 12V AC','100',description='RGB не поддерживается, белый свет доступен.'),
+        ))['products']
+        self.assertTrue(data['977']['lighting']['conflict'])
+        self.assertEqual(data['978']['lighting']['color'],'')
+        self.assertFalse(lighting.assess(data['979'],'plastic_budget',color='white')[0])
+
     def test_fontan_rejected_in_name_description_and_category(self):
         data=fixture();p=data['products']['951']
         self.assertTrue(lighting.assess(p,'plastic_budget',color='white')[0])
