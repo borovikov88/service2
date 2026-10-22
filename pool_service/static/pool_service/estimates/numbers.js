@@ -13,20 +13,22 @@ export function displayNumber(value, {exact=false, whole=false}={}) {
   if (exact || (whole && !Number.isInteger(Number(raw)))) return raw;
   return new Intl.NumberFormat('en-US', {useGrouping:false, maximumFractionDigits:whole ? 0 : 1}).format(Number(raw));
 }
-export const money = value => value === null || value === undefined ? '—' : displayNumber(value).replace('.', ',');
+export const money = value => value === null || value === undefined || value === '' ? '—' : new Intl.NumberFormat('ru-RU', {maximumFractionDigits:0}).format(Number(value)).replace(/\u00a0/g, ' ');
 export const cleanNote = text => String(text || '').replace(/(?<![\w/])\d+\.\d+/g, value => exactNumber(value));
 const states = new WeakMap();
 export function rawValue(el) {
   const state = states.get(el);
+  if(state?.options.money) return state.raw;
   return state && (!state.edited || el.value === state.display) ? state.raw : el.value;
 }
 export function bindNumber(el, value, options={}) {
   const raw = value == null ? '' : String(value).replace(',', '.');
-  const display = displayNumber(raw, options);
+  const display = options.money ? (raw === '' ? '' : money(raw)) : displayNumber(raw, options);
   states.set(el, {raw, display, options, edited:false});
+  if(options.money) el.type='text';
   el.value = display;
   el.setCustomValidity('');
-  el.inputMode = 'decimal';
+  el.inputMode = options.money ? 'numeric' : 'decimal';
   el.title = raw ? `Точное значение: ${exactNumber(raw)}. При редактировании показано полностью.` : '';
 }
 export function installNumbers(root) {
@@ -35,7 +37,11 @@ export function installNumbers(root) {
   });
   root.addEventListener('input', ({target:el}) => {
     const s=states.get(el); if(!s)return;
-    s.raw=el.value; s.edited=true;
+    s.raw=s.options.money ? el.value.replace(/[\s\u00a0]/g,'') : el.value; s.edited=true;
+    if(s.options.money){
+      el.setCustomValidity(s.raw!=='' && (!/^\d+$/.test(s.raw) || Number(s.raw)>1000000000) ? 'Укажите целую цену от 0 до 1 000 000 000 рублей.' : '');
+      return;
+    }
     el.setCustomValidity(s.options.whole && el.value!=='' && !Number.isInteger(Number(el.value)) ? 'Укажите целое количество для штучной позиции.' : '');
   }, true);
   root.addEventListener('change', event => {
@@ -46,7 +52,7 @@ export function installNumbers(root) {
     const s=states.get(el); if(!s)return;
     // Keep invalid raw input visible; rounding can hide a step/min violation.
     if(el.validity?.valid === false)return;
-    s.display=displayNumber(s.raw,s.options); el.value=s.display;
+    s.display=s.options.money ? (s.raw === '' ? '' : money(s.raw)) : displayNumber(s.raw,s.options); el.value=s.display;
     el.title=s.raw ? `Точное значение: ${exactNumber(s.raw)}. При редактировании показано полностью.` : '';
   });
   root.addEventListener('keydown', event => {

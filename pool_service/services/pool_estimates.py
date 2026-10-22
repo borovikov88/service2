@@ -11,12 +11,13 @@ from . import estimate_level_control as level_control
 from . import estimate_construction as construction
 from . import estimate_plaster_systems as plaster_systems
 from . import estimate_pvc as pvc
+from . import estimate_lighting as lighting
 
 from pool_service.services.permissions import organization_accesses_for_user
 
 VARIANTS = {"economy": ("Эконом", "Aquaviva"), "standard": ("Стандарт", "Hayward"), "premium": ("Премиум", "IML")}
 BLOCKS = {"construction": "Строительство чаши", "construction_materials": "Материалы для строительства чаши", "embedded": "Закладные элементы", "equipment": "Оборудование", "finish": "Отделка", "options": "Дополнительные работы"}
-KINDS = {"other", "work", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "treatment", "control_panel", "geotextile", *embedded.ROLES, *level_control.ROLES}
+KINDS = {*lighting.ROLES, "other", "work", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "treatment", "control_panel", "geotextile", *embedded.ROLES, *level_control.ROLES}
 FINISHES = {
     "film": ("Плёнка ПВХ для бассейна (+15% запас)", "Монтаж и сварка плёнки ПВХ"),
     "tile": ("Плитка для бассейна (без запаса)", "Облицовка бассейна плиткой"),
@@ -200,6 +201,12 @@ def normalize_inputs(raw):
         if field in raw:
             data[field] = _optional(number(raw[field], label, optional=True, minimum=".001", maximum=maximum))
     data.update(technology.normalize(raw))
+    if 'lighting' in raw:
+        data['lighting'] = string(raw['lighting'], 'Освещение', 10)
+        if data['lighting'] not in {'yes','no'}: raise EstimateInputError('Выберите наличие освещения.')
+        value = number(raw.get('light_count'), 'Число прожекторов', optional=True, minimum='1', maximum='100', places=None)
+        if value is not None and value != value.to_integral_value(): raise EstimateInputError('Число прожекторов должно быть целым.')
+        data['light_count'] = str(value) if value is not None else None
     data["required_head"] = _optional(number(raw.get("required_head"), "Расчётный напор", optional=True, minimum=".1", maximum="100"))
     data["heating_power"] = _optional(number(raw.get("heating_power"), "Мощность подогрева", optional=True, minimum=".1", maximum="10000"))
     # Missing fields in old saved versions stay missing; never inject new assumptions.
@@ -417,6 +424,7 @@ def generate(raw):
     if package: construction.initialize(result)
     plaster_systems.apply(result, create=True)
     pvc.initialize(result)
+    lighting.sync(result, create=True)
     return evaluate(result)
 
 
@@ -461,6 +469,7 @@ def normalize_catalog(raw):
     result["heater_purpose_note"] = string(raw.get("heater_purpose_note", ""), "Назначение нагревателя", 300)
     from .estimate_auxiliary import normalize_facts
     from .estimate_geotextile import normalize as normalize_geotextile
+    result["lighting"] = lighting.normalize(raw.get("lighting"))
     result["auxiliary"] = normalize_facts(raw.get("auxiliary"))
     result["geotextile"] = normalize_geotextile(raw.get("geotextile"))
     result["image"] = safe_image_url(raw.get("image", ""))
@@ -540,7 +549,7 @@ def normalize_snapshot(raw):
                 if not isinstance(rid, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", rid) or rid in row_ids:
                     raise EstimateInputError("Строки должны иметь уникальные идентификаторы.")
                 row_ids.add(rid)
-                if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("basis", ""), str) or row.get("basis", "") not in {"", "finish_area", "finish_net", "finish_stock", "surface", "perimeter", "volume", "concrete_total", "exchanger_quantity", "embedded_work", "level_system", *embedded.ROLES, *technology.BASES, *construction.BASES, *plaster_systems.BASES}:
+                if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("basis", ""), str) or row.get("basis", "") not in {"", "lighting", "finish_area", "finish_net", "finish_stock", "surface", "perimeter", "volume", "concrete_total", "exchanger_quantity", "embedded_work", "level_system", *embedded.ROLES, *technology.BASES, *construction.BASES, *plaster_systems.BASES}:
                     raise EstimateInputError("Некорректный тип строки.")
                 item = {"id": rid, "kind": row["kind"], "basis": row.get("basis", "")}
                 item["heating_parent"] = string(row.get("heating_parent", ""), "Связанный теплообменник", 64)
@@ -569,7 +578,7 @@ def normalize_snapshot(raw):
                 # Package quantities are exact geometry results. Turning off auto
                 # must not round that saved quantity and silently change the charge.
                 quantity_places = None if result.get("construction_version") and item["basis"] in construction.BASES else 3
-                item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", places=quantity_places, optional=item["kind"] == "work" or item["basis"] in {"concrete_total", "exchanger_quantity", *technology.BASES, *construction.BASES, *plaster_systems.BASES}))
+                item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", places=quantity_places, optional=item["kind"] in {"work", *lighting.ROLES} or item["basis"] in {"concrete_total", "exchanger_quantity", *technology.BASES, *construction.BASES, *plaster_systems.BASES}))
                 if boolean(row.get("quantity_edited", False)) and not item["auto_quantity"] and re.fullmatch(r"(?:шт\.?|компл\.?|комплект(?:а|ов)?|упак\.?|пара|пар)", item["unit"], re.IGNORECASE):
                     entered = number(row.get("quantity"), "Количество", maximum="1000000", optional=True, places=None)
                     if entered is not None and entered != entered.to_integral_value():
@@ -596,6 +605,7 @@ def normalize_snapshot(raw):
         if profile not in embedded.PROFILES:
             raise EstimateInputError('Выберите комплектацию закладных.')
         result["variants"][key] = {"blocks": cleaned, 'embedded_profile': profile}
+        if variant.get("lighting_initialized") is True: result["variants"][key]["lighting_initialized"]=True
         if result.get("level_shared_inlet"):
             link = string(variant.get("level_inlet_row_id", ""), "Форсунка линии уровня", 64)
             if link and not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", link):
@@ -614,6 +624,7 @@ def evaluate(raw):
     construction.sync(result)
     plaster_warnings = plaster_systems.apply(result)
     pvc.apply(result)
+    lighting.sync(result)
     result["technology"] = technology.summary(result["inputs"])
     result["heating"] = heating_requirement(result["inputs"])
     embedded.update_quantities(result)
@@ -770,6 +781,7 @@ def evaluate(raw):
         from .estimate_geotextile import annotate as annotate_geotextile
         annotate_auxiliary(result, variant, key)
         annotate_geotextile(result, variant)
+        lighting.annotate(result, variant)
     return result
 
 
@@ -816,6 +828,7 @@ def recalculate(raw, inputs):
                         row['basis'] = 'finish_net'
                     row['quantity'] = embedded.ceil_quantity(metrics[row['basis']])
     ensure_heating_rows(result)
+    lighting.sync(result, create=True)
     update_construction_quantities(result)
     # Capture deletions before technology can synthesize its legacy volume placeholder.
     initialized_plaster = plaster_systems.initialized_tiers(result)

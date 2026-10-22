@@ -101,7 +101,11 @@ export function installHelp(root) {
     return section?.querySelector('summary,legend,h2,h3') || source;
   }
   function attachHelp(anchor, button, warning) {
-    if(warning){anchor.before(button);return;}
+    if(warning){
+      const name=anchor.matches('[data-row-check]') && anchor.closest('td')?.querySelector('.pe-row-name');
+      if(name){button.classList.add('pe-row-warning-icon');name.append(button);}else anchor.before(button);
+      return;
+    }
     const control=anchor.matches('td,label') ? anchor.querySelector('input:not([type=hidden]):not([type=checkbox]),select,textarea') : null;
     if(control){
       let shell=control.closest('.pe-help-field');
@@ -148,7 +152,7 @@ export function installHelp(root) {
         const name=anchor.closest('tr')?.querySelector('.pe-row-name')?.textContent || anchor.textContent.split('\n')[0].slice(0,70) || 'параметры расчёта';
         group.label=name.trim();
         button.setAttribute('aria-label',(warning?'Проверить: ':'Подсказка: ')+group.label);
-        button.textContent=warning?(anchor.dataset.helpLabel || '! Проверить'):'?';
+        button.textContent=warning?(anchor.matches('[data-row-check]') ? '!' : anchor.dataset.helpLabel || '! Проверить'):'?';
         attachHelp(anchor,button,warning);
         button.addEventListener('pointerenter',event=>{if(event.pointerType==='mouse'&&!group.pointerDismissed)open(group);});
         button.addEventListener('pointerleave',()=>{group.pointerDismissed=false;laterClose();});
@@ -161,7 +165,7 @@ export function installHelp(root) {
       const warning=anchor.matches('[data-row-check], [data-help-source], [data-help-warning]');
       group.button.classList.toggle('pe-help-warning',warning);
       group.button.setAttribute('aria-label',(warning?'Проверить: ':'Подсказка: ')+group.label);
-      group.button.textContent=warning?(anchor.dataset.helpLabel || '! Проверить'):'?';
+      group.button.textContent=warning?(anchor.matches('[data-row-check]') ? '!' : anchor.dataset.helpLabel || '! Проверить'):'?';
       if(active===group){if(group.signature!==sources.map(source=>source.innerHTML).join("\n"))content(group);position();}
     }
   }

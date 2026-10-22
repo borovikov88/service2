@@ -59,6 +59,7 @@ export function setWorkPrice(snapshot, variantKey, blockId, source, price, all =
 
 export function automaticQuantity(snapshot, variantKey, row) {
   if (row.basis?.startsWith('pkg_')) return row.quantity; // Server owns exact construction quantities and handling scope.
+  if (row.basis === 'lighting') return row.kind==='light_transformer' ? '1' : snapshot.inputs.light_count;
   if (row.basis === 'level_system') return '1';
   const variant = snapshot.variants[variantKey];
   const value = row.basis === 'exchanger_quantity'
@@ -73,11 +74,11 @@ export function quantityRequired(row) {
 }
 
 // Reorder visible rows only within this table/quote. Hidden slots stay in place.
-export function moveRow(snapshot, variantKey, blockId, rowId, direction) {
+export function moveRow(snapshot, variantKey, blockId, rowId, direction, visibleIds=null) {
   if (![1, -1].includes(direction)) return false;
   const block = snapshot.variants[variantKey]?.blocks.find(b => b.id === blockId);
   if (!block || block.excluded) return false;
-  const visible = block.rows.map((row, index) => ({row, index})).filter(({row}) => !row.excluded);
+  const visible = block.rows.map((row, index) => ({row, index})).filter(({row}) => !row.excluded && (!visibleIds || visibleIds.has(row.id)));
   const from = visible.findIndex(({row}) => row.id === rowId), to = from + direction;
   if (from < 0 || to < 0 || to >= visible.length) return false;
   const a = visible[from].index, b = visible[to].index;

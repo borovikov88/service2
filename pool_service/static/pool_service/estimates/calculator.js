@@ -1,6 +1,6 @@
-import {installHelp} from './help.js?v=4';
-import {money, indivisible, exactNumber, cleanNote, bindNumber, rawValue, installNumbers} from './numbers.js?v=2';
-import {setExcluded, emptyRow, isWork, samePrice, workPriceTargets, automaticQuantity, quantityRequired, moveRow} from './state.js?v=8';
+import {installHelp} from './help.js?v=5';
+import {displayNumber, money, indivisible, exactNumber, cleanNote, bindNumber, rawValue, installNumbers} from './numbers.js?v=3';
+import {setExcluded, emptyRow, isWork, samePrice, workPriceTargets, automaticQuantity, quantityRequired, moveRow} from './state.js?v=9';
 
 const root = document.querySelector('#pool-estimator');
 const $ = selector => root.querySelector(selector);
@@ -32,7 +32,7 @@ function heatingFields() {
   $('#pe-heating-fields').hidden = !form.querySelector('[name="heating_types"]:checked');
   const heating = snapshot?.heating;
   $('#pe-heating-result').textContent = parametersDirty ? 'Пересчитайте параметры для подбора нагревателя.' : heating?.power
-    ? `${heating.mode === 'manual' ? 'Заданная' : 'Предварительная'} мощность: ${money(heating.power)} кВт.${heating.mode === 'estimated' && snapshot.inputs.location === 'outdoor' ? ' Улица: учтён коэффициент ×1,5.' : ''}`
+    ? `${heating.mode === 'manual' ? 'Заданная' : 'Предварительная'} мощность: ${displayNumber(heating.power)} кВт.${heating.mode === 'estimated' && snapshot.inputs.location === 'outdoor' ? ' Улица: учтён коэффициент ×1,5.' : ''}`
     : 'Заполните условия прогрева или задайте мощность вручную.';
 }
 function showCatalogStatus(data) {
@@ -177,7 +177,7 @@ function renderTotals() {
   const prices = snapshot.prices;
   $('#pe-price-date').textContent = `Дата цен: ${prices?.checked_at ? new Date(prices.checked_at).toLocaleDateString('ru-RU') : 'не указана'}${prices?.mixed ? ' · наиболее ранняя из использованных' : ''}${prices?.manual ? ' · ручные цены проверяются отдельно' : ''}`;
   heatingFields();
-  $('#pe-metrics').innerHTML = [['Объём воды', g.volume, 'м³'], ['Зеркало воды', g.surface, 'м²'], ['Площадь отделки', g.finish_area, 'м²'], ['Требуемый расход', g.required_flow, 'м³/ч'], ...(g.concrete_total ? [['Бетон чаши', g.concrete_total, 'м³']] : [])].map(([label, value, unit]) => `<div class="pe-metric"><span>${label}</span><strong>${money(value)}<small>${unit}</small></strong></div>`).join('');
+  $('#pe-metrics').innerHTML = [['Объём воды', g.volume, 'м³'], ['Зеркало воды', g.surface, 'м²'], ['Площадь отделки', g.finish_area, 'м²'], ['Требуемый расход', g.required_flow, 'м³/ч'], ...(g.concrete_total ? [['Бетон чаши', g.concrete_total, 'м³']] : [])].map(([label, value, unit]) => `<div class="pe-metric"><span>${label}</span><strong>${displayNumber(value)}<small>${unit}</small></strong></div>`).join('');
   $('#pe-variants').innerHTML = Object.entries(snapshot.variants).map(([key, v]) => `<button type="button" class="pe-variant" role="tab" aria-selected="${key === selected}" data-variant="${key}"><strong>${titles[key]}</strong><span class="pe-brand">${{economy:'Дешёвые подходящие модели', standard:'Средний ценовой уровень', premium:'Дорогие подходящие модели'}[key]}</span><span class="pe-total">${(v.missing_prices || v.missing_quantities) && Number(v.total) === 0 ? 'Цена уточняется' : money(v.total) + ' ₽'}</span><span class="pe-price-note">${v.missing_prices || v.missing_quantities ? `Без цены: ${v.missing_prices} · без объёма: ${v.missing_quantities || 0} · сумма неполная` : 'Сумма заполненных строк'}</span></button>`).join('');
   const variant = snapshot.variants[selected];
   $('#pe-embedded-profile').value = variant.embedded_profile || embeddedDefaults[selected];
@@ -191,13 +191,15 @@ function renderTotals() {
   $('#pe-version-label').textContent = projectId ? `Открыта версия ${loadedVersion} · последняя сохранённая ${revision}` : 'Несохранённый расчёт';
   $('#pe-warnings').innerHTML = `<div data-help-source data-help-label="! Проверки · ${variant.warnings.length}"><strong>Проверки и уточнения · ${variant.warnings.length}</strong><ul>${[...(variant.warnings || []), ...(variant.construction_notes || [])].map(text => `<li>${esc(cleanNote(text))}</li>`).join('')}${!variant.warnings.length ? '<li>Автоматические проверки пройдены. Полную проверку проекта выполняет инженер.</li>' : ''}</ul></div>`;
   for (const block of variant.blocks) {
-    const subtotal = root.querySelector(`[data-subtotal="${block.id}"]`);
-    if (subtotal) subtotal.textContent = `${money(block.subtotal)} ₽`;
+    for(const subtotal of root.querySelectorAll(`[data-subtotal="${block.id}"]`)) {
+      const stage=subtotal.dataset.workSubtotal;
+      subtotal.textContent=`${money(block.rows.filter(r=>!r.excluded && workStage(block,r)===stage).reduce((sum,r)=>sum+Number(r.amount||0),0))} ₽`;
+    }
     for (const row of block.rows) {
       const quantity = root.querySelector(`[data-row="${row.id}"][data-field="quantity"]`);
       if (quantity && document.activeElement !== quantity) bindNumber(quantity, row.quantity, {whole:indivisible(row.unit)});
       const price = root.querySelector(`[data-row="${row.id}"][data-field="price"]`);
-      if (price && document.activeElement !== price) bindNumber(price, row.price);
+      if (price && document.activeElement !== price) bindNumber(price, row.price, {money:true});
       const mode = root.querySelector(`[data-quantity-mode="${row.id}"]`);
       if (mode) mode.textContent = quantityMode(row);
       const check = root.querySelector(`[data-row-check="${row.id}"]`);
@@ -215,12 +217,19 @@ function renderTotals() {
   syncScope();
   help.refresh();
 }
+function workStage(block,row){return isWork(row) ? (block.id==='construction' && !/transport|travel|handling|delivery/.test(row.work_code||'') ? 'construction' : 'installation') : 'material';}
 function renderEditor() {
   const variant = snapshot.variants[selected];
-  $('#pe-blocks').innerHTML = variant.blocks.filter(b => !b.excluded).map(block => {
+  const visibleBlocks=variant.blocks.filter(b=>!b.excluded);
+  const sections=[
+    {title:'Материалы и оборудование', blocks:visibleBlocks.map(b=>({...b,stage:'material',rows:b.rows.filter(r=>!isWork(r))}))},
+    {title:'Этап 1. Строительство чаши — работы', blocks:visibleBlocks.map(b=>({...b,stage:'construction',rows:b.rows.filter(r=>workStage(b,r)==='construction')}))},
+    {title:'Этап 2. Монтаж оборудования и отделка — работы', blocks:visibleBlocks.map(b=>({...b,stage:'installation',rows:b.rows.filter(r=>workStage(b,r)==='installation')}))},
+  ];
+  $('#pe-blocks').innerHTML = sections.map(section=>`<section class="pe-stage"><h2>${section.title}</h2>`+section.blocks.filter(b=>b.rows.length).map(block => {
     const rows = block.rows.filter(r => !r.excluded);
-    return `<section class="pe-block"><div class="pe-block-head"><h3>${esc(block.title)}</h3><span class="pe-subtotal" data-subtotal="${block.id}">${money(block.subtotal)} ₽</span><button type="button" class="pe-link" data-exclude-block="${block.id}">Исключить</button></div>${rows.length ? `<div class="pe-table-wrap"><table><thead><tr><th>Позиция</th><th>Кол-во</th><th>Цена, ₽</th><th>Сумма, ₽</th><th><span class="visually-hidden">Действия</span></th></tr></thead><tbody>${rows.map(row => `<tr data-order-row="${row.id}"><td class="pe-position-cell"><button type="button" class="pe-drag-handle" data-drag-row="${row.id}" data-block="${block.id}" aria-label="Переместить: ${esc(row.name)}" aria-description="Перетащите строку или используйте стрелки вверх и вниз" title="Перетащите строку; с клавиатуры — стрелки вверх/вниз">⠿</button>${thumbnail(row.catalog?.image || productImages[row.catalog?.id], row.name)}<span class="pe-row-name">${esc(row.name)}</span><span class="pe-row-detail">${esc([({electric:'Электронагреватель', exchanger:'Теплообменник', heatpump:'Тепловой насос'})[row.heating_type], row.brand, row.model].filter(Boolean).join(' · '))}${row.existing ? ' · уже установлено' : ''}${row.selection_status === 'preliminary_primary' ? ' · предварительный подбор — проверить первичный контур' : ''}</span>${row.catalog?.specification_note ? `<small class="pe-help">${esc(row.catalog.specification_note)}${row.catalog.specification_source === 'https://aquaviva.nt-rt.ru/images/manuals/2-zakladnye-dlya-basseinov.pdf' ? ' <a href="https://aquaviva.nt-rt.ru/images/manuals/2-zakladnye-dlya-basseinov.pdf" target="_blank" rel="noopener">Источник</a>' : ''}</small>` : ''}${row.selection_note ? `<small class="pe-help">${esc(row.selection_note)}</small>` : ''}<div class="pe-row-check" data-row-check="${row.id}" aria-live="polite"${row.compatibility ? '' : ' hidden'}>${renderRowCheck(row, block.id)}</div></td><td><input class="pe-qty" data-field="quantity" data-block="${block.id}" data-row="${row.id}" type="number" min="0" max="1000000" step="any" value="${esc(row.quantity)}" placeholder="Уточнить" aria-label="Количество: ${esc(row.name)}"><span class="pe-row-detail">${esc(row.unit)} · <span data-quantity-mode="${row.id}">${quantityMode(row)}</span></span></td><td><input class="pe-price" data-field="price" data-block="${block.id}" data-row="${row.id}" type="number" min="0" max="1000000000" step="0.01" value="${esc(row.price)}" placeholder="Уточнить" aria-label="Цена: ${esc(row.name)}"><small>${esc(row.rate_source || '')}</small><small data-construction-quantity="${row.id}">${esc(cleanNote([row.construction_quantity_note, row.level_quantity_note].filter(Boolean).join(' ')))}</small><small data-construction-price="${row.id}">${esc(cleanNote(row.construction_price_note))}</small><small data-price-conversion="${row.id}">${esc(cleanNote(row.price_conversion_note))}</small></td><td class="pe-row-amount" data-amount="${row.id}">${money(row.amount)}</td><td class="pe-row-actions"><div class="pe-actions-inline">${!isWork(row) ? `<button type="button" class="pe-link" data-shop="${row.id}" data-block="${block.id}" aria-label="Выбрать товар: ${esc(row.name)}" title="Каталог"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/></svg></button>` : ''}<button type="button" class="pe-link" data-edit="${row.id}" data-block="${block.id}" aria-label="Изменить: ${esc(row.name)}">✎</button><button type="button" class="pe-link" data-exclude-row="${row.id}" data-block="${block.id}" aria-label="Исключить: ${esc(row.name)}">×</button></div></td></tr>`).join('')}</tbody></table></div>` : '<div class="pe-empty">В этом блоке пока нет активных позиций.</div>'}<button type="button" class="pe-link pe-add" data-add="${block.id}">+ Добавить позицию</button></section>`;
-  }).join('');
+    return `<section class="pe-block"><div class="pe-block-head"><h3>${esc(block.title)}</h3><span class="pe-subtotal" data-subtotal="${block.id}" data-work-subtotal="${block.stage}">${money(block.subtotal)} ₽</span><button type="button" class="pe-link" data-exclude-block="${block.id}" data-stage="${block.stage}">Исключить</button></div>${rows.length ? `<div class="pe-table-wrap"><table><thead><tr><th>Позиция</th><th>Кол-во</th><th>Цена, ₽</th><th>Сумма, ₽</th><th><span class="visually-hidden">Действия</span></th></tr></thead><tbody>${rows.map(row => `<tr data-order-row="${row.id}"><td class="pe-position-cell"><button type="button" class="pe-drag-handle" data-drag-row="${row.id}" data-block="${block.id}" aria-label="Переместить: ${esc(row.name)}" aria-description="Перетащите строку или используйте стрелки вверх и вниз" title="Перетащите строку; с клавиатуры — стрелки вверх/вниз">⠿</button>${thumbnail(row.catalog?.image || productImages[row.catalog?.id], row.name)}<span class="pe-row-name">${esc(row.name)}</span><span class="pe-row-detail">${esc([({electric:'Электронагреватель', exchanger:'Теплообменник', heatpump:'Тепловой насос'})[row.heating_type], row.brand, row.model].filter(Boolean).join(' · '))}${row.existing ? ' · уже установлено' : ''}${row.selection_status === 'preliminary_primary' ? ' · предварительный подбор — проверить первичный контур' : ''}</span>${row.catalog?.specification_note ? `<small class="pe-help">${esc(row.catalog.specification_note)}${row.catalog.specification_source === 'https://aquaviva.nt-rt.ru/images/manuals/2-zakladnye-dlya-basseinov.pdf' ? ' <a href="https://aquaviva.nt-rt.ru/images/manuals/2-zakladnye-dlya-basseinov.pdf" target="_blank" rel="noopener">Источник</a>' : ''}</small>` : ''}${row.selection_note ? `<small class="pe-help">${esc(row.selection_note)}</small>` : ''}<div class="pe-row-check" data-row-check="${row.id}" aria-live="polite"${row.compatibility ? '' : ' hidden'}>${renderRowCheck(row, block.id)}</div></td><td><input class="pe-qty" data-field="quantity" data-block="${block.id}" data-row="${row.id}" type="number" min="0" max="1000000" step="any" value="${esc(row.quantity)}" placeholder="Уточнить" aria-label="Количество: ${esc(row.name)}"><span class="pe-row-detail">${esc(row.unit)} · <span data-quantity-mode="${row.id}">${quantityMode(row)}</span></span></td><td><input class="pe-price" data-field="price" data-block="${block.id}" data-row="${row.id}" type="number" min="0" max="1000000000" step="0.01" value="${esc(row.price)}" placeholder="Уточнить" aria-label="Цена: ${esc(row.name)}"><small>${esc(row.rate_source || '')}</small><small data-construction-quantity="${row.id}">${esc(cleanNote([row.construction_quantity_note, row.level_quantity_note].filter(Boolean).join(' ')))}</small><small data-construction-price="${row.id}">${esc(cleanNote(row.construction_price_note))}</small><small data-price-conversion="${row.id}">${esc(cleanNote(row.price_conversion_note))}</small></td><td class="pe-row-amount" data-amount="${row.id}">${money(row.amount)}</td><td class="pe-row-actions"><div class="pe-actions-inline">${!isWork(row) ? `<button type="button" class="pe-link" data-shop="${row.id}" data-block="${block.id}" aria-label="Выбрать товар: ${esc(row.name)}" title="Каталог"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/></svg></button>` : ''}<button type="button" class="pe-link" data-edit="${row.id}" data-block="${block.id}" aria-label="Изменить: ${esc(row.name)}">✎</button><button type="button" class="pe-link" data-exclude-row="${row.id}" data-block="${block.id}" aria-label="Исключить: ${esc(row.name)}">×</button></div></td></tr>`).join('')}</tbody></table></div>` : '<div class="pe-empty">В этом блоке пока нет активных позиций.</div>'}<button type="button" class="pe-link pe-add" data-add="${block.id}" data-add-work="${Boolean(rows[0] && isWork(rows[0]))}">+ Добавить позицию</button></section>`;
+  }).join('')+'</section>').join('');
   const excluded = variant.blocks.filter(b => b.excluded || b.rows.some(r => r.excluded));
   $('#pe-excluded-count').textContent = `(${excluded.reduce((sum, b) => sum + (b.excluded ? 1 : b.rows.filter(r => r.excluded).length), 0)})`;
   $('#pe-excluded-content').innerHTML = excluded.map(b => `${b.excluded ? `<div class="pe-excluded-item"><div><strong>${esc(b.title)}</strong><small>${esc(b.reason)} · ${b.rows.length} позиций</small></div><button type="button" class="pe-link" data-restore-block="${b.id}">Вернуть блок</button></div>` : ''}${b.rows.filter(r => b.excluded || r.excluded).map(r => `<div class="pe-excluded-item"><div>${esc(r.name)}<small>${esc(r.quantity)} ${esc(r.unit)} · цена ${money(r.price)} ₽ · ${esc(r.reason || b.reason)}${r.existing ? ' · уже установлено' : ''}</small></div><button type="button" class="pe-link" data-restore-row="${r.id}" data-block="${b.id}">Вернуть строку</button></div>`).join('')}`).join('') || '<p class="pe-help">Исключённых позиций нет. Их можно будет вернуть с прежними количеством и ценой.</p>';
@@ -235,6 +244,8 @@ function setHeating(values) {
 }
 function fillParameters() {
   form.querySelectorAll('[name^="tech_"], [name^="construction_"]').forEach(el => { el.value = ''; });
+  form.elements.lighting.value=snapshot.inputs.lighting || 'no';
+  form.elements.light_count.value=snapshot.inputs.light_count || '';
   form.elements.construction_scheme.value = snapshot.construction_version ? 'package' : 'legacy';
   form.elements.height_mode.value = Object.hasOwn(snapshot.inputs,'freeboard') ? 'freeboard' : 'legacy';
   form.elements.freeboard.value = snapshot.inputs.freeboard ?? (snapshot.inputs.bowl_height ? String(Math.max(0,Number(snapshot.inputs.bowl_height)-Number(snapshot.inputs.depth_start))) : '');
@@ -305,11 +316,13 @@ function orderReady() {
   return true;
 }
 function finishOrder(blockId, rowId, targetIndex) {
-  const rows = snapshot.variants[selected].blocks.find(b => b.id === blockId)?.rows.filter(r => !r.excluded) || [];
+  const handle=[...root.querySelectorAll('[data-drag-row]')].find(el=>el.dataset.dragRow===rowId);
+  const visibleIds=new Set([...handle.closest('table').querySelectorAll('[data-order-row]')].map(el=>el.dataset.orderRow));
+  const rows = snapshot.variants[selected].blocks.find(b => b.id === blockId)?.rows.filter(r => visibleIds.has(r.id)) || [];
   let from = rows.findIndex(r => r.id === rowId);
   if (from < 0 || targetIndex < 0 || targetIndex >= rows.length || targetIndex === from) return;
   const direction = targetIndex > from ? 1 : -1;
-  while (from !== targetIndex && moveRow(snapshot, selected, blockId, rowId, direction)) from += direction;
+  while (from !== targetIndex && moveRow(snapshot, selected, blockId, rowId, direction, visibleIds)) from += direction;
   clearTimeout(timer); sequence++; changed(); renderEditor(); queueValidation();
   [...root.querySelectorAll('[data-drag-row]')].find(b => b.dataset.dragRow === rowId && b.dataset.block === blockId)?.focus({preventScroll:true});
   status('Строка перемещена в текущей таблице этого КП. Есть несохранённые изменения.');
@@ -330,7 +343,7 @@ root.addEventListener('keydown', event => {
   if (!handle || !['ArrowUp','ArrowDown'].includes(event.key)) return;
   event.preventDefault();
   if (!orderReady()) return;
-  const rows = snapshot.variants[selected].blocks.find(b => b.id === handle.dataset.block).rows.filter(r => !r.excluded);
+  const rows = [...handle.closest('table').querySelectorAll('[data-order-row]')].map(el=>({id:el.dataset.orderRow}));
   finishOrder(handle.dataset.block, handle.dataset.dragRow, rows.findIndex(r => r.id === handle.dataset.dragRow) + (event.key === 'ArrowUp' ? -1 : 1));
 });
 root.addEventListener('pointerdown', event => {
@@ -411,13 +424,14 @@ root.addEventListener('click', event => {
   if (el.dataset.version) loadProject(projectId, el.dataset.version);
   const blockId = el.dataset.excludeBlock || el.dataset.restoreBlock || el.dataset.block;
   if (el.dataset.excludeBlock || el.dataset.restoreBlock || el.dataset.excludeRow || el.dataset.restoreRow) {
-    askScope(blockId, el.dataset.excludeRow || el.dataset.restoreRow || null, Boolean(el.dataset.excludeBlock || el.dataset.excludeRow));
+    askScope(blockId, el.dataset.excludeRow || el.dataset.restoreRow || null, Boolean(el.dataset.excludeBlock || el.dataset.excludeRow), el.dataset.stage);
   }
   if (el.dataset.autoRow) { repairRow(el.dataset.block, el.dataset.autoRow); return; }
   if (el.dataset.shop) { openCatalog(el.dataset.block, el.dataset.shop); return; }
   if (el.dataset.edit || el.dataset.add) {
     const block = snapshot.variants[selected].blocks.find(b => b.id === (el.dataset.block || el.dataset.add));
     rowBeingEdited = el.dataset.edit ? structuredClone(block.rows.find(r => r.id === el.dataset.edit)) : emptyRow(crypto.randomUUID());
+    if(el.dataset.addWork==='true')rowBeingEdited.kind='work';
     const edit = $('#pe-row-form'); edit.reset();
     edit.elements.row_id.value = rowBeingEdited.id; edit.elements.block_id.value = block.id;
     for (const key of ['name', 'unit', 'brand', 'model', 'kind', 'quantity', 'price']) edit.elements.namedItem(key).value = rowBeingEdited[key] ?? '';
@@ -430,7 +444,7 @@ root.addEventListener('click', event => {
     $('#pe-level-fields').hidden = rowBeingEdited.kind !== 'skimmer';
     edit.elements.level_status.value = rowBeingEdited.level_status || 'unknown';
     edit.elements.level_evidence.value = rowBeingEdited.level_evidence || '';
-    for (const el of edit.querySelectorAll('input[type=number]')) bindNumber(el, el.value, {whole:el.name==='quantity' && indivisible(rowBeingEdited.unit)});
+    for (const el of edit.querySelectorAll('input[type=number], input[name=price]')) bindNumber(el, el.value, {money:el.name==='price', whole:el.name==='quantity' && indivisible(rowBeingEdited.unit)});
     const accessory = ['circulation_pump','solenoid_valve'].includes(rowBeingEdited.kind);
     $('#pe-heating-parent-label').hidden = !accessory;
     const parentSelect = edit.elements.heating_parent;
@@ -552,9 +566,9 @@ async function searchProjects() {
 }
 $('#pe-open').addEventListener('click', () => { $('#pe-projects-dialog').showModal(); searchProjects(); });
 $('#pe-project-search').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(searchProjects, 300); });
-function askScope(blockId, rowId, excluded) {
+function askScope(blockId, rowId, excluded, stage=null) {
   const block = snapshot.variants[selected].blocks.find(b => b.id === blockId);
-  scopeTarget = {variant: selected, blockId, rowId, excluded};
+  scopeTarget = {variant: selected, blockId, rowId, excluded, stage};
   $('#pe-scope-title').textContent = excluded ? 'Исключить из сметы?' : 'Восстановить в смете?';
   $('#pe-scope-target').textContent = `${rowId ? block.rows.find(r => r.id === rowId).name : block.title} · ${titles[selected]}`;
   $('#pe-scope-dialog').showModal();
@@ -563,7 +577,13 @@ root.addEventListener('click', event => {
   const button = event.target.closest('[data-scope-choice]');
   if (!button || busy || !scopeTarget) return;
   const t = scopeTarget;
-  setExcluded(snapshot, t.variant, t.blockId, t.rowId, t.excluded, button.dataset.scopeChoice === 'all');
+  if(t.stage){
+    for(const [key,v] of Object.entries(snapshot.variants)){
+      if(button.dataset.scopeChoice!=='all' && key!==t.variant)continue;
+      const block=v.blocks.find(b=>b.id===t.blockId);
+      for(const row of block.rows)if(!row.excluded && workStage(block,row)===t.stage)setExcluded(snapshot,key,t.blockId,row.id,true,false);
+    }
+  }else setExcluded(snapshot, t.variant, t.blockId, t.rowId, t.excluded, button.dataset.scopeChoice === 'all');
   $('#pe-scope-dialog').close(); scopeTarget = null;
   changed(); renderEditor(); queueValidation();
 });
