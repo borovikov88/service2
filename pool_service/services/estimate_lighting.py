@@ -29,8 +29,7 @@ def classify(specs, name, description, category, offer):
     evidence = without_hardware_grades(name) + '; ' + params
     materials = set()
     if re.search(r'\bABS\b|пластик', evidence, re.I): materials.add('plastic')
-    for grade in ('304', '316', '201'):
-        if re.search(r'AISI\s*' + grade, evidence, re.I): materials.add('steel' + grade)
+    materials.update('steel'+grade for grade in re.findall(r'\bAISI[ -]*(\d{3})',evidence,re.I))
     materials.update('steel'+grade for grade in body_grade_claims(description))
     if re.search(r'(?:материал корпуса|корпус)\s*[:—-]?\s*(?:из\s+)?(?:ABS|пластик)',description,re.I): materials.add('plastic')
     def one(pattern):
@@ -41,7 +40,9 @@ def classify(specs, name, description, category, offer):
     leds,lc=one(r'(\d+)\s*(?:LED|светодиод)')
     supplies = set(re.findall(r'\b(?:AC|DC)\b', evidence, re.I))
     included = bool(re.search(r'(?:\+|в комплекте|с)\s*закладн', name, re.I))
-    if re.search(r'(?:без|не включает|не входит)\s+закладн',scope): included=False
+    niche_denied=bool(re.search(r'(?:без|не включает|не входит)\s+закладн|закладн\w*\s+(?:(?:деталь|часть)\s+)?не\s+(?:входит|включен\w*|поставля\w*)',scope))
+    niche_conflict=included and niche_denied
+    if niche_denied: included=False
     positive, denied_lining=lining_claims(name+' '+description+' '+params)
     specs['lining']=sorted(positive)
     specs['lining_denied']=sorted(denied_lining)
@@ -49,7 +50,7 @@ def classify(specs, name, description, category, offer):
     specs.update(kind=kind, embedded_role='')
     specs['lighting'] = dict(material=next(iter(materials)) if len(materials)==1 else '', watts=watts, volts=volts, leds=leds,
         supply=next(iter(supplies)).upper() if len(supplies)==1 else '', models=' '.join(sorted(set(re.findall(r'\b(?:LED\d+|HT\d+[A-Z]*|SS\d+[A-Z]*)\b', evidence, re.I)))).upper(),
-        conflict=bool(positive & denied_lining) or len(materials)>1 or wc or vc or lc or len(supplies)>1, niche_included=included, denied=denied, note='Название и параметры карточки магазина; схема подключения требует проверки.')
+        conflict=niche_conflict or bool(positive & denied_lining) or len(materials)>1 or wc or vc or lc or len(supplies)>1, niche_included=included, denied=denied, note='Название и параметры карточки магазина; схема подключения требует проверки.')
 
 
 def sync(snapshot, create=False):
@@ -72,11 +73,12 @@ def sync(snapshot, create=False):
             if row['kind'] not in ROLES or row['existing']: continue
             if not enabled and not row['excluded']: row.update(excluded=True, reason=OFF)
             elif enabled and row['excluded'] and row['reason']==OFF: row.update(excluded=False, reason='')
+            if row['auto_quantity'] and row['unit']!='шт.': row['quantity']=None
             if row['auto_quantity'] and row['unit']=='шт.':
                 row['quantity']='1' if row['kind']=='light_transformer' else snapshot['inputs'].get('light_count')
             if row['kind']=='light_niche' and len(lights)==1:
                 included=(lights[0].get('catalog') or {}).get('lighting',{}).get('niche_included')
-                if included and not row['excluded'] and not row.get('selection_locked') and not row.get('unit_price_manual') and (row.get('catalog') or {}).get('selection')!='manual':
+                if included and not row['excluded'] and row['auto_quantity'] and (row['price'] is None and not row.get('catalog') or row.get('catalog') and row['price']==row['catalog']['price']) and not row.get('selection_locked') and not row.get('unit_price_manual') and (row.get('catalog') or {}).get('selection')!='manual':
                     row.update(excluded=True, reason=INCLUDED)
                 elif not included and row['excluded'] and row['reason']==INCLUDED: row.update(excluded=False,reason='')
 

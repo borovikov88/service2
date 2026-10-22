@@ -36,7 +36,8 @@ test('whole grouped money preserves raw history and validates new edits',async()
  const el={type:'number',value:'',error:'',setCustomValidity(v){this.error=v;}};
  bindNumber(el,'1234.56',{money:true});assert.equal(el.value,'1 235');assert.equal(rawValue(el),'1234.56');
  listeners.focusin({target:el});listeners.focusout({target:el});assert.equal(rawValue(el),'1234.56');
- listeners.focusin({target:el});el.value='2 345';listeners.input({target:el});listeners.focusout({target:el});assert.equal(rawValue(el),'2345');
+ listeners.focusin({target:el});el.value='2 345';listeners.input({target:el});assert.equal(rawValue(el),'2345');listeners.focusout({target:el});assert.equal(rawValue(el),'2345');
+ for(const value of ['1 200','1\u00a0200','1\u202f200']){el.value=value;listeners.input({target:el});assert.equal(rawValue(el),'1200');assert.equal(el.error,'');}
  for(const value of ['-1','NaN','12.5','1000000001']){el.value=value;listeners.input({target:el});assert.ok(el.error);}
  bindNumber(el,'99',{money:true});assert.equal(rawValue(el),'99');assert.equal(el.error,'');
 });

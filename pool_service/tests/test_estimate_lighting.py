@@ -79,7 +79,7 @@ class LightingTests(SimpleTestCase):
         block['rows'].remove(r['light_niche'])
         s=engine.recalculate(s,s['inputs']);s,_=shop.auto_select(s,fixture())
         self.assertEqual(rows(s)['pool_light']['price'],'999.00')
-        self.assertEqual(rows(s)['light_box']['quantity'],'7.000')
+        self.assertIsNone(rows(s)['light_box']['quantity'])
         self.assertNotIn('light_niche',rows(s))
 
     def test_body_evidence_finish_and_power_rejections(self):
@@ -107,3 +107,27 @@ class LightingTests(SimpleTestCase):
             self.assertEqual(len(ids),len(set(ids)))
             self.assertEqual(sum((b['subtotal'] for section in sections for b in section['blocks']),Decimal(0)),Decimal(v['total']))
         self.assertEqual(s,before)
+
+    def test_review_explicit_grade_and_suffix_niche_denial(self):
+        products=shop.parse_catalog(feed(
+            offer(921,'Прожектор подводный AISI430 12V 20W 100LED','100'),
+            offer(922,'Прожектор подводный AISI316 12V 20W 100LED с закладной','100',description='Закладная не входит в комплект.'),
+            offer(923,'Прожектор подводный AISI316 12V 20W 100LED с закладной','100',description='Коробка не входит, закладная входит в комплект.'),
+        ))['products']
+        for profile in ('plastic_budget','steel316'):
+            self.assertTrue(lighting.assess(products['921'],profile)[0])
+        self.assertTrue(lighting.assess(products['922'],'steel316')[0])
+        self.assertFalse(products['922']['lighting']['niche_included'])
+        self.assertFalse(lighting.assess(products['923'],'steel316')[0])
+
+    def test_review_manual_niche_and_wrong_automatic_unit(self):
+        s=engine.generate({**NEW,'lighting':'yes','light_count':'2'})
+        niche=rows(s,'premium')['light_niche']
+        niche.update(price='123.45',quantity='3',auto_quantity=False)
+        s,_=shop.auto_select(s,fixture())
+        self.assertFalse(rows(s,'premium')['light_niche']['excluded'])
+        self.assertEqual(rows(s,'premium')['light_niche']['amount'],'370.35')
+        rows(s)['pool_light']['unit']='м'
+        s=engine.evaluate(s)
+        self.assertIsNone(rows(s)['pool_light']['quantity'])
+        self.assertIsNone(rows(s)['pool_light']['amount'])

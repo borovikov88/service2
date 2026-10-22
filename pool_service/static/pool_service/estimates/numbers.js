@@ -18,6 +18,7 @@ export const cleanNote = text => String(text || '').replace(/(?<![\w/])\d+\.\d+/
 const states = new WeakMap();
 export function rawValue(el) {
   const state = states.get(el);
+  if(state?.options.money) return state.raw;
   return state && (!state.edited || el.value === state.display) ? state.raw : el.value;
 }
 export function bindNumber(el, value, options={}) {
