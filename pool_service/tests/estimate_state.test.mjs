@@ -115,5 +115,5 @@ test('filter loading quantity remains server-owned including unknown mass',()=>{
  const s=sample();
  assert.equal(automaticQuantity(s,'economy',{basis:'filter_load',quantity:'3.000'}),'3.000');
  assert.equal(automaticQuantity(s,'economy',{basis:'filter_load',quantity:null}),null);
- assert.equal(quantityRequired({kind:'filter_media',basis:'filter_load',auto_quantity:true}),false);
+ assert.equal(quantityRequired({...emptyRow('media'),kind:'filter_media',basis:'filter_load',auto_quantity:true}),false);
 });
