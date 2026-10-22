@@ -12,8 +12,9 @@ export function groupFor(block,row){
  return ['embedded','equipment'].includes(block.id)?block.id:'materials';
 }
 export function sections(variant){
+ const show_title=variant.blocks.some(b=>['construction','construction_materials'].includes(b.id)&&!b.excluded&&b.rows.some(r=>!r.excluded));
  const all=variant.blocks.flatMap(b=>b.rows.map(row=>({...row,source_block:b.id,source_excluded:b.excluded,group:groupFor(b,row)})));
- return groups.map(stage=>({...stage,blocks:stage.blocks.map(([id,title])=>{
+ return groups.map(stage=>({...stage,show_title,blocks:stage.blocks.map(([id,title])=>{
   const order=variant.view_order?.[id]||[],rank=new Map(order.map((rid,i)=>[rid,i]));
   const rows=all.filter(r=>r.group===id).sort((a,b)=>Number(['pvc_embedded','piping'].includes(a.id))-Number(['pvc_embedded','piping'].includes(b.id)) || (rank.get(a.id)??rank.size)-(rank.get(b.id)??rank.size));
   return {id,title,rows,subtotal:rows.filter(r=>!r.source_excluded&&!r.excluded).reduce((s,r)=>s+Number(r.amount||0),0)};
