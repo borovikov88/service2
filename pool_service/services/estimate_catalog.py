@@ -17,11 +17,12 @@ from django.core.cache import cache
 
 from . import estimate_embedded as embedded
 from . import estimate_lighting as lighting
+from . import estimate_temperature_control as temperature
 from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requirement, heating_types, row_heating_type, ensure_heating_rows, make_row, string
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
-CACHE_KEY = "pool-estimate-shop-v18"
+CACHE_KEY = "pool-estimate-shop-v19"
 CACHE_SECONDS = 900
 MAX_BYTES = 20_000_000
 FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
@@ -172,6 +173,7 @@ def parse_catalog(payload, checked_at=None):
         from .estimate_geotextile import classify as classify_geotextile
         lighting.classify(specs, name, description, category_path(offer.findtext("categoryId")), offer)
         classify_auxiliary(specs, name, description, offer)
+        temperature.classify(specs,name,brand,description,offer,url)
         classify_geotextile(specs, name, description, category_path(offer.findtext("categoryId")), offer)
         from .estimate_heater_purpose import purpose_note
         specs['heater_purpose_note'] = purpose_note(name, category_path(offer.findtext('categoryId')), url, description) if specs['heater_type'] == 'heatpump' else ''
@@ -321,6 +323,7 @@ def apply_product(row, product, catalog, selection="manual"):
     row["catalog"]["heater_purpose_note"] = product.get("heater_purpose_note", "")
     row["catalog"]["lighting"] = deepcopy(product.get("lighting", {}))
     row["catalog"]["auxiliary"] = deepcopy(product.get("auxiliary", {}))
+    row['catalog']['temperature'] = deepcopy(product.get('temperature',{}))
     row["catalog"]["geotextile"] = deepcopy(product.get("geotextile", {}))
     row["catalog"]["body_family"] = product.get("body_family", "")
     row["catalog"]["lining_denied"] = product.get("lining_denied", [])
@@ -448,6 +451,7 @@ def auto_select(snapshot, catalog, only_variant=None):
     from .estimate_auxiliary import fill as fill_auxiliary
     from .estimate_geotextile import fill as fill_geotextile
     filled += fill_auxiliary(result, catalog, only_variant)
+    filled += temperature.fill(result, catalog, only_variant)
     filled += fill_geotextile(result, catalog, only_variant)
     filled += lighting.fill(result, catalog, only_variant)
     from .estimate_level_control import fill as fill_level
@@ -506,6 +510,8 @@ def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="
         if product['kind'] == 'geotextile':
             from .estimate_geotextile import assess
             return assess(product) or ('Цена за м². Пригодность под плёнку бассейна требует проверки.' if product.get('geotextile', {}).get('purpose') != 'pool' else 'Цена за м²; запас 15% уже учтён в количестве материала.')
+        if product['kind']=='thermostat':
+            return 'Проверить схему коммутации, датчик и нагрузку контактов; панель с регулированием температуры может заменить термостат.'
         issue = profile_reason(product, inputs, required_flow, profile)
         if product['kind'] == 'level_regulator' and not issue:
             return product.get('specification_note') or 'Предварительный подбор; проверьте монтаж по паспорту модели.'
@@ -515,7 +521,7 @@ def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="
     query = search_text(string(query, "Поиск товара", 120)).split()
     kind = string(kind, "Тип товара", 20)
     brand = string(brand, "Бренд", 80)
-    if kind not in {*lighting.ROLES, "", "other", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "level_regulator", "level_inlet", "treatment", "control_panel", "geotextile", *embedded.ROLES}:
+    if kind not in {*lighting.ROLES, "thermostat", "", "other", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "level_regulator", "level_inlet", "treatment", "control_panel", "geotextile", *embedded.ROLES}:
         raise EstimateInputError("Неизвестный тип товара.")
     matches = [p for p in catalog["products"].values() if (not kind or (p['kind'] in {'inlet', 'vacuum'} if kind == 'level_inlet' else p['kind'] == kind)) and (not brand or p["brand"].casefold() == brand.casefold()) and all(q in search_text(p["name"] + " " + p["sku"] + " " + p["id"]) for q in query)]
     matches.sort(key=lambda p: (bool(reason(p)), not p["available"], bool(kind == "circulation_pump" and variant != "economy" and p.get("frequency_control") is not True), Decimal(p["price"]), int(p["id"])))

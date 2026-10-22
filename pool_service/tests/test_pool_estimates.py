@@ -144,6 +144,32 @@ class PoolEstimateViewsTests(TestCase):
     def save(self, **overrides):
         return self.post(**{"action": "save", "snapshot": self.snapshot, "expected_revision": 0, **overrides})
 
+    def test_thermostat_panel_and_legacy_history_roundtrip(self):
+        from unittest.mock import patch
+        from .test_estimate_temperature_control import fixture, HEAT, row
+        self.snapshot=generate(HEAT)
+        self.snapshot.pop('temperature_control_version')
+        for v in self.snapshot['variants'].values():
+            v.pop('thermostat_parents',None)
+            for b in v['blocks']:b['rows']=[r for r in b['rows'] if r['kind']!='thermostat']
+        saved=self.save().json()
+        loaded=self.client.get(self.url,{'organization':self.org.pk,'id':saved['id']}).json()['snapshot']
+        self.assertFalse(any(r['kind']=='thermostat' for b in loaded['variants']['economy']['blocks'] for r in b['rows']))
+        with patch('pool_service.estimate_views.get_catalog',return_value=fixture()):
+            editable=self.post(action='recalculate',snapshot=loaded,inputs=loaded['inputs']).json()['snapshot']
+        self.assertEqual(row(editable)['amount'],'100.00')
+        with patch('pool_service.estimate_views.get_catalog',return_value=fixture(True)):
+            changed=self.post(action='catalog_apply',snapshot=editable,variant='economy',block='equipment',row=row(editable,'control_panel')['id'],product_id='2').json()['snapshot']
+        self.assertTrue(row(changed)['excluded'])
+        self.assertEqual(row(changed)['price'],'100.00')
+        self.assertFalse(row(changed,tier='standard')['excluded'])
+        second=self.post(action='save',id=saved['id'],snapshot=changed,expected_revision=1).json()
+        self.assertEqual(second['loaded_version'],2)
+        restored=self.client.get(self.url,{'organization':self.org.pk,'id':saved['id']}).json()['snapshot']
+        self.assertTrue(row(restored)['excluded'])
+        historical=self.client.get(self.url,{'organization':self.org.pk,'id':saved['id'],'version':1}).json()['snapshot']
+        self.assertEqual(historical,loaded)
+
     def test_new_material_and_work_all_quotes_roundtrip(self):
         from pool_service.services.pool_estimates import make_row
         from pool_service.services.estimate_layout import sections
@@ -283,7 +309,8 @@ class PoolEstimateViewsTests(TestCase):
         for group in {group_for(source,r) for r in rows}:
             names=[r['name'] for r in rows if not r['excluded'] and group_for(source,r)==group]
             self.assertEqual(sorted(names,key=html.index),names)
-        self.assertNotIn(next(r['name'] for r in rows if r['excluded']),html)
+        economy_html=html.split('<h2>Эконом</h2>',1)[1].split('<h2>Стандарт</h2>',1)[0]
+        self.assertNotIn('data-row="'+next(r['id'] for r in rows if r['excluded'])+'"',economy_html)
 
     def test_work_upgrade_and_rate_versions_keep_tenant_boundary(self):
         first = self.save().json()

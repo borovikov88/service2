@@ -1,4 +1,4 @@
-import {isWork} from './state.js?v=12';
+import {isWork} from './state.js?v=13';
 export const groups=[
  {id:'stage1',title:'Этап 1. Строительство чаши',blocks:[['bowl_work','Работы по строительству чаши'],['bowl_materials','Материалы для строительства чаши']]},
  {id:'stage2',title:'Этап 2. Монтаж оборудования и отделка',blocks:[['embedded','Закладные элементы'],['equipment','Оборудование'],['materials','Отделочные материалы'],['installation_work','Отделочные работы, установка закладных и монтаж оборудования'],['extra_materials','Дополнительные материалы'],['extra_work','Дополнительные работы']]},

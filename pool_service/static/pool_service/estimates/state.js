@@ -10,6 +10,7 @@ export function setExcluded(snapshot, variantKey, blockId, rowId, excluded, all 
     if (target) {
       target.excluded = excluded;
       target.reason = excluded ? 'Исключено пользователем' : '';
+      if(rowId && target.kind==='thermostat')target.selection_locked=true;
     }
     // Restoring a row inside an excluded block restores only that row.
     if (rowId && target && !excluded && block.excluded) {

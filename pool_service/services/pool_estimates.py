@@ -16,12 +16,13 @@ from . import estimate_embedded_installation as installation
 from . import estimate_layout as layout
 from . import estimate_liner_corner as corner
 from . import estimate_consumables as consumables
+from . import estimate_temperature_control as temperature
 
 from pool_service.services.permissions import organization_accesses_for_user
 
 VARIANTS = {"economy": ("Эконом", "Aquaviva"), "standard": ("Стандарт", "Hayward"), "premium": ("Премиум", "IML")}
 BLOCKS = {"construction": "Строительство чаши", "construction_materials": "Материалы для строительства чаши", "embedded": "Закладные элементы", "equipment": "Оборудование", "finish": "Отделка", "options": "Дополнительные работы"}
-KINDS = {*lighting.ROLES, "other", "work", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "treatment", "control_panel", "geotextile", *embedded.ROLES, *level_control.ROLES}
+KINDS = {*lighting.ROLES, "thermostat", "other", "work", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "treatment", "control_panel", "geotextile", *embedded.ROLES, *level_control.ROLES}
 FINISHES = {
     "film": ("Плёнка ПВХ для бассейна (+15% запас)", "Монтаж и сварка плёнки ПВХ"),
     "tile": ("Плитка для бассейна (без запаса)", "Облицовка бассейна плиткой"),
@@ -439,6 +440,7 @@ def generate(raw):
     installation.initialize(result)
     corner.initialize(result)
     consumables.initialize(result)
+    temperature.initialize(result)
     result["level_shared_quantity_version"]=2
     return evaluate(result)
 
@@ -486,6 +488,7 @@ def normalize_catalog(raw):
     from .estimate_geotextile import normalize as normalize_geotextile
     result["lighting"] = lighting.normalize(raw.get("lighting"))
     result["auxiliary"] = normalize_facts(raw.get("auxiliary"))
+    result['temperature'] = temperature.normalize(raw.get('temperature'))
     result["geotextile"] = normalize_geotextile(raw.get("geotextile"))
     result["image"] = safe_image_url(raw.get("image", ""))
     options = raw.get("power_options", [raw["power"]] if raw["power"] != "unknown" else [])
@@ -527,6 +530,7 @@ def normalize_snapshot(raw):
     result = {"schema": 1, "inputs": normalize_inputs(raw.get("inputs")), "variants": {}, "works_catalog": 1 if raw.get("works_catalog") == 1 else 0, "heating_accessories": 1 if raw.get("heating_accessories") == 1 else 0}
     if raw.get("construction_version") == 1: result["construction_version"] = 1
     if raw.get('pvc_rate_version') == 2: result['pvc_rate_version'] = 2
+    if raw.get('temperature_control_version') == 1: result['temperature_control_version'] = 1
     if result.get("construction_version") and raw.get("construction_quantity_version") in (1, 2):
         result["construction_quantity_version"] = raw["construction_quantity_version"]
     expected_blocks=set(BLOCKS) if result.get("construction_version") else set(BLOCKS)-{construction.MATERIAL_BLOCK}
@@ -624,6 +628,10 @@ def normalize_snapshot(raw):
             raise EstimateInputError('Выберите комплектацию закладных.')
         result["variants"][key] = {"blocks": cleaned, 'embedded_profile': profile}
         result["variants"][key]["view_order"]=layout.normalize_order(variant.get("view_order",{}),row_ids)
+        initialized=variant.get('thermostat_parents',[])
+        if not isinstance(initialized,list) or len(initialized)>100 or any(not isinstance(x,str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}',x) for x in initialized):
+            raise EstimateInputError('Некорректный состав термостатов.')
+        result['variants'][key]['thermostat_parents']=list(dict.fromkeys(initialized))
         if variant.get("liner_corner_initialized") is True: result["variants"][key]["liner_corner_initialized"]=True
         if variant.get("light_controller_initialized") is True: result["variants"][key]["light_controller_initialized"]=True
         if variant.get("lighting_initialized") is True: result["variants"][key]["lighting_initialized"]=True
@@ -646,6 +654,7 @@ def evaluate(raw):
     plaster_warnings = plaster_systems.apply(result)
     pvc.apply(result)
     consumables.apply(result)
+    temperature.sync(result)
     lighting.sync(result)
     result["technology"] = technology.summary(result["inputs"])
     result["heating"] = heating_requirement(result["inputs"])
@@ -806,6 +815,7 @@ def evaluate(raw):
         annotate_auxiliary(result, variant, key)
         annotate_geotextile(result, variant)
         lighting.annotate(result, variant)
+        temperature.annotate(variant)
     return result
 
 
@@ -826,6 +836,7 @@ def recalculate(raw, inputs):
     installation.initialize(result)
     corner.initialize(result)
     consumables.initialize(result)
+    temperature.initialize(result)
     if result.get("level_shared_inlet") and inputs.get("level_inlet_mode")=="automatic": result["level_shared_quantity_version"]=2
     # Upgrade only the editable copy; saved versions are never passed through here on load.
     works.add_works(result)
