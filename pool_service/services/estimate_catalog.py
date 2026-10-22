@@ -23,7 +23,7 @@ from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requ
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
-CACHE_KEY = "pool-estimate-shop-v20"
+CACHE_KEY = "pool-estimate-shop-v21"
 CACHE_SECONDS = 900
 MAX_BYTES = 20_000_000
 FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
@@ -176,6 +176,10 @@ def parse_catalog(payload, checked_at=None):
         classify_auxiliary(specs, name, description, offer)
         temperature.classify(specs,name,brand,description,offer,url)
         filter_media.classify(specs,name,description,category_path(offer.findtext("categoryId")),offer,url)
+        from .estimate_liner_facts import classify as classify_liner
+        from .estimate_liner_corner import classify as classify_corner
+        classify_liner(specs,name,description,category_path(offer.findtext("categoryId")),offer)
+        classify_corner(specs,name,brand,offer,url)
         classify_geotextile(specs, name, description, category_path(offer.findtext("categoryId")), offer)
         from .estimate_heater_purpose import purpose_note
         specs['heater_purpose_note'] = purpose_note(name, category_path(offer.findtext('categoryId')), url, description) if specs['heater_type'] == 'heatpump' else ''
@@ -328,6 +332,7 @@ def apply_product(row, product, catalog, selection="manual"):
     row['catalog']['temperature'] = deepcopy(product.get('temperature',{}))
     row['catalog']['filter_loading'] = deepcopy(product.get('filter_loading',{}))
     row['catalog']['filter_media'] = deepcopy(product.get('filter_media',{}))
+    row['catalog']['liner'] = deepcopy(product.get('liner',{}))
     row["catalog"]["geotextile"] = deepcopy(product.get("geotextile", {}))
     row["catalog"]["body_family"] = product.get("body_family", "")
     row["catalog"]["lining_denied"] = product.get("lining_denied", [])
@@ -460,6 +465,8 @@ def auto_select(snapshot, catalog, only_variant=None):
     filled += fill_primary(result, catalog, only_variant)
     from .estimate_liner import fill as fill_liner
     filled += fill_liner(result, catalog, only_variant)
+    from .estimate_liner_corner import fill as fill_corner
+    filled += fill_corner(result,catalog,only_variant)
     from .estimate_auxiliary import fill as fill_auxiliary
     from .estimate_geotextile import fill as fill_geotextile
     filled += fill_auxiliary(result, catalog, only_variant)
@@ -523,6 +530,11 @@ def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="
         if product['kind'] == 'geotextile':
             from .estimate_geotextile import assess
             return assess(product) or ('Цена за м². Пригодность под плёнку бассейна требует проверки.' if product.get('geotextile', {}).get('purpose') != 'pool' else 'Цена за м²; запас 15% уже учтён в количестве материала.')
+        if product['kind']=='liner':
+            from .estimate_liner import search_note
+            return search_note(product)
+        if product['kind']=='liner_corner':
+            return 'Крепёжный уголок: цена за отрезок 2 м. Количество округляется по периметру, без дополнительного запаса.'
         if product['kind']=='filter_media':
             return filter_media.assess(product) or 'Проверить массу загрузки и фракцию по паспорту выбранного фильтра; фасовка и единица цены — по карточке песка.'
         if product['kind']=='thermostat':
@@ -536,7 +548,7 @@ def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="
     query = search_text(string(query, "Поиск товара", 120)).split()
     kind = string(kind, "Тип товара", 20)
     brand = string(brand, "Бренд", 80)
-    if kind not in {*lighting.ROLES, "thermostat", "filter_media", "", "other", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "level_regulator", "level_inlet", "treatment", "control_panel", "geotextile", *embedded.ROLES}:
+    if kind not in {*lighting.ROLES, "thermostat", "filter_media", "liner", "liner_corner", "", "other", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "level_regulator", "level_inlet", "treatment", "control_panel", "geotextile", *embedded.ROLES}:
         raise EstimateInputError("Неизвестный тип товара.")
     matches = [p for p in catalog["products"].values() if (not kind or (p['kind'] in {'inlet', 'vacuum'} if kind == 'level_inlet' else p['kind'] == kind)) and (not brand or p["brand"].casefold() == brand.casefold()) and all(q in search_text(p["name"] + " " + p["sku"] + " " + p["id"]) for q in query)]
     matches.sort(key=lambda p: (bool(reason(p)), not p["available"], bool(kind == "circulation_pump" and variant != "economy" and p.get("frequency_control") is not True), Decimal(p["price"]), int(p["id"])))
@@ -560,11 +572,25 @@ def refresh_prices(snapshot, catalog, variant_key):
             if not product:
                 origin["missing"] = True
                 continue
+            if product['kind']=='liner' and row['unit'] in {'рулон','рул.'} and (product.get('liner',{}).get('price_unit')=='m2' or product.get('liner',{}).get('unit_explicit') and product.get('liner',{}).get('price_unit')=='unknown'):
+                row['catalog_review_note']='Единица цены каталога больше не подтверждает цену за рулон; прежняя цена сохранена.'
+                skipped+=1
+                continue
+            if row['kind']=='liner' and not origin.get('roll_area') and origin.get('liner',{}).get('price_unit')=='m2':
+                if product.get('liner',{}).get('price_unit')!='m2' or product.get('liner',{}).get('conflict'):
+                    row['catalog_review_note']='Единица цены или характеристики лайнера изменились. Сохранена прежняя цена за м²; перевыберите товар после проверки.'
+                    skipped+=1
+                    continue
+                origin['liner']=deepcopy(product.get('liner',{}))
+                row['catalog_review_note']=''
             if origin.get('roll_area'):
                 from .estimate_liner import area, set_conversion
-                if area(product) != origin['roll_area'] or row['unit'] != 'м²':
+                if not area(product) or Decimal(area(product)) != Decimal(origin['roll_area']) or row['unit'] != 'м²' or product.get('liner',{}).get('price_unit')=='m2' or product.get('liner',{}).get('unit_explicit') and product.get('liner',{}).get('price_unit')=='unknown':
+                    row['catalog_review_note']='Площадь рулона или единица цены изменилась. Прежние цена и размер сохранены; перевыберите товар после проверки.'
                     skipped += 1
                     continue
+                row['catalog_review_note']=''
+                origin['liner']=deepcopy(product.get('liner',{}))
                 set_conversion(row, product)
                 origin.update(available=product['available'], missing=False, checked_at=catalog['checked_at'], feed_date=catalog['feed_date'])
                 updated += 1

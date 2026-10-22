@@ -190,7 +190,7 @@ class HeatingFinishTests(SimpleTestCase):
 
     def test_finish_search_matches_both_spellings(self):
         f = catalog.parse_catalog(feed(offer(91, 'Пленка для бассейна Test', description=''), offer(92, 'Плёнка ПВХ Test', description='')))
-        found = catalog.search_catalog(f, 'плёнка', 'other', '', generate(INPUTS)['inputs'], Decimal('8'))
+        found = catalog.search_catalog(f, 'плёнка', 'liner', '', generate(INPUTS)['inputs'], Decimal('8'))
         self.assertEqual(found['total'], 2)
 
     def test_unfilled_heater_explains_power_supply_and_keeps_manual_choice(self):

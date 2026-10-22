@@ -72,8 +72,10 @@ class LinerTests(SimpleTestCase):
             self.assertEqual(r['catalog']['roll_area'],'41.58')
             self.assertEqual(film(evaluate(s))['amount'],'189997.09')
         s=generate({**INPUTS,'finish':'film'});before=deepcopy(film(s))
-        with self.assertRaises(EstimateInputError): catalog.apply_product(film(s),c['products']['4'],c)
-        self.assertEqual(film(s),before)
+        catalog.apply_product(film(s),c['products']['4'],c)
+        self.assertEqual(film(s)['catalog']['id'],'4')
+        self.assertIsNone(film(s)['price'])
+        self.assertEqual(film(s)['quantity'],before['quantity'])
 
     def test_custom_uuid_and_legacy_without_finish_type_convert_and_keep_manual_prices(self):
         c=stock()
@@ -96,7 +98,8 @@ class LinerTests(SimpleTestCase):
             with self.assertRaises(EstimateInputError):catalog.apply_product(r,c['products']['1'],c)
             self.assertEqual(r,before)
         s=generate(INPUTS);r=film(s);r.update(id='custom',finish_type='')
-        with self.assertRaises(EstimateInputError):catalog.apply_product(r,c['products']['4'],c)
+        catalog.apply_product(r,c['products']['4'],c)
+        self.assertIsNone(r['price']);self.assertEqual(r['catalog']['id'],'4')
 
     def test_liner_accessories_are_not_mistaken_for_roll_material(self):
         for name in ('Клей для ПВХ пленки','Уголок крепёжный для лайнера','Жидкий ПВХ для пленки'):
