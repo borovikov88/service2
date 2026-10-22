@@ -20,7 +20,7 @@ def normalize_row_split(item, raw):
     # never silently add another item to a manual quantity, including zero.
     credit=number(raw.get('level_quantity_credit','0'),'Резерв форсунки уровня',maximum='1',places=None)
     if credit not in (0,1): raise EstimateInputError('Некорректный резерв форсунки уровня.')
-    if filtration + level != total:
+    if filtration + level + credit != total:
         credit=Decimal(0)
         level = level if total >= level else Decimal(0)
         filtration = total - level
@@ -132,12 +132,15 @@ def sync(snapshot):
                     # Preserve the user's physical total, not a reservation for
                     # a line that no longer exists (builtin/unlink/rebinding).
                     level = old_level if desired and total >= old_level else Decimal(0)
-                    item.update(filtration_quantity=f'{total-level:.3f}', level_quantity=f'{level:.3f}')
+                    credit=Decimal(item.get('level_quantity_credit','0'))
+                    item.update(filtration_quantity=f'{max(Decimal(0),total-level-credit):.3f}', level_quantity=f'{level:.3f}')
                     if level != desired:
                         notes.append('Проверить ручное количество форсунок: дополнительная единица для уровня не добавляется и не удаляется автоматически; укажите количество с учётом линии уровня.')
                 item['level_quantity_note'] = (
                     f"Фильтрация: {Decimal(item['filtration_quantity']).normalize():f} шт.; линия уровня: {Decimal(item['level_quantity']).normalize():f} шт."
                 )
+                if Decimal(item.get('level_quantity_credit','0')):
+                    item['level_quantity_note']+=' Резерв линии уровня: 1 шт.; не участвует в фильтрации.'
         if included:
             notes.append('Регулятор уровня подтверждён в комплекте скиммера; автоматическая дополнительная форсунка не требуется.')
             if regs:

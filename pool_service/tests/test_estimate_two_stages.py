@@ -116,6 +116,9 @@ class TwoStageTests(SimpleTestCase):
             s=engine.evaluate(s)
             self.assertEqual(row(s,'inlet')['quantity'],'4.000')
             self.assertEqual(row(s,'inlet')['level_quantity'],'0.000')
+            self.assertEqual(filtration_quantity(row(s,'inlet')),3)
+            s=engine.evaluate(s)
+            self.assertEqual(row(s,'inlet')['level_quantity_credit'],'1')
             row(s,'skimmer')['level_status']='absent'
             s=engine.recalculate(s,s['inputs'])
             self.assertEqual(row(s,'inlet')['quantity'],'4.000')
