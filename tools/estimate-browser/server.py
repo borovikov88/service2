@@ -26,6 +26,8 @@ if os.environ.get('ESTIMATE_BROWSER_CATALOG') == 'temperature':
     def stock():return temperature_stock(True)
 if os.environ.get('ESTIMATE_BROWSER_CATALOG') == 'media':
     from pool_service.tests.test_estimate_filter_media import fixture as stock
+if os.environ.get('ESTIMATE_BROWSER_CATALOG') == 'liner':
+    from pool_service.tests.test_estimate_liner_rolls import stock
 source=(ROOT / 'pool_service/templates/pool_service/estimates/calculator.html').read_text()
 source=re.sub(r'{% extends .*?%}|{% block .*?%}|{% endblock %}', '', source)
 html=Template(source).render(Context({'estimate_organization':{'pk':1}, 'csrf_token':'test-only'}))
@@ -46,7 +48,7 @@ class Handler(SimpleHTTPRequestHandler):
         if action=='generate': out={'snapshot':auto_select(generate(data['inputs']),stock())[0], 'selected_count':3}
         elif action=='recalculate':
             result=recalculate(data['snapshot'],data['inputs'])
-            if os.environ.get('ESTIMATE_BROWSER_CATALOG') in {'lighting','temperature','media'}: result=auto_select(result,stock())[0]
+            if os.environ.get('ESTIMATE_BROWSER_CATALOG') in {'lighting','temperature','media','liner'}: result=auto_select(result,stock())[0]
             out={'snapshot':result}
         elif action=='level_inlet_binding':
             from pool_service.services.estimate_level_shared import apply_binding
