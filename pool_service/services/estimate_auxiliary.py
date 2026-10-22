@@ -237,6 +237,8 @@ def classify(specs, name, description='', offer=None):
 
 def assess(product, snapshot, variant, tier):
     facts=product.get('auxiliary') or {}
+    if product.get('kind')=='control_panel' and (product.get('temperature') or {}).get('conflict'):
+        return 'Противоречивые характеристики температурного управления панели.',[]
     if not product.get('available'): return 'Доступность товара не подтверждена.',[]
     if facts.get('wrong_purpose'): return 'Известное иное назначение оборудования; применение в бассейне не подтверждено.',[]
     if facts.get('chlorine_sensor_missing') and (tier=='premium' or facts.get('mode')=='cl_ph'):

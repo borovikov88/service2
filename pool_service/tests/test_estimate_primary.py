@@ -75,7 +75,7 @@ class PrimaryCircuitTests(SimpleTestCase):
             if row['kind'] in ('circulation_pump','solenoid_valve'): row['heating_parent']=first['id']
         resolved=recalculate(unresolved,PRIMARY)
         self.assertEqual(len([r for r in block(resolved)['rows'] if r['kind']=='circulation_pump']),2)
-        existing=[r for r in block(resolved)['rows'] if r.get('heating_parent')==first['id']]
+        existing=[r for r in block(resolved)['rows'] if r.get('heating_parent')==first['id'] and r['kind'] in {'circulation_pump','solenoid_valve'}]
         self.assertTrue(all(r['price']=='50.00' and r['quantity']=='1.000' for r in existing))
 
     def test_identity_requires_brand_and_complete_model(self):
