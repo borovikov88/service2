@@ -16,11 +16,12 @@ import xml.etree.ElementTree as ET
 from django.core.cache import cache
 
 from . import estimate_embedded as embedded
+from . import estimate_lighting as lighting
 from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requirement, heating_types, row_heating_type, ensure_heating_rows, make_row, string
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
-CACHE_KEY = "pool-estimate-shop-v15"
+CACHE_KEY = "pool-estimate-shop-v16"
 CACHE_SECONDS = 900
 MAX_BYTES = 20_000_000
 FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
@@ -169,6 +170,7 @@ def parse_catalog(payload, checked_at=None):
         category = categories.get(offer.findtext("categoryId"), "")
         from .estimate_auxiliary import classify as classify_auxiliary
         from .estimate_geotextile import classify as classify_geotextile
+        lighting.classify(specs, name, description, category_path(offer.findtext("categoryId")), offer)
         classify_auxiliary(specs, name, description, offer)
         classify_geotextile(specs, name, description, category_path(offer.findtext("categoryId")), offer)
         from .estimate_heater_purpose import purpose_note
@@ -317,6 +319,7 @@ def apply_product(row, product, catalog, selection="manual"):
     row["catalog"] = {k: product[k] for k in ("id", "url", "sku", "price", "available", "nominal_flow", "power", "power_options", "heating_power", "heater_type", "titanium", "embedded_role", "material", "lining")}
     row["catalog"]["filtration"] = product.get("filtration")
     row["catalog"]["heater_purpose_note"] = product.get("heater_purpose_note", "")
+    row["catalog"]["lighting"] = deepcopy(product.get("lighting", {}))
     row["catalog"]["auxiliary"] = deepcopy(product.get("auxiliary", {}))
     row["catalog"]["geotextile"] = deepcopy(product.get("geotextile", {}))
     row["catalog"]["body_family"] = product.get("body_family", "")
@@ -446,6 +449,7 @@ def auto_select(snapshot, catalog, only_variant=None):
     from .estimate_geotextile import fill as fill_geotextile
     filled += fill_auxiliary(result, catalog, only_variant)
     filled += fill_geotextile(result, catalog, only_variant)
+    filled += lighting.fill(result, catalog, only_variant)
     from .estimate_level_control import fill as fill_level
     filled += fill_level(result, catalog, only_variant)
     # Explicit refresh also warns about newly known conflicts on protected rows;
@@ -508,7 +512,7 @@ def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="
     query = search_text(string(query, "Поиск товара", 120)).split()
     kind = string(kind, "Тип товара", 20)
     brand = string(brand, "Бренд", 80)
-    if kind not in {"", "other", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "level_regulator", "level_inlet", "treatment", "control_panel", "geotextile", *embedded.ROLES}:
+    if kind not in {*lighting.ROLES, "", "other", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "level_regulator", "level_inlet", "treatment", "control_panel", "geotextile", *embedded.ROLES}:
         raise EstimateInputError("Неизвестный тип товара.")
     matches = [p for p in catalog["products"].values() if (not kind or (p['kind'] in {'inlet', 'vacuum'} if kind == 'level_inlet' else p['kind'] == kind)) and (not brand or p["brand"].casefold() == brand.casefold()) and all(q in search_text(p["name"] + " " + p["sku"] + " " + p["id"]) for q in query)]
     matches.sort(key=lambda p: (bool(reason(p)), not p["available"], bool(kind == "circulation_pump" and variant != "economy" and p.get("frequency_control") is not True), Decimal(p["price"]), int(p["id"])))

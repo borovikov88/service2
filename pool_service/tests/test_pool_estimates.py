@@ -164,8 +164,9 @@ class PoolEstimateViewsTests(TestCase):
         self.assertEqual(recalculated['variants']['standard'], before['variants']['standard'])
         self.assertEqual(recalculated['variants']['economy']['total'], loaded['variants']['economy']['total'])
         html = self.client.get(reverse('pool_estimate_print',args=[first['id'],1])).content.decode()
-        names = [r['name'] for r in rows if not r['excluded']]
-        self.assertEqual(sorted(names,key=html.index),names)
+        for work in (False,True):
+            names = [r['name'] for r in rows if not r['excluded'] and (r['kind']=='work')==work]
+            self.assertEqual(sorted(names,key=html.index),names)
         self.assertNotIn(next(r['name'] for r in rows if r['excluded']),html)
 
     def test_work_upgrade_and_rate_versions_keep_tenant_boundary(self):
@@ -238,11 +239,11 @@ class PoolEstimateViewsTests(TestCase):
         filt.update(name="Excluded synthetic filter", excluded=True, price="999")
         first = self.save().json()
         response = self.client.get(reverse("pool_estimate_print", args=[first["id"], 1]))
-        self.assertContains(response, "12,3")
+        self.assertContains(response, ">12</td>")
         self.assertContains(response, "&lt;script&gt;")
         self.assertNotContains(response, '<script>alert(')
         self.assertNotContains(response, "Excluded synthetic filter")
-        self.assertNotContains(response, "Материалы для чаши")
+        self.assertContains(response, "Этап 1. Строительство чаши")
         self.assertContains(response, "Предварительный расчёт")
 
     def test_search_is_limited_to_current_organization(self):

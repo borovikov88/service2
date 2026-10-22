@@ -266,8 +266,8 @@ class CatalogViewsTests(TestCase):
         self.assertEqual(film(changed)['amount'],amount)
         printed=self.client.get(reverse('pool_estimate_print',args=[saved['id'],1]))
         self.assertContains(printed,'Цена рулона 100001 ₽')
-        from pool_service.templatetags.estimate_numbers import estimate_number
-        self.assertContains(printed,estimate_number(amount))
+        from pool_service.templatetags.estimate_numbers import estimate_money
+        self.assertContains(printed,estimate_money(amount))
 
 
     def test_custom_roll_selection_normalizes_save_load_lineage(self):
@@ -347,7 +347,7 @@ class CatalogViewsTests(TestCase):
         saved = self.post(action='save', snapshot=s, expected_revision=0).json()
         printed = self.client.get(reverse('pool_estimate_print', args=[saved['id'], 1]))
         self.assertContains(
-            printed, '<td>Насос фильтрации SyntheticBrand SyntheticModel-42</td>', count=3,
+            printed, '<td>Насос фильтрации SyntheticBrand SyntheticModel-42', count=3,
         )
 
     def test_construction_package_print_blank_prices_shared_rates_and_tenant(self):

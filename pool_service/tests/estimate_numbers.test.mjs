@@ -28,3 +28,15 @@ test('reusing a field or changing pieces to weight clears the old integer error'
  bindNumber(el,'1.5',{whole:false});assert.equal(el.error,'');
  bindNumber(el,'2',{whole:true});assert.equal(el.error,'');
 });
+
+test('whole grouped money preserves raw history and validates new edits',async()=>{
+ const {money}=await import('../static/pool_service/estimates/numbers.js');
+ assert.equal(money('1234456.49'),'1 234 456');assert.equal(money('1234456.5'),'1 234 457');
+ const listeners={};installNumbers({addEventListener:(k,fn)=>listeners[k]=fn});
+ const el={type:'number',value:'',error:'',setCustomValidity(v){this.error=v;}};
+ bindNumber(el,'1234.56',{money:true});assert.equal(el.value,'1 235');assert.equal(rawValue(el),'1234.56');
+ listeners.focusin({target:el});listeners.focusout({target:el});assert.equal(rawValue(el),'1234.56');
+ listeners.focusin({target:el});el.value='2 345';listeners.input({target:el});listeners.focusout({target:el});assert.equal(rawValue(el),'2345');
+ for(const value of ['-1','NaN','12.5','1000000001']){el.value=value;listeners.input({target:el});assert.ok(el.error);}
+ bindNumber(el,'99',{money:true});assert.equal(rawValue(el),'99');assert.equal(el.error,'');
+});
