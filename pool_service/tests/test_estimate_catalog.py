@@ -364,7 +364,7 @@ class CatalogViewsTests(TestCase):
         loaded=self.client.get(self.url,{'organization':self.org.pk,'id':saved['id'],'version':1}).json()['snapshot']
         self.assertEqual(row(loaded,'material_supplies')['amount'],row(s,'material_supplies')['amount'])
         printed=self.client.get(reverse('pool_estimate_print',args=[saved['id'],1]))
-        self.assertContains(printed,'Материалы для чаши бассейна')
+        self.assertContains(printed,'Материалы для строительства чаши')
         self.assertContains(printed,'data-price="delivery_concrete"></td>')
         self.assertContains(printed,'data-price="excavation_package"></td>')
         self.assertContains(printed,'возможности подъезда техники')
