@@ -32,6 +32,7 @@ def normalize_order(raw, row_ids):
 
 
 def sections(variant, client=False):
+    show_title=any(not b['excluded'] and not r['excluded'] for b in variant['blocks'] if b['id'] in {'construction','construction_materials'} for r in b['rows'])
     grouped={key:[] for key in IDS}
     for block in variant['blocks']:
         for row in block['rows']:
@@ -47,5 +48,5 @@ def sections(variant, client=False):
             rows=[{**r,'source_block':b['id'],'source_excluded':b['excluded']} for b,r in entries]
             total=sum((Decimal(r['amount']) for b,r in entries if not b['excluded'] and not r['excluded'] and r.get('amount') is not None),Decimal(0))
             tables.append({'id':key,'title':label,'rows':rows,'subtotal':str(total)})
-        result.append({'id':stage,'title':title,'blocks':tables})
+        result.append({'id':stage,'title':title,'show_title':show_title,'blocks':tables})
     return result

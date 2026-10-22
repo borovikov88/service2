@@ -144,6 +144,28 @@ class PoolEstimateViewsTests(TestCase):
     def save(self, **overrides):
         return self.post(**{"action": "save", "snapshot": self.snapshot, "expected_revision": 0, **overrides})
 
+    def test_consumables_history_and_captions_save_load_recalculate_print(self):
+        from unittest.mock import patch
+        from pool_service.services.estimate_catalog import CatalogUnavailable
+        from .test_estimate_construction import NEW
+        from .test_estimate_consumables import row
+        self.snapshot=generate({**NEW,'bowl_height':'1.7'})
+        for b in self.snapshot['variants']['economy']['blocks']:
+            if b['id'] in {'construction','construction_materials'}:b['excluded']=True
+        row(self.snapshot).update(price='0',unit_price_manual=True)
+        saved=self.save().json()
+        loaded=self.client.get(self.url,{'organization':self.org.pk,'id':saved['id']}).json()['snapshot']
+        printed=self.client.get(reverse('pool_estimate_print',args=[saved['id'],1])).content.decode()
+        self.assertEqual(printed.count('<h3>Этап 1.'),2)
+        self.assertEqual(printed.count('<h3>Этап 2.'),2)
+        self.assertEqual(row(loaded)['price'],'0.00')
+        with patch('pool_service.estimate_views.get_catalog',side_effect=CatalogUnavailable('Synthetic offline')):
+            changed=self.post(action='recalculate',snapshot=loaded,inputs={**loaded['inputs'],'width':'5'}).json()['snapshot']
+        self.assertEqual(row(changed)['price'],'0.00')
+        self.assertEqual(row(changed,'standard')['price'],'30000.00')
+        historical=self.client.get(self.url,{'organization':self.org.pk,'id':saved['id'],'version':1}).json()['snapshot']
+        self.assertEqual(historical,loaded)
+
     def test_lighting_api_save_load_off_on_and_deleted_row(self):
         from .test_estimate_lighting import rows, fixture
         from pool_service.services.estimate_catalog import auto_select

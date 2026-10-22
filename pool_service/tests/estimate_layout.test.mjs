@@ -23,3 +23,11 @@ test('additional tables separate materials and works; every construction row sta
  assert.deepEqual(s[1].blocks[5].rows.map(r=>r.id),['extra_job']);
  assert.equal(s.flatMap(s=>s.blocks).flatMap(b=>b.rows).length,v.blocks.flatMap(b=>b.rows).length);
 });
+test('both captions disappear with all construction rows excluded and return with one row',()=>{
+ const v=fixture();v.blocks[0].rows.forEach(r=>r.excluded=true);
+ assert.deepEqual(sections(v).map(s=>s.show_title),[false,false]);
+ v.blocks[0].rows[0].excluded=false;
+ assert.deepEqual(sections(v).map(s=>s.show_title),[true,true]);
+ v.blocks[0].excluded=true;
+ assert.deepEqual(sections(v).map(s=>s.show_title),[false,false]);
+});

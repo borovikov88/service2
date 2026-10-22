@@ -15,6 +15,7 @@ from . import estimate_lighting as lighting
 from . import estimate_embedded_installation as installation
 from . import estimate_layout as layout
 from . import estimate_liner_corner as corner
+from . import estimate_consumables as consumables
 
 from pool_service.services.permissions import organization_accesses_for_user
 
@@ -437,6 +438,7 @@ def generate(raw):
     lighting.sync(result, create=True)
     installation.initialize(result)
     corner.initialize(result)
+    consumables.initialize(result)
     result["level_shared_quantity_version"]=2
     return evaluate(result)
 
@@ -530,7 +532,7 @@ def normalize_snapshot(raw):
     if raw.get("level_shared_quantity_version")==2: result["level_shared_quantity_version"]=2
     if raw.get("level_system") == 1:
         result["level_system"] = 1
-    for marker in ("level_shared_inlet", "auxiliary_version", "plaster_systems", "pvc_area_version", "embedded_installation_version", "liner_corner_version", "installation_services_version"):
+    for marker in ("level_shared_inlet", "auxiliary_version", "plaster_systems", "pvc_area_version", "embedded_installation_version", "liner_corner_version", "installation_services_version", "consumables_version"):
         if raw.get(marker) == 1: result[marker] = 1
     if result.get("plaster_systems") == 1:
         initialized = raw.get("plaster_initialized", [])
@@ -579,7 +581,7 @@ def normalize_snapshot(raw):
                     raise EstimateInputError("Некорректный тип отделки строки.")
                 for field, limit in (("name", 200), ("unit", 20), ("brand", 80), ("model", 120), ("reason", 300), ("rate_source", 300), ("selection_note", 1000), ("catalog_review_note", 1000)):
                     item[field] = string(row.get(field, ""), field, limit, required=field in {"name", "unit"})
-                for field in ("excluded", "existing", "auto_quantity", "selection_locked", "quantity_stale", "heating_unbound", "level_managed", "unit_price_manual", "construction_price_suspended", "pvc_price_suspended"):
+                for field in ("excluded", "existing", "auto_quantity", "selection_locked", "quantity_stale", "heating_unbound", "level_managed", "unit_price_manual", "construction_price_suspended", "pvc_price_suspended", "consumables_price_suspended"):
                     item[field] = boolean(row.get(field, False))
                 if item["heating_parent"]:
                     item["heating_unbound"] = False
@@ -599,6 +601,7 @@ def normalize_snapshot(raw):
                         raise EstimateInputError("Укажите целое количество для штучной позиции.")
                 item["price"] = _optional(number(row.get("price"), "Цена", optional=True, places=2))
                 item["pvc_computed_price"] = _optional(number(row.get("pvc_computed_price"), "Расчётная цена ПВХ", optional=True, places=2))
+                item["consumables_computed_price"] = _optional(number(row.get("consumables_computed_price"), "Расчётная цена расходных материалов", optional=True, places=2))
                 if result.get("level_shared_inlet"):
                     from .estimate_level_shared import normalize_row_split
                     normalize_row_split(item, row)
@@ -641,6 +644,7 @@ def evaluate(raw):
     construction.sync(result)
     plaster_warnings = plaster_systems.apply(result)
     pvc.apply(result)
+    consumables.apply(result)
     lighting.sync(result)
     result["technology"] = technology.summary(result["inputs"])
     result["heating"] = heating_requirement(result["inputs"])
@@ -819,6 +823,7 @@ def recalculate(raw, inputs):
     result["inputs"] = normalize_inputs(inputs)
     installation.initialize(result)
     corner.initialize(result)
+    consumables.initialize(result)
     if result.get("level_shared_inlet") and inputs.get("level_inlet_mode")=="automatic": result["level_shared_quantity_version"]=2
     # Upgrade only the editable copy; saved versions are never passed through here on load.
     works.add_works(result)
