@@ -255,7 +255,8 @@ from .communication_api import (
 from .avito_services_feed import services_feed, services_feed_edit, services_feed_download, services_feed_publish, services_feed_public
 
 urlpatterns = [
-    path("api/communications/avito/services-feed/<uuid:public_key>/feed.xlsx", services_feed_public, name="avito_services_feed_public"),
+    path("api/communications/avito/services-feed/<uuid:public_key>/feed.xml", services_feed_public, name="avito_services_feed_public"),
+    path("api/communications/avito/services-feed/<uuid:public_key>/feed.xlsx", services_feed_public, {"output_format": "xlsx"}, name="avito_services_feed_public_xlsx"),
     path("avito/<int:connection_id>/services-feed/publish/", services_feed_publish, name="avito_services_feed_publish"),
     path("estimates/", estimate_page, name="pool_estimate_page"),
     path("estimates/api/", estimate_api, name="pool_estimate_api"),
