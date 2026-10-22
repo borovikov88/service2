@@ -26,7 +26,8 @@ WORKS = (
     ('primer', 'finish', 'Грунтовка', 'м²', None, '70', 'finish_net', False),
     ('plaster', 'finish', 'Штукатурка', 'м²', None, '900', 'finish_net', False),
     ('finish_transport', 'finish', 'Транспортные расходы — отделка и монтаж', 'рейс', '2200', None, None, False),
-    ('finish_travel', 'finish', 'Командировочные — отделка и монтаж', 'чел./день', None, None, None, True),
+    ('finish_travel', 'finish', 'Командировочные — отделка и монтаж', 'чел./день', None, None, None, False),
+    ('accommodation', 'options', 'Проживание', 'сутки', None, None, None, False),
     ('countercurrent', 'options', 'Монтаж противотока', 'шт.', '9800', '9800', None, True),
     ('waterfall', 'options', 'Монтаж водопада', 'шт.', '9800', '9800', None, True),
 )
@@ -130,6 +131,7 @@ def add_works(snapshot, *, fresh=False):
                 identify(row)
         generic = next((r for r in blocks['construction']['rows'] if r['id'] == 'bowl_work'), None)
         for code, bid, name, unit, economy, standard, qty, optional in WORKS:
+            if code=='accommodation' and not fresh and snapshot.get('installation_services_version')==1: continue
             if snapshot.get("construction_version") and bid == "construction": continue
             block = blocks[bid]
             if any(r.get('work_code') == code for r in block['rows']):
@@ -158,6 +160,7 @@ def add_works(snapshot, *, fresh=False):
                 row['price'] = price
     if fresh:
         fill_missing_prices(snapshot)
+    snapshot['installation_services_version']=1
     snapshot['works_catalog'] = 1
     return snapshot
 

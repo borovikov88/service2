@@ -36,8 +36,13 @@ def active(variant, kind):
             and r['quantity'] is not None and Decimal(r['quantity']) > 0]
 
 
-def linked(variant):
+def linked(variant, automatic=False):
     rows = [r for r in active(variant, 'inlet') if r['unit'] == 'шт.']
+    if automatic:
+        row=next((r for r in rows if r['id']==variant.get('level_inlet_row_id')),None) or next(iter(sorted(rows,key=lambda r:r['id'])),None)
+        variant['level_inlet_row_id']=row['id'] if row else ''
+        variant['level_inlet_link_manual']=False
+        return row
     if variant.get('level_inlet_link_manual'):
         return next((r for r in rows if r['id'] == variant.get('level_inlet_row_id')), None)
     if len(rows) == 1:
@@ -75,7 +80,8 @@ def sync(snapshot):
     for variant in snapshot['variants'].values():
         variant['level_shared_inlet'] = 1
         notes = []
-        row = linked(variant)
+        automatic=snapshot.get('level_shared_quantity_version')==2
+        row = linked(variant, automatic)
         regs = active(variant, 'level_regulator')
         notes.extend('Регулятор уровня: ' + reg['catalog_review_note'] for reg in regs if reg.get('catalog_review_note'))
         included = variant.get('level_control_status') == 'included'
@@ -91,8 +97,8 @@ def sync(snapshot):
             regulator = regs[0].get('catalog') or {}
             issue = regs[0].get('catalog_review_note') or blocked(row, regulator, variant, snapshot['inputs'])
             if issue:
-                wanted = False
-                notes.append('Проверить линию уровня: ' + issue + ' Выбранная модель сохранена; дополнительная единица автоматически не добавлена.')
+                if not automatic: wanted = False
+                notes.append('Проверить линию уровня: ' + issue + (' Дополнительная форсунка учтена только в количестве; инженерная совместимость не подтверждена.' if automatic else ' Выбранная модель сохранена; дополнительная единица автоматически не добавлена.'))
             else:
                 reason = inlet_reason(evidence(row), regulator, snapshot['inputs'], variant['embedded_profile'])
                 if reason:
@@ -109,6 +115,10 @@ def sync(snapshot):
                     base = Decimal(q['inlet']) if item['basis'] == 'inlet' else max(Decimal(0), total - old_level)
                     item.update(filtration_quantity=f'{base:.3f}', level_quantity=f'{desired:.3f}', quantity=f'{base + desired:.3f}')
                 else:
+                    if automatic and not item['existing'] and item['unit']=='шт.':
+                        if desired>old_level and total>0: total+=desired-old_level
+                        item['quantity']=f'{total:.3f}'
+                        old_level=desired
                     # Preserve the user's physical total, not a reservation for
                     # a line that no longer exists (builtin/unlink/rebinding).
                     level = old_level if desired and total >= old_level else Decimal(0)
@@ -134,7 +144,7 @@ def fill(snapshot, catalog, only=None):
     for tier, variant in snapshot['variants'].items():
         if only and tier != only:
             continue
-        regs, row = active(variant, 'level_regulator'), linked(variant)
+        regs, row = active(variant, 'level_regulator'), linked(variant, snapshot.get('level_shared_quantity_version')==2)
 
         def rejection(product):
             if product.get('kind', 'level_regulator') != 'level_regulator':

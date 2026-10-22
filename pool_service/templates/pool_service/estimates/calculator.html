@@ -1,7 +1,7 @@
 {% extends 'pool_service/base.html' %}
 {% load static %}
 {% block title %}Расчёт бассейна · {{ brand_name }}{% endblock %}
-{% block extra_head %}<link rel="stylesheet" href="{% static 'pool_service/estimates/calculator.css' %}?v=stages-lighting-1">{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="{% static 'pool_service/estimates/calculator.css' %}?v=two-stages-2">{% endblock %}
 {% block content %}
 <main class="pe" id="pool-estimator" data-api="{% url 'pool_estimate_api' %}" data-organization="{{ estimate_organization.pk }}">
   {% csrf_token %}
@@ -13,7 +13,7 @@
   <div class="pe-workspace">
     <aside class="pe-panel pe-inputs">
       <div class="pe-section-label"><span>01</span><h2 id="pe-parameters-title">Параметры бассейна</h2></div>
-      <form id="pe-parameters">
+      <form id="pe-parameters"><input type="hidden" name="level_inlet_mode" value="automatic">
         <label>Название расчёта<input name="title" value="Новый бассейн" maxlength="200" required></label>
         <div class="pe-pool-illustration" aria-hidden="true"><svg viewBox="0 0 300 145"><defs><pattern id="pe-water" width="24" height="20" patternUnits="userSpaceOnUse"><path d="M0 12Q6 6 12 12T24 12" fill="none" stroke="#65c5cb" stroke-width="1"/></pattern></defs><path d="M45 45L214 18L265 88L96 122Z" fill="#e6f3f2" stroke="#136e73" stroke-width="2"/><path d="M61 48L207 26L247 84L102 113Z" fill="url(#pe-water)"/><path d="M45 45V61L96 137L265 104V88M96 122V137" fill="none" stroke="#136e73" stroke-width="2"/></svg><span>Прямоугольный · скиммерный · частный</span></div>
         <div class="pe-grid2"><label>Длина, м<input name="length" type="number" min="0.1" max="100" step="0.001" value="8" required></label><label>Ширина, м<input name="width" type="number" min="0.1" max="100" step="0.001" value="4" required></label><label>Глубина воды в начале, м<input name="depth_start" type="number" min="0.1" max="10" step="0.001" value="1.5" required></label><label>Глубина воды в конце, м<input name="depth_end" type="number" min="0.1" max="10" step="0.001" value="1.5" required></label></div>
@@ -83,7 +83,7 @@
       <section class="pe-catalog-note"><strong id="pe-price-date">Дата цен: не указана</strong><p id="pe-catalog-status">Каталог загружается при подборе. Сохранённые версии сохраняют прежние цены.</p><p class="pe-help" data-help-target="#pe-variants-title">Автоподбор учитывает бренд, назначение, производительность и мощность. Нагреватель подбирается автоматически по ценовому уровню КП. Подбор предварительный; рабочие условия и комплектацию подтверждает инженер.</p><div class="pe-actions"><button type="button" id="pe-catalog-auto" class="pe-btn">Обновить автоподбор в 3 КП</button><button type="button" id="pe-catalog-prices" class="pe-btn">Обновить цены текущей сметы</button></div></section>
       <div class="pe-panel pe-editor">
         <div class="pe-editor-header"><div><h2 id="pe-editor-title">Смета</h2><span id="pe-version-label" class="pe-help">Несохранённый расчёт</span></div></div>
-        <div class="pe-embedded-settings"><label>Закладные в этом КП<select id="pe-embedded-profile"><option value="plastic_budget">Пластик · эконом (Aquaviva / Aquant)</option><option value="plastic_europe">Пластик · европейские бренды</option><option value="steel304">Нержавейка AISI 304</option><option value="steel316">Нержавейка AISI 316 / 316L</option></select></label><label id="pe-level-inlet-binding-label" hidden>Модель форсунки для линии уровня<select id="pe-level-inlet-binding"></select><small>Та же модель, отдельная линия. Автоматическое количество включает одну форсунку уровня; ручное количество сохраняется.</small></label><p class="pe-help" id="pe-embedded-summary"></p></div><div id="pe-warnings" class="pe-warnings" aria-live="polite"></div>
+        <div class="pe-embedded-settings"><label>Закладные в этом КП<select id="pe-embedded-profile"><option value="plastic_budget">Пластик · эконом (Aquaviva / Aquant)</option><option value="plastic_europe">Пластик · европейские бренды</option><option value="steel304">Нержавейка AISI 304</option><option value="steel316">Нержавейка AISI 316 / 316L</option></select></label><p class="pe-help" id="pe-embedded-summary"></p></div><div id="pe-warnings" class="pe-warnings" aria-live="polite"></div>
         <p class="pe-help" data-help-target="#pe-editor-title">Количество и цена показаны до десятых; при фокусе доступны точные значения. Итог рассчитан без округления отображаемых величин.</p><div id="pe-blocks"></div>
         <details id="pe-excluded" class="pe-excluded"><summary>Исключённые строки и блоки <span id="pe-excluded-count"></span></summary><div id="pe-excluded-content"></div></details>
       </div>
@@ -99,5 +99,5 @@
   <dialog id="pe-scope-dialog" class="pe-dialog"><h2 id="pe-scope-title">Изменить состав</h2><p id="pe-scope-target"></p><div class="pe-dialog-actions"><button type="button" class="pe-btn pe-primary" data-scope-choice="one">Только в этом КП</button><button type="button" class="pe-btn" data-scope-choice="all">Во всех трёх КП</button><button type="button" class="pe-btn" data-close="pe-scope-dialog">Отмена</button></div></dialog>
   <dialog id="pe-new-dialog" class="pe-dialog"><h2>Начать новый расчёт?</h2><p>Сохранить текущий расчёт перед созданием нового или удалить текущие несохранённые изменения? Сохранённые версии останутся в истории.</p><p id="pe-new-error" class="pe-error" role="alert"></p><div class="pe-dialog-actions"><button type="button" class="pe-btn pe-primary" data-new-action="save">Сохранить и создать новый</button><button type="button" class="pe-btn" data-new-action="discard">Удалить несохранённое и создать новый</button><button type="button" class="pe-btn" data-close="pe-new-dialog">Отмена — вернуться к расчёту</button></div></dialog>
 </main>
-<script type="module" src="{% static 'pool_service/estimates/calculator.js' %}?v=stages-lighting-1"></script>
+<script type="module" src="{% static 'pool_service/estimates/calculator.js' %}?v=two-stages-2"></script>
 {% endblock %}

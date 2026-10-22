@@ -18,7 +18,7 @@ class EstimateWorkTests(SimpleTestCase):
         for key, variant in s['variants'].items():
             rows = [r for b in variant['blocks'] for r in b['rows'] if r['kind'] == 'work']
             self.assertEqual({r['work_code'] for r in rows}, expected)
-            self.assertEqual(len(rows), 27)
+            self.assertEqual(len(rows), 28)
             self.assertEqual(work(s, 'excavation', key)['quantity'], None)
             self.assertIsNone(work(s, 'embedded_work', key)['price'])  # Formula depends on the old fitting set.
         self.assertEqual(work(s, 'equipment_work')['price'], '70000.00')
@@ -50,9 +50,13 @@ class EstimateWorkTests(SimpleTestCase):
             self.assertEqual(work(s, code)['quantity'], '69.000')
         self.assertIsNone(work(s, 'plaster')['quantity'])
         self.assertIsNone(work(s, 'plaster')['amount'])
-        for code in ('liner_steps', 'gutters', 'countercurrent', 'waterfall', 'construction_travel', 'finish_travel'):
+        for code in ('liner_steps', 'gutters', 'countercurrent', 'waterfall', 'construction_travel'):
             self.assertTrue(work(s, code)['excluded'])
             self.assertIsNone(work(s, code)['amount'])
+        for code in ('finish_travel','accommodation'):
+            self.assertFalse(work(s,code)['excluded'])
+            self.assertIsNone(work(s,code)['quantity'])
+            self.assertIsNone(work(s,code)['price'])
         work(s, 'primer').update(auto_quantity=False, quantity='7', price='11')
         result = recalculate(s, {**INPUTS, 'finish': 'tile', 'length': '10'})
         self.assertTrue(work(result, 'underlay_film')['excluded'])

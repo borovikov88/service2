@@ -44,14 +44,9 @@ def estimate_money(value):
 
 @register.filter
 def estimate_sections(variant):
-    from pool_service.services.estimate_works import is_work
-    sections=[]
-    for title, mode in [('Материалы и оборудование','material'),('Этап 1. Строительство чаши — работы','construction'),('Этап 2. Монтаж оборудования и отделка — работы','installation')]:
-        blocks=[]
-        for block in variant['blocks']:
-            if block['excluded']: continue
-            rows=[r for r in block['rows'] if not r['excluded'] and not r['existing'] and
-                  (not is_work(r) if mode=='material' else is_work(r) and (block['id']=='construction' and not re.search(r'transport|travel|handling|delivery',r.get('work_code',''))) == (mode=='construction'))]
-            if rows: blocks.append({**block,'rows':rows,'subtotal':sum((Decimal(r['amount']) for r in rows if r.get('amount') is not None),Decimal(0))})
-        if blocks: sections.append({'title':title,'blocks':blocks})
-    return sections
+    from pool_service.services.estimate_layout import sections
+    return sections(variant, client=True)
+
+@register.filter
+def estimate_variants(variants):
+    return [(key,variants[key]) for key in ('economy','standard','premium') if key in variants]

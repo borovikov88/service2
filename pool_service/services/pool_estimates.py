@@ -12,6 +12,9 @@ from . import estimate_construction as construction
 from . import estimate_plaster_systems as plaster_systems
 from . import estimate_pvc as pvc
 from . import estimate_lighting as lighting
+from . import estimate_embedded_installation as installation
+from . import estimate_layout as layout
+from . import estimate_liner_corner as corner
 
 from pool_service.services.permissions import organization_accesses_for_user
 
@@ -201,6 +204,7 @@ def normalize_inputs(raw):
         if field in raw:
             data[field] = _optional(number(raw[field], label, optional=True, minimum=".001", maximum=maximum))
     data.update(technology.normalize(raw))
+    if raw.get("level_inlet_mode")=="automatic": data["level_inlet_mode"]="automatic"
     if 'lighting' in raw:
         data['lighting'] = string(raw['lighting'], 'Освещение', 10)
         if data['lighting'] not in {'yes','no'}: raise EstimateInputError('Выберите наличие освещения.')
@@ -425,6 +429,9 @@ def generate(raw):
     plaster_systems.apply(result, create=True)
     pvc.initialize(result)
     lighting.sync(result, create=True)
+    installation.initialize(result)
+    corner.initialize(result)
+    result["level_shared_quantity_version"]=2
     return evaluate(result)
 
 
@@ -514,9 +521,10 @@ def normalize_snapshot(raw):
     if result.get("construction_version") and raw.get("construction_quantity_version") in (1, 2):
         result["construction_quantity_version"] = raw["construction_quantity_version"]
     expected_blocks=set(BLOCKS) if result.get("construction_version") else set(BLOCKS)-{construction.MATERIAL_BLOCK}
+    if raw.get("level_shared_quantity_version")==2: result["level_shared_quantity_version"]=2
     if raw.get("level_system") == 1:
         result["level_system"] = 1
-    for marker in ("level_shared_inlet", "auxiliary_version", "plaster_systems", "pvc_area_version"):
+    for marker in ("level_shared_inlet", "auxiliary_version", "plaster_systems", "pvc_area_version", "embedded_installation_version", "liner_corner_version", "installation_services_version"):
         if raw.get(marker) == 1: result[marker] = 1
     if result.get("plaster_systems") == 1:
         initialized = raw.get("plaster_initialized", [])
@@ -549,7 +557,7 @@ def normalize_snapshot(raw):
                 if not isinstance(rid, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", rid) or rid in row_ids:
                     raise EstimateInputError("Строки должны иметь уникальные идентификаторы.")
                 row_ids.add(rid)
-                if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("basis", ""), str) or row.get("basis", "") not in {"", "lighting", "finish_area", "finish_net", "finish_stock", "surface", "perimeter", "volume", "concrete_total", "exchanger_quantity", "embedded_work", "level_system", *embedded.ROLES, *technology.BASES, *construction.BASES, *plaster_systems.BASES}:
+                if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("basis", ""), str) or row.get("basis", "") not in {"", "lighting", "liner_corner", "finish_area", "finish_net", "finish_stock", "surface", "perimeter", "volume", "concrete_total", "exchanger_quantity", "embedded_work", "level_system", *embedded.ROLES, *technology.BASES, *construction.BASES, *plaster_systems.BASES}:
                     raise EstimateInputError("Некорректный тип строки.")
                 item = {"id": rid, "kind": row["kind"], "basis": row.get("basis", "")}
                 item["heating_parent"] = string(row.get("heating_parent", ""), "Связанный теплообменник", 64)
@@ -578,7 +586,7 @@ def normalize_snapshot(raw):
                 # Package quantities are exact geometry results. Turning off auto
                 # must not round that saved quantity and silently change the charge.
                 quantity_places = None if result.get("construction_version") and item["basis"] in construction.BASES else 3
-                item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", places=quantity_places, optional=item["kind"] in {"work", *lighting.ROLES} or item["basis"] in {"concrete_total", "exchanger_quantity", *technology.BASES, *construction.BASES, *plaster_systems.BASES}))
+                item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", places=quantity_places, optional=item["kind"] in {"work", *lighting.ROLES} or item["basis"] in {"concrete_total", "exchanger_quantity", "liner_corner", *technology.BASES, *construction.BASES, *plaster_systems.BASES}))
                 if boolean(row.get("quantity_edited", False)) and not item["auto_quantity"] and re.fullmatch(r"(?:шт\.?|компл\.?|комплект(?:а|ов)?|упак\.?|пара|пар)", item["unit"], re.IGNORECASE):
                     entered = number(row.get("quantity"), "Количество", maximum="1000000", optional=True, places=None)
                     if entered is not None and entered != entered.to_integral_value():
@@ -605,6 +613,8 @@ def normalize_snapshot(raw):
         if profile not in embedded.PROFILES:
             raise EstimateInputError('Выберите комплектацию закладных.')
         result["variants"][key] = {"blocks": cleaned, 'embedded_profile': profile}
+        result["variants"][key]["view_order"]=layout.normalize_order(variant.get("view_order",{}),row_ids)
+        if variant.get("liner_corner_initialized") is True: result["variants"][key]["liner_corner_initialized"]=True
         if variant.get("lighting_initialized") is True: result["variants"][key]["lighting_initialized"]=True
         if result.get("level_shared_inlet"):
             link = string(variant.get("level_inlet_row_id", ""), "Форсунка линии уровня", 64)
@@ -629,6 +639,8 @@ def evaluate(raw):
     result["heating"] = heating_requirement(result["inputs"])
     embedded.update_quantities(result)
     level_control.sync(result)
+    installation.apply(result)
+    corner.sync(result)
     result["prices"] = price_summary(result)
     for key, variant in result["variants"].items():
         total, missing, models, missing_quantities = Decimal(0), 0, 0, 0
@@ -798,6 +810,9 @@ def recalculate(raw, inputs):
                 if row["kind"] == "heater":
                     row["heating_type"] = row_heating_type(row, result["inputs"])
     result["inputs"] = normalize_inputs(inputs)
+    installation.initialize(result)
+    corner.initialize(result)
+    if result.get("level_shared_inlet") and inputs.get("level_inlet_mode")=="automatic": result["level_shared_quantity_version"]=2
     # Upgrade only the editable copy; saved versions are never passed through here on load.
     works.add_works(result)
     works.fill_missing_prices(result)

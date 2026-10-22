@@ -164,6 +164,26 @@ class PoolEstimateViewsTests(TestCase):
         original=self.client.get(self.url,{'organization':self.org.pk,'id':saved['id'],'version':1}).json()['snapshot']
         self.assertEqual(original,loaded)
 
+    def test_unified_work_order_roundtrip_print_and_variant_order(self):
+        from unittest.mock import patch
+        from pool_service.services.estimate_catalog import CatalogUnavailable
+        from pool_service.services.estimate_layout import sections
+        self.snapshot=generate({**INPUTS,'finish':'film'})
+        variant=self.snapshot['variants']['economy']
+        ids=[r['id'] for r in sections(variant)[1]['blocks'][-1]['rows']]
+        variant['view_order']={'installation_work':list(reversed(ids))}
+        saved=self.save().json()
+        loaded=self.client.get(self.url,{'organization':self.org.pk,'id':saved['id']}).json()['snapshot']
+        with patch('pool_service.estimate_views.get_catalog',side_effect=CatalogUnavailable('Synthetic offline')):
+            recalculated=self.post(action='recalculate',snapshot=loaded,inputs=loaded['inputs']).json()['snapshot']
+        actual=[r['id'] for r in sections(recalculated['variants']['economy'])[1]['blocks'][-1]['rows']]
+        self.assertEqual(actual,list(reversed(ids)))
+        printed=self.client.get(reverse('pool_estimate_print',args=[saved['id'],1])).content.decode()
+        active=[r['id'] for r in sections(loaded['variants']['economy'],client=True)[1]['blocks'][-1]['rows']]
+        self.assertEqual(sorted(active,key=lambda rid:printed.index('data-row="'+rid+'"')),active)
+        self.assertLess(printed.index('<h2>Эконом</h2>'),printed.index('<h2>Стандарт</h2>'))
+        self.assertLess(printed.index('<h2>Стандарт</h2>'),printed.index('<h2>Премиум</h2>'))
+
     def test_row_order_survives_save_load_recalculate_and_print(self):
         self.snapshot = generate({**INPUTS, 'heating_types':['exchanger','electric'],
                                   'heating':'exchanger', 'construction_scheme':'package',
@@ -184,8 +204,10 @@ class PoolEstimateViewsTests(TestCase):
         self.assertEqual(recalculated['variants']['standard'], before['variants']['standard'])
         self.assertEqual(recalculated['variants']['economy']['total'], loaded['variants']['economy']['total'])
         html = self.client.get(reverse('pool_estimate_print',args=[first['id'],1])).content.decode()
-        for work in (False,True):
-            names = [r['name'] for r in rows if not r['excluded'] and (r['kind']=='work')==work]
+        from pool_service.services.estimate_layout import group_for
+        source=block(self.snapshot)
+        for group in {group_for(source,r) for r in rows}:
+            names=[r['name'] for r in rows if not r['excluded'] and group_for(source,r)==group]
             self.assertEqual(sorted(names,key=html.index),names)
         self.assertNotIn(next(r['name'] for r in rows if r['excluded']),html)
 
