@@ -32,7 +32,7 @@ class SharedLevelInletTests(SimpleTestCase):
         self.assertFalse(any(r['kind'] == 'level_inlet' for r in block(s, 'embedded')['rows']))
         row.update(price='125.25', unit_price_manual=True)
         s = estimates.evaluate(s)
-        self.assertEqual(inlet(s)['amount'], '501.00')
+        self.assertEqual(inlet(s)['amount'], '500.00')
         baseline = s['variants']['economy']['total']
         for _ in range(3):
             s = estimates.recalculate(json.loads(json.dumps(s)), s['inputs'])
@@ -67,9 +67,9 @@ class SharedLevelInletTests(SimpleTestCase):
         s = estimates.evaluate(s)
         self.assertEqual(inlet(s)['quantity'], '7.000')
         self.assertEqual(inlet(s)['filtration_quantity'], '6.000')
-        self.assertEqual(inlet(s)['amount'], '864.15')
+        self.assertEqual(inlet(s)['amount'], '861.00')
         s = estimates.recalculate(s, {**s['inputs'], 'length': '16'})
-        self.assertEqual(inlet(s)['amount'], '864.15')
+        self.assertEqual(inlet(s)['amount'], '861.00')
         inlet(s)['quantity'] = '0'
         s = estimates.evaluate(s)
         self.assertEqual(inlet(s)['level_quantity'], '0.000')
@@ -145,7 +145,7 @@ class SharedLevelInletTests(SimpleTestCase):
         reg = next(r for r in block(s, 'embedded')['rows'] if r['kind'] == 'level_regulator')
         self.assertEqual(reg['catalog']['id'], '22')
         self.assertEqual(inlet(s)['catalog']['id'], '21')
-        self.assertEqual(inlet(s)['amount'], '493.80')
+        self.assertEqual(inlet(s)['amount'], '492.00')
         self.assertIn('Проверить совместимость', ' '.join(s['variants']['economy']['warnings']))
         before = s['variants']['economy']['total']
         fill(s, c)
@@ -264,7 +264,7 @@ class SharedLevelInletTests(SimpleTestCase):
                 kept = next(r for r in block(result, 'embedded')['rows'] if r['kind'] == 'level_regulator')
                 self.assertEqual(Decimal(kept['price']), expected_price)
                 self.assertEqual(Decimal(kept['quantity']), expected_qty)
-                self.assertEqual(Decimal(kept['amount']), expected_price * expected_qty)
+                self.assertEqual(Decimal(kept['amount']), expected_price.quantize(Decimal('1')) * expected_qty)
                 self.assertEqual(kept['catalog']['id'], '22')
                 self.assertNotEqual(kept['catalog']['level_data_issue'], 'conflict')
                 self.assertIn('Текущая выгрузка', kept['catalog_review_note'])
@@ -287,7 +287,7 @@ class SharedLevelInletTests(SimpleTestCase):
             self.assertEqual(inlet(s)['quantity'], '3.000')
             self.assertEqual(inlet(s)['filtration_quantity'], '3.000')
             self.assertEqual(inlet(s)['level_quantity'], '0.000')
-            self.assertEqual(inlet(s)['amount'], '370.35')
+            self.assertEqual(inlet(s)['amount'], '369.00')
             self.assertIsNone(inlet(s)['compatibility'])
         skimmer = next(r for r in block(s, 'embedded')['rows'] if r['kind'] == 'skimmer')
         skimmer.update(level_status='absent')
@@ -295,7 +295,7 @@ class SharedLevelInletTests(SimpleTestCase):
         self.assertEqual(inlet(s)['quantity'], '3.000')
         self.assertEqual(inlet(s)['filtration_quantity'], '3.000')
         self.assertEqual(inlet(s)['level_quantity'], '0.000')
-        self.assertEqual(inlet(s)['amount'], '370.35')
+        self.assertEqual(inlet(s)['amount'], '369.00')
         self.assertIn('ручное количество', ' '.join(s['variants']['economy']['warnings']))
         self.assertIsNone(inlet(s)['compatibility'])
         # Explicitly returning quantity to automatic mode adds exactly one.
@@ -305,7 +305,7 @@ class SharedLevelInletTests(SimpleTestCase):
             self.assertEqual(inlet(s)['quantity'], '4.000')
             self.assertEqual(inlet(s)['filtration_quantity'], '3.000')
             self.assertEqual(inlet(s)['level_quantity'], '1.000')
-            self.assertEqual(inlet(s)['amount'], '493.80')
+            self.assertEqual(inlet(s)['amount'], '492.00')
 
     def test_manual_allocation_cleared_on_unlink_and_moves_only_to_bound_row(self):
         s = legacy_snapshot(INPUTS)

@@ -38,7 +38,7 @@ class EstimateWorkTests(SimpleTestCase):
         self.assertIsNone(work(result, 'excavation')['amount'])
         self.assertGreater(result['variants']['economy']['missing_quantities'], 0)
         row.update(quantity='3', auto_quantity=False)
-        self.assertEqual(Decimal(evaluate(s)['variants']['economy']['total']) - base, Decimal('30.15'))
+        self.assertEqual(Decimal(evaluate(s)['variants']['economy']['total']) - base, Decimal('30.00'))
         row.update(excluded=True)
         self.assertEqual(Decimal(evaluate(s)['variants']['economy']['total']), base)
         block(s)['rows'][0]['quantity'] = None

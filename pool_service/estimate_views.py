@@ -117,6 +117,10 @@ def estimate_api(request):
             projects = PoolEstimate.objects.filter(organization=organization, title__icontains=query).select_related("created_by")
             return JsonResponse({"projects": [{"id": p.pk, "title": p.title, "revision": p.revision, "updated_at": p.updated_at, "created_at": p.created_at, "created_by": _author(p.created_by)} for p in projects[:50]], "limit": 50})
         action = data.get("action")
+        # POST edits/saves use the current billing policy. GET and print above
+        # keep immutable historical versions exactly as they were saved.
+        if isinstance(data.get('snapshot'), dict):
+            data['snapshot'] = {**data['snapshot'], 'visible_rounding': 1}
         if action == "generate":
             snapshot = apply_defaults(generate(data.get("inputs")), organization)
             try:

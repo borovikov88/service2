@@ -12,7 +12,7 @@ class NumberDisplayTests(SimpleTestCase):
             'Геометрия и объём работ по чаше считаются точно.',
             'В новых сметах автоматические количества песка (т) и бетона (м³) округляются вверх до целых',
             'арматуры — вверх до 0,5 т',
-            'Ручные количества не округляются; исторические сметы сохраняют свои правила.',
+            'Точные ручные количества сохраняются; стоимость считается по показанным количеству и цене. Исторические версии не изменяются.',
         ):
             self.assertIn(phrase, text)
         self.assertRegex(text, r'<p class="pe-help" data-help-target="#pe-parameters-title">[^<]*арматуры — вверх до 0,5 т[^<]*</p>')
@@ -27,8 +27,8 @@ class NumberDisplayTests(SimpleTestCase):
         html=render_to_string('pool_service/estimates/print.html',{'version':{'snapshot':s,'number':1}})
         self.assertIn('5,9 т',html)
         self.assertIn('1,3 т',html)
-        self.assertIn('6742',html)
-        self.assertIn('113333',html)
+        self.assertIn('6726',html)
+        self.assertIn('117000',html)
         self.assertIn('0.15',html)
         self.assertEqual(s,before)
         for value in ('0.15','0.05','0.02'):self.assertEqual(estimate_exact(value),value)
@@ -48,4 +48,4 @@ class NumberDisplayTests(SimpleTestCase):
         row(s,'pump')['quantity']='2'
         self.assertEqual(row(evaluate(s),'pump')['quantity'],'2.000')
         row(s,'material_sand').update(quantity='5.9136',auto_quantity=False,quantity_edited=True)
-        self.assertEqual(row(evaluate(s),'material_sand')['amount'],'6741.50')
+        self.assertEqual(row(evaluate(s),'material_sand')['amount'],'6726.00')

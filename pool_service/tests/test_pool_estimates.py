@@ -48,12 +48,12 @@ class PoolEstimateEngineTests(SimpleTestCase):
     def test_money_rounds_per_line_with_decimal(self):
         row = block(self.snapshot)["rows"][0]
         row.update(price="0.05", quantity="0.1")
-        self.assertEqual(evaluate(self.snapshot)["variants"]["economy"]["total"], "0.01")
+        self.assertEqual(evaluate(self.snapshot)["variants"]["economy"]["total"], "0.00")
 
     def test_excluded_blocks_and_existing_equipment_not_charged(self):
         row = block(self.snapshot)["rows"][0]
         row.update(price="123.45", quantity="2")
-        self.assertEqual(evaluate(self.snapshot)["variants"]["economy"]["total"], "246.90")
+        self.assertEqual(evaluate(self.snapshot)["variants"]["economy"]["total"], "246.00")
         row["excluded"] = True
         self.assertEqual(evaluate(self.snapshot)["variants"]["economy"]["total"], "0.00")
         row["excluded"] = False

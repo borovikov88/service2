@@ -84,7 +84,7 @@ class LitokolCatalogueTests(SimpleTestCase):
         mix=row(s,'tech_plaster_material');latex=row(s,'tech_plaster_latex')
         self.assertEqual((mix['catalog']['id'],mix['quantity'],mix['price'],mix['amount']),('3','98','1000.00','98000.00'))
         self.assertEqual((latex['catalog']['id'],latex['price']),('4','1000.00'))
-        self.assertEqual(D(latex['amount']),D(latex['quantity'])*1000)
+        self.assertEqual(D(latex['amount']),D('88.1')*1000)
         self.assertIsNone(row(s,'tech_plaster_contact')['price']);self.assertIsNone(row(s,'tech_plaster_contact')['quantity'])
 
     def test_litres_never_kg_unknown_price_and_frozen_pack_refresh(self):
@@ -104,7 +104,7 @@ class LitokolCatalogueTests(SimpleTestCase):
 
     def test_exact_dose_amount_without_rounded_kg_price_and_explicit_reselection(self):
         data=fixture();data['products']['4']['price']='20001.00';s=catalog.auto_select(engine.generate(PARAMS),data)[0]
-        r=row(s,'tech_plaster_latex');want=(D(r['quantity'])*D('20001')/20).quantize(D('.01'))
+        r=row(s,'tech_plaster_latex');want=D('88.1')*1000
         self.assertEqual(D(r['amount']),want)
         new=deepcopy(data);new['products']['4']['price']='30000.00'
         checked,_,_=catalog.refresh_prices(s,new,'standard');self.assertEqual(row(checked,'tech_plaster_latex')['price'],'1500.00')
@@ -183,4 +183,6 @@ class LitokolExactMoneyTests(SimpleTestCase):
         data=fixture();data['products']['4']['plaster_product']['pack_quantity']='3';data['products']['4']['price']='1.00'
         s=catalog.auto_select(engine.generate(PARAMS),data)[0]
         row(s,'tech_plaster_latex').update(quantity='1.005',auto_quantity=False)
-        self.assertEqual(row(engine.evaluate(s),'tech_plaster_latex')['amount'],'0.34')
+        self.assertEqual(row(engine.evaluate(s),'tech_plaster_latex')['amount'],'0.00') # shown kg price is 0 ₽
+        s.pop('visible_rounding')
+        self.assertEqual(row(engine.evaluate(s),'tech_plaster_latex')['amount'],'0.34') # old version stays exact

@@ -40,7 +40,7 @@ class GeotextileTests(SimpleTestCase):
         initial=generate({**INPUTS,'finish':'film'})
         row=geo(initial);row.update(price='123.45',quantity='2',auto_quantity=False,unit_price_manual=True)
         result,_=catalog.auto_select(initial,source)
-        self.assertEqual(geo(result)['amount'],'246.90')
+        self.assertEqual(geo(result)['amount'],'246.00')
         old=deepcopy(initial);old.pop('auxiliary_version')
         for v in old['variants'].values():
             for b in v['blocks']:
@@ -82,7 +82,7 @@ class GeotextileTests(SimpleTestCase):
         kept,_=catalog.auto_select(manual,changed)
         for result in [kept,evaluate(kept),recalculate(kept,kept['inputs'])]:
             self.assertEqual(geo(result)['catalog'],origin)
-            self.assertEqual(geo(result)['amount'],'246.90')
+            self.assertEqual(geo(result)['amount'],'246.00')
             self.assertIn('не подходит',geo(result)['selection_note'])
             self.assertIn('Текущая выгрузка',geo(result)['selection_note'])
 
@@ -113,7 +113,7 @@ class GeotextileRollTests(SimpleTestCase):
             self.assertEqual(row['catalog']['roll_price'],'16606.00')
             self.assertEqual(row['catalog']['roll_area'],'100')
             self.assertEqual(row['quantity'],geo(initial,tier)['quantity'])
-            self.assertEqual(Decimal(row['amount']),Decimal(row['quantity'])*Decimal('166.06'))
+            self.assertEqual(Decimal(row['amount']),Decimal(row['quantity'])*Decimal('166'))
             self.assertEqual(Decimal(selected['variants'][tier]['total'])-Decimal(initial['variants'][tier]['total']),Decimal(row['amount']))
             self.assertIn('100 м²',row['price_conversion_note']);self.assertIn('15%',row['price_conversion_note'])
         for result in (evaluate(selected),recalculate(selected,selected['inputs'])):

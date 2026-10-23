@@ -71,7 +71,7 @@ class CatalogEngineTests(SimpleTestCase):
         self.assertEqual(block(s)["rows"][0]["catalog"]["id"], "1")
         self.assertEqual(block(s, variant="standard")["rows"][0]["brand"], "Hayward")
         self.assertIsNotNone(block(s, variant="premium")["rows"][0]["price"])
-        self.assertEqual(sum(Decimal(r["amount"] or 0) for r in block(s)["rows"] if r["kind"] != "work"), Decimal("57800.20"))  # equipment plus 32 m² × 1800 PVC materials
+        self.assertEqual(sum(Decimal(r["amount"] or 0) for r in block(s)["rows"] if r["kind"] != "work"), Decimal("57800.00"))  # equipment plus 32 m² × 1800 PVC materials
 
     def test_spa_unavailable_wrong_voltage_and_wrong_head_not_auto_selected(self):
         f = catalog.parse_catalog(feed(
@@ -280,11 +280,11 @@ class CatalogViewsTests(TestCase):
         self.assertEqual(selected.status_code,200)
         s=selected.json()['snapshot']
         find=lambda snapshot:next(r for r in block(snapshot,'finish')['rows'] if r['id']==row['id'])
-        self.assertEqual(find(s)['amount'],'189997.09')
+        self.assertEqual(find(s)['amount'],'189995.00')
         saved=self.post(action='save',snapshot=s,expected_revision=0).json()
         loaded=self.client.get(self.url,{'organization':self.org.pk,'id':saved['id'],'version':1}).json()['snapshot']
         self.assertEqual(find(loaded)['catalog']['roll_area'],'41.58')
-        self.assertEqual(find(loaded)['amount'],'189997.09')
+        self.assertEqual(find(loaded)['amount'],'189995.00')
         self.assertEqual(find(loaded)['finish_type'],'')
 
 
@@ -306,10 +306,10 @@ class CatalogViewsTests(TestCase):
                 }).json()['snapshot']
                 self.assertEqual(loaded.get('construction_quantity_version'), version)
                 self.assertEqual(loaded['variants'], s['variants'])
-                self.assertEqual(row(loaded,'material_sand')['amount'], '6741.50' if version is None else '6840.00')
+                self.assertEqual(row(loaded,'material_sand')['amount'], '6726.00' if version is None else '6840.00')
                 self.assertEqual(row(loaded,'material_rebar')['unit'], 'т' if version == 2 else 'кг')
                 self.assertEqual(row(loaded,'material_rebar')['amount'],
-                    {None:'113332.80',1:'113355.00',2:'135000.00'}[version])
+                    {None:'113337.00',1:'113355.00',2:'135000.00'}[version])
                 printed = self.client.get(reverse('pool_estimate_print', args=[saved['id'],1]))
                 if version:
                     self.assertContains(printed,'Стоимость материала рассчитана по сметному количеству.')
@@ -334,7 +334,7 @@ class CatalogViewsTests(TestCase):
         self.assertEqual(loaded['variants']['economy']['total'], s['variants']['economy']['total'])
         self.assertFalse(row(loaded, 'material_sand')['auto_quantity'])
         self.assertEqual(row(loaded, 'material_rebar')['quantity'], '1.234567')
-        self.assertEqual(row(loaded, 'material_rebar')['amount'], '98765.36')
+        self.assertEqual(row(loaded, 'material_rebar')['amount'], '96000.00')
         self.assertEqual(row(loaded, 'material_rebar')['unit'], 'т')
 
     def test_construction_package_print_preserves_equipment_name_brand_and_model(self):

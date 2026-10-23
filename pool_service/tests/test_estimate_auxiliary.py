@@ -113,7 +113,7 @@ class AuxiliaryTests(SimpleTestCase):
         self.assertEqual(row(kept,'control_panel')['price'],'123.45')
         self.assertEqual(row(kept,'control_panel')['quantity'],'2.000')
         self.assertIn('Текущая выгрузка',row(kept,'control_panel')['selection_note'])
-        self.assertEqual(row(kept,'control_panel')['amount'],'246.90')
+        self.assertEqual(row(kept,'control_panel')['amount'],'246.00')
         excluded=deepcopy(initial);row(excluded,'treatment').update(excluded=True,reason='Ручное исключение')
         kept,_=catalog.auto_select(excluded,current)
         self.assertTrue(row(kept,'treatment')['excluded'])

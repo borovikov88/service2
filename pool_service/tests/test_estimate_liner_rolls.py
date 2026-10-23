@@ -33,7 +33,7 @@ class GenericLinerTests(SimpleTestCase):
         self.assertEqual({p['id'] for p in found['products']},{'11','12','13','14'})
         s=choose(engine.generate({**INPUTS,'finish':'film'}),11);r=film(s)
         self.assertEqual(D(r['catalog']['roll_area']),D('41.58'))
-        self.assertEqual(D(r['amount']),(D(r['quantity'])*10000/D('41.58')).quantize(D('.01')))
+        self.assertEqual(D(r['amount']),D('19039'))
         self.assertIn('Справочно: 2 целых рулонов',r['price_conversion_note'])
         self.assertEqual(r['unit'],'м²')
         self.assertNotEqual(D(r['amount']),D('20000'))
