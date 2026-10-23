@@ -21,13 +21,13 @@ def film(s,tier='economy'):
 
 
 class LinerTests(SimpleTestCase):
-    def test_exact_series_and_roll_conversion_without_intermediate_rounding(self):
+    def test_exact_series_and_roll_conversion_charge_visible_operands(self):
         s,count=catalog.auto_select(generate({**INPUTS,'finish':'film','bowl_height':'1.7'}),stock())
         self.assertEqual(count,3)
         self.assertEqual([film(s,t)['catalog']['sku'] for t in s['variants']],['34500','24920','30528'])
         for tier in s['variants']:
             r=film(s,tier); c=r['catalog']
-            exact=(D(r['quantity'])*D(c['roll_price'])/D(c['roll_area'])).quantize(D('.01'),rounding=ROUND_HALF_UP)
+            exact=(D(r['quantity'])*D(r['price']).quantize(D('1'),rounding=ROUND_HALF_UP)).quantize(D('1'),rounding=ROUND_HALF_UP)
             self.assertEqual(D(r['amount']),exact)
             self.assertNotEqual(D(r['amount']),D(r['quantity'])*D(r['price']))
             self.assertIn('Цена рулона',r['price_conversion_note'])
@@ -45,7 +45,7 @@ class LinerTests(SimpleTestCase):
         r=film(s);r.update(price='12.34',unit_price_manual=True)
         manual,_,_=catalog.refresh_prices(s,c,'economy')
         self.assertEqual(film(manual)['price'],'12.34')
-        self.assertEqual(D(film(manual)['amount']),D(film(manual)['quantity'])*D('12.34'))
+        self.assertEqual(D(film(manual)['amount']),D(film(manual)['quantity'])*D('12'))
         old=deepcopy(original)
         film(old)['catalog'].pop('roll_area');film(old)['catalog'].pop('roll_price')
         before=evaluate(old)
@@ -70,7 +70,7 @@ class LinerTests(SimpleTestCase):
             r=film(s);r.update(basis=basis,auto_quantity=False,quantity='79')
             catalog.apply_product(r,c['products']['1'],c)
             self.assertEqual(r['catalog']['roll_area'],'41.58')
-            self.assertEqual(film(evaluate(s))['amount'],'189997.09')
+            self.assertEqual(film(evaluate(s))['amount'],'189995.00')
         s=generate({**INPUTS,'finish':'film'});before=deepcopy(film(s))
         catalog.apply_product(film(s),c['products']['4'],c)
         self.assertEqual(film(s)['catalog']['id'],'4')
@@ -85,13 +85,13 @@ class LinerTests(SimpleTestCase):
             catalog.apply_product(r,c['products']['1'],c)
             checked=evaluate(s)
             find=lambda snapshot: next(x for x in block(snapshot,'finish')['rows'] if x['id']==rid)
-            self.assertEqual(find(checked)['amount'],'189997.09')
+            self.assertEqual(find(checked)['amount'],'189995.00')
             self.assertEqual(find(checked)['catalog']['roll_area'],'41.58')
             self.assertIn('Цена рулона',find(checked)['price_conversion_note'])
             refreshed,_,_=catalog.refresh_prices(checked,c,'economy')
-            self.assertEqual(find(refreshed)['amount'],'189997.09')
+            self.assertEqual(find(refreshed)['amount'],'189995.00')
             find(checked).update(price='12.34',unit_price_manual=True)
-            self.assertEqual(find(evaluate(checked))['amount'],'974.86')
+            self.assertEqual(find(evaluate(checked))['amount'],'948.00')
         for unit in ('шт.','компл.','м'):
             s=generate(INPUTS);r=film(s);r.update(id='custom',finish_type='',unit=unit)
             before=deepcopy(r)
