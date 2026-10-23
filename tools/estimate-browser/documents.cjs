@@ -21,7 +21,7 @@ const {chromium}=require('playwright');
   await documentPage.pdf({path:`/workspace/client-${type}-preview.pdf`,printBackground:true,preferCSSPageSize:true});
   if(type==='estimate'){check(await documentPage.locator('.quote-table th:nth-child(3)').first().evaluate(el=>el.clientWidth)>=35,'unit column has room');await documentPage.emulateMedia({media:'screen'});await documentPage.screenshot({path:'/workspace/client-estimate-preview.png',fullPage:true});}
   if(type==='equipment'){
-   const url=new URL(documentPage.url());url.searchParams.set('variants','economy,standard,premium');await documentPage.goto(url.href);await documentPage.locator('#document-print:enabled').waitFor();await documentPage.pdf({path:'/workspace/client-equipment-three-preview.pdf',printBackground:true,preferCSSPageSize:true});
+   const url=new URL(documentPage.url());url.searchParams.set('variants','economy,standard,premium');await documentPage.goto(url.href);await documentPage.locator('#document-print:enabled').waitFor({state:'attached'});await documentPage.pdf({path:'/workspace/client-equipment-three-preview.pdf',printBackground:true,preferCSSPageSize:true});
    check(await documentPage.locator('.comparison-table thead th').count()===4,'three comparison columns');
   }
   await documentPage.close();
