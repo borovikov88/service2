@@ -22,6 +22,7 @@ from pool_service.services.estimate_catalog import (
     refresh_prices, search_catalog,
 )
 from decimal import Decimal
+from pool_service.services import estimate_documents as documents
 
 
 def _organizations(user):
@@ -53,6 +54,8 @@ def estimate_page(request):
     request.session["estimate_organization"] = str(organization.pk)
     return render(request, "pool_service/estimates/calculator.html", {
         "active_tab": "estimates", "estimate_organization": organization,
+        "estimate_document_defaults": documents.defaults(organization),
+        "estimate_document_can_manage": documents.can_manage_defaults(request.user,organization),
     })
 
 
@@ -121,6 +124,20 @@ def estimate_api(request):
         # keep immutable historical versions exactly as they were saved.
         if isinstance(data.get('snapshot'), dict):
             data['snapshot'] = {**data['snapshot'], 'visible_rounding': 1}
+        if action == 'document_defaults':
+            if not documents.can_manage_defaults(request.user,organization):
+                return JsonResponse({'error':'Общие условия может сохранять владелец или администратор организации.'},status=403)
+            if not isinstance(data.get('values'),dict):
+                raise EstimateInputError('Передайте общие условия предложения.')
+            from pool_service.estimate_models import PoolEstimateDocumentSettings
+            values=documents.normalize(data.get('values'))
+            values={key:values.get(key,'') for key in documents.TERMS}
+            PoolEstimateDocumentSettings.objects.update_or_create(organization=organization,defaults={'values':values,'updated_by':request.user})
+            return JsonResponse({'values':values})
+        if action == 'document_check':
+            snapshot=evaluate(data.get('snapshot'))
+            options=documents.normalize(snapshot.get('documents'))
+            return JsonResponse({'errors':documents.readiness(snapshot,options)})
         if action == "generate":
             snapshot = apply_defaults(generate(data.get("inputs")), organization)
             try:
@@ -214,6 +231,10 @@ def estimate_api(request):
         if action != "save":
             raise EstimateInputError("Неизвестное действие.")
         snapshot = evaluate(data.get("snapshot"))
+        if data.get('for_documents'):
+            options=documents.normalize(snapshot.get('documents'))
+            errors=documents.readiness(snapshot,options)
+            if errors:return JsonResponse({'error':'Предложение не готово к выдаче.','document_errors':errors},status=400)
         note = string(data.get("note", ""), "Комментарий версии", 300)
         expected = _positive_int(data.get("expected_revision"), allow_zero=True)
         with transaction.atomic():
@@ -247,3 +268,25 @@ def estimate_print(request, estimate_id, number):
     return render(request, "pool_service/estimates/print.html", {"estimate": estimate, "version": version,
         "prices_date": datetime.fromisoformat(prices["checked_at"]) if prices["checked_at"] else None,
         "prices_mixed": prices["mixed"], "prices_manual": prices["manual"]})
+
+
+@login_required
+@never_cache
+@require_http_methods(['GET'])
+def estimate_document(request,estimate_id,number):
+    estimate=get_object_or_404(PoolEstimate,pk=estimate_id,organization_id__in=_organizations(request.user))
+    version=get_object_or_404(estimate.versions,number=number)
+    try:
+        raw={**version.snapshot.get('documents',{})}
+        if 'variants' in request.GET:raw['variants']=request.GET['variants'].split(',')
+        options=documents.normalize(raw)
+        kind=request.GET.get('document','estimate')
+        if kind not in {'estimate','equipment'}:raise EstimateInputError('Неизвестный документ.')
+        errors=documents.readiness(version.snapshot,options)
+        payload=documents.build(version.snapshot,options) if not errors else None
+        response=render(request,'pool_service/estimates/document.html',{'estimate':estimate,'version':version,'doc':payload,
+            'document_kind':kind,'document_errors':errors,'document_variants':[(key,title,key in options['variants']) for key,title in documents.TIERS.items()]})
+        response['X-Frame-Options']='SAMEORIGIN'
+        return response
+    except EstimateInputError as exc:
+        return JsonResponse({'error':str(exc)},status=400)

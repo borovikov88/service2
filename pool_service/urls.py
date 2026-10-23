@@ -80,7 +80,7 @@ from .views import (
     push_unsubscribe,
 )
 from . import views
-from .estimate_views import estimate_page, estimate_api, estimate_print
+from .estimate_views import estimate_page, estimate_api, estimate_print, estimate_document
 from .client_crm_views import client_detail, client_merge_index, client_merge_search, client_onec_import
 from .client_crm_ui import client_edit
 from .security_views import (
@@ -261,6 +261,7 @@ urlpatterns = [
     path("estimates/", estimate_page, name="pool_estimate_page"),
     path("estimates/api/", estimate_api, name="pool_estimate_api"),
     path("estimates/<uuid:estimate_id>/versions/<int:number>/print/", estimate_print, name="pool_estimate_print"),
+    path("estimates/<uuid:estimate_id>/versions/<int:number>/documents/", estimate_document, name="pool_estimate_document"),
     path("avito/<int:connection_id>/services-feed/", services_feed, name="avito_services_feed"),
     path("avito/<int:connection_id>/services-feed/<str:avito_id>/edit/", services_feed_edit, name="avito_services_feed_edit"),
     path("avito/<int:connection_id>/services-feed/draft.xlsx", services_feed_download, name="avito_services_feed_download"),

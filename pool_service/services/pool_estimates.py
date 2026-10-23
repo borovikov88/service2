@@ -544,6 +544,9 @@ def normalize_snapshot(raw):
         raise EstimateInputError("Неизвестный формат расчёта.")
     result = {"schema": 1, "inputs": normalize_inputs(raw.get("inputs")), "variants": {}, "works_catalog": 1 if raw.get("works_catalog") == 1 else 0, "heating_accessories": 1 if raw.get("heating_accessories") == 1 else 0}
     if raw.get('visible_rounding') == 1: result['visible_rounding'] = 1
+    if 'documents' in raw:
+        from .estimate_documents import normalize as normalize_documents
+        result['documents'] = normalize_documents(raw['documents'])
     if raw.get("construction_version") == 1: result["construction_version"] = 1
     if raw.get('pvc_rate_version') == 2: result['pvc_rate_version'] = 2
     if raw.get('temperature_control_version') == 1: result['temperature_control_version'] = 1
