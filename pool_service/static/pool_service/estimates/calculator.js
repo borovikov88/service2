@@ -57,11 +57,11 @@ function catalogInputsReady() {
   if (parametersDirty) { status('Сначала пересчитайте изменённые параметры бассейна.', true); return false; }
   return Boolean(snapshot);
 }
-function openCatalog(block, row) {
+function openCatalog(block, row, draft = null) {
   if (!catalogInputsReady()) return;
-  const item = snapshot.variants[selected].blocks.find(b => b.id === block).rows.find(r => r.id === row);
-  catalogTarget = {block, row, variant: selected};
-  $('#pe-catalog-target').textContent = `${titles[selected]} · заменить «${item.name}». Количество и исключения сохранятся.`;
+  const item = draft || snapshot.variants[selected].blocks.find(b => b.id === block).rows.find(r => r.id === row);
+  catalogTarget = {block, row, variant: selected, draft};
+  $('#pe-catalog-target').textContent = `${titles[selected]} · ${draft ? 'выбрать товар для новой позиции' : 'заменить «' + item.name + '». Количество и исключения сохранятся.'}`;
   const q = new URL(location.href).searchParams;
   const isPlaster=item.kind==='plaster_component'||selected==='standard'&&['plaster_mix_bags','plaster_latex_kg'].includes(item.basis);
   const plasterQuery=isPlaster?(item.basis==='plaster_mix_bags'?'CR30':'IDROKOL X20'):'';
@@ -401,7 +401,7 @@ root.addEventListener('change', event => {
     if (el.dataset.field === 'price' && isWork(row) && !samePrice(row.price, value)) {
       askWorkPrice(el.dataset.block, row, value); return;
     }
-    if (el.dataset.field === 'price' && (row.catalog?.roll_area || ['liner','plaster_component'].includes(row.kind) || row.id==='liner_corner_2m' || row.construction_price || row.id==='material_supplies' || row.pvc_computed_price != null || row.consumables_computed_price != null)) row.unit_price_manual = true;
+    if (el.dataset.field === 'price' && (row.catalog?.roll_area || ['liner','plaster_component'].includes(row.kind) || row.id==='liner_corner_2m' || row.construction_price || row.id==='material_supplies' || row.pvc_computed_price != null || row.consumables_computed_price != null || row.electrical_computed_price != null)) row.unit_price_manual = true;
     row[el.dataset.field] = value;
     if (el.dataset.field === 'quantity') { row.quantity_edited = true; row.auto_quantity = false; row.quantity_stale = false; row.selection_locked = true; if (row.catalog) row.catalog.selection = 'manual'; }
     const mode = root.querySelector(`[data-quantity-mode="${row.id}"]`);
@@ -443,6 +443,7 @@ root.addEventListener('click', event => {
     for (const key of ['existing', 'auto_quantity']) edit.elements.namedItem(key).checked = rowBeingEdited[key];
     for (const key of ['flow', 'head', 'filter_flow', 'backwash_flow']) edit.elements.namedItem(key).value = rowBeingEdited.specs[key] ?? '';
     edit.elements.quantity.required = quantityRequired(rowBeingEdited);
+    $('#pe-row-catalog').hidden = Boolean(el.dataset.edit);
     $('#pe-handling-fields').hidden = block.id !== 'construction_materials';
     edit.elements.handling_mode.value = rowBeingEdited.handling_mode || 'unknown';
     edit.elements.handling_mass.value = rowBeingEdited.handling_mass ?? '';
@@ -462,6 +463,18 @@ root.addEventListener('click', event => {
     $('#pe-row-dialog').showModal();
   }
 });
+$('#pe-row-catalog').addEventListener('click', () => {
+  const f = $('#pe-row-form');
+  const block = snapshot.variants[selected].blocks.find(b => b.id === f.elements.block_id.value);
+  const existing = block.rows.some(r => r.id === f.elements.row_id.value);
+  if (existing) { openCatalog(block.id, rowBeingEdited.id); return; }
+  const draft = structuredClone(rowBeingEdited);
+  draft.kind = f.elements.kind.value === 'work' ? 'other' : f.elements.kind.value;
+  draft.name = f.elements.name.value || 'Новая позиция';
+  draft.quantity = rawValue(f.elements.quantity) || '1';
+  draft.unit = f.elements.unit.value || 'шт.';
+  openCatalog(block.id, draft.id, draft);
+});
 $('#pe-row-form').addEventListener('change', event => {
   if (!['auto_quantity', 'kind', 'unit'].includes(event.target.name)) return;
   const f = event.currentTarget;
@@ -479,7 +492,7 @@ $('#pe-row-form').addEventListener('submit', event => {
   if ((row.quantity !== rowBeingEdited.quantity || row.unit !== rowBeingEdited.unit) && indivisible(row.unit) && row.quantity !== '' && !Number.isInteger(Number(row.quantity))) {
     f.elements.quantity.setCustomValidity('Укажите целое количество для штучной позиции.'); f.elements.quantity.reportValidity(); return;
   }
-  if (!samePrice(row.price, rowBeingEdited.price) && (row.catalog?.roll_area || ['liner','plaster_component'].includes(row.kind) || row.id==='liner_corner_2m' || row.construction_price || row.id==='material_supplies' || row.pvc_computed_price != null || row.consumables_computed_price != null)) row.unit_price_manual = true;
+  if (!samePrice(row.price, rowBeingEdited.price) && (row.catalog?.roll_area || ['liner','plaster_component'].includes(row.kind) || row.id==='liner_corner_2m' || row.construction_price || row.id==='material_supplies' || row.pvc_computed_price != null || row.consumables_computed_price != null || row.electrical_computed_price != null)) row.unit_price_manual = true;
   if (row.kind === 'work' && !row.quantity) row.quantity = null;
   if (row.kind === 'work' && !row.work_code) row.work_code = row.id.startsWith('finish_work') ? 'finish_' + (row.finish_type || 'unknown') : row.id;
   if (['name', 'brand', 'model', 'kind'].some(key => row[key] !== rowBeingEdited[key])) row.catalog = null;
@@ -683,7 +696,17 @@ root.addEventListener('click', async event => {
   const target = {...catalogTarget};
   await run(async () => {
     clearTimeout(timer); sequence++;
-    const data = await api({action: 'catalog_apply', snapshot, ...target, product_id: button.dataset.catalogProduct});
+    const candidate = target.draft ? addRow(snapshot, target.variant, target.block, target.draft, false) : snapshot;
+    const data = await api({action: 'catalog_apply', snapshot: candidate, block:target.block, row:target.row, variant:target.variant, product_id: button.dataset.catalogProduct});
+    if (target.draft) {
+      rowBeingEdited = structuredClone(data.snapshot.variants[target.variant].blocks.find(b => b.id === target.block).rows.find(r => r.id === target.row));
+      const f = $('#pe-row-form');
+      for (const key of ['name','unit','brand','model','kind','quantity','price']) f.elements.namedItem(key).value = rowBeingEdited[key] ?? '';
+      for (const key of ['flow','head','filter_flow','backwash_flow']) f.elements.namedItem(key).value = rowBeingEdited.specs[key] ?? '';
+      for (const el of f.querySelectorAll('input[type=number], input[name=price]')) bindNumber(el, el.value, {money:el.name==='price', whole:el.name==='quantity' && indivisible(rowBeingEdited.unit)});
+      $('#pe-catalog-dialog').close();
+      return;
+    }
     snapshot = data.snapshot; changed(); renderEditor(); showCatalogStatus(data);
     $('#pe-catalog-dialog').close();
     status('Товар и цена перенесены в смету. Проверьте количество, единицу измерения и предупреждения.');

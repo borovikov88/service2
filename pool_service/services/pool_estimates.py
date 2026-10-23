@@ -20,6 +20,7 @@ from . import estimate_consumables as consumables
 from . import estimate_temperature_control as temperature
 from . import estimate_filter_media as filter_media
 from . import estimate_rounding as rounding
+from . import estimate_electrical as electrical
 
 from pool_service.services.permissions import organization_accesses_for_user
 
@@ -442,6 +443,7 @@ def generate(raw):
     lighting.sync(result, create=True)
     installation.initialize(result)
     corner.initialize(result)
+    electrical.initialize(result)
     consumables.initialize(result)
     temperature.initialize(result)
     filter_media.initialize(result)
@@ -557,7 +559,7 @@ def normalize_snapshot(raw):
     if raw.get("level_shared_quantity_version")==2: result["level_shared_quantity_version"]=2
     if raw.get("level_system") == 1:
         result["level_system"] = 1
-    for marker in ("level_shared_inlet", "auxiliary_version", "plaster_systems", "pvc_area_version", "embedded_installation_version", "liner_corner_version", "installation_services_version", "consumables_version", "finishing_work_version"):
+    for marker in ("level_shared_inlet", "auxiliary_version", "plaster_systems", "pvc_area_version", "embedded_installation_version", "liner_corner_version", "installation_services_version", "consumables_version", "finishing_work_version", "electrical_version"):
         if raw.get(marker) == 1: result[marker] = 1
     if result.get("plaster_systems") == 1:
         initialized = raw.get("plaster_initialized", [])
@@ -607,7 +609,7 @@ def normalize_snapshot(raw):
                     raise EstimateInputError("Некорректный тип отделки строки.")
                 for field, limit in (("name", 200), ("unit", 20), ("brand", 80), ("model", 120), ("reason", 300), ("rate_source", 300), ("selection_note", 1000), ("catalog_review_note", 1000)):
                     item[field] = string(row.get(field, ""), field, limit, required=field in {"name", "unit"})
-                for field in ("excluded", "existing", "auto_quantity", "selection_locked", "quantity_stale", "heating_unbound", "level_managed", "unit_price_manual", "construction_price_suspended", "pvc_price_suspended", "consumables_price_suspended", "material_price_suspended"):
+                for field in ("excluded", "existing", "auto_quantity", "selection_locked", "quantity_stale", "heating_unbound", "level_managed", "unit_price_manual", "construction_price_suspended", "pvc_price_suspended", "consumables_price_suspended", "material_price_suspended", "electrical_managed", "electrical_price_suspended"):
                     item[field] = boolean(row.get(field, False))
                 if item["heating_parent"]:
                     item["heating_unbound"] = False
@@ -627,6 +629,7 @@ def normalize_snapshot(raw):
                         raise EstimateInputError("Укажите целое количество для штучной позиции.")
                 item["price"] = _optional(number(row.get("price"), "Цена", optional=True, places=2))
                 item["pvc_computed_price"] = _optional(number(row.get("pvc_computed_price"), "Расчётная цена ПВХ", optional=True, places=2))
+                item["electrical_computed_price"] = _optional(number(row.get("electrical_computed_price"), "Цена электрооборудования", optional=True, places=2))
                 item["consumables_computed_price"] = _optional(number(row.get("consumables_computed_price"), "Расчётная цена расходных материалов", optional=True, places=2))
                 if result.get("level_shared_inlet"):
                     from .estimate_level_shared import normalize_row_split
@@ -679,6 +682,7 @@ def evaluate(raw):
     construction.sync(result)
     plaster_warnings = plaster_systems.apply(result)
     pvc.apply(result)
+    electrical.apply(result)
     consumables.apply(result)
     temperature.sync(result)
     filter_media.sync(result)
@@ -880,6 +884,7 @@ def recalculate(raw, inputs):
     pvc.upgrade_rates(result)
     installation.initialize(result)
     corner.initialize(result)
+    electrical.initialize(result)
     consumables.initialize(result)
     temperature.initialize(result)
     filter_media.initialize(result)
