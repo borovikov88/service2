@@ -23,7 +23,7 @@ from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requ
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
-CACHE_KEY = "pool-estimate-shop-v22"
+CACHE_KEY = "pool-estimate-shop-v23"
 CACHE_SECONDS = 900
 MAX_BYTES = 20_000_000
 FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
@@ -536,6 +536,8 @@ def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="
             return search_reason(product, inputs, required_flow, variant)
         if product['kind'] == 'geotextile':
             from .estimate_geotextile import assess
+            if product.get('geotextile',{}).get('price_unit')=='roll' and not assess(product):
+                return 'Рулон 100 м² (2×50 м); цена пересчитывается за м², запас 15% уже учтён в количестве.'
             return assess(product) or ('Цена за м². Пригодность под плёнку бассейна требует проверки.' if product.get('geotextile', {}).get('purpose') != 'pool' else 'Цена за м²; запас 15% уже учтён в количестве материала.')
         if product['kind']=='plaster_component':
             return 'Проверьте фасовку и единицу цены: CR30 — мешок 25 кг; IDROKOL для дозировки в кг не пересчитывается из литров без плотности.'
@@ -581,6 +583,12 @@ def refresh_prices(snapshot, catalog, variant_key):
             if not product:
                 origin["missing"] = True
                 continue
+            if row['kind']=='geotextile':
+                from .estimate_geotextile import assess
+                issue=assess(product)
+                if issue:
+                    row['catalog_review_note']=issue
+                    skipped+=1;continue
             if origin.get('material_source_price'):
                 from .estimate_plaster_catalog import factor,conversion
                 oldfactor=factor(row,origin);newfactor=factor(row,product)
@@ -602,6 +610,13 @@ def refresh_prices(snapshot, catalog, variant_key):
                     continue
                 origin['liner']=deepcopy(product.get('liner',{}))
                 row['catalog_review_note']=''
+            if row['kind']=='geotextile' and not origin.get('roll_area') and product.get('geotextile',{}).get('price_unit')=='roll':
+                from .estimate_geotextile import assess
+                if row['unit']!='м²' or assess(product):
+                    row['catalog_review_note']='Проверьте единицу строки и характеристики рулона геотекстиля; прежняя цена сохранена.'
+                    skipped+=1;continue
+                apply_product(row,product,catalog,origin['selection'])
+                updated+=1;continue
             if origin.get('roll_area'):
                 from .estimate_liner import area, set_conversion
                 if not area(product) or Decimal(area(product)) != Decimal(origin['roll_area']) or row['unit'] != 'м²' or product.get('liner',{}).get('price_unit')=='m2' or product.get('liner',{}).get('unit_explicit') and product.get('liner',{}).get('price_unit')=='unknown':

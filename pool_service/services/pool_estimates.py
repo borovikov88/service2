@@ -528,6 +528,7 @@ def normalize_catalog(raw):
         from .estimate_liner import ROLLS
         fact = ROLLS.get(result['sku'])
         known = (result['liner'].get('area') or (fact[1] if fact else None)) if not result['liner'].get('conflict') else None
+        if result['geotextile'].get('price_unit')=='roll': known=result['geotextile'].get('area')
         if not known or number(raw.get('roll_area'), 'Площадь рулона', minimum='.001', maximum='100000', places=None) != Decimal(known):
             raise EstimateInputError('Неподтверждённая площадь рулона.')
         result['roll_area'] = str(known)
