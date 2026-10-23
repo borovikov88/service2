@@ -19,6 +19,7 @@ from . import estimate_finishing_work as finishing_work
 from . import estimate_consumables as consumables
 from . import estimate_temperature_control as temperature
 from . import estimate_filter_media as filter_media
+from . import estimate_rounding as rounding
 
 from pool_service.services.permissions import organization_accesses_for_user
 
@@ -425,7 +426,7 @@ def generate(raw):
             row["heating_type"] = heating_types(inputs)[0]
             rowsets["equipment"].insert(2, row)
         variants[key] = {"embedded_profile": embedded.DEFAULTS[key], "blocks": [{"id": bid, "title": title, "excluded": False, "reason": "", "rows": rowsets[bid]} for bid, title in BLOCKS.items() if package or bid != construction.MATERIAL_BLOCK]}
-    result = {"schema": 1, "inputs": inputs, "variants": variants, "geometry": metrics, "heating_accessories": 1, "level_system": 1, "level_shared_inlet": 1, "auxiliary_version": 1, "plaster_systems": 1}
+    result = {"schema": 1, "inputs": inputs, "variants": variants, "geometry": metrics, "heating_accessories": 1, "level_system": 1, "level_shared_inlet": 1, "auxiliary_version": 1, "plaster_systems": 1, "visible_rounding": 1}
     if package: result.update(construction_version=1, construction_quantity_version=2)
     ensure_heating_rows(result)
     works.add_works(result, fresh=True)
@@ -542,6 +543,7 @@ def normalize_snapshot(raw):
     if not isinstance(raw, dict) or raw.get("schema") != 1:
         raise EstimateInputError("Неизвестный формат расчёта.")
     result = {"schema": 1, "inputs": normalize_inputs(raw.get("inputs")), "variants": {}, "works_catalog": 1 if raw.get("works_catalog") == 1 else 0, "heating_accessories": 1 if raw.get("heating_accessories") == 1 else 0}
+    if raw.get('visible_rounding') == 1: result['visible_rounding'] = 1
     if raw.get("construction_version") == 1: result["construction_version"] = 1
     if raw.get('pvc_rate_version') == 2: result['pvc_rate_version'] = 2
     if raw.get('temperature_control_version') == 1: result['temperature_control_version'] = 1
@@ -711,6 +713,9 @@ def evaluate(raw):
                     amount = construction.amount(row)
                 if charged and row["quantity"] is not None and estimate_plaster_catalog.active(row):
                     amount=estimate_plaster_catalog.amount(row)
+                if result.get('visible_rounding'):
+                    displayed_amount = rounding.amount(row)
+                    if charged: amount = displayed_amount
                 if charged and row.get('construction_unit_conflict'):
                     amount=None
                     if row['price'] is not None: missing+=1
@@ -848,6 +853,10 @@ def evaluate(raw):
         lighting.annotate(result, variant)
         temperature.annotate(variant)
         filter_media.annotate(result, variant)
+        if result.get('visible_rounding'):
+            for block in variant['blocks']:
+                for row in block['rows']:
+                    rounding.notes(row)
     return result
 
 
@@ -864,6 +873,7 @@ def recalculate(raw, inputs):
                 if row["kind"] == "heater":
                     row["heating_type"] = row_heating_type(row, result["inputs"])
     result["inputs"] = normalize_inputs(inputs)
+    result['visible_rounding'] = 1
     pvc.upgrade_rates(result)
     installation.initialize(result)
     corner.initialize(result)
