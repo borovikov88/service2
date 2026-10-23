@@ -116,4 +116,5 @@ def build(snapshot, options):
     pool=snapshot['inputs'];geometry=snapshot.get('geometry',{})
     return {'variants':variants,'comparison':comparison,'cards':list(cards.values()),'terms':terms,'options':deepcopy(options),
         'pool':pool,'geometry':geometry,'finish':{'film':'Плёнка ПВХ','tile':'Плитка','mosaic':'Мозаика'}.get(pool.get('finish'),''),
+        'proposal_date':date.fromisoformat(options['proposal_date']).strftime('%d.%m.%Y') if options.get('proposal_date') else '',
         'landscape':len(variants)==3}

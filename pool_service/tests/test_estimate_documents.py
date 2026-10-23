@@ -101,6 +101,7 @@ class DocumentApiTests(TestCase):
         self.assertEqual(saved.status_code,201,saved.content[:300])
         data=saved.json();loaded=self.client.get(self.api,{'organization':self.org.pk,'id':data['id']}).json()['snapshot']
         self.assertEqual(loaded['documents'],self.snapshot['documents'])
+        self.assertRedirects(self.client.get(reverse('pool_estimate_print',args=[data['id'],1])),reverse('pool_estimate_document',args=[data['id'],1]),fetch_redirect_response=False)
         html=self.client.get(reverse('pool_estimate_document',args=[data['id'],1])).content.decode()
         self.assertNotIn('INTERNAL-BRAND-SECRET',html)
 

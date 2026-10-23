@@ -5,7 +5,8 @@ from uuid import UUID
 from django.contrib.auth.decorators import login_required
 from django.db import transaction
 from django.http import JsonResponse
-from django.shortcuts import get_object_or_404, render
+from django.shortcuts import get_object_or_404, render, redirect
+from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_protect
@@ -264,6 +265,8 @@ def estimate_print(request, estimate_id, number):
     organizations = _organizations(request.user)
     estimate = get_object_or_404(PoolEstimate, pk=estimate_id, organization_id__in=organizations)
     version = get_object_or_404(estimate.versions, number=number)
+    if version.snapshot.get('documents'):
+        return redirect(reverse('pool_estimate_document',args=[estimate.pk,number]))
     prices = price_summary(version.snapshot)
     return render(request, "pool_service/estimates/print.html", {"estimate": estimate, "version": version,
         "prices_date": datetime.fromisoformat(prices["checked_at"]) if prices["checked_at"] else None,
@@ -280,12 +283,13 @@ def estimate_document(request,estimate_id,number):
         raw={**version.snapshot.get('documents',{})}
         if 'variants' in request.GET:raw['variants']=request.GET['variants'].split(',')
         options=documents.normalize(raw)
-        kind=request.GET.get('document','estimate')
+        kind=request.GET.get('document',options['types'][0])
         if kind not in {'estimate','equipment'}:raise EstimateInputError('Неизвестный документ.')
         errors=documents.readiness(version.snapshot,options)
         payload=documents.build(version.snapshot,options) if not errors else None
         response=render(request,'pool_service/estimates/document.html',{'estimate':estimate,'version':version,'doc':payload,
-            'document_kind':kind,'document_errors':errors,'document_variants':[(key,title,key in options['variants']) for key,title in documents.TIERS.items()]})
+            'document_kind':kind,'document_errors':errors,'document_variants':[(key,title,key in options['variants']) for key,title in documents.TIERS.items()],
+            'document_number':options.get('proposal_number') or f'КП-{str(estimate.pk)[:8].upper()}-{number}'})
         response['X-Frame-Options']='SAMEORIGIN'
         return response
     except EstimateInputError as exc:
