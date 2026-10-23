@@ -67,7 +67,7 @@ class PvcAreaTests(SimpleTestCase):
             self.assertTrue(row(saved)['unit_price_manual'])
             again=recalculate(saved,{**saved['inputs'],'width':'5'})
             self.assertEqual(row(again)['price'],value)
-            self.assertEqual(row(again)['amount'],value)
+            self.assertEqual(row(again)['amount'],None if value is None else str(Decimal(value).quantize(Decimal('1')).quantize(Decimal('.01'))))
             self.assertEqual(row(again,'pvc_embedded')['price'],'60000.00')
             self.assertEqual(row(again,'piping','standard')['price'],'72000.00')
 

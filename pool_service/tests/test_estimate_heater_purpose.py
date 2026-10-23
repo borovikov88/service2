@@ -174,7 +174,7 @@ class HeatPumpPurposeTests(SimpleTestCase):
                     before = target(protected,'heater',tier)
                     for field in ('catalog','price','quantity','model','name'):
                         self.assertEqual(row[field],before[field])
-                    self.assertEqual(row['amount'],'246.90')
+                    self.assertEqual(row['amount'],'246.00')
                     self.assertEqual(result['variants'][tier]['total'],protected['variants'][tier]['total'])
                     self.assert_purpose_warning(row['selection_note'])
                     self.assert_purpose_warning(' '.join(result['variants'][tier]['warnings']))

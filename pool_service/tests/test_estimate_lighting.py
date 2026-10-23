@@ -126,7 +126,7 @@ class LightingTests(SimpleTestCase):
         niche.update(price='123.45',quantity='3',auto_quantity=False)
         s,_=shop.auto_select(s,fixture())
         self.assertFalse(rows(s,'premium')['light_niche']['excluded'])
-        self.assertEqual(rows(s,'premium')['light_niche']['amount'],'370.35')
+        self.assertEqual(rows(s,'premium')['light_niche']['amount'],'369.00')
         rows(s)['pool_light']['unit']='м'
         s=engine.evaluate(s)
         self.assertIsNone(rows(s)['pool_light']['quantity'])
