@@ -43,6 +43,10 @@ jobs:
 
   test:
     name: Django checks and tests
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     needs: scope
     outputs:
       service_deploy: ${{ needs.scope.outputs.service_deploy }}
@@ -57,10 +61,20 @@ jobs:
       ADVISOR_MCP_TEST_ENABLED: "false"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+        with:
+          fetch-depth: 2
+          persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.0.0
         with:
           python-version: "3.13"
           cache: pip
+      - name: Check reuse policy regressions
+        run: python -m unittest discover -s .github/tests -p test_reuse_pr_tests.py -v
+      - name: Verify equivalent successful PR tests
+        id: reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/reuse_pr_tests.py
       - name: Validate deploy workflow syntax
         shell: bash
         run: |
@@ -80,20 +94,38 @@ jobs:
             .github/workflows/production-health.yml .github/workflows/avito-readonly-audit.yml .github/workflows/call-recordings-sync.yml \
             .github/workflows/employee-identity-sync.yml .github/workflows/avito-status-monitor.yml
       - name: Verify Avito monitor scheduling and deployment locks
+        if: steps.reuse.outputs.verified != 'true'
         run: python -m unittest discover -s .github/tests -p 'test_avito*py' -v
       - name: Verify water calculator and publication boundaries
+        if: steps.reuse.outputs.verified != 'true'
         run: |
           node --test tools/aqualine22-calculator/tests/engine.test.mjs
           node --test pool_service/tests/estimate_state.test.mjs pool_service/tests/estimate_parameters.test.mjs pool_service/tests/estimate_numbers.test.mjs
           python -m unittest discover -s .github/tests -p test_aqualine22_publication.py -v
       - name: Install dependencies
+        if: steps.reuse.outputs.verified != 'true'
         run: python -m pip install -r requirements.txt
       - name: Validate Django configuration and migration state
+        if: steps.reuse.outputs.verified != 'true'
         run: |
           python manage.py check --settings=service_site.test_settings
           python manage.py makemigrations --check --dry-run --settings=service_site.test_settings
       - name: Run test suite
+        if: steps.reuse.outputs.verified != 'true'
         run: python manage.py test --settings=service_site.test_settings --verbosity 1
+
+      - name: Record successful PR test tree
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        run: python .github/scripts/reuse_pr_tests.py record
+      - name: Store PR test evidence
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        continue-on-error: true
+        with:
+          name: service2-tested-tree-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/service2-ci-proof.json
+          if-no-files-found: error
+          retention-days: 2
 
   deploy:
     name: Deploy tested main to Passenger

@@ -12,9 +12,20 @@
 ## Автоматический цикл
 
 Workflow `.github/workflows/ci-deploy.yml` запускает все Django-тесты и проверки
-на pull request в `main`. После merge GitHub повторяет те же проверки для
-точного commit в `main` и только после успеха запускает deployment в GitHub
-Environment `production`. Deployment по SSH вызывает `update.sh` с SHA
+на pull request в `main`. Успешный PR сохраняет короткое доказательство дерева
+фактически проверенного merge checkout. После merge job `Django checks and tests`
+может использовать этот результат, если Git tree нового `main` совпадает целиком,
+PR и workflow принадлежат этому репозиторию, запуск успешен и не старше суток,
+а workflow и проверяющий скрипт не менялись относительно первого родителя `main`.
+Доказательство проверяется по run/attempt, PR/head/base, digest архива и GitHub
+Git commit; содержимое архива не исполняется и не распаковывается на диск.
+
+При отсутствии/ошибке/просрочке доказательства, изменении дерева или политики,
+неоднозначности PR, запуске из fork либо ручном `workflow_dispatch` выполняется
+обычный полный CI. Первый deploy самой оптимизации также проходит полный CI.
+Неизменны обязательное имя проверки, синтаксическая проверка workflow, protected
+Environment `production`, exact-SHA/preflight/lock и health-check. Только после
+успешной проверки выполняется deployment в GitHub Environment `production`. Deployment по SSH вызывает `update.sh` с SHA
 проверенного commit. Скрипт сверяет SHA с `origin/main`, запрещает параллельный
 запуск и отказывается затирать настоящие местные изменения. Независимое
 содержательное ревью выполняется на точном финальном diff/head. Проверенный
