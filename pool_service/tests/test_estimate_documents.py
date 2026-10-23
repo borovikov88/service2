@@ -30,7 +30,7 @@ class DocumentTests(SimpleTestCase):
     def test_selected_variants_clean_print_and_comparison_no_snapshot_mutation(self):
         s=fixture();before=deepcopy(s);payload=docs.build(s,s['documents'])
         self.assertEqual([v['key'] for v in payload['variants']],['economy','standard'])
-        self.assertEqual(len(payload['cards']),1);self.assertTrue(payload['comparison'][0]['same'])
+        self.assertEqual(len(payload['cards']),1);self.assertEqual(payload['comparison'],[])
         self.assertEqual(docs.readiness(s,s['documents']),[])
         for kind in ['estimate','equipment']:
             html=render_to_string('pool_service/estimates/document.html',{'doc':payload,'document_kind':kind,'estimate':{'title':'Test','pk':'test-id','organization':{'name':'Test company'}},'version':{'number':1}})
@@ -56,14 +56,79 @@ class DocumentTests(SimpleTestCase):
         s=fixture();options=docs.normalize({**OPTIONS,'variants':['economy','standard','premium']})
         result=docs.build(s,options);self.assertTrue(result['landscape'])
         self.assertEqual(len(result['variants']),3);self.assertEqual(len(result['comparison'][0]['cells']),3)
-        self.assertEqual(result['cards'][0]['image'],'');self.assertEqual(result['cards'][0]['facts'],[])
+        self.assertEqual(result['cards'],[]);self.assertEqual(result['comparison'][0]['cells'][0][0]['image'],'')
         light=engine.make_row('test_light','Synthetic pool light','шт.','2',kind='pool_light')
         light.update(price='100',amount='200',catalog={'id':'light1','image':'https://evil.invalid/private.png'})
         next(b for b in s['variants']['economy']['blocks'] if b['id']=='equipment')['rows'].append(light)
         result=docs.build(s,options)
         self.assertTrue(any(c['label']=='Освещение' for c in result['comparison']))
-        self.assertEqual(next(c for c in result['cards'] if c['name']=='Synthetic pool light')['image'],'')
+        self.assertEqual(next(c for c in result['comparison'] if c['label']=='Освещение')['cells'][0][0]['image'],'')
         self.assertNotIn('надёж',str(result));self.assertNotIn('экономич',str(result))
+
+
+class ComparisonDifferenceTests(SimpleTestCase):
+    def test_differences_have_photos_and_saved_costs_common_cards_have_no_prices(self):
+        s=fixture()
+        for key in ('economy','standard'):
+            rows=next(b for b in s['variants'][key]['blocks'] if b['id']=='equipment')['rows']
+            rows[0].update(name='Pump '+key,price='10000' if key=='economy' else '12000')
+            common=engine.make_row('common_filter','Shared filter','шт.','1',kind='filter')
+            common.update(price='500',auto_quantity=False)
+            rows.append(common)
+        s=engine.evaluate(s)
+        # Keep this display-only fixture to its two specified goods.
+        for key in ('economy','standard'):
+            block=next(b for b in s['variants'][key]['blocks'] if b['id']=='equipment')
+            block['rows']=[r for r in block['rows'] if r['id'] in {'test_pump','common_filter'}]
+        for key in ('economy','standard'):
+            rows=next(b for b in s['variants'][key]['blocks'] if b['id']=='equipment')['rows']
+            rows[0]['catalog']={'id':key,'image':'https://shop.aqualine22.ru/image/catalog/test-'+key+'.png'}
+        before=deepcopy(s);result=docs.build(s,s['documents'])
+        self.assertEqual([x['label'] for x in result['comparison']],['Фильтрационный насос'])
+        cells=result['comparison'][0]['cells']
+        self.assertEqual([items[0]['amount'] for items in cells],['10000.00','12000.00'])
+        self.assertTrue(all(items[0]['image'] for items in cells))
+        self.assertEqual([card['name'] for card in result['cards']],['Shared filter'])
+        self.assertTrue(all('price' not in card and 'amount' not in card for card in result['cards']))
+        self.assertEqual([v['total'] for v in result['variants']],['10500.00','12500.00'])
+        html=render_to_string('pool_service/estimates/document.html',{'doc':result,'document_kind':'equipment','estimate':{'pk':'test','title':'Test'},'version':{'number':1}})
+        comparison=html.split('<section class="equipment-comparison">')[1].split('</section>',1)[0]
+        common=html.split('<section class="equipment-description">')[1].split('</section>',1)[0]
+        self.assertIn('test-economy.png',comparison);self.assertIn('Стоимость: 12000',comparison)
+        self.assertNotIn('Shared filter',comparison);self.assertNotIn('₽',common)
+        self.assertIn('Shared filter',common);self.assertIn('12500',comparison)
+        self.assertEqual(s,before)
+
+    def test_same_model_with_other_quantity_or_visible_price_is_a_difference(self):
+        for changed in ({'quantity':'2'},{'price':'10001'}):
+            s=fixture();r=next(b for b in s['variants']['standard']['blocks'] if b['id']=='equipment')['rows'][0]
+            r.update(changed);s=engine.evaluate(s);result=docs.build(s,s['documents'])
+            self.assertEqual(len(result['comparison']),1);self.assertEqual(result['cards'],[])
+        s=fixture()
+        for key,price in [('economy','10000.01'),('standard','10000.49')]:
+            next(b for b in s['variants'][key]['blocks'] if b['id']=='equipment')['rows'][0]['price']=price
+        s=engine.evaluate(s);self.assertEqual(docs.build(s,s['documents'])['comparison'],[])
+
+    def test_shared_items_removed_individually_without_losing_duplicate_rows(self):
+        s=fixture()
+        for key in ('economy','standard'):
+            rows=next(b for b in s['variants'][key]['blocks'] if b['id']=='equipment')['rows']
+            rows.append({**deepcopy(rows[0]),'id':'extra_pump','name':'Additional '+key,'price':'200','amount':'200.00'})
+        result=docs.build(s,s['documents'])
+        self.assertEqual([len(cell) for cell in result['comparison'][0]['cells']],[1,1])
+        self.assertTrue(all('Additional' in cell[0]['name'] for cell in result['comparison'][0]['cells']))
+        self.assertEqual(len(result['cards']),1)
+        s=fixture();rows=next(b for b in s['variants']['economy']['blocks'] if b['id']=='equipment')['rows']
+        rows.append({**deepcopy(rows[0]),'id':'duplicate'})
+        result=docs.build(s,s['documents']);self.assertEqual([len(cell) for cell in result['comparison'][0]['cells']],[1,0])
+
+    def test_selection_only_and_one_quote_moves_all_goods_below_table(self):
+        s=fixture()
+        two=docs.build(s,s['documents']);self.assertEqual(two['comparison'],[])
+        three=docs.build(s,docs.normalize({**OPTIONS,'variants':['economy','standard','premium']}))
+        self.assertEqual(len(three['comparison']),1);self.assertEqual(three['cards'],[])
+        one=docs.build(s,docs.normalize({**OPTIONS,'variants':['economy']}))
+        self.assertEqual(one['comparison'],[]);self.assertEqual(len(one['cards']),1)
 
 
 class DocumentApiTests(TestCase):
