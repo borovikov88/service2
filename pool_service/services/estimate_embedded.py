@@ -38,6 +38,14 @@ def counts(inputs, geometry, variant=None):
         'inlet': max(2, int(ceil_quantity(flow / Decimal(inputs['inlet_flow'])))),
         'drain': 1 if inputs.get('drain_scheme')=='empty_only' and Decimal(geometry['volume'])<=50 else 2, 'vacuum': 1,
     }
+    if variant:
+        skimmers = [r for b in variant['blocks'] for r in b['rows']
+                    if r['kind'] == 'skimmer' and ((not b['excluded'] and not r['excluded']) or r['existing'])]
+        if skimmers and all(r['unit'] in ('шт.', 'компл.') and r['quantity'] is not None and Decimal(r['quantity']) == Decimal(r['quantity']).to_integral_value() for r in skimmers):
+            actual = sum((Decimal(r['quantity'] or 0) for r in skimmers), Decimal(0))
+            # Preserve the normal hydraulic baseline; scale automatic return
+            # points with the number of active skimmers, including manual edits.
+            result['inlet'] = max(2, int(ceil_quantity(flow * actual / Decimal(result['skimmer']) / Decimal(inputs['inlet_flow']))))
     return {**{k: str(v) for k, v in result.items()}, 'embedded_work': str(sum(result.values()))}
 
 
