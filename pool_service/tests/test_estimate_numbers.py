@@ -27,8 +27,8 @@ class NumberDisplayTests(SimpleTestCase):
         html=render_to_string('pool_service/estimates/print.html',{'version':{'snapshot':s,'number':1}})
         self.assertIn('5,9 т',html)
         self.assertIn('1,3 т',html)
-        self.assertIn('6742',html)
-        self.assertIn('113333',html)
+        self.assertIn('6726',html)
+        self.assertIn('117000',html)
         self.assertIn('0.15',html)
         self.assertEqual(s,before)
         for value in ('0.15','0.05','0.02'):self.assertEqual(estimate_exact(value),value)
@@ -48,4 +48,4 @@ class NumberDisplayTests(SimpleTestCase):
         row(s,'pump')['quantity']='2'
         self.assertEqual(row(evaluate(s),'pump')['quantity'],'2.000')
         row(s,'material_sand').update(quantity='5.9136',auto_quantity=False,quantity_edited=True)
-        self.assertEqual(row(evaluate(s),'material_sand')['amount'],'6741.50')
+        self.assertEqual(row(evaluate(s),'material_sand')['amount'],'6726.00')

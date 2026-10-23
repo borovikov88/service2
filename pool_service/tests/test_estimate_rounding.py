@@ -104,7 +104,7 @@ class VisibleRoundingApiTests(TestCase):
         old=example();old.pop('visible_rounding');old=engine.evaluate(old)
         estimate=PoolEstimate.objects.create(organization=org,title=old['inputs']['title'],revision=1,created_by=user)
         PoolEstimateVersion.objects.create(estimate=estimate,number=1,snapshot=old,created_by=user)
-        saved={'id':estimate.pk,'snapshot':old}
+        saved={'id':str(estimate.pk),'snapshot':old}
         with patch('pool_service.estimate_views.get_catalog',side_effect=CatalogUnavailable('Synthetic offline catalogue')):
             changed=post(action='recalculate',snapshot=saved['snapshot'],inputs=old['inputs'])['snapshot']
         self.assertEqual(row(changed)['amount'],'312000.00')
