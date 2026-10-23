@@ -1,5 +1,7 @@
 """Customer documents from frozen quote rows. No catalogue fetch or new pricing."""
 from copy import deepcopy
+from collections import Counter
+from decimal import Decimal
 from datetime import date
 from .estimate_layout import sections
 
@@ -99,18 +101,48 @@ def build(snapshot, options):
     for key in options['variants']:
         variant=snapshot['variants'][key]
         variants.append({'key':key,'title':TIERS[key],'total':variant['total'],'sections':sections(variant,client=True)})
-    for kind,label,purpose in ROLES:
-        cells=[]; identities=[]
-        for key in options['variants']:
-            matches=[r for b in snapshot['variants'][key]['blocks'] if not b['excluded'] for r in b['rows'] if not r['excluded'] and not r['existing'] and r['kind']==kind]
-            items=[]; ids=[]
-            for row in matches:
-                origin=row.get('catalog') or {}; identity=origin.get('id') or title(row)
-                ids.append(identity); items.append({'name':title(row),'quantity':row['quantity'],'unit':row['unit'],'facts':characteristics(row)})
-                card=cards.setdefault(identity,{'name':title(row),'purpose':purpose,'image':safe_image_url(origin.get('image','')),'facts':characteristics(row),'variants':[]})
-                if TIERS[key] not in card['variants']:card['variants'].append(TIERS[key])
-            cells.append(items);identities.append(sorted(ids))
-        if any(cells):comparison.append({'label':label,'cells':cells,'same':len(cells)>1 and all(x==identities[0] for x in identities)})
+    from .estimate_works import is_work
+    from .estimate_rounding import quantity as shown_quantity, price as shown_price
+    descriptions={kind:(label,purpose) for kind,label,purpose in ROLES}
+    groups={}
+    for key in options['variants']:
+        for block in snapshot['variants'][key]['blocks']:
+            if block['excluded']:continue
+            for row in block['rows']:
+                if row['excluded'] or row['existing'] or is_work(row):continue
+                group_key=('role',row['kind']) if row['kind'] in descriptions else ('row',row['id'])
+                label,purpose=descriptions.get(row['kind'],(row['name'],''))
+                group=groups.setdefault(group_key,{'label':label,'purpose':purpose,'rows':{tier:[] for tier in options['variants']}})
+                origin=row.get('catalog') or {}
+                facts=characteristics(row)
+                item={'name':title(row),'quantity':row['quantity'],'unit':row['unit'],
+                    'price':row['price'],'amount':row.get('amount'),'facts':facts,
+                    'image':safe_image_url(origin.get('image','')),
+                    'show_unit_price':row['quantity'] is not None and Decimal(row['quantity'])!=1}
+                # Compare what the customer sees, including quantity and cost.
+                # A matching model with a different price/quantity is a difference.
+                signature=(origin.get('id') or title(row),title(row),row['unit'],
+                    shown_quantity(row['quantity'],row['unit']),shown_price(row['price']),
+                    Decimal(row['amount']) if row.get('amount') is not None else None,tuple(facts))
+                group['rows'][key].append((signature,item))
+    for group in groups.values():
+        common=None
+        for rows in group['rows'].values():
+            counts=Counter(signature for signature,_ in rows)
+            common=counts if common is None else common & counts
+        cells=[]
+        for key,rows in group['rows'].items():
+            remaining=common.copy();items=[]
+            for signature,item in rows:
+                if remaining[signature]:
+                    remaining[signature]-=1
+                    identity=signature[:2]+(tuple(item['facts']),)
+                    card=cards.setdefault(identity,{'name':item['name'],'purpose':group['purpose'],
+                        'image':item['image'],'facts':item['facts'],'variants':[TIERS[t] for t in options['variants']]})
+                    if not card['image'] and item['image']:card['image']=item['image']
+                else:items.append(item)
+            cells.append(items)
+        if any(cells):comparison.append({'label':group['label'],'cells':cells})
     # No separate catalogue IDs/brand lines, selection notes or compatibility claims are rendered.
     terms=[{'title':label,'text':options.get(key,'')} for key,label in TERMS.items() if options.get(key,'').strip()]
     pool=snapshot['inputs'];geometry=snapshot.get('geometry',{})
