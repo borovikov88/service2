@@ -43,10 +43,6 @@ jobs:
 
   test:
     name: Django checks and tests
-    permissions:
-      contents: read
-      actions: read
-      pull-requests: read
     needs: scope
     outputs:
       service_deploy: ${{ needs.scope.outputs.service_deploy }}
@@ -64,6 +60,9 @@ jobs:
         with:
           fetch-depth: 2
           persist-credentials: false
+      - name: Capture checked-out tree
+        id: test_tree
+        run: python3 .github/scripts/reuse_pr_tests.py capture
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.0.0
         with:
           python-version: "3.13"
@@ -72,8 +71,6 @@ jobs:
         run: python -m unittest discover -s .github/tests -p test_reuse_pr_tests.py -v
       - name: Verify equivalent successful PR tests
         id: reuse
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: python .github/scripts/reuse_pr_tests.py
       - name: Validate deploy workflow syntax
         shell: bash
@@ -114,18 +111,9 @@ jobs:
         if: steps.reuse.outputs.verified != 'true'
         run: python manage.py test --settings=service_site.test_settings --verbosity 1
 
-      - name: Record successful PR test tree
+      - name: PR_TESTED_TREE_V1 ${{ steps.test_tree.outputs.tree }} ${{ steps.test_tree.outputs.commit }}
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        run: python .github/scripts/reuse_pr_tests.py record
-      - name: Store PR test evidence
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        continue-on-error: true
-        with:
-          name: service2-tested-tree-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/service2-ci-proof.json
-          if-no-files-found: error
-          retention-days: 2
+        run: echo 'Full PR checks completed for the captured checkout.'
 
   deploy:
     name: Deploy tested main to Passenger

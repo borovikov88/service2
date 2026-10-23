@@ -1,7 +1,6 @@
 """Offline provenance, tamper and fallback regressions; never contact GitHub."""
 from copy import deepcopy
 from datetime import datetime, timezone
-import hashlib
 import importlib.util
 import io
 import json
@@ -10,7 +9,6 @@ import tempfile
 import urllib.error
 import unittest
 from unittest.mock import patch
-import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location('reuse', ROOT / '.github/scripts/reuse_pr_tests.py')
@@ -30,13 +28,13 @@ class Api:
                     'workflow_id':11,'path':reuse.WORKFLOW,'repository':{'full_name':reuse.REPO,'id':1},
                     'head_repository':{'full_name':reuse.REPO,'id':1},'head_sha':HEAD,
                     'updated_at':'2026-10-23T07:59:00Z'}
-        self.artifact = {'id':33,'name':'service2-tested-tree-22-2','expired':False,'size_in_bytes':400,
-                         'workflow_run':{'id':22,'head_sha':HEAD,'repository_id':1,'head_repository_id':1}}
-        self.proof = {'schema':1,'repository':reuse.REPO,'tree':TREE,'commit':TESTED,'run_id':22,'run_attempt':2,
-                      'pr':374,'head':HEAD,'base':BASE,'policy':deepcopy(POLICY)}
+        self.proof = {'name':f'PR_TESTED_TREE_V1 {TREE} {TESTED}', 'status':'completed','conclusion':'success'}
+        self.job = {'name':'Django checks and tests','run_id':22,'status':'completed','conclusion':'success','steps':[self.proof]}
+        self.jobs = [self.job]
+        self.total = 1
         self.workflow = {'id':11,'path':reuse.WORKFLOW,'state':'active'}
         self.tested = {'tree':{'sha':TREE},'parents':[{'sha':BASE},{'sha':HEAD}]}
-        self.runs = [self.run];self.artifacts = [self.artifact];self.prs = [self.pr]
+        self.runs = [self.run];self.prs = [self.pr]
         self.calls = []
 
     def get(self, path):
@@ -44,11 +42,10 @@ class Api:
         if path.startswith('/commits/'):return self.prs
         if path == '/actions/workflows/ci-deploy.yml':return self.workflow
         if '/runs?' in path:return {'workflow_runs':self.runs}
-        if '/artifacts?' in path:return {'artifacts':self.artifacts}
+        if '/attempts/' in path:return {'total_count':self.total,'jobs':self.jobs}
         if path.startswith('/git/commits/'):return self.tested
         raise AssertionError(path)
 
-    def archive(self, artifact):return self.proof
 
 
 class ReuseTests(unittest.TestCase):
@@ -75,12 +72,16 @@ class ReuseTests(unittest.TestCase):
             with self.subTest(case=case),self.assertRaises(reuse.EvidenceError):self.verify(**case)
         self.assertEqual(self.api.calls,[])
 
-    def test_proof_identity_and_tree_must_match(self):
-        changes={'schema':2,'repository':'other/repo','tree':BASE,'run_id':23,'run_attempt':1,
-                 'pr':375,'head':BASE,'base':HEAD,'policy':{},'commit':'not-a-sha'}
-        for key,value in changes.items():
-            with self.subTest(key=key),self.assertRaises(reuse.EvidenceError):
-                self.api=Api();self.api.proof[key]=value;self.verify()
+    def test_proof_tree_format_success_and_uniqueness(self):
+        for proof in ({'name':f'PR_TESTED_TREE_V1 {BASE} {TESTED}','status':'completed','conclusion':'success'},
+                      {'name':f'PR_TESTED_TREE_V1 {TREE} bad','status':'completed','conclusion':'success'},
+                      {'name':f'PR_TESTED_TREE_V1 {TREE} {TESTED}','status':'completed','conclusion':'skipped'},
+                      {'name':f'PR_TESTED_TREE_V1 {TREE} {TESTED} extra','status':'completed','conclusion':'success'}):
+            with self.subTest(proof=proof),self.assertRaises(reuse.EvidenceError):
+                self.api=Api();self.api.job['steps']=[proof];self.verify()
+        for proofs in ([],[self.api.proof,self.api.proof]):
+            self.api=Api();self.api.job['steps']=proofs
+            with self.assertRaises(reuse.EvidenceError):self.verify()
 
     def test_actual_tested_commit_and_merge_parents_cross_checked(self):
         for tested in ({'tree':{'sha':BASE},'parents':[{'sha':BASE},{'sha':HEAD}]},
@@ -108,44 +109,32 @@ class ReuseTests(unittest.TestCase):
         self.api=Api();self.api.runs.insert(0,self.api.run|{'conclusion':'failure'})
         with self.assertRaises(reuse.EvidenceError):self.verify()
 
-    def test_artifact_attempt_origin_expired_missing_duplicate_size(self):
-        for key,value in (('name','service2-tested-tree-22-1'),('expired',True),('size_in_bytes',100000),
-                          ('workflow_run',{'id':23,'head_sha':HEAD,'repository_id':1,'head_repository_id':1})):
+    def test_exact_attempt_and_single_successful_job(self):
+        self.assertEqual(self.verify(),22)
+        self.assertIn('/actions/runs/22/attempts/2/jobs?per_page=100',self.api.calls)
+        for key,value in (('name','Other job'),('run_id',23),('status','in_progress'),('conclusion','failure')):
             with self.subTest(key=key),self.assertRaises(reuse.EvidenceError):
-                self.api=Api();self.api.artifact[key]=value;self.verify()
-        for choices in ([],[self.api.artifact,self.api.artifact]):
-            self.api=Api();self.api.artifacts=choices
-            with self.assertRaises(reuse.EvidenceError):self.verify()
+                self.api=Api();self.api.job[key]=value;self.verify()
+        self.api=Api();self.api.jobs*=2;self.api.total=2
+        with self.assertRaises(reuse.EvidenceError):self.verify()
+        self.api=Api();self.api.total=101
+        with self.assertRaises(reuse.EvidenceError):self.verify()
 
-    def test_archive_not_extracted_or_executed_and_size_bounded(self):
-        for name,value in ((reuse.PROOF,{'schema':1}),('../'+reuse.PROOF,{'schema':1}),
-                           (reuse.PROOF,{'schema':2}),(reuse.PROOF,{'schema':1,'extra':'x'*17000})):
-            content=io.BytesIO()
-            with zipfile.ZipFile(content,'w') as archive:archive.writestr(name,json.dumps(value))
-            if name==reuse.PROOF and value=={'schema':1}:self.assertEqual(reuse.read_proof(content.getvalue()),value)
-            else:
-                with self.assertRaises(reuse.EvidenceError):reuse.read_proof(content.getvalue())
-
-    def test_archive_digest_and_signed_download_have_no_token(self):
-        stream=io.BytesIO()
-        with zipfile.ZipFile(stream,'w') as archive:archive.writestr(reuse.PROOF,json.dumps({'schema':1}))
-        body=stream.getvalue()
-        artifact={'id':33,'digest':'sha256:'+hashlib.sha256(body).hexdigest()}
-        location='https://example.blob.core.windows.net/signed?signature=PRIVATE'
-        redirect=urllib.error.HTTPError('https://api.github.com',302,'Found',{'Location':location},None)
-        api=reuse.GitHub('PRIVATE_TOKEN')
-        with patch.object(api,'open',side_effect=[redirect,body]) as opened:
-            self.assertEqual(api.archive(artifact),{'schema':1})
-        self.assertEqual(opened.call_args_list[1].kwargs,{'authenticated':False,'limit':reuse.ZIP_LIMIT})
-        with patch.object(api,'open',side_effect=[redirect,body]),self.assertRaises(reuse.EvidenceError):
-            api.archive(artifact|{'digest':'sha256:bad'})
-        for target in ('http://example.blob.core.windows.net/a','https://evil.example/a',
-                       'https://user@example.blob.core.windows.net/a',
-                       'https://example.blob.core.windows.net:8443/a'):
-            redirect=urllib.error.HTTPError('https://api.github.com',302,'Found',{'Location':target},None)
-            with patch.object(api,'open',side_effect=redirect) as opened,self.assertRaises(reuse.EvidenceError):
-                api.archive(artifact)
+    def test_public_client_has_no_token_and_does_not_retry_or_follow_redirects(self):
+        api=reuse.GitHub()
+        with patch.object(api.opener,'open',return_value=io.BytesIO(b'{"ok":true}')) as opened:
+            self.assertEqual(api.get('/actions/workflows/ci-deploy.yml'),{'ok':True})
+        request=opened.call_args.args[0]
+        self.assertIsNone(request.get_header('Authorization'))
+        self.assertEqual(request.full_url,'https://api.github.com/repos/'+reuse.REPO+'/actions/workflows/ci-deploy.yml')
+        for status in (302,403,429):
+            error=urllib.error.HTTPError(request.full_url,status,'DENIED',{},None)
+            with patch.object(api.opener,'open',side_effect=error) as opened,self.assertRaises(urllib.error.HTTPError):
+                api.get('/actions/workflows/ci-deploy.yml')
             self.assertEqual(opened.call_count,1)
+        for path in ('https://other.example/','/actions/runs/1/artifacts','/actions/runs/1/logs'):
+            with patch.object(api.opener,'open') as opened,self.assertRaises(reuse.EvidenceError):api.get(path)
+            opened.assert_not_called()
 
     def test_lookup_errors_fall_back_without_exposing_payloads(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -158,12 +147,14 @@ class ReuseTests(unittest.TestCase):
             self.assertEqual(output.read_text(),'verified=false\n')
             self.assertNotIn('PRIVATE',printed.getvalue())
 
-    def test_record_actual_merge_checkout_not_head_only(self):
-        env=self.env|{'GITHUB_EVENT_NAME':'pull_request','GITHUB_RUN_ID':'22','GITHUB_RUN_ATTEMPT':'2'}
-        event={'pull_request':deepcopy(self.api.pr)};event['pull_request']['base']['sha']=BASE
-        with patch.object(reuse,'git',side_effect=[SHA,TREE]),patch.object(reuse,'policy_hashes',return_value=POLICY):
-            proof=reuse.create_proof(env,event)
-        self.assertEqual((proof['commit'],proof['tree'],proof['head']),(SHA,TREE,HEAD))
+    def test_capture_actual_merge_checkout_before_tests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output=Path(directory,'output')
+            with patch.object(reuse,'git',side_effect=[SHA,TREE]):
+                reuse.capture_tree(self.env|{'GITHUB_OUTPUT':str(output)})
+            self.assertEqual(output.read_text(),f'commit={SHA}\ntree={TREE}\n')
+            with patch.object(reuse,'git',return_value=BASE),self.assertRaises(reuse.EvidenceError):
+                reuse.capture_tree(self.env|{'GITHUB_OUTPUT':str(output)})
 
     def test_workflow_keeps_protected_name_and_deploy_guards(self):
         text=(ROOT/reuse.WORKFLOW).read_text()
@@ -173,10 +164,15 @@ class ReuseTests(unittest.TestCase):
         self.assertIn('Verify hosting compatibility without modifying checkout',text)
         self.assertIn('Verify deployed site health',text)
         self.assertIn('Check reuse policy regressions',text)
-        self.assertIn('retention-days: 2',text)
+        self.assertNotIn('actions: read',text)
+        self.assertNotIn('pull-requests: read',text)
+        self.assertNotIn('upload-artifact',text)
         self.assertNotIn('actions: write',text)
         self.assertNotIn('contents: write',text)
-        self.assertLess(text.index('name: Run test suite'),text.index('name: Record successful PR test tree'))
+        self.assertLess(text.index('name: Capture checked-out tree'),text.index('name: Check reuse policy regressions'))
+        self.assertLess(text.index('name: Run test suite'),text.index('name: PR_TESTED_TREE_V1'))
+        reuse_step=text[text.index('- name: Verify equivalent successful PR tests'):text.index('- name: Validate deploy workflow syntax')]
+        self.assertNotIn('GH_TOKEN',reuse_step)
         for name in ('Install dependencies','Run test suite','Validate Django configuration and migration state'):
             self.assertIn('- name: '+name+"\n        if: steps.reuse.outputs.verified != 'true'",text)
 
