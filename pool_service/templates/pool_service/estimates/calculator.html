@@ -1,13 +1,13 @@
 {% extends 'pool_service/base.html' %}
 {% load static %}
 {% block title %}Расчёт бассейна · {{ brand_name }}{% endblock %}
-{% block extra_head %}<link rel="stylesheet" href="{% static 'pool_service/estimates/calculator.css' %}?v=litokol-contact-1">{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="{% static 'pool_service/estimates/calculator.css' %}?v=client-documents-1">{% endblock %}
 {% block content %}
 <main class="pe" id="pool-estimator" data-api="{% url 'pool_estimate_api' %}" data-organization="{{ estimate_organization.pk }}">
   {% csrf_token %}
   <header class="pe-header">
     <div><div class="pe-eyebrow">ПРОЕКТЫ / СМЕТЫ <span>ПЕРВАЯ ВЕРСИЯ</span></div><h1>Расчёт бассейна</h1><p>Один бассейн. Три варианта комплектации.</p></div>
-    <div class="pe-actions"><button type="button" id="pe-new" class="pe-btn">Новый расчёт</button><button type="button" id="pe-open" class="pe-btn">Сохранённые расчёты</button><button type="button" id="pe-save" class="pe-btn pe-primary">Сохранить версию</button></div>
+    <div class="pe-actions"><button type="button" id="pe-new" class="pe-btn">Новый расчёт</button><button type="button" id="pe-open" class="pe-btn">Сохранённые расчёты</button><button type="button" id="pe-documents" class="pe-btn">Документы для клиента</button><button type="button" id="pe-save" class="pe-btn pe-primary">Сохранить версию</button></div>
   </header>
   <div id="pe-status" class="pe-status" role="status" aria-live="polite">Подготавливаем расчёт…</div>
   <div class="pe-workspace">
@@ -99,6 +99,7 @@
   <dialog id="pe-price-dialog" class="pe-dialog"><h2>Изменить расценку работы?</h2><p id="pe-price-target"></p><p id="pe-price-matches" class="pe-help"></p><p class="pe-help" data-help-target="#pe-price-dialog h2">Повышенная ручная расценка запомнится для новых расчётов выбранных КП. Снижение цены действует в текущем расчёте.</p><p id="pe-price-error" class="pe-error" role="alert"></p><div class="pe-dialog-actions"><button type="button" class="pe-btn pe-primary" data-price-choice="one">Только в этом КП</button><button type="button" class="pe-btn" data-price-choice="all">Во всех трёх КП</button><button type="button" class="pe-btn" data-close="pe-price-dialog">Отмена</button></div></dialog>
   <dialog id="pe-scope-dialog" class="pe-dialog"><h2 id="pe-scope-title">Изменить состав</h2><p id="pe-scope-target"></p><div class="pe-dialog-actions"><button type="button" class="pe-btn pe-primary" data-scope-choice="one">Только в этом КП</button><button type="button" class="pe-btn" data-scope-choice="all">Во всех трёх КП</button><button type="button" class="pe-btn" data-close="pe-scope-dialog">Отмена</button></div></dialog>
   <dialog id="pe-new-dialog" class="pe-dialog"><h2>Начать новый расчёт?</h2><p>Сохранить текущий расчёт перед созданием нового или удалить текущие несохранённые изменения? Сохранённые версии останутся в истории.</p><p id="pe-new-error" class="pe-error" role="alert"></p><div class="pe-dialog-actions"><button type="button" class="pe-btn pe-primary" data-new-action="save">Сохранить и создать новый</button><button type="button" class="pe-btn" data-new-action="discard">Удалить несохранённое и создать новый</button><button type="button" class="pe-btn" data-close="pe-new-dialog">Отмена — вернуться к расчёту</button></div></dialog>
+  {% include "pool_service/estimates/document_dialog.html" %}
 </main>
-<script type="module" src="{% static 'pool_service/estimates/calculator.js' %}?v=litokol-contact-1"></script>
+<script type="module" src="{% static 'pool_service/estimates/calculator.js' %}?v=client-documents-1"></script>
 {% endblock %}

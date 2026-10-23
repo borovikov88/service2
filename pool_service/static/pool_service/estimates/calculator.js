@@ -1,3 +1,4 @@
+import {installDocuments} from './documents.js?v=1';
 import {productDetails,productTitle} from './product-details.js?v=1';
 import {sections as viewSections, groupFor, moveViewRow} from './layout.js?v=6';
 import {installHelp} from './help.js?v=5';
@@ -234,7 +235,7 @@ function renderEditor() {
   renderTotals();
 }
 function renderHistory() {
-  $('#pe-history-list').innerHTML = versions.map(v => `<div class="pe-history-row"><div><strong>Версия ${v.number}</strong> · ${stamp(v.created_at)} · ${esc(v.created_by?.name || 'Автор не указан')}<small>${esc(v.note || 'Без комментария')}</small></div><div><button type="button" class="pe-link" data-version="${v.number}">Открыть копию</button><a class="pe-link" href="${location.pathname}${encodeURIComponent(projectId)}/versions/${v.number}/print/" target="_blank" rel="noopener">Печать / PDF</a></div></div>`).join('') || 'После первого сохранения здесь появится версия 1.';
+  $('#pe-history-list').innerHTML = versions.map(v => `<div class="pe-history-row"><div><strong>Версия ${v.number}</strong> · ${stamp(v.created_at)} · ${esc(v.created_by?.name || 'Автор не указан')}<small>${esc(v.note || 'Без комментария')}</small></div><div><button type="button" class="pe-link" data-version="${v.number}">Открыть копию</button><a class="pe-link" href="${location.pathname}${encodeURIComponent(projectId)}/versions/${v.number}/documents/" target="_blank" rel="noopener">Печать / PDF</a></div></div>`).join('') || 'После первого сохранения здесь появится версия 1.';
 }
 function setHeating(values) {
   const selectedTypes = values.heating_types ?? (values.heating === 'none' ? [] : [values.heating]);
@@ -762,3 +763,14 @@ if (initial.get('id')) await loadProject(initial.get('id'), initial.get('version
 else await generateNew();
 
 form.elements.tech_insulation_wall_height.addEventListener('input', () => { form.elements.tech_insulation_wall_height_mode.value = 'manual'; });
+
+installDocuments(root,{
+ current:()=>({snapshot,busy,parametersDirty}),error:message=>status(message,true),api,
+ save:async candidate=>{
+  clearTimeout(timer);sequence++;
+  const data=await api({action:'save',snapshot:candidate,id:projectId,expected_revision:revision,note:'Документы для клиента',for_documents:true});
+  snapshot=data.snapshot;projectId=data.id;revision=data.revision;loadedVersion=data.loaded_version;versions=data.versions;
+  dirty=false;renderEditor();renderHistory();rememberLocation();status(`Документы подготовлены по сохранённой версии ${loadedVersion}.`);
+  return data;
+ }
+});

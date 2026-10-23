@@ -54,3 +54,11 @@ class PoolEstimateWorkRate(models.Model):
             models.UniqueConstraint(fields=['organization', 'variant', 'identity'], name='pool_work_rate_org_tier_uniq'),
             models.CheckConstraint(condition=models.Q(price__gte=0), name='pool_work_rate_nonnegative'),
         ]
+
+
+class PoolEstimateDocumentSettings(models.Model):
+    """Company document defaults; client details belong only to saved versions."""
+    organization = models.OneToOneField('pool_service.Organization', on_delete=models.CASCADE)
+    values = models.JSONField(default=dict)
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL)
+    updated_at = models.DateTimeField(auto_now=True)
