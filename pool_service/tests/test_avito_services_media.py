@@ -159,6 +159,98 @@ class MediaNetworkTests(SimpleTestCase):
             media._download('https://photos.invalid/photo.jpg', media.time.monotonic() + 5)
         connection._pinned_socket.shutdown.assert_called_once_with(media.socket.SHUT_RDWR)
 
+    def download_failure(self, connection):
+        with patch.object(media, '_resolve', return_value='93.184.216.34'), \
+                patch.object(media, '_PinnedHTTPS', return_value=connection), \
+                patch.object(media.threading, 'Timer'), self.assertRaises(ValueError) as caught:
+            media._download('https://photos.invalid/PRIVATE.jpg', media.time.monotonic() + 5)
+        return caught.exception, media.photo_transport_failure(caught.exception)
+
+    def test_transport_status_mime_and_length_reasons_preserve_status_without_remote_values(self):
+        cases = [
+            (self.response(status=302), 'http_status', 302),
+            (self.response(status=403), 'http_status', 403),
+            (self.response(content_type='text/html'), 'content_type', 200),
+        ]
+        for length, reason in (('PRIVATE', 'content_length_invalid'),
+                               (str(media.MAX_BYTES + 1), 'content_length_limit')):
+            response = self.response()
+            response.getheader.side_effect = lambda key, default=None, length=length: {
+                'Content-Type': 'image/jpeg', 'Content-Length': length}.get(key, default)
+            cases.append((response, reason, 200))
+        for response, reason, status in cases:
+            with self.subTest(reason=reason, status=status):
+                connection = MagicMock()
+                connection.getresponse.return_value = response
+                error, value = self.download_failure(connection)
+                self.assertEqual(value['reason'], reason)
+                self.assertEqual(value['phase'], 'headers')
+                self.assertEqual(value['http_status'], status)
+                self.assertEqual(value['source_scheme'], 'https')
+                self.assertTrue(value['path_ascii'])
+                self.assertEqual(value['selected_ip_family'], 'ipv4')
+                self.assertNotIn('PRIVATE', str(value))
+                self.assertNotIn('photos.invalid', str(value))
+                response.read1.assert_not_called()
+                connection.request.assert_called_once()
+        self.assertEqual(value['declared_bytes'], media.MAX_BYTES + 1)
+
+    def test_transport_incomplete_body_and_io_families_are_distinct(self):
+        import ssl
+        response = self.response()
+        actual = len(picture(format='JPEG'))
+        response.getheader.side_effect = lambda key, default=None: {
+            'Content-Type': 'image/jpeg', 'Content-Length': str(actual + 1)}.get(key, default)
+        connection = MagicMock()
+        connection.getresponse.return_value = response
+        error, value = self.download_failure(connection)
+        self.assertEqual(value['reason'], 'incomplete_body')
+        self.assertEqual(value['declared_bytes'], actual + 1)
+        self.assertEqual(value['received_bytes'], actual)
+        for failure, expected in (
+                (TimeoutError('PRIVATE'), 'io_timeout'),
+                (ssl.SSLCertVerificationError('PRIVATE'), 'tls_certificate'),
+                (ssl.SSLError('PRIVATE'), 'tls_error'),
+                (OSError(111, 'PRIVATE'), 'io_error'),
+                (media.http.client.BadStatusLine('PRIVATE'), 'http_protocol'),
+                (UnicodeEncodeError('ascii', 'я', 0, 1, 'PRIVATE'), 'request_encoding')):
+            with self.subTest(reason=expected):
+                connection = MagicMock()
+                connection.connect.side_effect = failure
+                error, value = self.download_failure(connection)
+                self.assertEqual(value['reason'], expected)
+                self.assertEqual(value['phase'], 'connect')
+                self.assertIsNone(value['http_status'])
+                self.assertNotIn('PRIVATE', str(value))
+                connection.request.assert_not_called()
+
+    def test_transport_dns_metadata_only_contains_public_families_and_count(self):
+        diagnostics = {}
+        answers = [(2, 1, 6, '', ('93.184.216.34', 443)),
+                   (10, 1, 6, '', ('2606:4700:4700::1111', 443))]
+        with patch.object(media.socket, 'getaddrinfo', return_value=answers):
+            media._resolve('photos.invalid', 443, media.time.monotonic() + 3, diagnostics=diagnostics)
+        self.assertEqual(diagnostics, {'dns_family': 'mixed', 'dns_answer_count': 2})
+        with patch.object(media.socket, 'getaddrinfo', return_value=answers + [(2, 1, 6, '', ('127.0.0.1', 443))]), \
+                self.assertRaises(ValueError) as caught:
+            media._resolve('photos.invalid', 443, media.time.monotonic() + 3, diagnostics={})
+        self.assertEqual(media.photo_transport_failure(caught.exception)['reason'], 'dns_private_address')
+        semaphore = media.threading.BoundedSemaphore(1)
+        with patch.object(media, '_DNS_SLOTS', semaphore), \
+                patch.object(media.threading, 'Thread') as thread, self.assertRaises(ValueError) as caught:
+            thread.return_value.start.side_effect = RuntimeError('PRIVATE')
+            media._resolve('photos.invalid', 443, media.time.monotonic() + 3)
+        self.assertEqual(media.photo_transport_failure(caught.exception)['reason'], 'dns_unavailable')
+        self.assertTrue(semaphore.acquire(blocking=False))
+        semaphore.release()
+
+    def test_transport_untyped_error_does_not_export_message_or_attributes(self):
+        failure = ValueError('PRIVATE https://secret.invalid')
+        failure.reason = 'PRIVATE'
+        failure.http_status = 403
+        self.assertEqual(media.photo_transport_failure(failure),
+            {'reason': None, 'phase': None, 'http_status': None})
+
 
 class MediaAssetsTests(TestCase):
     def setUp(self):
