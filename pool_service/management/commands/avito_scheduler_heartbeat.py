@@ -30,7 +30,7 @@ class Command(BaseCommand):
                 AvitoSchedulerHeartbeat.objects.update_or_create(
                     pk=HEARTBEAT_KEY,
                     defaults={"run_id": options["run_id"], "state": "running",
-                              "started_at": now, "finished_at": None, "exit_code": None},
+                              "started_at": now, "finished_at": None, "exit_code": None, "checks": []},
                 )
             else:
                 # A late completion cannot overwrite a newer supervisor run.

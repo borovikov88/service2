@@ -1,0 +1,30 @@
+"""Protected one-time setup for the explicitly authorised services account."""
+import json
+import os
+import re
+import subprocess
+
+from django.conf import settings
+from django.core.management.base import BaseCommand, CommandError
+
+from pool_service.avito_services_workplace_setup import setup, safe_setup_error
+
+
+class Command(BaseCommand):
+    def add_arguments(self, parser):
+        parser.add_argument("--expected-sha", required=True)
+        parser.add_argument("--base-url", required=True)
+
+    def handle(self, *args, **options):
+        expected = options["expected_sha"]
+        if os.environ.get("SERVICE2_AVITO_DEPLOY_SETUP") != "1" or not re.fullmatch(r"[a-f0-9]{40}", expected):
+            raise CommandError("services_setup_protected_deploy_required")
+        actual = subprocess.run(["git", "rev-parse", "HEAD"], cwd=settings.BASE_DIR,
+            check=True, capture_output=True, text=True, timeout=10).stdout.strip()
+        if actual != expected:
+            raise CommandError("services_setup_commit_mismatch")
+        try:
+            result = setup(4, "446312402", options["base_url"])
+        except Exception as exc:
+            result = {"setup": "blocked", "connection_id": 4, "code": safe_setup_error(exc)}
+        self.stdout.write("AVITO_SERVICES_SETUP " + json.dumps(result, sort_keys=True))

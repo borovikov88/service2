@@ -252,9 +252,15 @@ from .communication_api import (
     website_request_create,
 )
 
-from .avito_services_feed import services_feed, services_feed_edit, services_feed_download, services_feed_publish, services_feed_public
+from .avito_services_feed import services_feed, services_feed_edit, services_feed_download, services_feed_publish, services_feed_public, services_feed_version_public
+from .avito_services_media import services_image_upload, services_image_preview, services_image_public, services_media_probe
 
 urlpatterns = [
+    path("api/communications/avito/services-media/probe/", services_media_probe, name="avito_services_media_probe"),
+    path("api/communications/avito/services-media/<uuid:public_key>/photo.jpg", services_image_public, name="avito_services_image_public"),
+    path("avito/<int:connection_id>/services-media/upload/", services_image_upload, name="avito_services_image_upload"),
+    path("avito/<int:connection_id>/services-media/<uuid:public_key>/preview/", services_image_preview, name="avito_services_image_preview"),
+    path("avito/services/feed/<uuid:public_key>/versions/<int:version_id>.xml", services_feed_version_public, name="avito_services_feed_version_public"),
     path("api/communications/avito/services-feed/<uuid:public_key>/feed.xml", services_feed_public, name="avito_services_feed_public"),
     path("api/communications/avito/services-feed/<uuid:public_key>/feed.xlsx", services_feed_public, {"output_format": "xlsx"}, name="avito_services_feed_public_xlsx"),
     path("avito/<int:connection_id>/services-feed/publish/", services_feed_publish, name="avito_services_feed_publish"),

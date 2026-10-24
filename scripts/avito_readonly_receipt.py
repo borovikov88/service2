@@ -185,6 +185,32 @@ def report(value):
         groups = sequence(value["message_code_counts"], message_count, 200)
         require(len({(row["type"], row["code"]) for row in groups}) == len(groups))
         result["message_code_counts"] = groups
+    if "message_groups" in value:
+        allowed_explanations = {
+            "existing_listing_link": "Сообщение о привязке существующего объявления; само по себе исправления не требует.",
+            "information": "Информационное сообщение Авито.",
+            "action_required": "Авито сообщает о проблеме, требующей проверки и исправления.",
+            "review_required": "Предупреждение требует просмотра; по одному коду или количеству причина не определяется.",
+        }
+        allowed_fields = {"Id", "AvitoId", "Title", "Description", "Category", "ServiceType", "ServiceSubtype",
+                          "Address", "ContactPhone", "Images", "ImageUrls", "Price", "PriceList", "DateEnd", "TNVED"}
+        def message_group(row):
+            require(isinstance(row, dict) and row.get("category") in allowed_explanations)
+            require(row.get("type") in {"error", "warning", "alarm", "info"})
+            require(row.get("explanation") == allowed_explanations[row["category"]])
+            reasons = row.get("reason_keywords")
+            require(isinstance(reasons, list) and len(reasons) <= 9 and all(reason in {
+                "номер телефона", "ТН ВЭД", "фотографии", "срок размещения", "не поддерживается",
+                "категория", "обязательное поле", "контакты в описании", "существующее объявление"} for reason in reasons))
+            require(type(row.get("binding_evidence")) is bool and type(row.get("action_evidence")) is bool)
+            fields = row.get("fields")
+            require(isinstance(fields, list) and len(fields) <= len(allowed_fields)
+                    and all(field in allowed_fields for field in fields))
+            return {"type": row["type"], "code": integer(row.get("code"), 10**12),
+                "rows": integer(row.get("rows"), 5000), "category": row["category"],
+                "explanation": row["explanation"], "fields": fields,
+                "reason_keywords": reasons, "binding_evidence": row["binding_evidence"], "action_evidence": row["action_evidence"]}
+        result["message_groups"] = sequence(value["message_groups"], message_group, 200)
     return result
 
 def listing_scan(value):
@@ -314,6 +340,84 @@ def cached_configuration(value):
             **{key: value.get(key) for key in keys}}
 
 
+def runtime_checks(value):
+    require(isinstance(value, list) and len(value) <= 6)
+    names = {"statuses", "advance", "autoload_report", "tariff", "publication_correlation", "messages_digest"}
+    outcomes = {"baseline", "success", "failed", "skipped", "not_run"}
+    allowed_codes = {
+    "", "not_configured", "disabled", "not_checked", "check_due", "schedule_invalid",
+    "binding_changed", "check_error_unclassified", "worker_check_exception",
+    "budget_or_batch_deferred", "workspace_busy", "worker_result_unknown", "quiet_hours", "not_due",
+    "advance_binding_changed", "advance_data_invalid", "advance_provider_invalid", "advance_read_failed",
+    "autoload_auto_binding_changed", "autoload_auto_error", "autoload_report_invalid",
+    "autoload_report_changed", "autoload_report_limit", "autoload_report_duplicate_rows",
+    "autoload_report_pagination", "provider_cooldown", "provider_unavailable",
+    "provider_credentials_missing", "provider_credentials_invalid", "provider_token_missing",
+    "provider_account_mismatch", "provider_account_id_invalid", "provider_account_id_missing",
+    "provider_invalid_json", "provider_invalid_response", "provider_response_too_large",
+    "monitor_scan_limit", "monitor_pagination_invalid", "monitor_status_invalid",
+    "monitor_owner_unavailable", "monitor_connection_changed", "monitor_interrupted", "monitor_error",
+    "tariff_reminder_failed", "tariff_notification_preferences_disabled", "notification_preferences_disabled",
+    "publication_correlation_failed", "dependency_failed", "deferred_queue_invalid", "conversation_access_denied",
+}
+    result = []
+    def timestamp(raw):
+        if raw is None:
+            return None
+        require(isinstance(raw, str) and len(raw) <= 50 and datetime.fromisoformat(raw).tzinfo is not None)
+        return raw
+    for row in value:
+        require(isinstance(row, dict) and row.get("check") in names)
+        require(row.get("state") in {"disabled", "blocked", "failed", "pending", "due", "ok"})
+        require(type(row.get("configured")) is bool and type(row.get("enabled")) is bool)
+        require(row.get("scope_valid") is None or type(row.get("scope_valid")) is bool)
+        require(type(row.get("last_worker_verified")) is bool)
+        require(row.get("last_worker_outcome") is None or row["last_worker_outcome"] in outcomes)
+        def fixed_code(raw):
+            require(raw is None or (isinstance(raw, str) and (raw in allowed_codes or re.fullmatch(r"provider_http_[1-5][0-9]{2}", raw))))
+            return raw
+        result.append({"check": row["check"], "state": row["state"],
+            "configured": row["configured"], "enabled": row["enabled"], "scope_valid": row["scope_valid"],
+            "code": fixed_code(row.get("code")), "checked_at": timestamp(row.get("checked_at")),
+            "success_at": timestamp(row.get("success_at")), "next_due_at": timestamp(row.get("next_due_at")),
+            "last_worker_verified": row["last_worker_verified"],
+            "last_worker_outcome": row.get("last_worker_outcome"),
+            "last_worker_code": fixed_code(row.get("last_worker_code")),
+            "last_worker_checked_at": timestamp(row.get("last_worker_checked_at"))})
+    require(len({row["check"] for row in result}) == len(result))
+    return result
+
+
+def webhook_evidence(value):
+    require(isinstance(value, dict))
+    if "error" in value:
+        return {"error": code(value["error"])}
+    names = ("binding_valid", "registration_confirmed", "delivery_observed", "live_provider_checked")
+    require(all(type(value.get(key)) is bool for key in names))
+    require(value.get("live_registered") is None or type(value.get("live_registered")) is bool)
+    require(not value["registration_confirmed"] or value["binding_valid"])
+    require(not value["delivery_observed"] or (value["binding_valid"] and value["registration_confirmed"]))
+    require(not value["live_provider_checked"] or (value["binding_valid"] and type(value["live_registered"]) is bool))
+    require(value["live_provider_checked"] or value.get("live_registered") is None)
+    return {**{key: value[key] for key in names}, "live_registered": value.get("live_registered")}
+
+
+def storage_probe(value):
+    require(isinstance(value, dict) and value.get("source") == "passenger_http")
+    require(type(value.get("checked")) is bool and type(value.get("cached")) is bool)
+    result = {"source": "passenger_http", "checked": value["checked"], "cached": value["cached"]}
+    if value["checked"]:
+        flags = ("outside_checkout", "file_private", "directory_private", "readable", "synthetic_only")
+        require(all(value.get(flag) is True for flag in flags))
+        result.update({flag: True for flag in flags})
+    else:
+        error = value.get("error")
+        require(error in {"storage_probe_binding_changed", "storage_probe_not_run", "storage_probe_failed", "storage_probe_http_failed"} or
+                isinstance(error, str) and re.fullmatch(r"storage_probe_http_(?:301|302|303|307|308|401|403|404|405|429|500|502|503|504)", error))
+        result["error"] = error
+    return result
+
+
 def connection(value):
     require(isinstance(value, dict))
     result = {"connection_id": integer(value.get("connection_id"))}
@@ -327,6 +431,12 @@ def connection(value):
                   advance_access=advance_access(value.get("advance_access", {"error": "audit_advance_not_requested"})),
                   monitoring=monitoring(value.get("monitoring", {"error": "audit_monitoring_not_requested"})),
                   cached_configuration=cached_configuration(value.get("cached_configuration", {"error": "audit_cached_configuration_not_requested"})))
+    if "runtime_checks" in value:
+        result["runtime_checks"] = runtime_checks(value["runtime_checks"])
+    if "webhook_evidence" in value:
+        result["webhook_evidence"] = webhook_evidence(value["webhook_evidence"])
+    if "storage_probe" in value:
+        result["storage_probe"] = storage_probe(value["storage_probe"])
     return result
 
 def normalize(value):

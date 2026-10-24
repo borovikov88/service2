@@ -7,6 +7,7 @@ from copy import deepcopy
 from io import BytesIO
 import re
 import time
+import hashlib
 from urllib.parse import urlsplit
 from zipfile import ZipFile, BadZipFile
 from xml.etree.ElementTree import ParseError
@@ -29,6 +30,10 @@ from django.views.decorators.http import require_GET, require_http_methods
 from .avito_feed_models import AvitoServicesFeed
 from .avito_services_history import ensure_baseline, record_version, require_identities, restored_snapshot
 from .avito_services_xml import xml_bytes
+from .avito_publication_models import AvitoServicesPublication, AvitoServicesListingIntent
+from .avito_services_publication import bind_publication, publication_context, archive_context, _binding_valid, public_origin, annotate_reactivation
+from .avito_services_media import (validate_photo_scope, validate_snapshot_media,
+                                  mark_snapshot_media_published, editor_media_context)
 from .avito_management import _scope
 from .communication_models import ChannelConnection
 
@@ -202,7 +207,13 @@ def _version(feed, value):
 
 def _page_context(request, connection, feed, error=''):
     observations = {row.get('avito_id'): row for row in feed.latest_observations} if feed else {}
-    rows = [{**row, 'observation': observations.get(row['AvitoId'])}
+    publication = publication_context(feed) if feed else None
+    reported = {row['avito_id']: row for row in publication['rows']} if publication else {}
+    intents = {intent.avito_id: intent for intent in feed.listing_intents.filter(
+        account_id=connection.external_id, organization_id=connection.channel.organization_id)} if feed else {}
+    rows = [{**row, 'observation': observations.get(row['AvitoId']),
+             'archive_control': archive_context(row, observations.get(row['AvitoId']),
+                 intents.get(row['AvitoId']), reported.get(row['AvitoId']))}
             for row in entries(feed.draft)] if feed else []
     history = Paginator(feed.versions.select_related('actor').order_by('-pk'), 20).get_page(
         request.GET.get('history_page')) if feed else None
@@ -211,7 +222,7 @@ def _page_context(request, connection, feed, error=''):
         selected = _version(feed, request.GET['history_version'])
     return {
         'connection': connection, 'feed': feed, 'rows': rows, 'error': error,
-        'history': history, 'selected_version': selected,
+        'history': history, 'selected_version': selected, 'publication': publication,
         'feed_url': request.build_absolute_uri(reverse('avito_services_feed_public', args=[feed.public_key]))
                     if feed and feed.enabled else '',
     }
@@ -239,9 +250,12 @@ def services_feed(request, connection_id):
                 if not upload.name.startswith(connection.external_id + '_'):
                     raise ValueError('Имя экспорта должно начинаться с ID выбранного аккаунта и подчёркивания.')
                 imported = parse_export(upload.read(MAX_BYTES + 1))
+                for item in entries(imported):
+                    item['ImageUrls'] = validate_photo_scope(connection, item['ImageUrls'])
             reason = _reason(request, {'import': 'Импорт обратной выгрузки Авито',
                                       'restore': 'Восстановление содержания прежней версии',
-                                      'disable': 'Отключение доступа к файлу'}.get(action, ''))
+                                      'disable': 'Отключение доступа к файлу',
+                                      'policy': 'Политика возврата объявления в Service2'}.get(action, ''))
             with transaction.atomic():
                 connection = ChannelConnection.objects.select_for_update().get(pk=connection.pk)
                 connection = connection_for(request, connection_id)
@@ -249,6 +263,7 @@ def services_feed(request, connection_id):
                 if feed and (not bound(feed, connection) or str(feed.revision) != request.POST.get('revision')):
                     raise ValueError('Данные изменились. Обновите страницу перед сохранением.')
                 source = None
+                policy_changes = []
                 before = deepcopy(feed.draft) if feed else []
                 if action == 'import':
                     if feed:
@@ -263,9 +278,26 @@ def services_feed(request, connection_id):
                     candidate = restored_snapshot(feed, source)
                     # A restore is a new draft, never a replacement of the public file.
                     xml_bytes(candidate, max_images=30)
+                    for item in entries(candidate):
+                        validate_photo_scope(connection, item['ImageUrls'], max_count=30)
                     require_identities(feed, candidate)
                     ensure_baseline(feed)
                     feed.draft = candidate
+                elif action == 'policy' and feed:
+                    avito_id, stopped = request.POST.get('avito_id'), request.POST.get('owner_withdrawn')
+                    target = next((item for item in entries(feed.draft) if item['AvitoId'] == avito_id), None)
+                    if target is None or stopped not in {'0', '1'}:
+                        raise ValueError('Некорректная политика возврата объявления.')
+                    ensure_baseline(feed)
+                    intent, _ = AvitoServicesListingIntent.objects.get_or_create(feed=feed, avito_id=avito_id,
+                        defaults={'account_id': feed.account_id, 'organization_id': feed.organization_id_at_import})
+                    if intent.account_id != feed.account_id or intent.organization_id != feed.organization_id_at_import:
+                        raise ValueError('Политика относится к другой привязке аккаунта. Нужна проверка источника.')
+                    was_stopped = intent.owner_withdrawn
+                    intent.owner_withdrawn, intent.marked_by = stopped == '1', request.user
+                    intent.save()
+                    policy_changes = [{'avito_id': avito_id, 'id': target['Id'],
+                        'field': 'Запрет автоматического возврата (Service2)', 'before': was_stopped, 'after': intent.owner_withdrawn}]
                 elif action == 'disable' and feed:
                     ensure_baseline(feed)
                     feed.enabled = False
@@ -275,7 +307,7 @@ def services_feed(request, connection_id):
                 feed.updated_by = request.user
                 feed.save()
                 record_version(feed, action, before, feed.draft, actor=request.user,
-                               reason=reason, source_version=source)
+                               reason=reason, source_version=source, extra_changes=policy_changes)
             return redirect('avito_services_feed', connection_id=connection_id)
         except ValueError as exc:
             error = str(exc)
@@ -305,6 +337,7 @@ def services_feed_edit(request, connection_id, avito_id):
                 locked = AvitoServicesFeed.objects.select_for_update().get(pk=feed.pk)
                 if not bound(locked, connection) or request.POST.get('revision') != str(locked.revision):
                     return HttpResponse('Данные изменились. Откройте объявление заново перед редактированием.', status=409)
+                form.cleaned_data['image_urls'] = validate_photo_scope(connection, form.cleaned_data['image_urls'])
                 before = deepcopy(locked.draft)
                 updated = deepcopy(locked.draft)
                 target = next(r for r in entries(updated) if r['AvitoId'] == avito_id)
@@ -323,8 +356,10 @@ def services_feed_edit(request, connection_id, avito_id):
             # These are local history/XML validators, not provider response text.
             form.add_error(None, str(error))
             return render(request, 'pool_service/avito/services_edit.html',
-                          {'form': form, 'feed': feed, 'connection': connection, 'row': row}, status=400)
-    return render(request, 'pool_service/avito/services_edit.html', {'form': form, 'feed': feed, 'connection': connection, 'row': row})
+                          {'form': form, 'feed': feed, 'connection': connection, 'row': row,
+                           **editor_media_context(connection, row)}, status=400)
+    return render(request, 'pool_service/avito/services_edit.html', {'form': form, 'feed': feed, 'connection': connection, 'row': row,
+                   **editor_media_context(connection, row)})
 
 
 @login_required
@@ -434,6 +469,7 @@ def services_feed_publish(request, connection_id):
     if not bound(feed, connection) or request.POST.get('revision') != str(feed.revision):
         return HttpResponse('Данные изменились. Обновите страницу.', status=409)
     try:
+        public_origin()  # Reject invalid canonical origin before any provider check or publication.
         # Legacy inactive rows remain stored; only the active publication must fit10.
         xml_bytes(feed.draft, max_images=30)
         require_identities(feed, feed.draft)
@@ -441,6 +477,7 @@ def services_feed_publish(request, connection_id):
         if not entries(verified['sheets']):
             raise ValueError('Нет активных объявлений для публикации. Возвращение из архива требует отдельной проверки стоимости.')
         content = xml_bytes(verified['sheets'])
+        validate_snapshot_media(connection, verified['sheets'])
     except (ValueError, AvitoError) as error:
         return render(request, 'pool_service/avito/services_feed.html',
                       _page_context(request, connection, feed, _safe_failure(error)), status=400)
@@ -454,17 +491,22 @@ def services_feed_publish(request, connection_id):
         require_identities(locked, locked.draft)
         ensure_baseline(locked)
         before = deepcopy(locked.published)
+        for item in entries(verified['sheets']):
+            validate_photo_scope(connection, item['ImageUrls'])
         locked.published = verified['sheets']
         locked.published_revision = locked.revision
         locked.published_photo_limit = 10
         locked.enabled = True
+        verified['observations'] = annotate_reactivation(locked.latest_observations, verified['observations'])
         locked.latest_observations = verified['observations']
         locked.last_checked_at = timezone.now()
         locked.updated_by = request.user
         locked.save()
-        record_version(locked, 'publish', before, locked.published, actor=request.user,
+        mark_snapshot_media_published(connection, locked.published)
+        version = record_version(locked, 'publish', before, locked.published, actor=request.user,
                        reason='Публикация файла; применение Авито ещё не подтверждено',
                        observations=verified['observations'], content=content)
+        bind_publication(locked, version)
     return redirect('avito_services_feed', connection_id=connection_id)
 
 
@@ -486,6 +528,7 @@ def _verify_publication(request, connection, feed):
                 or _older_observation(locked, observed)):
             return HttpResponse('Данные изменились. Обновите страницу.', status=409)
         ensure_baseline(locked)
+        observed = annotate_reactivation(locked.latest_observations, observed)
         locked.latest_observations = observed
         locked.last_checked_at = timezone.now()
         locked.save(update_fields=['latest_observations', 'last_checked_at'])
@@ -509,5 +552,26 @@ def services_feed_public(request, public_key, output_format="xml"):
         return HttpResponse('Источник временно недоступен: требуется проверка данных.', status=503)
     response = HttpResponse(content, content_type=MIME if output_format == 'xlsx' else 'application/xml; charset=utf-8')
     response['Content-Disposition'] = f'attachment; filename="avito-services.{output_format}"'
+    response['X-Robots-Tag'] = 'noindex, nofollow, noarchive'
+    return response
+
+
+@never_cache
+@require_GET
+def services_feed_version_public(request, public_key, version_id):
+    publication = get_object_or_404(AvitoServicesPublication.objects.select_related(
+        'version__feed__connection__channel'), version_id=version_id, version__feed__public_key=public_key)
+    version = publication.version
+    feed, connection = version.feed, version.feed.connection
+    if not _binding_valid(publication, connection):
+        raise Http404
+    try:
+        content = xml_bytes(version.snapshot, max_images=10)
+    except ValueError:
+        return HttpResponse('Источник версии временно недоступен.', status=503)
+    if hashlib.sha256(content).hexdigest() != publication.file_sha256:
+        return HttpResponse('Контрольная сумма версии не совпадает.', status=503)
+    response = HttpResponse(content, content_type='application/xml; charset=utf-8')
+    response['Content-Disposition'] = f'attachment; filename="avito-services-version-{version.pk}.xml"'
     response['X-Robots-Tag'] = 'noindex, nofollow, noarchive'
     return response

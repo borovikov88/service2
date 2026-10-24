@@ -92,12 +92,14 @@ def binding(connection):
     return (current.channel_id, current.channel.organization_id, current.external_id, fingerprint)
 
 def report_summary(report):
+    from .avito_report_messages import groups as message_groups
     samples = []
     rows = sorted(report["rows"], key=lambda row: not any(m["type"] == "error" for m in row["messages"]))
     groups = defaultdict(int)
     for row in rows:
         for key in {(m["type"], m["code"]) for m in row["messages"]}:
             groups[key] += 1
+
         if len(groups) > 200:
             raise AvitoError("audit_report_code_limit")
         critical = [message for message in row["messages"] if message["type"] in ("error", "alarm")]
@@ -114,7 +116,8 @@ def report_summary(report):
             "shop_feed_diagnostics": report.get("shop_feed_diagnostics", []),
             "started_at": datetime.fromisoformat(report["started_at"]).astimezone(ZoneInfo("Asia/Barnaul")).isoformat() if report.get("started_at") else None,
             "message_code_counts": [{"type": kind, "code": code, "rows": count}
-                                    for (kind, code), count in sorted(groups.items())]}
+                                    for (kind, code), count in sorted(groups.items())],
+            "message_groups": message_groups(rows)}
 
 def listing_summary(items, pages):
     # full_scan validates complete pagination and account identity. Titles are
@@ -330,6 +333,13 @@ def collect_connection(connection, item_ids, index, stocks=None, stock_error=Non
                     raise AvitoError("audit_profile_source_changed")
             except Exception as error:
                 configured_source = {"error": safe_error(error)}
+        try:
+            from .avito_services_workplace_setup import webhook_evidence, storage_probe_evidence
+            webhook_state = webhook_evidence(connection, live=True)
+            storage_probe_state = storage_probe_evidence(connection)
+        except Exception as error:
+            webhook_state = {"error": safe_error(error)}
+            storage_probe_state = {"source": "passenger_http", "checked": False, "cached": True, "error": "storage_probe_failed"}
         final_account_id = authorized_account_id(connection)
         after = binding(connection)
         if before != after or final_account_id != account_id:
@@ -342,9 +352,12 @@ def collect_connection(connection, item_ids, index, stocks=None, stock_error=Non
             cached_flags = cached_configuration_state(connection)
         except Exception:
             cached_flags = {"error": "audit_configuration_unavailable"}
+        from .avito_runtime import checks
+        runtime_checks = checks(ChannelConnection.objects.select_related("channel").get(pk=connection.pk))
         return identity | {"account_id": account_id, "items": items, "autoload_report": summary, "listing_scan": listing_scan, "active_source_audit": active_source,
                            "configured_feed_source": configured_source, "advance_access": advance_access,
-                           "monitoring": flags, "cached_configuration": cached_flags}
+                           "monitoring": flags, "cached_configuration": cached_flags, "runtime_checks": runtime_checks,
+                           "webhook_evidence": webhook_state, "storage_probe": storage_probe_state}
     except Exception as error:
         return identity | {"error": safe_error(error)}
 

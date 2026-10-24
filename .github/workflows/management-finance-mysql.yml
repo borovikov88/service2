@@ -5,6 +5,12 @@ on:
     branches: [main]
     paths:
       - "pool_service/models.py"
+      - "pool_service/avito_*.py"
+      - "pool_service/tests/test_avito*.py"
+      - "pool_service/management/commands/monitor_avito_statuses.py"
+      - "pool_service/management/commands/configure_avito_services_workplace.py"
+      - "pool_service/communication_api.py"
+      - "pool_service/communication_services.py"
       - "pool_service/reward_models.py"
       - "pool_service/reward_views.py"
       - "pool_service/services/rewards.py"
@@ -94,4 +100,11 @@ jobs:
             pool_service.tests_communications.CommunicationsTests.test_owner_can_create_and_edit_megafon_line_with_safe_recording_hosts \
             pool_service.tests_communications.CommunicationsTests.test_megafon_account_sync_auto_matches_employee_and_backfills_calls \
             pool_service.tests_communications.CommunicationsTests.test_megafon_accounts_repairs_legacy_api_endpoint_without_redirect \
+            pool_service.tests.test_avito_services_media \
+            pool_service.tests.test_avito_services_publication \
+            pool_service.tests.test_avito_services_runtime \
+            pool_service.tests.test_avito_services_feed \
+            pool_service.tests.test_avito_services_feed_versions \
+            pool_service.tests.test_avito_autoload_auto \
+            pool_service.tests.test_avito_readonly_audit \
             --verbosity 2
