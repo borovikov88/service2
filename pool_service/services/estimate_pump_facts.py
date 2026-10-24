@@ -31,10 +31,26 @@ def voltage(value):
 
 
 def purpose(value):
+    # Exact public card wording, verified against the production catalogue.
+    if value in {
+        'фильтрация и циркуляция воды в бассейне',
+        'циркуляция воды в фильтровальной системе бассейна',
+        'циркуляция воды в системе фильтрации бассейна',
+        'циркуляция и фильтрация общественных бассейнов',
+        'фильтрация и циркуляция воды в общественных бассейнах',
+        'циркуляция воды и фильтрация бассейна',
+        'циркуляция и фильтрация воды бассейна',
+    }:
+        return ('фильтрация', 'циркуляция')
     values = set(re.split(r'\s*[;,/]\s*', value))
     known = {'фильтрация', 'циркуляция', 'гидромассаж', 'противоток', 'аттракционы',
              'фонтан', 'фонтаны', 'дренаж', 'дозирование', 'спа', 'spa'}
     return tuple(sorted(values)) if values and values <= known else None
+
+
+def frequency(value):
+    values = re.split(r'\s*/\s*', re.sub(r'\s*(?:гц|hz)$', '', value))
+    return tuple(sorted(set(values))) if values and set(values) <= {'50', '60'} else None
 
 
 def classify(specs, name, description, category, url, offer):
@@ -54,7 +70,7 @@ def classify(specs, name, description, category, url, offer):
     issues = []
     structured = any(params.get(label) for label in FIELDS.values())
     facts = {'in_category': in_category, 'structured': structured,
-             'prefilter': None, 'issue': '', 'source': ''}
+             'prefilter': None, 'issue': '', 'source': '', 'mode_note': ''}
     notes = []
     if not in_category:
         issues.append('Принадлежность категории «Насосы для бассейнов» не подтверждена.')
@@ -67,7 +83,7 @@ def classify(specs, name, description, category, url, offer):
             'flow': lambda v: number(v, r'(?:м[³3]/(?:ч|час)|m[³3]/h)'),
             'head': lambda v: number(v, r'[мm]', '1000'),
             'phases': lambda v: v if v in {'1', '3'} else None,
-            'frequency': lambda v: number(v, r'(?:гц|hz)', '1000'),
+            'frequency': frequency,
         }
         parsed = {}
         for key, parser in parsers.items():
@@ -84,22 +100,31 @@ def classify(specs, name, description, category, url, offer):
         if duties and ('фильтрация' not in duties or set(duties) - {'фильтрация', 'циркуляция'}):
             issues.append('Назначение насоса не подтверждает обычную фильтрацию бассейна: ' + '; '.join(duties) + '.')
         facts['prefilter'] = parsed.get('prefilter')
-        # The public operating-mode field must describe the same single Q-H
-        # point. A table of curves or maximum values is not a substitute.
+        # Scalar card fields already explicitly link head to the stated flow.
+        # Check additional numeric claims without imposing one prose template.
         modes = params.get(FIELDS['mode'], [])
         for value in modes:
             notes.append(FIELDS['mode'] + ': ' + value)
-            match = re.fullmatch(r'(\d+(?:[.,]\d+)?)\s*м[³3]/ч\s+при\s+(\d+(?:[.,]\d+)?)\s*м\s*;\s*(220|230|380|400)\s*в', value)
-            if not match or any(parsed.get(k) is None or parsed[k] != p(v) for k, p, v in (
-                    ('flow', number, match[1] if match else ''),
-                    ('head', number, match[2] if match else ''),
-                    ('voltage', voltage, match[3] if match else ''))):
-                issues.append('Режим указанной производительности не подтверждает единую рабочую точку и питание.')
+            claims = {
+                'flow': [number(v) for v in re.findall(r'(\d+(?:[.,]\d+)?)\s*м[³3]/ч', value)],
+                'head': [number(v) for v in re.findall(r'при\s+(?:напоре\s+)?(\d+(?:[.,]\d+)?)\s*м\b', value)],
+                'voltage': [voltage(v) for v in re.findall(r'(?<!\d)(220|230|380|400)\s*в\b', value)],
+            }
+            if any(parsed.get(k) is not None and any(v != parsed[k] for v in values) for k, values in claims.items()):
+                issues.append('Режим указанной производительности противоречит расходу, напору или питанию карточки.')
+            if re.search(r'q\s*max|h\s*max|максимальн', value):
+                facts['mode_note'] = 'рабочая Q–H точка вместо максимальных значений режима'
+            elif re.search(r'об/мин|двухскорост|исходного наименования', value):
+                facts['mode_note'] = 'режим и скорость насоса на объекте: ' + value
+            elif not any(claims.values()) and value not in {'рабочая каталожная точка поставщика', 'заявленная производительность'}:
+                facts['mode_note'] = 'условия указанного режима насоса: ' + value
         specs.update(kind='pump', filtration='фильтрация' in duties,
                      nominal_flow=parsed.get('flow'), head=parsed.get('head'),
                      flow=parsed.get('flow') if parsed.get('head') else None,
                      power=parsed.get('voltage', 'unknown'),
                      power_options=[parsed['voltage']] if parsed.get('voltage') else [])
+        if facts['mode_note'].startswith('рабочая Q–H точка вместо'):
+            specs.update(flow=None, head=None)
         if parsed.get('voltage') and parsed.get('phases') and (
                 (parsed['voltage'] == '230' and parsed['phases'] != '1') or
                 (parsed['voltage'] == '400' and parsed['phases'] != '3')):
@@ -113,6 +138,7 @@ def classify(specs, name, description, category, url, offer):
         issues.append('Название подтверждает другое назначение насоса.')
     facts['issue'] = ' '.join(dict.fromkeys(issues))[:1000]
     facts['source'] = facts['source'][:2000]
+    facts['mode_note'] = facts['mode_note'][:500]
     specs['pump_facts'] = facts
 
 
@@ -124,4 +150,5 @@ def normalize(raw):
             'structured': boolean(raw.get('structured', False)),
             'prefilter': None if raw.get('prefilter') is None else boolean(raw['prefilter']),
             'issue': string(raw.get('issue', ''), 'Проверка насоса', 1000),
+            'mode_note': string(raw.get('mode_note', ''), 'Режим насоса', 500),
             'source': string(raw.get('source', ''), 'Источник характеристик насоса', 2000)}

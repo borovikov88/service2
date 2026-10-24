@@ -126,3 +126,33 @@ class PumpFactsTests(SimpleTestCase):
         self.assertIsNone(p['flow'])
         self.assertIsNone(p['head'])
         self.assertIn('рабочая Q–H точка насоса', assess(p, INPUTS, Decimal('8'))[1])
+
+    def test_verified_catalogue_purpose_aliases_and_operating_mode_wording(self):
+        for duty in ['Фильтрация и циркуляция воды в бассейне',
+                     'Циркуляция воды в фильтровальной системе бассейна',
+                     'Циркуляция воды в системе фильтрации бассейна',
+                     'Циркуляция и фильтрация общественных бассейнов',
+                     'Фильтрация и циркуляция воды в общественных бассейнах',
+                     'Циркуляция воды и фильтрация бассейна',
+                     'Циркуляция и фильтрация воды бассейна']:
+            for mode in ['8 м³/ч при 8 м; 220 В; 50 Гц', 'Рабочая точка при 8 м',
+                         'Каталожная рабочая точка при 8 м, 50 Гц',
+                         'Рабочая каталожная точка поставщика', '8 м³/ч при напоре 8 м']:
+                params = [(k, duty if k == 'Назначение' else mode if k == 'Режим указанной производительности'
+                           else '50/60' if k == 'Частота питания, Гц' else v) for k, v in PARAMS]
+                p = catalog.parse_catalog(feed(pump(params=params)))['products']['1']
+                self.assertFalse(p['pump_facts']['issue'], (duty, mode))
+                self.assertIsNone(assess(p, INPUTS, Decimal('8'))[0])
+        for mode in ['8 м³/ч при 10 м; 220 В; 50 Гц', '8 м³/ч при 8 м; 380 В', 'Рабочая точка при 4 м']:
+            params = [(k, mode if k == 'Режим указанной производительности' else v) for k, v in PARAMS]
+            p = catalog.parse_catalog(feed(pump(params=params)))['products']['1']
+            self.assertTrue(p['pump_facts']['issue'])
+
+    def test_speed_conditions_are_provisional_and_maxima_are_not_operating_points(self):
+        for mode, has_point in [('При 1450 об/мин', True), ('Qmax 8 м³/ч, Hmax 8 м', False), ('Неизвестный режим', True)]:
+            params = [(k, mode if k == 'Режим указанной производительности' else v) for k, v in PARAMS]
+            p = catalog.parse_catalog(feed(pump(params=params)))['products']['1']
+            self.assertFalse(p['pump_facts']['issue'])
+            self.assertEqual(p['flow'] is not None, has_point)
+            self.assertTrue(p['pump_facts']['mode_note'])
+            self.assertIn(p['pump_facts']['mode_note'], assess(p, INPUTS, Decimal('8'))[1])

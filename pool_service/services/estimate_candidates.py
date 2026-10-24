@@ -30,6 +30,8 @@ def assess(product, inputs, required_flow, profile=None):
             missing.append('характеристики насоса в карточке магазина')
         elif facts.get('prefilter') is not True:
             missing.append('отдельный префильтр перед насосом' if facts.get('prefilter') is False else 'наличие префильтра')
+        if facts.get('mode_note'):
+            missing.append(facts['mode_note'])
     if kind == 'pump' and product.get('filtration') is not True:
         # A vague "pump" could be an attraction/spa device: minimum identity gate.
         return 'Назначение для фильтрации с префильтром не подтверждено.', []
