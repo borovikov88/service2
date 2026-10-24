@@ -117,6 +117,7 @@ def _save_webhook_evidence(connection_id, binding, origin, expected_hash, *, ver
         metadata[WEBHOOK_KEY] = {**binding, "origin": origin, "token_stamp": stamp,
             "verified": verified, "verified_at": previous.get("verified_at") if same_window and previous.get("verified") else timezone.now().isoformat(),
             "last_delivery_at": previous.get("last_delivery_at") if same_window else None,
+            "chain": previous.get("chain") if same_window else None,
             "last_error_code": error}
         if verified:
             marker = dict(metadata.get(KEY) or {})
@@ -187,7 +188,7 @@ def ensure_webhook(connection_id, binding, origin):
     _save_webhook_evidence(connection_id, binding, origin, connection.api_token_hash, verified=True)
 
 
-def stamp_incoming(connection, metadata, result, *, expected_hash, message_present):
+def stamp_incoming(connection, metadata, result, *, expected_hash, message_present, message=None):
     """Called only after existing token auth + account-validated ingest succeeded."""
     if not message_present or result not in {"created", "duplicate"} or connection.api_token_hash != expected_hash:
         return
@@ -199,6 +200,11 @@ def stamp_incoming(connection, metadata, result, *, expected_hash, message_prese
     verified_at = when(evidence.get("verified_at"))
     if verified_at is None or verified_at > timezone.now():
         return
+    if connection.pk == 4:
+        from .avito_webhook_chain import capture
+        if not capture(connection, metadata, result, message):
+            return
+        evidence = metadata[WEBHOOK_KEY]
     metadata[WEBHOOK_KEY] = {**evidence, "last_delivery_at": timezone.now().isoformat()}
 
 
@@ -217,6 +223,9 @@ def webhook_evidence(connection, *, live=False):
     result = {"binding_valid": valid, "registration_confirmed": registered,
         "delivery_observed": bool(registered and verified_at and delivery and verified_at <= delivery <= timezone.now()),
         "live_provider_checked": False, "live_registered": None}
+    if connection.pk == 4:
+        from .avito_webhook_chain import summary
+        result["delivery_observed"] = bool(result["delivery_observed"] and summary(connection)["authenticated_event"])
     if live:
         if _provider_root() != "https://api.avito.ru" or not valid:
             return result

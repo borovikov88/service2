@@ -1,53 +1,75 @@
-# Explicit hosting-operator Avito audit
+# Protected services release audit
 
-The connected 1C Diagnostic MCP scope is unchanged. This audit uses the existing
-protected production deployment identity and the encrypted Avito client credentials
-on their Service2 host, for the owner's requested account diagnostics.
+The existing protected audit command and scheduled/post-deploy workflow now read
+only Service2 connection4 / Avito446312402. Revision15 means the requested
+published revision; the current draft revision and history row PK are separate
+fields. No browser session, new service, credentials or paid API is required.
 
-Acceptance: confirm account self matches each configured connection; join selected
-item IDs through API autoload_item_id to the existing XML's exact Id; read the
-complete stable last_successful v4 report; publish only bounded schema-projected
-receipts; never change listings, prices, categories, user rights or schedules.
+The fixed command is:
+manage.py audit_avito_readonly --connection-id 4 --account-id 446312402 --revision 15
 
-manage.py audit_avito_readonly --item-ids <comma-separated numeric IDs> is an
-explicit privileged hosting-operator command. At most two active credentialed
-Avito connections are read; an active owner/admin with channel-management capability
-must exist in each organization. Bindings, encrypted-key fingerprints and account
-self are checked again after the reads. Drift discards the connection result.
-Only the official https://api.avito.ru root and the existing fixed, pinned shop
-XML reader are used. Existing client token caching and database request throttling
-continue; no workspace/auto-collector setting or notification is written.
+Other connections/accounts/revisions fail before token/provider access. Optional
+item IDs are intersected with the bound services draft before requests; the
+default is empty. The scoped reader never fetches Shop XML, physical stock or
+legacy goods IDs. Legacy multi-account collection remains an internal
+compatibility function, not an operational command/workflow path.
 
-The deployment workflow invokes it only on a main push whose commit message
-contains [avito-audit], after the normal deployment and HTTPS health. It acquires
-the existing ../tmp/service2-deploy.lock, verifies the deployed tested SHA and audit
-source cleanliness, uses pinned SSH, and limits execution to 360 seconds.
-Ordinary deployments do not read Avito through this command.
-Raw SSH stdout/stderr remain private, are deleted, and are not artifacts or logs.
-A separate pure-Python parser accepts exactly one framed receipt and projects its
-full schema again; invalid transport/schema is a fixed unavailable marker.
+The protected GitHub workflow requires current main, successful exact-head
+production CI, pinned SSH, a canonical private checkout, clean deployed source
+and the existing deployment lock. Its normal workflow_run trigger supplies
+fresh read-only evidence after deployment without dispatch tooling. The command
+does not publish a file, create photo assets, register webhooks, change monitor
+settings or create notifications. Existing account4 token-cache and request
+throttle mechanisms retain their ordinary behavior.
 
-The source receipt includes XML hash/count and bounded Laguna 2.0x1.25 candidates,
-XML ID/price/Availability only. API details and the latest report have distinct
-fields and timestamps; no_autoload_id and not_in_current_xml are not proof an ad
-was manually created or should be deleted. A matching ID proves the ID match,
-not that account autoload settings use this exact feed URL: that is explicitly
-unverified. This is not a full inventory of all account listings.
-Reports may be incomplete/denied; their absence never becomes a successful zero.
-Critical messages are bounded and contact/credential text is redacted again.
-No deletion, deactivation, promotion or shop database/profile edit is performed.
+Only bounded schema-projected receipts leave the host. They include the exact
+fixed services scope, active/report coverage, safe publication/history metadata,
+an optional immutable-file HTTP byte comparison, current webhook ingestion and
+owner-notification evidence, and a decoded existing photograph shared with the
+published snapshot. URLs, feed capability UUIDs, hashes, image bytes, actors,
+listing text, message bodies, callback identifiers and secrets are withheld.
+The receipt exposes only the authenticated owner page /avito/4/services-feed/;
+the concrete immutable URL is shown there to the authorized owner.
 
-Full listing scans now use the existing strict full_scan helper (60-second
-budget per connection, shared throttling, up to 100 pages/5,000 listings).
-Only complete scans return status counts; failures carry a safe error and never
-fabricated zero counts. Duplicate-title groups are candidates, with numeric IDs
-and a title SHA-256; raw titles are withheld. Snapshot count does not prove stock
-or the historical reason for expiry. listing_stock_reconciliation_verified
-remains false. Account/key/role binding is rechecked after all reads.
+One raw item-detail GET uses the existing authenticated bounded transport and
+the first owned published service ID. Only fixed lower/capitalized-key presence,
+type and array/object count for title/description/images/photos are projected.
+Another-user/not-found/unknown status cannot confirm a content boundary. A
+requested detail for the same item reuses that response. This measures the
+specific endpoint response; field presence is never actual content verification
+or proof of another endpoint's capabilities.
 
-Autoload report aggregates count distinct affected rows by message type/code
-across the full report, not only the bounded sample. Code groups are capped at
-200; incomplete/invalid aggregates fail closed. Error rows take priority over
-alarm-only rows in samples. started_at is the provider upload start converted
-to Asia/Barnaul, separately from checked_at. No collection activation, database
-business-data writes, listing changes, ID recreation or paid services result.
+Database/account/organization/owner/key bindings are rechecked after all reads.
+Drift discards all connection evidence. Helper failures remain independent.
+The strict standalone renderer accepts one framed receipt and validates it
+again, rejects extra/foreign connections, and never echoes raw SSH stderr.
+
+An immutable HTTP byte match proves Service2 served that version, not that
+Avito fetched it or applied its text/photos. Report errors and unavailable data
+remain distinct from zero. Registration, authenticated ingress, message
+persistence, owner notification and push delivery are separate facts.
+
+
+## Separately approved draft-photo operation
+
+A different fixed command run_avito_services_release_operation is invoked only
+after normal deployment health and setup when the main push contains the exact
+marker [avito-services-release-v15-20261024]. Its generation is
+services-v15-20261024-r1. Ordinary later deployments and the read-only workflow
+do not call this operation. The protected command verifies the exact deployed
+SHA, account/actor/key binding and its durable generation lease.
+
+This first operation checks the existing publication and approved photo, then
+uses the signed Passenger endpoint for a real upload, private preview, cover
+order save and exact restoration of the original draft content. Its two editor
+saves create history and advance the draft revision; they do not publish the
+file or change the current published contents/revision. It does not prove
+browser clicks, public availability of the new asset, or actual Avito content.
+
+The pending operation identity is saved before POST. Timeout or a repeated
+invocation only reconciles the durable endpoint receipt; it never sends another
+POST or creates a new token blindly. Unknown remains unknown until a matching
+current-bound durable result exists. Shared deployment locking and private
+stdout/stderr handling match the read-only operator. A separate strict parser
+projects fixed positive/negative facts; workflow success alone is not proof
+that the photo operation completed.

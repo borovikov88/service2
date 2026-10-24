@@ -19,6 +19,9 @@ from pool_service.models import OrganizationAccess
 from scripts.avito_readonly_receipt import normalize, safe_text, xml_id, price
 
 MAX_CONNECTIONS = 2
+SERVICES_CONNECTION_ID = 4
+SERVICES_ACCOUNT_ID = "446312402"
+SERVICES_REVISION = 15
 SAFE_ERRORS = {
     "advance_data_invalid", "advance_provider_invalid", "provider_cooldown",
     "provider_credentials_missing", "provider_credentials_invalid", "provider_token_missing",
@@ -29,7 +32,7 @@ SAFE_ERRORS = {
     "provider_account_mismatch", "provider_data_invalid", "provider_unavailable",
     "provider_response_too_large", "provider_invalid_json", "provider_invalid_response",
     "autoload_report_invalid", "autoload_report_changed", "autoload_report_limit", "autoload_report_pagination",
-    "autoload_report_duplicate_rows",
+    "autoload_report_duplicate_rows", "audit_content_probe_unavailable",
     *avito_source_audit.ERRORS,
 }
 
@@ -155,18 +158,67 @@ def item_link(item_id, detail, index):
     return {"item_id": item_id, "status": detail["status"], "autoload_xml_id": public_xml_id(source_id),
             "link_state": state, "xml_matches": matches[:10], "report_xml_ids": []}
 
-def fetch_detail(token, account_id, item_id):
+def _item_detail_slot(account_id):
     deadline = time.monotonic() + 15
     while True:
         try:
             avito_workspace.enforce_rate(account_id, "item_detail", seconds=3)
-            break
+            return
         except avito_workspace.AvitoCooldownError as error:
             wait = max(0.05, (error.retry_at - timezone.now()).total_seconds())
             if time.monotonic() + wait >= deadline:
                 raise AvitoError("audit_provider_cooldown") from None
             time.sleep(min(wait, 3))
+
+
+def fetch_detail(token, account_id, item_id):
+    _item_detail_slot(account_id)
     return avito_workspace.fetch_item_detail(token, account_id, item_id)
+
+
+def _raw_field_shape(response, key):
+    if key not in response:
+        return {"present": False, "type": "missing", "count": None}
+    value = response[key]
+    kind = ("null" if value is None else "boolean" if type(value) is bool
+            else "string" if isinstance(value, str) else "array" if isinstance(value, list)
+            else "object" if isinstance(value, dict) else "number" if type(value) in (int, float)
+            else None)
+    if kind is None or kind in {"array", "object"} and len(value) > 1000:
+        raise AvitoError("provider_data_invalid")
+    return {"present": True, "type": kind, "count": len(value) if kind in {"array", "object"} else None}
+
+
+def _published_probe_id(feed):
+    published = [row for sheet in feed.published for row in sheet["rows"]]
+    selected = next((row["AvitoId"] for row in published
+                     if isinstance(row.get("AvitoId"), str)
+                     and re.fullmatch(r"[0-9]{1,32}", row["AvitoId"])), None)
+    if selected is None:
+        raise AvitoError("audit_content_probe_unavailable")
+    return selected
+
+
+def raw_content_probe(token, account_id, feed):
+    """One existing item endpoint; only fixed structural evidence leaves this function."""
+    selected = _published_probe_id(feed)
+    _item_detail_slot(account_id)
+    # Existing transport bounds JSON to1MiB and timeout8s; no new provider endpoint.
+    response = avito_workspace._get(token, f"/core/v1/accounts/{account_id}/items/{selected}/")
+    status = response.get("status")
+    if status in {"not_found", "another_user"}:
+        raise AvitoError("provider_item_unavailable")
+    if status not in avito_workspace.ITEM_STATUSES:
+        raise AvitoError("provider_data_invalid")
+    fields = {key: {"lowercase": _raw_field_shape(response, key),
+                    "capitalized": _raw_field_shape(response, key.capitalize())}
+              for key in ("title", "description", "images", "photos")}
+    evidence = {"source": "avito_item_detail_raw_fields", "endpoint_kind": "core_v1_account_item",
+        "checked_at": timezone.now().isoformat(), "owned_status_verified": True,
+        "sample_count": 1, "live_content_verified": False, "fields": fields}
+    # Reuse the same response for a requested link; raw values are not retained.
+    detail = {"status": status, "autoload_item_id": avito_workspace._text(response.get("autoload_item_id"), 100)}
+    return selected, detail, evidence
 
 def monitoring_state(connection):
     """Configuration/evidence flags only: no amount, dates, recipient or message."""
@@ -297,9 +349,12 @@ def services_coverage(feed, all_items, *, requested, checked, skipped):
         'published_inactive': len(published_ids & inactive) if complete else None,
         'requested_count': requested, 'checked_count': checked, 'skipped_out_of_scope': skipped}
 
-def collect_connection(connection, item_ids, index, stocks=None, stock_error=None):
+def collect_connection(connection, item_ids, index, stocks=None, stock_error=None, *, release_evidence=False):
     identity = {"connection_id": connection.pk}
     try:
+        if release_evidence and (connection.pk != SERVICES_CONNECTION_ID
+                                 or connection.external_id != SERVICES_ACCOUNT_ID):
+            raise AvitoError("provider_account_mismatch")
         before = binding(connection)
         # Existing .env/credentials remain on the host. Only the official root.
         if _provider_root() != "https://api.avito.ru":
@@ -319,13 +374,24 @@ def collect_connection(connection, item_ids, index, stocks=None, stock_error=Non
             advance_access = {"error": safe_error(error)}
         from .avito_input_copy import bound_services_feed
         service_feed = bound_services_feed(connection, account_id)
+        if release_evidence and service_feed is None:
+            raise AvitoError("provider_account_mismatch")
         service_ids = ({row['AvitoId'] for sheet in service_feed.draft for row in sheet['rows']}
                        if service_feed is not None else None)
         scoped_ids = [item_id for item_id in item_ids if service_ids is None or item_id in service_ids]
+        raw_fields, probed_id, probed_detail = None, None, None
+        if release_evidence:
+            try:
+                probed_id = _published_probe_id(service_feed)
+                _, probed_detail, raw_fields = raw_content_probe(token, account_id, service_feed)
+            except Exception as error:
+                raw_fields = {"error": safe_error(error)}
         items = []
         for item_id in scoped_ids:
             try:
-                detail = fetch_detail(token, account_id, item_id)
+                if item_id == probed_id and probed_detail is None:
+                    raise AvitoError(raw_fields["error"])
+                detail = probed_detail if item_id == probed_id else fetch_detail(token, account_id, item_id)
                 items.append(services_item_link(item_id, detail, service_feed) if service_feed is not None
                              else item_link(item_id, detail, index))
             except Exception as error:
@@ -335,6 +401,8 @@ def collect_connection(connection, item_ids, index, stocks=None, stock_error=Non
             from .avito_input_copy import services_input_scope
             proof_options = ({"include_input_proof": True, "input_proof_connection": connection}
                              if services_input_scope(connection, account_id) else {})
+            if release_evidence:
+                proof_options["allow_shop_recovery"] = False
             report = avito_autoload_report.fetch_report(token, account_id, kind="last_successful", **proof_options)
             summary = report_summary(report)
             for item in items:
@@ -386,6 +454,9 @@ def collect_connection(connection, item_ids, index, stocks=None, stock_error=Non
             # Independent local storage proof must survive a provider read failure,
             # and a storage diagnostic failure must not erase webhook evidence.
             storage_probe_state = {"source": "passenger_http", "checked": False, "cached": True, "error": "storage_probe_failed"}
+        release_fields = _services_release_evidence(connection) if release_evidence else {}
+        if release_evidence:
+            release_fields["raw_content_fields"] = raw_fields
         final_account_id = authorized_account_id(connection)
         after = binding(connection)
         if before != after or final_account_id != account_id:
@@ -400,7 +471,7 @@ def collect_connection(connection, item_ids, index, stocks=None, stock_error=Non
             cached_flags = {"error": "audit_configuration_unavailable"}
         from .avito_runtime import checks
         runtime_checks = checks(ChannelConnection.objects.select_related("channel").get(pk=connection.pk))
-        return identity | ({"services_coverage": service_coverage} if service_coverage is not None else {}) | {"account_id": account_id, "items": items, "autoload_report": summary, "listing_scan": listing_scan, "active_source_audit": active_source,
+        return identity | release_fields | ({"services_coverage": service_coverage} if service_coverage is not None else {}) | {"account_id": account_id, "items": items, "autoload_report": summary, "listing_scan": listing_scan, "active_source_audit": active_source,
                            "configured_feed_source": configured_source, "advance_access": advance_access,
                            "monitoring": flags, "cached_configuration": cached_flags, "runtime_checks": runtime_checks,
                            "webhook_evidence": webhook_state, "storage_probe": storage_probe_state}
@@ -434,3 +505,70 @@ def collect(item_ids):
     )
     return normalize({"schema_version": 1, "status": "read" if complete else "partial",
                       "checked_at": checked_at, "source": source, "connections": results})
+
+
+def _services_release_evidence(connection):
+    """Independent read-only checks; no helper failure erases another result."""
+    result = {}
+    try:
+        from .avito_services_publication import publication_release_check
+        result["publication_release"] = publication_release_check(
+            connection, revision=SERVICES_REVISION, check_http=True)
+    except Exception:
+        result["publication_release"] = {"error": "audit_publication_release_unavailable"}
+    try:
+        from .avito_webhook_chain import summary
+        result["webhook_chain"] = summary(connection)
+    except Exception:
+        result["webhook_chain"] = {"error": "audit_webhook_chain_unavailable"}
+    try:
+        from .avito_services_media_livecheck import media_release_source
+        result["approved_photo"] = media_release_source(connection)
+    except Exception:
+        result["approved_photo"] = {"error": "audit_approved_photo_unavailable"}
+    return result
+
+
+def collect_services(item_ids=None, *, connection_id=SERVICES_CONNECTION_ID,
+                     account_id=SERVICES_ACCOUNT_ID, revision=SERVICES_REVISION):
+    """Current services release only; never discover or read another account."""
+    checked_at = datetime.now(ZoneInfo("Asia/Barnaul")).isoformat()
+    from django.urls import reverse
+    owner_page = reverse("avito_services_feed", args=[SERVICES_CONNECTION_ID])
+    if owner_page != "/avito/4/services-feed/":
+        raise ValueError("owner page invalid")
+    envelope = {"schema_version": 1, "checked_at": checked_at, "prepared_owner_page": owner_page,
+        "scope": {"kind": "services_readonly", "connection_id": SERVICES_CONNECTION_ID,
+                  "account_id": SERVICES_ACCOUNT_ID, "revision": SERVICES_REVISION},
+        "source": {"scope": "services", "state": "not_applicable",
+                   "reason": "services_have_no_physical_stock"}, "connections": []}
+    if (type(connection_id) is not int or connection_id != SERVICES_CONNECTION_ID
+            or account_id != SERVICES_ACCOUNT_ID or type(revision) is not int
+            or revision != SERVICES_REVISION):
+        return normalize(envelope | {"status": "blocked", "reason": "audit_scope_invalid"})
+    if item_ids is None:
+        item_ids = []
+    if not isinstance(item_ids, list) or (item_ids and parse_item_ids(",".join(item_ids)) != item_ids):
+        raise ValueError("item IDs invalid")
+    connection = ChannelConnection.objects.filter(
+        pk=SERVICES_CONNECTION_ID, external_id=SERVICES_ACCOUNT_ID,
+        is_active=True, channel__kind="avito", channel__is_active=True,
+        avito_credential__isnull=False,
+    ).select_related("channel").first()
+    if connection is None:
+        return normalize(envelope | {"status": "blocked", "reason": "audit_services_connection_unavailable"})
+    # Fail before token/provider access if account/organization/feed/owner changed.
+    try:
+        binding(connection)
+        from .avito_input_copy import bound_services_feed
+        if bound_services_feed(connection, SERVICES_ACCOUNT_ID) is None:
+            raise AvitoError("provider_account_mismatch")
+    except Exception:
+        return normalize(envelope | {"status": "blocked", "reason": "audit_services_binding_invalid"})
+    row = collect_connection(connection, item_ids, None, release_evidence=True)
+    complete = ("error" not in row and all(
+        "error" not in row[key] for key in
+        ("autoload_report", "listing_scan", "configured_feed_source", "advance_access",
+         "publication_release", "webhook_chain", "approved_photo", "raw_content_fields"))
+        and all("error" not in item for item in row["items"]))
+    return normalize(envelope | {"status": "read" if complete else "partial", "connections": [row]})

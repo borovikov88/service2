@@ -35,8 +35,10 @@ def diagnostic_account(connection, *, has_credentials=False):
     if not isinstance(rows, list):
         rows = []
     from .avito_runtime import checks
+    from .avito_webhook_chain import display
+    chain = display(connection) if connection.pk == 4 and str(connection.external_id) == "446312402" else {}
     return {
-        "runtime_checks": checks(connection),
+        "runtime_checks": checks(connection), "webhook_chain": chain,
         "connection": connection, "has_credentials": has_credentials,
         "checked_at": data.get("avito_api_checked_at") or "",
         "results": [row for row in rows if isinstance(row, dict) and isinstance(row.get("key"), str) and row.get("key") in DIAGNOSTIC_KEYS][:7],

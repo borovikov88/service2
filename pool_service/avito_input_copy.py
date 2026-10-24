@@ -144,10 +144,19 @@ def _copy_url(summary):
     return part, host
 
 def _download(summary, deadline):
-    # Reuse the reviewed DNS and numeric-pinned TLS transport from the photo
-    # integration. It never receives provider Authorization or ambient cookies.
-    from .avito_services_media import _resolve, _PinnedHTTPS, _public_ip
+    # The first-party report URL guard is deliberately separate from transport.
     part, host = _copy_url(summary)
+    return _download_url(part, host, deadline)
+
+
+def _download_url(part, host, deadline):
+    """Internal transport: callers must validate a fixed, trusted source first.
+
+    Report copies use _copy_url's Avito-domain allowlist. Immutable source checks
+    use a server-generated version_url, never a URL accepted from a request.
+    No caller can supply Authorization or ambient cookies.
+    """
+    from .avito_services_media import _resolve, _PinnedHTTPS, _public_ip
     if time.monotonic() >= deadline:
         raise CopyUnavailable('input_copy_budget_exhausted')
     try:

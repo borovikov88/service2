@@ -1,0 +1,28 @@
+{% if feed.enabled %}
+<details class="card card-body my-3">
+<summary>Ручная сверка содержимого карточек · опубликованная версия {{ feed.published_revision }}</summary>
+<p class="mt-2 mb-2"><strong>Содержимое карточек Авито не сверено.</strong> Этот лист показывает ожидаемые значения из опубликованного снимка Service2. Активный статус и отчёт автозагрузки не подтверждают совпадение заголовка, описания или фотографий.</p>
+<p class="small">Источник ожидаемых значений: опубликованный XML Service2, версия {{ feed.published_revision }}.
+{% if publication and publication.version.revision == feed.published_revision %}Запись публикации: {{ publication.version.pk }} · {{ publication.version.created_at }}.{% else %}Время исходной публикации не установлено.{% endif %}
+Лист сформирован: {% now "c" %}.</p>
+<ol class="small">
+<li>До проверки сохраните исходную карточку или снимки экрана существующего объявления с его AvitoId. Укажите, откуда они получены: кабинет Авито или публичная страница, полный адрес страницы и время наблюдения.</li>
+<li>После завершения загрузки откройте то же объявление. Сравните заголовок, описание и каждую фотографию, включая обложку и порядок, со значениями ниже.</li>
+<li>В сохранённом листе или снимках отметьте фактические отличия, дату и время, источник и имя проверившего. Если поле нельзя увидеть, оставьте его несверенным.</li>
+</ol>
+<p class="small">Это рабочий лист для ручной проверки. Он не сохраняет заключение о совпадении и не меняет статус проверки в Service2.</p>
+{% for sheet in feed.published %}{% for item in sheet.rows %}
+<details class="border rounded p-2 mb-2">
+<summary>AvitoId {{ item.AvitoId }} · Id {{ item.Id }} · {{ item.Title }}</summary>
+<div class="table-responsive mt-2"><table class="table table-sm align-top"><thead><tr><th>Поле</th><th>Ожидаемое значение из XML</th><th>Фактическое значение после обработки</th></tr></thead><tbody>
+<tr><th>Заголовок</th><td><pre class="mb-0 text-break" style="white-space:pre-wrap">{{ item.Title }}</pre></td><td>Заполните при ручной сверке</td></tr>
+<tr><th>Описание</th><td><pre class="mb-0 text-break" style="white-space:pre-wrap">{{ item.Description }}</pre></td><td>Заполните при ручной сверке</td></tr>
+<tr><th>Фотографии в порядке XML</th><td><pre class="mb-0 text-break" style="white-space:pre-wrap">{{ item.ImageUrls }}</pre></td><td>Сверьте изображения, обложку и порядок. Ссылки сами по себе не доказывают совпадение изображений.</td></tr>
+</tbody></table></div>
+<p class="small mb-1">Источник до проверки и время: ____________________</p>
+<p class="small mb-1">Источник после обработки и время: ____________________</p>
+<p class="small mb-0">Проверил(а), результат и отличия: ____________________</p>
+</details>
+{% endfor %}{% endfor %}
+</details>
+{% endif %}

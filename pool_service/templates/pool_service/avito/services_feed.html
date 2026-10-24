@@ -28,6 +28,7 @@
 </form>
 </details>
 {% if feed %}
+{% include 'pool_service/avito/_card_comparison_worksheet.html' %}
 <form method="post" action="{% url 'avito_services_feed_publish' connection.pk %}" class="card card-body my-3">{% csrf_token %}
 <input type="hidden" name="revision" value="{{ feed.revision }}">
 <p>Перед публикацией проверяются принадлежность всех строк аккаунту и наличие всех активных объявлений. В новый XML войдут только подтверждённые активные объявления. Неактивные строки останутся в черновике и истории.</p>
@@ -36,19 +37,29 @@
 </form>
 {% if feed.enabled %}
 <div class="alert alert-info" role="status">
-<p class="mb-1">Файл версии {{ feed.published_revision }} доступен Авито.</p>
+<p class="mb-1">Опубликованный снимок Service2: версия {{ feed.published_revision }}.</p>
 {% if publication %}
 <p class="mb-1"><strong>{{ publication.label }}</strong></p>
+<dl class="row small mb-1" aria-label="Этапы подтверждения публикации">
+<dt class="col-8">Файл версии опубликован в Service2</dt><dd class="col-4">{% if publication.facts.file_published %}Да{% else %}Не подтверждено{% endif %}</dd>
+<dt class="col-8">Найдена загрузка после публикации</dt><dd class="col-4">{% if publication.facts.upload_found %}Да{% else %}Ожидается{% endif %}</dd>
+<dt class="col-8">Источник загрузки связан с этой версией</dt><dd class="col-4">{% if publication.facts.source_confirmed %}Подтверждено{% else %}Не подтверждено{% endif %}</dd>
+<dt class="col-8">Строки найденной загрузки обработаны</dt><dd class="col-4">{% if publication.facts.rows_processed %}Да, см. результаты{% else %}Не подтверждено{% endif %}</dd>
+<dt class="col-8">Текст и порядок фотографий в живой карточке</dt><dd class="col-4">Не проверены</dd>
+</dl>
+{% if publication.facts.rows_processed and not publication.facts.source_confirmed %}<p class="small mb-1">Строки обработаны в найденной загрузке, но её связь с этой версией файла ещё не доказана.</p>{% endif %}
 {% if publication.attempt %}<p class="small mb-1">Загрузка {{ publication.attempt.upload_id }} · начало {{ publication.attempt.report_started_at }} · проверка {{ publication.attempt.checked_at }}.</p>{% endif %}
 <p class="mb-0">Подтверждение источника версии и статусы объявлений не подтверждают фактическое содержание текста и фотографий: используемый метод API не возвращает эти поля.</p>
 {% else %}<p class="mb-0">Обработка, модерация и применение изменений пока не подтверждены. Для старого опубликованного снимка ещё нет привязки к неизменяемому источнику.</p>{% endif %}
 </div>
 {% if publication %}
 <details class="card card-body my-3"><summary>Связь версии с загрузкой Авито</summary>
-<label for="version-feed-url" class="mt-2">Неизменяемый XML версии {{ publication.version.revision }}</label>
+<label for="version-feed-url" class="mt-2">Неизменяемый XML опубликованной ревизии {{ publication.version.revision }}</label>
+<p class="small mb-1">Запись истории № {{ publication.version.pk }} · опубликована {{ publication.version.created_at }}.</p>
 <input id="version-feed-url" class="form-control" value="{{ publication.url }}" readonly>
-<p class="small mt-2">Неизменяемый адрес позволяет подтвердить версию, если API отчёта возвращает его напрямую. Старый адрес продолжит отдавать прежнюю версию. Для постоянного feed.xml автоматический читатель может проверить входную XML-копию Авито: полный набор Id/AvitoId и точный SHA-256 должны совпасть с одной версией, опубликованной до начала загрузки. Настройки Авито автоматически не меняются.</p>
-<p class="small">Адрес копии Авито сам по себе не доказывает ошибку настройки. Без подтверждённой XML-копии дата и совпадение Id дают лишь кандидатную связь. Копия XLSX или другого неподдержанного формата, недоступная копия и одинаковые байты нескольких версий оставляют точную публикацию неподтверждённой. Старый отчёт новую публикацию не подтверждает.</p>
+<div class="alert alert-warning small mt-2 mb-1">При выборе этого адреса в кабинете Авито фиксируется весь снимок объявлений этой версии. Следующая публикация в Service2 не изменит его содержимое: для новой версии потребуется снова согласовать и заменить источник в Авито. Не переключайте источник до проверки текущей ревизии, состава и точных HTTP-байтов.</div>
+<p class="small mt-2">Неизменяемый адрес позволяет подтвердить версию, если API отчёта возвращает его напрямую. Старый адрес продолжит отдавать прежнюю версию. Для постоянного feed.xml автоматический читатель может проверить входную XML-копию Авито: полный набор Id/AvitoId и точный SHA-256 должны совпасть с одной версией, опубликованной до начала загрузки. Настройки Авито автоматически не меняются. До ручного изменения источника нужно проверить доступность и точные байты этого адреса; совпадение нашего HTTP-ответа не означает получение файла Авито.</p>
+<p class="small">Адрес копии Авито сам по себе не доказывает ошибку настройки. Без подтверждённой XML-копии дата и совпадение Id дают лишь кандидатную связь. Если Авито отдаёт только защищённый адрес копии (например, HTTP 401), неизменяемый адрес сам по себе не снимает это ограничение. Копия XLSX или другого неподдержанного формата, недоступная копия и одинаковые байты нескольких версий без точного неизменяемого URL оставляют точную публикацию неподтверждённой. Старый отчёт новую публикацию не подтверждает.</p>
 <div class="table-responsive"><table class="table"><thead><tr><th>Объявление</th><th>Результат в отчёте</th><th>Срок</th><th>Сообщения</th></tr></thead><tbody>
 {% for result in publication.rows %}<tr><td>Id {{ result.xml_id }}<br>AvitoId {{ result.avito_id|default_if_none:"не передан" }}</td><td>{{ result.status|default_if_none:"не передан" }}{% if result.has_error %}<br>Требует исправления{% endif %}</td><td>{{ result.finish_time|default_if_none:"не передан" }}</td><td>{% for message in result.messages %}{{ message.type }} {{ message.code }}{% if not forloop.last %}; {% endif %}{% empty %}Нет сообщений{% endfor %}</td></tr>{% empty %}<tr><td colspan="4">Подходящий отчёт после публикации ещё не получен.</td></tr>{% endfor %}
 </tbody></table></div>
@@ -56,14 +67,14 @@
 {% endif %}
 {% if feed_url %}<details class="card card-body my-3"><summary>Источник XML и подключение автозагрузки</summary>
 <label for="feed-url" class="mt-2">Ссылка XML для аккаунта {{ connection.external_id }}</label><input class="form-control" id="feed-url" value="{{ feed_url }}" readonly>
-<p class="small mt-2">В настройках автозагрузки Авито должен быть подключён именно feed.xml. Публикация в Service2 не меняет настройки Авито и не запускает принудительную загрузку.</p>
+<p class="small mt-2">Это постоянный адрес feed.xml: он отдаёт последний опубликованный снимок. Неизменяемый адрес выше отдаёт только одну версию. В Авито должен быть выбран один согласованный источник для этого аккаунта; не добавляйте вторую копию того же файла. Изменение URL в кабинете требует отдельного шага владельца. Публикация в Service2 не меняет настройки Авито и не запускает принудительную загрузку.</p>
 <form method="post">{% csrf_token %}<input type="hidden" name="revision" value="{{ feed.revision }}"><input type="hidden" name="action" value="disable"><button class="btn btn-outline-secondary" type="submit">Отключить доступ к файлу</button></form>
 </details>{% endif %}
 {% else %}<p>Источник пока недоступен Авито.</p>{% endif %}
 <div class="table-responsive"><table class="table align-middle"><thead><tr><th>Объявление</th><th>Статус и срок в Авито</th><th></th></tr></thead><tbody>
 {% for row in rows %}<tr>
 <td>{{ row.Title }}<div class="small">Id {{ row.Id }} · AvitoId {{ row.AvitoId }}</div></td>
-<td>{% if row.observation %}{% if row.archive_control.code == 'provider_expired' %}{{ row.archive_control.label }}{% else %}{{ row.observation.status_label }}{% endif %}
+<td>{% if row.observation %}{% if row.archive_control.code == 'provider_term_passed' %}{{ row.archive_control.label }}{% else %}{{ row.observation.status_label }}{% endif %}
 {% if not row.observation.included %}<div class="small">{{ row.observation.exclusion_reason }}</div>{% endif %}
 <div class="small">Срок: {% if row.observation.finish_time %}{{ row.observation.finish_time }}<br>Источник: Авито, finish_time{% else %}не передан{% endif %}</div>
 {% else %}Нет сохранённой проверки{% endif %}
@@ -71,7 +82,7 @@
 {% if row.archive_control.owner_withdrawn %}<div class="small">Владелец запретил автоматический возврат в Service2.</div>{% endif %}
 <details class="mt-2"><summary>Возврат после окончания срока</summary>
 {% if row.archive_control.code != 'active' %}<p class="small">{{ row.archive_control.label }}. Источник: {{ row.archive_control.source|default:"не установлен" }}.</p><p class="small">{{ row.archive_control.manual_step }}</p>{% endif %}
-<p class="small">{{ row.archive_control.limitation }} Дополнительная стоимость неизвестна; автоматическая активация заблокирована. Id и AvitoId сохранены.</p>
+<p class="small">{{ row.archive_control.limitation }} Дополнительная стоимость неизвестна; автоматическая активация заблокирована; даже бесплатное продление требует отдельного согласования владельца. Id и AvitoId сохранены.</p>
 <form method="post">{% csrf_token %}<input type="hidden" name="action" value="policy"><input type="hidden" name="revision" value="{{ feed.revision }}"><input type="hidden" name="avito_id" value="{{ row.AvitoId }}"><input type="hidden" name="owner_withdrawn" value="{% if row.archive_control.owner_withdrawn %}0{% else %}1{% endif %}">
 <label class="small">Причина отметки<input class="form-control" name="reason" maxlength="500"></label>
 <p class="small">Отметка действует только в Service2: она не снимает объявление с Авито и не запускает публикацию.</p>
