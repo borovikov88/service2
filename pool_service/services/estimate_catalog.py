@@ -23,7 +23,7 @@ from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requ
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
-CACHE_KEY = "pool-estimate-shop-v24"
+CACHE_KEY = "pool-estimate-shop-v25"
 CACHE_SECONDS = 900
 MAX_BYTES = 20_000_000
 FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
@@ -200,6 +200,8 @@ def parse_catalog(payload, checked_at=None):
             elif re.search(r"с частотн\w* (?:регулирован|преобразовател)", name, re.I):
                 frequency = True
         specs["frequency_control"] = frequency
+        from .estimate_pump_facts import classify as classify_pump
+        classify_pump(specs, name, description, category_path(offer.findtext('categoryId')), url, offer)
         if specs['embedded_role']:
             specs['kind'] = specs['embedded_role']
         model = re.sub(r"^(?:песочный )?(?:фильтр|насос)(?: для бассейна)?\s+", "", name, flags=re.I).split("(")[0].strip()[:120]
@@ -275,6 +277,10 @@ def candidate_reason(product, inputs, required_flow, *, for_auto=False):
     if product["kind"] in {"circulation_pump", "solenoid_valve"}:
         return "Требуется подтверждение характеристик первичного контура и совместимости: расход/напор, температура, давление, теплоноситель, питание и присоединения."
     if product["kind"] == "pump":
+        from .estimate_candidates import assess
+        blocked, missing = assess(product, inputs, required_flow)
+        if blocked or missing:
+            return blocked or 'Проверить: ' + ', '.join(missing) + '.'
         if not product["filtration"]:
             return "Назначение для фильтрации с префильтром не подтверждено."
         if not product["nominal_flow"] or Decimal(product["nominal_flow"]) < required_flow:
@@ -330,6 +336,7 @@ def apply_product(row, product, catalog, selection="manual"):
     row["specs"] = {k: product[k] for k in ("flow", "head", "filter_flow", "backwash_flow")}
     row["catalog"] = {k: product[k] for k in ("id", "url", "sku", "price", "available", "nominal_flow", "power", "power_options", "heating_power", "heater_type", "titanium", "embedded_role", "material", "lining")}
     row["catalog"]["filtration"] = product.get("filtration")
+    row['catalog']['pump_facts'] = deepcopy(product.get('pump_facts', {}))
     row["catalog"]["heater_purpose_note"] = product.get("heater_purpose_note", "")
     row["catalog"]["lighting"] = deepcopy(product.get("lighting", {}))
     row["catalog"]["auxiliary"] = deepcopy(product.get("auxiliary", {}))
@@ -566,7 +573,7 @@ def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="
     brand = string(brand, "Бренд", 80)
     if kind not in {*lighting.ROLES, "thermostat", "filter_media", "liner", "liner_corner", "plaster_component", "", "other", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "level_regulator", "level_inlet", "treatment", "control_panel", "geotextile", *embedded.ROLES}:
         raise EstimateInputError("Неизвестный тип товара.")
-    matches = [p for p in catalog["products"].values() if (not kind or (p['kind'] in {'inlet', 'vacuum'} if kind == 'level_inlet' else p['kind'] == kind)) and (not brand or p["brand"].casefold() == brand.casefold()) and all(q in search_text(p["name"] + " " + p["sku"] + " " + p["id"]) for q in query)]
+    matches = [p for p in catalog["products"].values() if (not kind or (p['kind'] in {'inlet', 'vacuum'} if kind == 'level_inlet' else p['kind'] == kind)) and (kind != 'pump' or p.get('pump_facts', {}).get('in_category')) and (not brand or p["brand"].casefold() == brand.casefold()) and all(q in search_text(p["name"] + " " + p["sku"] + " " + p["id"]) for q in query)]
     matches.sort(key=lambda p: (bool(reason(p)), not p["available"], bool(kind == "circulation_pump" and variant != "economy" and p.get("frequency_control") is not True), Decimal(p["price"]), int(p["id"])))
     from .estimate_liner import area
     return {"products": [{**p, "warning": reason(p), "roll_area": area(p)} for p in matches[:40]], "total": len(matches), "status": catalog_status(catalog)}
@@ -656,7 +663,7 @@ def explain_unfilled(snapshot, catalog, only_variant=None):
             continue
         for block in variant['blocks']:
             for row in block['rows']:
-                if row['kind'] != 'heater' and not row.get('embedded_role'):
+                if row['kind'] not in {'heater', 'pump'} and not row.get('embedded_role'):
                     continue
                 if row.get('selection_status') == 'check_core' or not row.get('catalog') and row.get('selection_note', '').startswith('Проверить: прежний автоматический кандидат отклонён.'):
                     continue
@@ -675,7 +682,11 @@ def explain_unfilled(snapshot, catalog, only_variant=None):
                 if row.get('selection_locked') or (row['price'] is not None and not row.get('catalog')) or (row.get('catalog') or {}).get('selection') == 'manual':
                     row['selection_note'] = previous + 'Автоподбор не изменяет вручную отредактированную строку. Для замены модели откройте каталог.'
                     continue
-                if row['kind'] == 'heater':
+                if row['kind'] == 'pump':
+                    products = [p for p in catalog['products'].values() if p['kind'] == 'pump']
+                    heading = previous + 'Требуемый расход: ' + snapshot['geometry']['required_flow'] + ' м³/ч. '
+                    reason = lambda p: candidate_reason(p, snapshot['inputs'], Decimal(snapshot['geometry']['required_flow']))
+                elif row['kind'] == 'heater':
                     source = row_heating_type(row, snapshot['inputs'])
                     if Decimal(row['quantity']) != 1:
                         row['selection_note'] = 'Автоподбор нагревателя рассчитан на одну единицу полной требуемой мощности. Количество изменено; состав нескольких приборов требует отдельного подбора.'
