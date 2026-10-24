@@ -87,7 +87,7 @@ def _avito_connection(request, public_id, webhook_token):
     return connection if connection.check_api_token(webhook_token) else None
 
 
-def _mark_avito_webhook_event(connection, result, *, error="", message_present=False):
+def _mark_avito_webhook_event(connection, result, *, error="", message_present=False, message=None):
     authenticated = (connection.channel_id, connection.channel.organization_id,
         str(connection.external_id), connection.api_token_hash,
         connection.is_active, connection.channel.is_active)
@@ -101,7 +101,8 @@ def _mark_avito_webhook_event(connection, result, *, error="", message_present=F
         settings_data["avito_webhook_last_received_at"] = timezone.now().isoformat()
         settings_data["avito_webhook_last_result"] = result
         from .avito_services_workplace_setup import stamp_incoming
-        stamp_incoming(locked, settings_data, result, expected_hash=connection.api_token_hash, message_present=message_present)
+        stamp_incoming(locked, settings_data, result, expected_hash=connection.api_token_hash,
+                       message_present=message_present, message=message)
         if error:
             settings_data["avito_webhook_last_error"] = error[:120]
         else:
@@ -315,7 +316,7 @@ def avito_webhook(request, public_id, webhook_token):
         _mark_avito_webhook_event(connection, "error", error=str(exc))
         return JsonResponse({"accepted": True, "created": False, "error": str(exc)})
     result = "created" if created else ("duplicate" if message else "ignored")
-    _mark_avito_webhook_event(connection, result, message_present=message is not None)
+    _mark_avito_webhook_event(connection, result, message_present=message is not None, message=message)
     return JsonResponse({
         "accepted": True,
         "created": created,

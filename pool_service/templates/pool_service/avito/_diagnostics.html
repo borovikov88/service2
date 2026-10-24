@@ -18,6 +18,11 @@
               Webhook: {{ account.webhook_status }}
             </span>
           </div>
+          {% if account.webhook_chain %}
+            <div class="small mt-2">{{ account.webhook_chain.state_label }}</div>
+            <div class="small text-muted">{{ account.webhook_chain.owner_notification_label }}</div>
+            {% if account.webhook_chain.owner_notification_recorded %}<div class="small text-muted">Подтверждена запись уведомления в Service2; доставка push на устройство не подтверждена.</div>{% endif %}
+          {% endif %}
           {% if account.webhook_received %}<div class="small text-muted mt-2">Последнее событие: <time datetime="{{ account.webhook_received }}" data-avito-time>{{ account.webhook_received }}</time></div>{% endif %}
           {% if account.webhook_error %}<div class="small text-danger mt-1">Подключение: {{ account.webhook_error }}</div>{% endif %}
           {% if account.pull_error %}<div class="small text-danger mt-1">Чтение сообщений: {{ account.pull_error }}</div>{% endif %}

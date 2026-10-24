@@ -1,8 +1,10 @@
 import io
+import json
 import os
 import uuid
 from datetime import datetime, timedelta, timezone as dtz
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 from django.contrib.auth.models import User
 from django.core.management import call_command
@@ -12,6 +14,7 @@ from django.utils import timezone
 from pool_service import avito_runtime as runtime, avito_advance, avito_autoload_auto as auto
 from pool_service import avito_services_workplace_setup as setup, avito_deferred_messages as quiet
 from pool_service.avito_report_messages import classify, groups
+from pool_service import avito_webhook_chain as chain
 from pool_service.communication_api import _mark_avito_webhook_event
 from pool_service.communication_avito import AvitoError
 from pool_service.communication_models import (CommunicationChannel, ChannelConnection, AvitoCredential,
@@ -314,9 +317,184 @@ class ServicesRuntimeTests(TestCase):
         _mark_avito_webhook_event(self.connection, "ignored")
         self.assertFalse(setup.webhook_evidence(self.fresh())["delivery_observed"])
         _mark_avito_webhook_event(self.connection, "created", message_present=True)
+        self.assertFalse(setup.webhook_evidence(self.fresh())["delivery_observed"])
+        message = self.message()
+        _mark_avito_webhook_event(self.fresh(), "created", message_present=True, message=message)
         self.assertTrue(setup.webhook_evidence(self.fresh())["delivery_observed"])
         AvitoCredential.objects.filter(connection=self.connection).update(client_secret_encrypted="synthetic-new-key")
         self.assertFalse(setup.webhook_evidence(self.fresh())["delivery_observed"])
+
+    def post_webhook(self, path, *, user_id="446312402", message_id="PRIVATE_SYNTHETIC_MESSAGE"):
+        payload = {"payload": {"type": "message", "value": {
+            "user_id": user_id, "id": message_id, "chat_id": "PRIVATE_SYNTHETIC_CHAT",
+            "author_id": "42", "author_name": "PRIVATE_SYNTHETIC_NAME", "type": "text",
+            "content": {"text": "PRIVATE_SYNTHETIC_BODY"}}}}
+        return self.client.post(path, data=json.dumps(payload), content_type="application/json")
+
+    def test_authenticated_webhook_chain_proves_persistence_owner_record_and_dedupe(self):
+        _, writes = self.install()
+        path = urlsplit(writes[0]).path
+        with patch.object(quiet, "daylight", return_value=True), \
+             patch("pool_service.services.notifications.send_push_to_users"):
+            response = self.post_webhook(path)
+            self.assertEqual(200, response.status_code)
+            self.assertTrue(response.json()["created"])
+            result = chain.summary(self.fresh())
+            self.assertEqual("accepted_persisted", result["state"])
+            self.assertTrue(result["generation_bound"])
+            self.assertTrue(result["authenticated_event"])
+            self.assertTrue(result["conversation_bound"])
+            self.assertTrue(result["message_persisted"])
+            self.assertEqual("direct_recorded", result["owner_notification_state"])
+            self.assertTrue(result["owner_notification_recorded"])
+            self.assertFalse(result["push_delivery_confirmed"])
+            self.assertNotIn("PRIVATE_SYNTHETIC", json.dumps(result))
+            self.assertNotIn("message_id", result)
+            self.assertNotIn("conversation_id", result)
+            duplicate = self.post_webhook(path)
+        self.assertFalse(duplicate.json()["created"])
+        self.assertEqual(1, ConversationMessage.objects.count())
+        self.assertEqual(1, Notification.objects.filter(user=self.owner, kind="communication").count())
+        self.assertFalse(ConversationMessage.objects.filter(direction=ConversationMessage.DIRECTION_OUT).exists())
+        self.assertEqual("duplicate", chain.summary(self.fresh())["event_result"])
+        current = self.fresh()
+        setup._save_webhook_evidence(4, setup._binding(current), "https://service2.aqualine22.ru",
+                                     current.api_token_hash, verified=True)
+        self.assertEqual("accepted_persisted", chain.summary(self.fresh())["state"])
+
+    def test_wrong_token_wrong_provider_account_and_ignored_events_never_prove_delivery(self):
+        from django.urls import reverse
+        _, writes = self.install()
+        denied = self.post_webhook(reverse("avito_webhook", args=[self.fresh().public_id, "synthetic-wrong-token"]))
+        self.assertEqual(401, denied.status_code)
+        response = self.post_webhook(urlsplit(writes[0]).path, user_id="999999")
+        self.assertEqual(200, response.status_code)
+        self.assertFalse(response.json()["created"])
+        self.assertFalse(ConversationMessage.objects.exists())
+        self.assertFalse(Notification.objects.exists())
+        result = chain.summary(self.fresh())
+        self.assertEqual("awaiting_first", result["state"])
+        self.assertIsNone(result["received_at"])
+        self.assertFalse(result["authenticated_event"])
+        self.assertFalse(setup.webhook_evidence(self.fresh())["delivery_observed"])
+
+    def test_webhook_owner_chain_tracks_quiet_queue_and_preference_retry_without_night_send(self):
+        _, writes = self.install()
+        with patch.object(quiet, "daylight", return_value=False), \
+             patch("pool_service.services.notifications.send_push_to_users") as push:
+            self.assertTrue(self.post_webhook(urlsplit(writes[0]).path).json()["created"])
+            self.assertEqual("queued", chain.summary(self.fresh())["owner_notification_state"])
+            self.assertEqual("skipped", quiet.flush(4))
+            push.assert_not_called()
+        self.assertFalse(Notification.objects.exists())
+        profile, _ = Profile.objects.get_or_create(user=self.owner)
+        profile.in_app_notifications_enabled = False
+        profile.save(update_fields=["in_app_notifications_enabled"])
+        with patch.object(quiet, "daylight", return_value=True):
+            self.assertEqual("failed", quiet.flush(4))
+        result = chain.summary(self.fresh())
+        self.assertEqual("queued", result["owner_notification_state"])
+        self.assertEqual("notification_preferences_disabled", result["owner_notification_error"])
+        self.assertFalse(result["owner_notification_recorded"])
+        profile.in_app_notifications_enabled = True
+        profile.save(update_fields=["in_app_notifications_enabled"])
+        with patch.object(quiet, "daylight", return_value=False):
+            self.assertEqual("skipped", quiet.flush(4))
+        self.assertFalse(Notification.objects.exists())
+        with patch.object(quiet, "daylight", return_value=True):
+            self.assertEqual("success", quiet.flush(4))
+            self.assertEqual("skipped", quiet.flush(4))
+        result = chain.summary(self.fresh())
+        self.assertEqual("quiet_digest_recorded", result["owner_notification_state"])
+        self.assertTrue(result["owner_notification_recorded"])
+        self.assertEqual(1, Notification.objects.filter(user=self.owner, kind="communication").count())
+
+    def test_chain_generation_change_deleted_or_foreign_message_cannot_reuse_proof(self):
+        _, writes = self.install()
+        with patch.object(quiet, "daylight", return_value=True), \
+             patch("pool_service.services.notifications.send_push_to_users"):
+            self.post_webhook(urlsplit(writes[0]).path)
+        current = self.fresh()
+        evidence = current.settings[setup.WEBHOOK_KEY]
+        original = dict(evidence["chain"])
+        original_verified = evidence["verified_at"]
+        evidence["verified_at"] = (timezone.now() - timedelta(microseconds=1)).isoformat()
+        current.save(update_fields=["settings"])
+        self.assertEqual("awaiting_first", chain.summary(self.fresh())["state"])
+        self.assertFalse(setup.webhook_evidence(self.fresh())["delivery_observed"])
+        # Restore the original window, then show that a deleted DB row is not proof.
+        current = self.fresh()
+        current.settings[setup.WEBHOOK_KEY]["verified_at"] = original_verified
+        current.settings[setup.WEBHOOK_KEY]["chain"] = original
+        current.save(update_fields=["settings"])
+        other = Organization.objects.create(name="Synthetic foreign proof")
+        channel = CommunicationChannel.objects.create(organization=other, kind="avito", name="Foreign")
+        foreign_connection = ChannelConnection.objects.create(channel=channel, external_id="999999")
+        foreign_conversation = Conversation.objects.create(connection=foreign_connection, organization=other,
+                                                             external_id="synthetic-foreign", participant_name="Synthetic")
+        foreign_message = ConversationMessage.objects.create(conversation=foreign_conversation,
+            external_id="synthetic-foreign", direction=ConversationMessage.DIRECTION_IN, body="Synthetic")
+        current.settings[setup.WEBHOOK_KEY]["chain"] = dict(original, message_id=foreign_message.pk,
+                                                           conversation_id=foreign_conversation.pk)
+        current.save(update_fields=["settings"])
+        self.assertEqual("persisted_row_missing", chain.summary(self.fresh())["state"])
+        current = self.fresh()
+        current.settings[setup.WEBHOOK_KEY]["chain"] = original
+        current.save(update_fields=["settings"])
+        ConversationMessage.objects.filter(pk=original["message_id"]).delete()
+        result = chain.summary(self.fresh())
+        self.assertEqual("persisted_row_missing", result["state"])
+        self.assertFalse(result["message_persisted"])
+        self.assertFalse(result["owner_notification_recorded"])
+
+    def test_fresh_connection_move_cannot_reuse_foreign_organization_conversation(self):
+        from pool_service.communication_services import receive_message
+        self.install()
+        Conversation.objects.create(connection=self.connection, organization=self.org,
+                                    external_id="synthetic-existing-chat", participant_name="Synthetic")
+        other = Organization.objects.create(name="Other synthetic scope")
+        channel = CommunicationChannel.objects.create(organization=other, kind="avito", name="Foreign")
+        ChannelConnection.objects.filter(pk=4).update(channel=channel)
+        with self.assertRaisesMessage(ValueError, "avito_conversation_binding_changed"):
+            receive_message(connection=self.fresh(), external_conversation_id="synthetic-existing-chat",
+                            participant_name="Synthetic", body="Synthetic", external_message_id="synthetic-new")
+        self.assertFalse(ConversationMessage.objects.exists())
+        self.assertFalse(Notification.objects.exists())
+
+    def test_manual_recovery_is_deduped_bounded_and_never_claims_webhook_delivery(self):
+        from pool_service import communication_avito as provider
+        self.install()
+        responses = {"chats": [{"id": "synthetic-recovery-chat"}]}
+        message = {"id": "synthetic-recovery-message", "author_id": "42", "direction": "in",
+                   "created": int(timezone.now().timestamp()), "type": "text", "content": {"text": "Synthetic recovery"}}
+        with patch.object(provider, "authorized_account_id", return_value="446312402"), \
+             patch.object(provider, "access_token", return_value="synthetic-token"), \
+             patch.object(provider, "_json_request", return_value=responses) as chats, \
+             patch.object(provider, "_json_list_request", return_value=[message]) as messages, \
+             patch.object(quiet, "daylight", return_value=True), \
+             patch("pool_service.services.notifications.send_push_to_users"):
+            first = provider.sync_recent_messages(self.fresh(), chat_limit=1, messages_per_chat=1)
+            second = provider.sync_recent_messages(self.fresh(), chat_limit=1, messages_per_chat=1)
+        self.assertEqual((1, 0), (first.messages_created, first.messages_existing))
+        self.assertEqual((0, 1), (second.messages_created, second.messages_existing))
+        self.assertEqual(2, chats.call_count)
+        self.assertEqual(2, messages.call_count)
+        self.assertEqual(1, ConversationMessage.objects.count())
+        self.assertEqual(1, Notification.objects.filter(user=self.owner, kind="communication").count())
+        self.assertEqual("awaiting_first", chain.summary(self.fresh())["state"])
+        self.assertFalse(setup.webhook_evidence(self.fresh())["delivery_observed"])
+
+    def test_manual_services_recovery_rejects_other_provider_account_before_chat_read(self):
+        from pool_service import communication_avito as provider
+        self.install()
+        with patch.object(provider, "authorized_account_id", return_value="999999"), \
+             patch.object(provider, "access_token") as token, \
+             patch.object(provider, "_json_request") as request:
+            with self.assertRaisesMessage(AvitoError, "provider_account_mismatch"):
+                provider.sync_recent_messages(self.fresh())
+        token.assert_not_called()
+        request.assert_not_called()
+        self.assertFalse(ConversationMessage.objects.exists())
 
     def message(self):
         conversation = Conversation.objects.create(connection=self.connection, organization=self.org, external_id="synthetic-chat")

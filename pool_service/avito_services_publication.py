@@ -4,6 +4,7 @@ from datetime import timedelta
 import hashlib
 import json
 import re
+import time
 from urllib.parse import urlsplit
 
 from django.conf import settings
@@ -20,6 +21,7 @@ STATE_LABELS = {
     'report_predates_publication': 'Отчёт старше публикации; новая версия не подтверждена',
     'report_unfinished': 'Загрузка ещё обрабатывается',
     'report_source_unknown': 'Источник отчёта не передан; версия файла не подтверждена',
+    'report_source_conflict': 'Адрес источника и проверенная XML-копия противоречат друг другу',
     'report_source_mismatch': 'API отчёта вернул другой адрес источника; версия не подтверждена',
     'report_identity_mismatch': 'Состав или привязки объявлений в отчёте отличаются',
     'candidate_finished': 'Последующая загрузка сопоставлена; точная версия файла не подтверждена',
@@ -188,7 +190,7 @@ def correlate_report(connection, report):
         exact = list(publications.filter(immutable_source_sha256=sources[0])[:2]) if len(sources) == 1 else []
         if len(exact) > 1:
             return None  # Ambiguous internal source binding never becomes proof.
-        publication = (copy_matches[0] if copy_confirmed else exact[0] if exact else
+        publication = (exact[0] if exact else copy_matches[0] if copy_confirmed else
             publications.filter(version__created_at__lt=started).order_by('-version__created_at', '-pk').first() or latest)
         if not _binding_valid(publication, current):
             return None
@@ -204,6 +206,7 @@ def correlate_report(connection, report):
         identities_match = expected == received and len(rows) == len(expected)
         immutable = sources == [publication.immutable_source_sha256]
         stable = sources == [publication.stable_source_sha256]
+        copy_conflict = bool(immutable and copy_digest and copy_digest != publication.file_sha256)
         finished = report.get('upload_finished') is True
         status = report.get('upload_status')
         if status not in {'processing', 'success', 'success_warning', 'error', None}:
@@ -213,9 +216,11 @@ def correlate_report(connection, report):
             state = 'report_predates_publication'
         elif not finished:
             state = 'report_unfinished'
-        elif copy_ambiguous:
+        elif copy_conflict:
+            state = 'report_source_conflict'
+        elif copy_ambiguous and not immutable:
             state = 'source_copy_ambiguous'
-        elif copy_digest and not copy_confirmed:
+        elif copy_digest and not copy_confirmed and not immutable:
             state = 'source_copy_mismatch'
         elif not sources and not copy_confirmed:
             state = 'report_source_unknown'
@@ -227,7 +232,7 @@ def correlate_report(connection, report):
             state = 'upload_failed'
         elif status not in {'success', 'success_warning'}:
             state = 'report_unfinished'
-        elif copy_confirmed:
+        elif copy_confirmed and not immutable:
             state, source_confirmed = ('source_copy_item_errors' if any(row['has_error'] for row in rows)
                                        else 'source_copy_confirmed'), True
         elif immutable:
@@ -236,7 +241,10 @@ def correlate_report(connection, report):
         else:
             state = 'candidate_finished'
         fingerprint_data = {'upload_id': upload_id, 'started_at': started.isoformat(),
-            'upload_status': status, 'finished': finished, 'sources': [] if copy_digest else sources,
+            'upload_status': status, 'finished': finished,
+            # Exact immutable identity is meaningful even when copy bytes are
+            # known; rotating provider-copy URLs are not proof and are ignored.
+            'sources': sources if not copy_digest or immutable else [],
             'input_copy_sha256': copy_digest, 'rows': rows}
         digest = _sha(json.dumps(fingerprint_data, ensure_ascii=False, sort_keys=True, separators=(',', ':')))
         attempt, _ = AvitoServicesPublicationAttempt.objects.get_or_create(
@@ -255,7 +263,197 @@ def publication_context(feed):
         'state': attempt.state if attempt else 'waiting',
         'label': STATE_LABELS.get(attempt.state if attempt else 'waiting', STATE_LABELS['waiting']),
         'attempt': attempt, 'rows': attempt.rows if attempt else [],
-        'content_verified': False, 'source_confirmed': attempt.source_confirmed if attempt else False}
+        'content_verified': False, 'source_confirmed': attempt.source_confirmed if attempt else False,
+        'facts': publication_facts(publication, attempt)}
+
+def _snapshot_data(sheets):
+    """Validate locally; never contact an image URL or return private fields."""
+    from .avito_services_feed import images
+    from .avito_services_xml import xml_bytes
+    content = xml_bytes(sheets, max_images=10)
+    rows = _rows(sheets)
+    pairs = {(row['Id'], row['AvitoId']) for row in rows}
+    maximum = max(len(images(row['ImageUrls']).split(' | ')) for row in rows)
+    return content, pairs, maximum
+
+
+def publication_facts(publication, attempt=None):
+    """Independent evidence, not a single 'applied' flag.
+
+    rows_processed concerns the found provider upload. Without source_confirmed
+    it must not be presented as processing this particular local version.
+    """
+    facts = dict.fromkeys(('file_published', 'upload_found', 'source_confirmed',
+                           'rows_processed', 'live_content_verified'), False)
+    try:
+        content, expected, _ = _snapshot_data(publication.version.snapshot)
+        facts['file_published'] = bool(
+            _binding_valid(publication, publication.version.feed.connection)
+            and hashlib.sha256(content).hexdigest() == publication.file_sha256)
+    except (ValueError, KeyError, TypeError):
+        return facts
+    if not facts['file_published'] or attempt is None or attempt.publication_id != publication.pk:
+        return facts
+    fresh = attempt.report_started_at is not None and attempt.report_started_at > publication.version.created_at
+    facts['upload_found'] = fresh
+    if not fresh:
+        return facts
+    facts['source_confirmed'] = attempt.source_confirmed is True
+    try:
+        rows = attempt.rows
+        received = {(row['xml_id'], row['avito_id']) for row in rows}
+        matches = len(rows) == len(expected) and received == expected
+    except (KeyError, TypeError):
+        matches = False
+    facts['rows_processed'] = bool(matches and attempt.upload_status in {'success', 'success_warning'}
+        and attempt.state not in {'report_unfinished', 'report_predates_publication', 'upload_failed'})
+    # The provider methods used here do not return live description/photo order.
+    return facts
+
+
+def publication_release_check(connection, *, revision=15, check_http=False):
+    """Read-only, bounded and safe to project into a protected diagnostic receipt.
+
+    HTTP parity proves our immutable endpoint, never Avito ingestion. This is
+    not permission to publish and never substitutes for publish-time checks.
+    No token, raw URL, content, identifier set, author or hash is returned.
+    """
+    from .communication_models import ChannelConnection
+    from .avito_services_xml import xml_bytes
+    result = {'configured': False, 'binding_present': False, 'snapshot_valid': False,
+        'current_publication': False, 'draft_matches_published': False,
+        'identity_sets_match': False, 'photo_limit_ok': False, 'http_checked': False,
+        'revision': revision if type(revision) is int and 0 < revision < 2**31 else 0,
+        'draft_revision': None, 'published_revision': None,
+        'history_version_id': None, 'created_at': None, 'checked_at': timezone.now().isoformat(),
+        'draft_count': 0, 'published_count': 0, 'snapshot_count': 0, 'max_photos': None,
+        'http_matches': None, 'http_code': 'not_checked',
+        'facts': dict.fromkeys(('file_published', 'upload_found', 'source_confirmed',
+                               'rows_processed', 'live_content_verified'), False)}
+    if result['revision'] == 0 or type(check_http) is not bool:
+        result['http_code'] = 'scope_invalid'
+        return result
+    current = ChannelConnection.objects.select_related('channel').filter(pk=connection.pk).first()
+    if (current is None or not current.is_active or not current.channel.is_active
+            or current.channel.kind != 'avito' or current.external_id != connection.external_id
+            or current.channel_id != connection.channel_id
+            or current.channel.organization_id != connection.channel.organization_id):
+        result['http_code'] = 'scope_invalid'
+        return result
+    feed = AvitoServicesFeed.objects.select_related('connection__channel').filter(
+        connection=current, account_id=current.external_id,
+        organization_id_at_import=current.channel.organization_id).first()
+    if feed is None:
+        result['http_code'] = 'publication_missing'
+        return result
+    result.update(configured=True, draft_revision=feed.revision,
+                  published_revision=feed.published_revision)
+    try:
+        draft_rows, published_rows = _rows(feed.draft), _rows(feed.published)
+        if len(draft_rows) > 200 or len(published_rows) > 200:
+            raise ValueError
+        result['draft_count'], result['published_count'] = len(draft_rows), len(published_rows)
+        result['draft_matches_published'] = (
+            xml_bytes(feed.draft, max_images=30) ==
+            xml_bytes(feed.published, max_images=feed.published_photo_limit))
+    except (ValueError, KeyError, TypeError):
+        pass
+    publication = AvitoServicesPublication.objects.select_related('version__feed__connection__channel').filter(
+        version__feed=feed, version__revision=revision).order_by('-version__created_at', '-pk').first()
+    if publication is None:
+        # Legacy history remains inspectable, but cannot acquire an immutable
+        # source binding or a later-upload proof retroactively.
+        version = feed.versions.filter(revision=revision,
+            action__in=('publish', 'legacy_published')).order_by('-created_at', '-pk').first()
+        if version is not None:
+            result.update(history_version_id=version.pk, created_at=version.created_at.isoformat())
+            try:
+                content, expected, maximum = _snapshot_data(version.snapshot)
+                result.update(snapshot_count=len(expected), max_photos=maximum, photo_limit_ok=maximum <= 10)
+                result['snapshot_valid'] = hashlib.sha256(content).hexdigest() == version.file_digest
+                result['identity_sets_match'] = (expected == {(row['Id'], row['AvitoId']) for row in published_rows}
+                    and len(published_rows) == len(expected))
+                result['current_publication'] = bool(result['snapshot_valid'] and feed.enabled
+                    and feed.published_revision == revision
+                    and xml_bytes(feed.published, max_images=feed.published_photo_limit) == content)
+                result['facts']['file_published'] = result['current_publication']
+            except (ValueError, KeyError, TypeError, UnboundLocalError):
+                pass
+        result['http_code'] = 'publication_missing'
+        return result
+    result.update(binding_present=True, history_version_id=publication.version_id,
+                  created_at=publication.version.created_at.isoformat())
+    if not _binding_valid(publication, current):
+        result['http_code'] = 'scope_invalid'
+        return result
+    try:
+        content, expected, maximum = _snapshot_data(publication.version.snapshot)
+        result['snapshot_count'], result['max_photos'] = len(expected), maximum
+        result['photo_limit_ok'] = maximum <= 10
+        if hashlib.sha256(content).hexdigest() != publication.file_sha256:
+            raise ValueError
+        result['snapshot_valid'] = True
+        result['identity_sets_match'] = (
+            expected == {(row['Id'], row['AvitoId']) for row in published_rows}
+            and len(published_rows) == len(expected))
+        result['current_publication'] = bool(feed.published_revision == revision and
+            xml_bytes(feed.published, max_images=feed.published_photo_limit) == content)
+    except (ValueError, KeyError, TypeError, UnboundLocalError):
+        result['http_code'] = 'snapshot_invalid'
+        return result
+    attempt = publication.attempts.order_by('-report_started_at', '-pk').first()
+    result['facts'] = publication_facts(publication, attempt)
+    if not check_http:
+        return result
+    try:
+        url = version_url(publication.version)
+        part = urlsplit(url)
+        host = part.hostname.encode('idna').decode('ascii').lower()
+        # URL is generated solely from this scoped immutable binding and the
+        # canonical server origin; request data can never select a target.
+        if _sha(url) != publication.immutable_source_sha256:
+            raise ValueError
+    except (ValueError, UnicodeError):
+        result['http_code'] = 'scope_invalid'
+        return result
+    result['http_checked'] = True
+    try:
+        from .avito_input_copy import _download_url, MAX_SECONDS
+        raw = _download_url(part, host, time.monotonic() + MAX_SECONDS)
+        result['http_matches'] = raw == content
+        result['http_code'] = 'verified' if result['http_matches'] else 'http_mismatch'
+    except Exception:
+        # Provider URLs, transport exceptions and content never enter receipts.
+        result['http_matches'], result['http_code'] = False, 'http_unavailable'
+    # Recheck current account/org/feed + bytes after the network request. This
+    # does not lock the database across HTTP or authorize a later mutation.
+    refreshed = AvitoServicesPublication.objects.select_related(
+        'version__feed__connection__channel').filter(pk=publication.pk).first()
+    valid = refreshed is not None and _binding_valid(refreshed, refreshed.version.feed.connection)
+    if valid:
+        fresh_feed = refreshed.version.feed
+        valid = (fresh_feed.public_key == feed.public_key
+                 and refreshed.immutable_source_sha256 == publication.immutable_source_sha256
+                 and fresh_feed.revision == feed.revision
+                 and fresh_feed.published_revision == feed.published_revision
+                 and fresh_feed.published_photo_limit == feed.published_photo_limit
+                 and fresh_feed.draft == feed.draft and fresh_feed.published == feed.published)
+    if valid:
+        fresh_connection = refreshed.version.feed.connection
+        valid = (fresh_connection.external_id == current.external_id
+                 and fresh_connection.channel_id == current.channel_id
+                 and fresh_connection.channel.organization_id == current.channel.organization_id)
+    try:
+        valid = valid and _sha(version_url(refreshed.version)) == refreshed.immutable_source_sha256
+        fresh_content = _snapshot_data(refreshed.version.snapshot)[0] if valid else None
+        valid = valid and fresh_content == content and refreshed.file_sha256 == publication.file_sha256
+    except (ValueError, KeyError, TypeError):
+        valid = False
+    if not valid:
+        result['http_matches'], result['http_code'] = False, 'scope_changed'
+        result['facts'] = dict.fromkeys(result['facts'], False)
+    return result
+
 
 def archive_context(row, observation, intent, report_row=None):
     """Expose reason provenance, never infer a zero-cost purchase entitlement."""
@@ -271,7 +469,7 @@ def archive_context(row, observation, intent, report_row=None):
         reported_end = _date((report_row or {}).get('finish_time'))
         if ((report_row or {}).get('status') == 'old' and reported_end is not None
                 and reported_end <= timezone.now()):
-            code, label, source = 'provider_expired', 'Авито сообщает: срок размещения истёк', 'autoload_report'
+            code, label, source = 'provider_term_passed', 'Известный срок размещения прошёл; причина архива не подтверждена', 'autoload_report'
         else:
             code, label, source = 'archive_unknown', 'Архив; причина не подтверждена', 'avito_item_detail'
     else:
@@ -284,7 +482,7 @@ def archive_context(row, observation, intent, report_row=None):
         'removed': 'Уточните в кабинете Авито причину снятия и доступность повторной публикации этого же объявления; инициатор не передан API.',
         'unknown': 'Сначала обновите статус. До подтверждения статуса и условий повторная публикация заблокирована.',
     }
-    manual_step = steps.get(code, 'Откройте это существующее объявление в архиве Авито, проверьте нулевую дополнительную стоимость и повторно опубликуйте его. Новое объявление вместо него не создавайте.')
+    manual_step = steps.get(code, 'Откройте это существующее объявление в архиве Авито, проверьте причину архива и нулевую дополнительную стоимость, затем отдельно согласуйте повторную публикацию с владельцем. Новое объявление вместо него не создавайте.')
     return {'code': code, 'label': label, 'source': source, 'owner_withdrawn': owner_stopped,
         'can_reactivate': False, 'cost': None,
         'limitation': 'Доступный API не предоставляет подтверждённые для этого аккаунта расчёт нулевой доплаты и команду повторного размещения услуги.',

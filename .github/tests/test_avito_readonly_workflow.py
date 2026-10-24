@@ -78,7 +78,7 @@ esac
         (self.base / "bin/git").chmod(0o700)
         python = "#!/usr/bin/env bash\nset -eu\nif [[ \"$1\" == -c ]]; then exec " + \
                  "'" + sys.executable + "' \"$@\"; fi\n" + \
-                 '[[ "$*" == "manage.py audit_avito_readonly --item-ids 7234733937,3842842492" ]]\n' + \
+                 '[[ "$*" == "manage.py audit_avito_readonly --connection-id 4 --account-id 446312402 --revision 15" ]]\n' + \
                  'touch "$AVITO_TEST_MARKER"\n'
         (self.base / "venv/bin/python").write_text(python)
         (self.base / "venv/bin/python").chmod(0o700)
@@ -86,6 +86,16 @@ esac
     def run_remote(self, **updates):
         return subprocess.run(["bash", str(ROOT / ".github/scripts/avito_readonly_remote.sh"), SHA, str(self.app)],
                               env=self.env | updates, capture_output=True, text=True, timeout=10)
+
+    def test_runner_has_fixed_services_scope_and_no_legacy_goods_selection(self):
+        source = (ROOT / ".github/scripts/avito_readonly_remote.sh").read_text()
+        self.assertIn("--connection-id 4 --account-id 446312402 --revision 15", source)
+        self.assertNotIn("--item-ids", source)
+        self.assertNotIn("7234733937", source)
+        self.assertNotIn("3842842492", source)
+        workflow = (ROOT / ".github/workflows/avito-readonly-audit.yml").read_text()
+        self.assertIn("read-only services connection4/account446312402", workflow)
+        self.assertNotIn("inputs.connection_id", workflow)
 
     def test_valid_current_main_invokes_only_fixed_readonly_command(self):
         result = self.run_remote()

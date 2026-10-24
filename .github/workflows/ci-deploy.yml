@@ -302,6 +302,33 @@ jobs:
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
             -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
+      - name: Run explicitly approved services draft photo check
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[avito-services-release-v15-20261024]')
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          operation_temp="$(mktemp -d "$RUNNER_TEMP/avito-services-release.XXXXXX")"
+          trap 'rm -rf -- "$operation_temp"' EXIT
+          PORT="${DEPLOY_PORT:-22}"
+          printf -v REMOTE_COMMAND 'bash -s -- %q %q' "$GITHUB_SHA" "$DEPLOY_APP_PATH"
+          operation_exit=0
+          ssh -i ~/.ssh/service2_deploy \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
+            -o StrictHostKeyChecking=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND" \
+            < .github/scripts/avito_services_release_remote.sh \
+            >"$operation_temp/stdout" 2>"$operation_temp/stderr" || operation_exit=$?
+          python3 scripts/avito_services_release_receipt.py "$operation_temp/stdout"
+          [[ "$operation_exit" == 0 ]] || {
+            echo "AVITO_SERVICES_RELEASE_TRANSPORT_BLOCKED"; exit 2;
+          }
       - name: Verify Diagnostic MCP metadata is live after activation
         if: steps.activate_diag.outputs.smoke_required == 'true'
         env:
@@ -353,7 +380,6 @@ jobs:
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
-          AUDIT_ITEM_IDS: "7234733937,3842842492"
         run: |
           set -Eeuo pipefail
           audit_temp="$(mktemp -d "$RUNNER_TEMP/avito-audit.XXXXXX")"
@@ -361,8 +387,8 @@ jobs:
           trap 'rm -rf -- "$audit_temp"' EXIT
           PORT="${DEPLOY_PORT:-22}"
           printf -v REMOTE_COMMAND \
-            'set -Eeuo pipefail; cd %q; test ! -L ../tmp/service2-deploy.lock; exec 9>../tmp/service2-deploy.lock; flock -n 9; test "$(git rev-parse HEAD)" = %q; git diff --quiet HEAD -- pool_service service_site manage.py scripts; exec timeout 360 ../venv/bin/python manage.py audit_avito_readonly --item-ids %q' \
-            "$DEPLOY_APP_PATH" "$GITHUB_SHA" "$AUDIT_ITEM_IDS"
+            'set -Eeuo pipefail; cd %q; test ! -L ../tmp/service2-deploy.lock; exec 9>../tmp/service2-deploy.lock; flock -n 9; test "$(git rev-parse HEAD)" = %q; git diff --quiet HEAD -- pool_service service_site manage.py scripts; exec timeout 360 ../venv/bin/python manage.py audit_avito_readonly --connection-id 4 --account-id 446312402 --revision 15' \
+            "$DEPLOY_APP_PATH" "$GITHUB_SHA"
           audit_exit=0
           ssh -i ~/.ssh/service2_deploy \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
