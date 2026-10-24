@@ -541,12 +541,19 @@ def publication_release(value):
     if "error" in value:
         require(value["error"] == "audit_publication_release_unavailable")
         return {"error": value["error"]}
-    flags = ("configured", "binding_present", "snapshot_valid", "current_publication",
-             "draft_matches_published", "identity_sets_match", "photo_limit_ok", "http_checked")
+    flags = ("configured", "binding_present", "http_checked")
     result = {}
     for key in flags:
         require(type(value.get(key)) is bool)
         result[key] = value[key]
+    for key in ("snapshot_valid", "current_publication", "draft_matches_published",
+                "identity_sets_match", "photo_limit_ok"):
+        item = value.get(key)
+        require(item is None or type(item) is bool)
+        result[key] = item
+    require(value.get("snapshot_source") in {
+        "unavailable", "current_published_without_history", "published_history", "legacy_history"})
+    result["snapshot_source"] = value["snapshot_source"]
     result["revision"] = integer(value.get("revision"), 1000000000)
     for key in ("draft_revision", "published_revision"):
         revision = value.get(key)
@@ -558,7 +565,9 @@ def publication_release(value):
     for key in ("created_at", "checked_at"):
         result[key] = release_timestamp(value.get(key))
     for key in ("draft_count", "published_count", "snapshot_count"):
-        result[key] = integer(value.get(key), 200)
+        item = value.get(key)
+        require(item is None or type(item) is int and 0 <= item <= 200)
+        result[key] = item
     max_photos = value.get("max_photos")
     require(max_photos is None or type(max_photos) is int and 0 <= max_photos <= 30)
     result["max_photos"] = max_photos
@@ -638,6 +647,79 @@ def approved_photo(value):
     return result
 
 
+
+MEDIA_READINESS_CHECKS = (
+    "connection_scope", "actor_active", "editor_organization", "manage_channels",
+    "setup_binding", "feed_binding", "published_revision", "shared_identity", "shared_photo",
+    "photo_scope", "form_valid", "title_roundtrip", "description_roundtrip",
+    "image_urls_roundtrip", "source_read", "image_decode",
+)
+MEDIA_READINESS_REASONS = {
+    "media_ready", "media_connection_invalid", "media_actor_invalid",
+    "media_editor_organization_mismatch", "media_capability_denied", "media_setup_binding_invalid",
+    "media_feed_invalid", "media_published_revision_mismatch", "media_shared_identity_missing",
+    "media_shared_photo_missing", "media_photo_scope_invalid", "media_form_invalid",
+    "media_title_roundtrip_changed", "media_description_roundtrip_changed",
+    "media_image_urls_roundtrip_changed", "media_source_read_failed", "media_image_decode_failed",
+}
+
+
+def media_readiness(value):
+    require(isinstance(value, dict))
+    if "error" in value:
+        require(value["error"] == "audit_media_readiness_unavailable")
+        return {"error": value["error"]}
+    require(value.get("state") in {"ready", "blocked"}
+            and value.get("stage") in {*MEDIA_READINESS_CHECKS, "complete"}
+            and value.get("reason") in MEDIA_READINESS_REASONS)
+    require(value.get("exception_class") in {
+        None, "PermissionDenied", "Http404", "LiveMediaCheckError", "AvitoError", "ValueError",
+        "OSError", "DatabaseError", "TypeError", "KeyError", "AttributeError", "OtherError"})
+    checks = value.get("checks")
+    require(isinstance(checks, dict))
+    result = {key: value[key] for key in ("state", "stage", "reason", "exception_class")}
+    result["checks"] = {}
+    for key in MEDIA_READINESS_CHECKS:
+        item = checks.get(key)
+        require(key in checks and (item is None or type(item) is bool))
+        result["checks"][key] = item
+    if result["state"] == "ready":
+        require(result["stage"] == "complete" and result["reason"] == "media_ready"
+                and result["exception_class"] is None and all(item is True for item in result["checks"].values()))
+    else:
+        require(result["stage"] != "complete" and result["reason"] != "media_ready")
+    return result
+
+
+def operation_ledger(value):
+    require(isinstance(value, dict))
+    if "error" in value:
+        require(value["error"] == "audit_operation_ledger_unavailable")
+        return {"error": value["error"]}
+    require(value.get("state") in {
+        "not_started", "scope_invalid", "pending", "completed", "unknown", "failed", "blocked", "busy"})
+    require(value.get("phase") in {
+        "reserve", "publication_preflight", "account_read", "photo_source", "binding_check",
+        "token_prepare", "http_pending", "http_post", "receipt_read", "receipt_validate", "finalize", "unknown"})
+    require(value.get("exception_class") in {
+        None, "Blocked", "AvitoError", "LiveMediaCheckError", "ValueError", "PermissionDenied", "Http404",
+        "OSError", "TimeoutError", "HTTPError", "URLError", "JSONDecodeError", "OperationalError",
+        "IntegrityError", "FieldError", "Other"})
+    result = {key: value[key] for key in ("state", "phase", "exception_class")}
+    flags = ("has_operation_id", "pending_http", "has_exact_receipt")
+    for key in flags:
+        item = value.get(key)
+        require(item is None or type(item) is bool)
+        result[key] = item
+    if any(result[key] is None for key in flags):
+        require(all(result[key] is None for key in flags) and result["state"] != "completed")
+    else:
+        require(not result["has_exact_receipt"] or result["has_operation_id"])
+        require(result["pending_http"] == (result["has_operation_id"] and not result["has_exact_receipt"]))
+        require(result["state"] != "completed" or result["has_exact_receipt"])
+    return result
+
+
 def connection(value):
     require(isinstance(value, dict))
     result = {"connection_id": integer(value.get("connection_id"))}
@@ -653,7 +735,8 @@ def connection(value):
                   cached_configuration=cached_configuration(value.get("cached_configuration", {"error": "audit_cached_configuration_not_requested"})))
     for key, project in (("publication_release", publication_release),
                          ("webhook_chain", webhook_chain), ("approved_photo", approved_photo),
-                         ("raw_content_fields", raw_content_fields)):
+                         ("raw_content_fields", raw_content_fields),
+                         ("media_readiness", media_readiness), ("operation_ledger", operation_ledger)):
         if key in value:
             result[key] = project(value[key])
     if "services_coverage" in value:

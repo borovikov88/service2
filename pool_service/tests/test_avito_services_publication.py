@@ -552,3 +552,46 @@ class PublicationResultTests(TestCase):
         self.feed.refresh_from_db()
         self.assertEqual(self.feed.draft, pending)
         self.assertEqual(self.feed.revision, 3)
+
+
+    def test_actual_current_published_snapshot_is_valid_even_without_any_history(self):
+        self.feed.versions.all().delete()
+        with patch('pool_service.avito_input_copy._download_url') as download:
+            result = publication_release_check(self.connection, revision=2, check_http=True)
+        self.assertEqual(result['snapshot_source'], 'current_published_without_history')
+        self.assertTrue(result['facts']['file_published'])
+        self.assertTrue(result['snapshot_valid'])
+        self.assertTrue(result['photo_limit_ok'])
+        self.assertTrue(result['identity_sets_match'])
+        self.assertTrue(result['current_publication'])
+        self.assertTrue(result['draft_matches_published'])
+        self.assertEqual(result['snapshot_count'], 2)
+        self.assertEqual(result['published_count'], 2)
+        self.assertIsNone(result['history_version_id'])
+        self.assertIsNone(result['created_at'])
+        self.assertFalse(result['binding_present'])
+        self.assertFalse(result['facts']['source_confirmed'])
+        self.assertFalse(result['http_checked'])
+        self.assertEqual(result['http_code'], 'publication_missing')
+        download.assert_not_called()
+
+    def test_unperformed_scope_checks_are_null_instead_of_false_data_validation(self):
+        self.connection.external_id = 'unknown-account'
+        result = publication_release_check(self.connection, revision=2, check_http=True)
+        self.assertEqual(result['snapshot_source'], 'unavailable')
+        for name in ('snapshot_valid', 'photo_limit_ok', 'identity_sets_match',
+                     'current_publication', 'draft_matches_published',
+                     'draft_count', 'published_count', 'snapshot_count'):
+            self.assertIsNone(result[name])
+        self.assertEqual(result['http_code'], 'scope_invalid')
+
+    def test_invalid_draft_does_not_make_valid_published_snapshot_invalid(self):
+        self.feed.versions.all().delete()
+        malformed = deepcopy(self.feed.draft)
+        malformed[0]['rows'][0]['UnexpectedField'] = 'unsupported'
+        AvitoServicesFeed.objects.filter(pk=self.feed.pk).update(draft=malformed)
+        result = publication_release_check(self.connection, revision=2)
+        self.assertTrue(result['facts']['file_published'])
+        self.assertTrue(result['snapshot_valid'])
+        self.assertIsNone(result['draft_matches_published'])
+        self.assertEqual(result['snapshot_count'], 2)

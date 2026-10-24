@@ -480,6 +480,7 @@ class AdvanceAccessPrivacyTests(SimpleTestCase):
 def release_publication():
     return {"configured": True, "binding_present": False, "snapshot_valid": True,
         "current_publication": False, "draft_matches_published": True,
+        "snapshot_source": "current_published_without_history",
         "identity_sets_match": True, "photo_limit_ok": True, "http_checked": False,
         "revision": 15, "draft_revision": 17, "published_revision": 15, "history_version_id": None, "created_at": None,
         "checked_at": "2026-10-24T12:00:00+00:00", "draft_count": 2,
@@ -487,6 +488,16 @@ def release_publication():
         "http_matches": None, "http_code": "publication_missing",
         "facts": {"file_published": False, "upload_found": False,
                   "source_confirmed": False, "rows_processed": False, "live_content_verified": False}}
+
+
+def release_readiness():
+    return {"state": "ready", "stage": "complete", "reason": "media_ready", "exception_class": None,
+            "checks": {key: True for key in receipt.MEDIA_READINESS_CHECKS}}
+
+
+def release_ledger():
+    return {"state": "failed", "has_operation_id": False, "pending_http": False,
+            "has_exact_receipt": False, "phase": "unknown", "exception_class": None}
 
 
 def release_chain():
@@ -603,7 +614,8 @@ class ScopedServicesReleaseAuditTests(TestCase):
     def test_fresh_scoped_snapshot_preserves_settings_and_discards_every_proof_on_account_drift(self):
         from pool_service import avito_services_workplace_setup as setup
         helpers = {"publication_release": release_publication(),
-                   "webhook_chain": release_chain(), "approved_photo": release_photo()}
+                   "webhook_chain": release_chain(), "approved_photo": release_photo(),
+                   "media_readiness": release_readiness(), "operation_ledger": release_ledger()}
         before = list(ChannelConnection.objects.order_by("pk").values_list("pk", "settings"))
         for final_account in ("446312402", "1001"):
             with self.subTest(final_account=final_account), \
@@ -645,13 +657,19 @@ class ScopedServicesReleaseAuditTests(TestCase):
         from pool_service import avito_services_publication as publication
         from pool_service import avito_webhook_chain as chain
         from pool_service import avito_services_media_livecheck as media
-        with patch.object(publication, "publication_release_check", side_effect=RuntimeError("PRIVATE")), \
+        from pool_service import avito_services_media_readiness as readiness
+        from pool_service import avito_services_release_operation as operation
+        with patch.object(readiness, "media_release_readiness", side_effect=RuntimeError("PRIVATE")), \
+             patch.object(operation, "release_operation_diagnostics", return_value=release_ledger()), \
+             patch.object(publication, "publication_release_check", side_effect=RuntimeError("PRIVATE")), \
              patch.object(chain, "summary", return_value=release_chain()), \
              patch.object(media, "media_release_source", return_value=release_photo()):
             value = audit._services_release_evidence(self.target)
         self.assertEqual({"error": "audit_publication_release_unavailable"}, value["publication_release"])
         self.assertEqual("awaiting_first", value["webhook_chain"]["state"])
         self.assertTrue(value["approved_photo"]["source_in_published"])
+        self.assertEqual({"error": "audit_media_readiness_unavailable"}, value["media_readiness"])
+        self.assertFalse(value["operation_ledger"]["has_operation_id"])
         self.assertNotIn("PRIVATE", str(value))
         with patch.object(audit, "binding") as binding, \
              patch.object(audit, "access_token") as token, \
@@ -742,3 +760,51 @@ class RawItemContentBoundaryTests(SimpleTestCase):
         value["fields"]["title"]["lowercase"] = {"present": True, "type": "missing", "count": None}
         with self.assertRaises(ValueError):
             receipt.raw_content_fields(value)
+
+
+class ServicesReadinessDiagnosticProjectionTests(SimpleTestCase):
+    def test_readiness_preserves_unchecked_vs_false_without_exporting_exception_text(self):
+        raw = release_readiness()
+        raw.update(state="blocked", stage="description_roundtrip",
+                   reason="media_description_roundtrip_changed", exception_class=None,
+                   private_url="PRIVATE", exception_message="PRIVATE")
+        raw["checks"]["description_roundtrip"] = False
+        for key in ("image_urls_roundtrip", "source_read", "image_decode"):
+            raw["checks"][key] = None
+        value = receipt.media_readiness(raw)
+        self.assertIs(value["checks"]["description_roundtrip"], False)
+        self.assertIsNone(value["checks"]["source_read"])
+        self.assertNotIn("PRIVATE", str(value))
+        for changed in (raw | {"exception_class": "PRIVATE"},
+                        release_readiness() | {"checks": raw["checks"]}):
+            with self.assertRaises(ValueError):
+                receipt.media_readiness(changed)
+
+    def test_ledger_projects_legacy_uncertainty_without_guessing_http_sent(self):
+        raw = release_ledger() | {"operation_id": "PRIVATE", "binding": "PRIVATE"}
+        self.assertEqual(release_ledger(), receipt.operation_ledger(raw))
+        unverifiable = raw | {"state": "scope_invalid", "has_operation_id": None,
+                              "pending_http": None, "has_exact_receipt": None}
+        projected = receipt.operation_ledger(unverifiable)
+        self.assertIsNone(projected["has_operation_id"])
+        self.assertIsNone(projected["pending_http"])
+        pending = raw | {"state": "unknown", "has_operation_id": True, "pending_http": True}
+        self.assertTrue(receipt.operation_ledger(pending)["pending_http"])
+        self.assertNotIn("PRIVATE", str(receipt.operation_ledger(pending)))
+        for changed in (raw | {"state": "completed"},
+                        pending | {"has_exact_receipt": True},
+                        raw | {"exception_class": "PrivateError"}):
+            with self.assertRaises(ValueError):
+                receipt.operation_ledger(changed)
+
+    def test_missing_history_snapshot_can_be_unknown_without_fabricated_zero_or_failure(self):
+        raw = release_publication()
+        raw.update(snapshot_source="unavailable", snapshot_valid=None, current_publication=None,
+                   identity_sets_match=None, photo_limit_ok=None, snapshot_count=None, max_photos=None)
+        value = receipt.publication_release(raw)
+        self.assertIsNone(value["snapshot_valid"])
+        self.assertIsNone(value["snapshot_count"])
+        self.assertIsNone(value["photo_limit_ok"])
+        self.assertEqual("unavailable", value["snapshot_source"])
+        with self.assertRaises(ValueError):
+            receipt.publication_release(raw | {"snapshot_source": "PRIVATE"})
