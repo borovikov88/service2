@@ -42,6 +42,9 @@ def purpose(value):
         'циркуляция и фильтрация воды бассейна',
     }:
         return ('фильтрация', 'циркуляция')
+    if value in {'циркуляция воды плавательного бассейна', 'циркуляция воды бассейна',
+                 'циркуляция воды в бассейне', 'циркуляция воды в небольших частных и наземных бассейнах'}:
+        return ('циркуляция',)
     values = set(re.split(r'\s*[;,/]\s*', value))
     known = {'фильтрация', 'циркуляция', 'гидромассаж', 'противоток', 'аттракционы',
              'фонтан', 'фонтаны', 'дренаж', 'дозирование', 'спа', 'spa'}
@@ -61,7 +64,8 @@ def classify(specs, name, description, category, url, offer):
     ancestry = [text(part) for part in category.split(' / ')]
     in_category = (set(markers) == {CATEGORY} if markers else
                    ancestry[:3] == ['бассейны', 'оборудование для бассейнов', CATEGORY])
-    if specs['kind'] != 'pump' and not (in_category and params.get('тип товара') == ['насос']):
+    pump_types = {'насос', 'центробежный насос с префильтром'}
+    if specs['kind'] != 'pump' and not (in_category and set(params.get('тип товара', [])) <= pump_types and params.get('тип товара')):
         return
     # A known heater/primary-circuit/accessory identity cannot be relabelled by
     # a category marker or a generic public type alone.
@@ -70,13 +74,13 @@ def classify(specs, name, description, category, url, offer):
     issues = []
     structured = any(params.get(label) for label in FIELDS.values())
     facts = {'in_category': in_category, 'structured': structured,
-             'prefilter': None, 'issue': '', 'source': '', 'mode_note': ''}
+             'prefilter': None, 'issue': '', 'source': '', 'mode_note': '', 'purpose_note': ''}
     notes = []
     if not in_category:
         issues.append('Принадлежность категории «Насосы для бассейнов» не подтверждена.')
     if structured:
         parsers = {
-            'type': lambda v: v if v == 'насос' else None,
+            'type': lambda v: 'насос' if v in pump_types else None,
             'purpose': purpose,
             'prefilter': lambda v: {'да': True, 'нет': False}.get(v),
             'voltage': voltage,
@@ -97,7 +101,10 @@ def classify(specs, name, description, category, url, offer):
             else:
                 parsed[key] = results[0]
         duties = parsed.get('purpose', ())
-        if duties and ('фильтрация' not in duties or set(duties) - {'фильтрация', 'циркуляция'}):
+        provisional_circulation = duties == ('циркуляция',) and parsed.get('prefilter') is True
+        if provisional_circulation:
+            facts['purpose_note'] = 'назначение для фильтрации: карточка подтверждает циркуляцию воды бассейна и префильтр'
+        elif duties and ('фильтрация' not in duties or set(duties) - {'фильтрация', 'циркуляция'}):
             issues.append('Назначение насоса не подтверждает обычную фильтрацию бассейна: ' + '; '.join(duties) + '.')
         facts['prefilter'] = parsed.get('prefilter')
         # Scalar card fields already explicitly link head to the stated flow.
@@ -118,7 +125,7 @@ def classify(specs, name, description, category, url, offer):
                 facts['mode_note'] = 'режим и скорость насоса на объекте: ' + value
             elif not any(claims.values()) and value not in {'рабочая каталожная точка поставщика', 'заявленная производительность'}:
                 facts['mode_note'] = 'условия указанного режима насоса: ' + value
-        specs.update(kind='pump', filtration='фильтрация' in duties,
+        specs.update(kind='pump', filtration='фильтрация' in duties or provisional_circulation,
                      nominal_flow=parsed.get('flow'), head=parsed.get('head'),
                      flow=parsed.get('flow') if parsed.get('head') else None,
                      power=parsed.get('voltage', 'unknown'),
@@ -151,4 +158,5 @@ def normalize(raw):
             'prefilter': None if raw.get('prefilter') is None else boolean(raw['prefilter']),
             'issue': string(raw.get('issue', ''), 'Проверка насоса', 1000),
             'mode_note': string(raw.get('mode_note', ''), 'Режим насоса', 500),
+            'purpose_note': string(raw.get('purpose_note', ''), 'Назначение насоса', 500),
             'source': string(raw.get('source', ''), 'Источник характеристик насоса', 2000)}

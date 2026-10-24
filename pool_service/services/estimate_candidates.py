@@ -32,6 +32,8 @@ def assess(product, inputs, required_flow, profile=None):
             missing.append('отдельный префильтр перед насосом' if facts.get('prefilter') is False else 'наличие префильтра')
         if facts.get('mode_note'):
             missing.append(facts['mode_note'])
+        if facts.get('purpose_note'):
+            missing.append(facts['purpose_note'])
     if kind == 'pump' and product.get('filtration') is not True:
         # A vague "pump" could be an attraction/spa device: minimum identity gate.
         return 'Назначение для фильтрации с префильтром не подтверждено.', []
@@ -79,7 +81,8 @@ def choose(products, tier, inputs, required_flow, profile=None):
         pump = p.get('pump_facts', {}) if p['kind'] == 'pump' else {}
         return (int(bool(field) and not p.get(field)),
                 int(p['kind'] == 'pump' and not p.get('power_options')),
-                int(bool(pump) and pump.get('prefilter') is not True), len(missing))
+                int(bool(pump) and pump.get('prefilter') is not True),
+                int(bool(pump.get('purpose_note'))), len(missing))
     best = min(evidence_rank(p, missing) for p, missing in eligible)
     choices = [p for p, missing in eligible if evidence_rank(p, missing) == best]
     known = [p for p in choices if field and p.get(field)]

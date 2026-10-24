@@ -156,3 +156,19 @@ class PumpFactsTests(SimpleTestCase):
             self.assertEqual(p['flow'] is not None, has_point)
             self.assertTrue(p['pump_facts']['mode_note'])
             self.assertIn(p['pump_facts']['mode_note'], assess(p, INPUTS, Decimal('8'))[1])
+
+    def test_pool_circulation_with_prefilter_is_provisional_and_filtration_has_priority(self):
+        params = [(k, 'Циркуляция воды плавательного бассейна' if k == 'Назначение'
+                   else 'Центробежный насос с префильтром' if k == 'Тип товара' else v) for k, v in PARAMS]
+        p = catalog.parse_catalog(feed(pump(params=params)))['products']['1']
+        issue, missing = assess(p, INPUTS, Decimal('8'))
+        self.assertIsNone(issue)
+        self.assertTrue(p['pump_facts']['purpose_note'])
+        self.assertIn(p['pump_facts']['purpose_note'], missing)
+        c = catalog.parse_catalog(feed(pump(1, params, price='1'), pump(2, price='1000')))
+        result, _ = catalog.auto_select(generate(INPUTS), c)
+        self.assertEqual(row(result)['catalog']['id'], '2')
+        # Unknown general purpose cannot be promoted using a prefilter alone.
+        params = [(k, 'Оборудование бассейна' if k == 'Назначение' else v) for k, v in PARAMS]
+        p = catalog.parse_catalog(feed(pump(params=params)))['products']['1']
+        self.assertTrue(assess(p, INPUTS, Decimal('8'))[0])
