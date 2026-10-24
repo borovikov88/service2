@@ -307,7 +307,10 @@ class MediaNetworkTests(SimpleTestCase):
             (['http://photos.invalid/photo.jpg?a=1'], 'upgrade_target_scheme'),
             (['https://photos.invalid:8443/photo.jpg?a=1'], 'upgrade_target_port'),
             (['https://other.invalid/photo.jpg?a=1'], 'upgrade_target_host'),
-            (['https://www.photos.invalid/photo.jpg?a=1'], 'upgrade_target_host'),
+            (['https://www.evil.invalid/photo.jpg?a=1'], 'upgrade_target_host'),
+            (['https://evil-www.photos.invalid/photo.jpg?a=1'], 'upgrade_target_host'),
+            (['https://www.photos.invalid.evil.invalid/photo.jpg?a=1'], 'upgrade_target_host'),
+            (['https://www.www.photos.invalid/photo.jpg?a=1'], 'upgrade_target_host'),
             (['https://photos.invalid./photo.jpg?a=1'], 'upgrade_target_host'),
             (['https://photos.invalid/another.jpg?a=1'], 'upgrade_target_path'),
             (['https://photos.invalid/photo.jpg?a=2'], 'upgrade_target_query'),
@@ -334,8 +337,8 @@ class MediaNetworkTests(SimpleTestCase):
 
     def test_image_upgrade_rejects_second_hop_and_initial_https_redirect(self):
         plain, secure = MagicMock(), MagicMock()
-        plain.getresponse.return_value = self.upgrade_response()
-        secure.getresponse.return_value = self.upgrade_response()
+        plain.getresponse.return_value = self.upgrade_response(['https://www.photos.invalid/photo.jpg?a=1'])
+        secure.getresponse.return_value = self.upgrade_response(['https://photos.invalid/photo.jpg?a=1'])
         with patch.object(media, '_resolve', return_value='93.184.216.34') as dns, \
                 patch.object(media, '_PinnedHTTP', return_value=plain), \
                 patch.object(media, '_PinnedHTTPS', return_value=secure), \
@@ -392,6 +395,88 @@ class MediaNetworkTests(SimpleTestCase):
         self.assertEqual([call.args[0] for call in timer.call_args_list], [10, 1])
         secure.request.assert_not_called()
         redirect.read1.assert_not_called()
+
+    def test_image_upgrade_allows_only_single_www_dns_pair_and_uses_target_host_and_tls_name(self):
+        for original_host, target_host in (
+                ('photos.invalid', 'www.photos.invalid'),
+                ('www.photos.invalid', 'photos.invalid')):
+            with self.subTest(original_host=original_host):
+                plain, secure = MagicMock(), MagicMock()
+                plain.getresponse.return_value = self.upgrade_response([
+                    'https://' + target_host + '/photo.jpg?a=1'])
+                secure.getresponse.return_value = self.response()
+                observed = {}
+                with patch.object(media, '_resolve', side_effect=['93.184.216.34', '93.184.216.35']) as dns, \
+                        patch.object(media, '_PinnedHTTP', return_value=plain), \
+                        patch.object(media, '_PinnedHTTPS', return_value=secure) as tls, \
+                        patch.object(media.threading, 'Timer'):
+                    raw = media._download('http://' + original_host + '/photo.jpg?a=1',
+                        media.time.monotonic() + 10, diagnostics=observed)
+                media._image(raw, normalize=False)
+                self.assertEqual([call.args[:2] for call in dns.call_args_list],
+                    [(original_host, 80), (target_host, 443)])
+                self.assertEqual(tls.call_args.args[:3], (target_host, 443, '93.184.216.35'))
+                self.assertEqual(secure.request.call_args.kwargs['headers']['Host'], target_host)
+                self.assertTrue(observed['https_upgrade_followed'])
+                self.assertEqual(observed['host_relation'], 'www_alias')
+                self.assertEqual(observed['source_scheme'], 'http')
+                plain.getresponse.return_value.read1.assert_not_called()
+                self.assertEqual(set(secure.request.call_args.kwargs['headers']), {'Host', 'Accept', 'User-Agent'})
+                # The pinned TLS connection validates this exact target name.
+                socket = MagicMock()
+                with patch.object(media, '_numeric_socket', return_value=socket):
+                    connection = media._PinnedHTTPS(target_host, 443, '93.184.216.35', 2)
+                    connection._context = MagicMock()
+                    connection.connect()
+                connection._context.wrap_socket.assert_called_once_with(
+                    socket, server_hostname=target_host, do_handshake_on_connect=False)
+
+    def test_www_relation_never_treats_ips_double_www_or_registry_neighbors_as_aliases(self):
+        for source, target in (
+                ('93.184.216.34', 'www.93.184.216.34'),
+                ('0x5db8d822', 'www.0x5db8d822'),
+                ('0x5d.0xb8.0xd8.0x22', 'www.0x5d.0xb8.0xd8.0x22'),
+                ('2001:4860:4860::8888', 'www.2001:4860:4860::8888'),
+                ('www', 'www.www'),
+                ('www.photos.invalid', 'www.www.photos.invalid'),
+                ('www.www.photos.invalid', 'www.photos.invalid'),
+                ('photos.invalid', 'www.photos.invalid.evil.invalid'),
+                ('photos.invalid', 'evil-www.photos.invalid'),
+                ('photos.invalid.', 'www.photos.invalid.')):
+            with self.subTest(source=source, target=target):
+                self.assertEqual(media._image_host_relation(source, target), 'other')
+
+    def test_www_upgrade_retains_path_query_port_and_private_target_dns_guards(self):
+        cases = (
+            ('https://www.photos.invalid/another.jpg?a=1', 'upgrade_target_path'),
+            ('https://www.photos.invalid/photo.jpg?a=2', 'upgrade_target_query'),
+            ('https://www.photos.invalid:8443/photo.jpg?a=1', 'upgrade_target_port'),
+        )
+        for target, reason in cases:
+            with self.subTest(reason=reason):
+                plain = MagicMock()
+                plain.getresponse.return_value = self.upgrade_response([target])
+                with patch.object(media, '_resolve', return_value='93.184.216.34') as dns, \
+                        patch.object(media, '_PinnedHTTP', return_value=plain), \
+                        patch.object(media, '_PinnedHTTPS') as tls, \
+                        patch.object(media.threading, 'Timer'), self.assertRaises(ValueError) as caught:
+                    media._download('http://photos.invalid/photo.jpg?a=1', media.time.monotonic() + 10)
+                self.assertEqual(media.photo_transport_failure(caught.exception)['reason'], reason)
+                self.assertEqual(dns.call_count, 1)
+                tls.assert_not_called()
+        plain = MagicMock()
+        plain.getresponse.return_value = self.upgrade_response(['https://www.photos.invalid/photo.jpg?a=1'])
+        public = [(2, 1, 6, '', ('93.184.216.34', 80))]
+        private = [(2, 1, 6, '', ('127.0.0.1', 443))]
+        with patch.object(media.socket, 'getaddrinfo', side_effect=[public, private]) as dns, \
+                patch.object(media, '_PinnedHTTP', return_value=plain), \
+                patch.object(media, '_PinnedHTTPS') as tls, \
+                patch.object(media.threading, 'Timer'), self.assertRaises(ValueError) as caught:
+            media._download('http://photos.invalid/photo.jpg?a=1', media.time.monotonic() + 10)
+        self.assertEqual(media.photo_transport_failure(caught.exception)['reason'], 'dns_private_address')
+        self.assertEqual(dns.call_count, 2)
+        self.assertEqual(dns.call_args.args[0], 'www.photos.invalid')
+        tls.assert_not_called()
 
 
 class MediaAssetsTests(TestCase):
