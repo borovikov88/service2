@@ -2,7 +2,8 @@
 {% block title %}Редактировать объявление{% endblock %}
 {% block content %}
 <h1>{{ row.Title }}</h1><p>Аккаунт {{ connection.name }} · AvitoId {{ row.AvitoId }}</p>
-<form method="post">{% csrf_token %}<input type="hidden" name="revision" value="{{ feed.revision }}">
-{{ form.as_p }}<button class="btn btn-primary" type="submit">Сохранить черновик</button>
-<a href="{% url 'avito_services_feed' connection.pk %}">Вернуться к списку</a></form>
+<p>До 10 фотографий. Изменения сохраняются в новый черновик и историю; файл Авито изменится после отдельной публикации.</p>
+<form method="post" class="card card-body">{% csrf_token %}<input type="hidden" name="revision" value="{{ feed.revision }}">
+{{ form.as_p }}<div class="d-flex gap-2 flex-wrap"><button class="btn btn-primary" type="submit">Сохранить черновик</button>
+<a class="btn btn-outline-secondary" href="{% url 'avito_services_feed' connection.pk %}">Вернуться к списку</a></div></form>
 {% endblock %}

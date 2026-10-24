@@ -27,7 +27,7 @@ def checked_text(value):
     return value
 
 
-def xml_bytes(sheets):
+def xml_bytes(sheets, *, max_images=10):
     root = ET.Element('Ads', {'formatVersion': '3', 'target': 'Avito.ru'})
     ids, avito_ids = set(), set()
     for sheet in sheets:
@@ -55,7 +55,7 @@ def xml_bytes(sheets):
                 elif name == 'ImageUrls':
                     from .avito_services_feed import images
                     parent = ET.SubElement(ad, 'Images')
-                    for url in images(value).split(' | '):
+                    for url in images(value, max_count=max_images).split(' | '):
                         ET.SubElement(parent, 'Image', {'url': url})
                 elif name == 'PriceList':
                     lines = value.splitlines()
