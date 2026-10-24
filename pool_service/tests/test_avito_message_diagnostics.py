@@ -148,6 +148,23 @@ class MessageDiagnosticsTests(TestCase):
             with self.subTest(changed=changed), self.assertRaises(ValueError):
                 receipt.input_copy_proof(dict(proof, **changed))
 
+    def test_optional_copy_recheck_failure_preserves_successful_complete_report(self):
+        proof = {"source": "provider_report_input_copy", "state": "unavailable",
+                 "code": "input_copy_report_recheck_failed", "content_kind": "unknown",
+                 "identity_count": 0, "byte_count": 0, "provider_error": "PRIVATE"}
+        source = {"upload_id": "613521535", "upload_status": "success_warning",
+                  "complete": True, "finished": True, "total": 11,
+                  "counts": {"error": 0, "warning": 11, "alarm": 0, "info": 11},
+                  "critical_samples": [], "input_copy_proof": proof}
+        result = receipt.report(source)
+        self.assertTrue(result["complete"])
+        self.assertTrue(result["finished"])
+        self.assertEqual("success_warning", result["upload_status"])
+        self.assertNotIn("error", result)
+        self.assertEqual("unavailable", result["input_copy_proof"]["state"])
+        self.assertEqual("input_copy_report_recheck_failed", result["input_copy_proof"]["code"])
+        self.assertNotIn("PRIVATE", json.dumps(result))
+
     def test_services_inventory_is_explicitly_not_applicable_and_cannot_expose_shop_data(self):
         value = {"scope": "services", "state": "not_applicable",
                  "reason": "services_have_no_physical_stock", "shop_quantity": "PRIVATE"}

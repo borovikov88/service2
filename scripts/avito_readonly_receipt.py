@@ -168,7 +168,7 @@ def input_copy_proof(value):
         "host_not_allowed", "address_unavailable", "budget_exhausted", "redirect_denied",
         "encoding_unsupported", "size_invalid", "too_large", "incomplete", "transport_failed",
         "xml_forbidden", "xml_invalid", "xml_structure", "xml_limit", "not_xml",
-        "identity_mismatch", "source_changed", "report_changed", "check_failed"}
+        "identity_mismatch", "source_changed", "report_changed", "report_recheck_failed", "check_failed"}
     fixed = value.get("code")
     require(isinstance(fixed, str) and (fixed in {"input_copy_" + suffix for suffix in suffixes}
             or re.fullmatch(r"input_copy_http_[1-5][0-9]{2}", fixed)))
