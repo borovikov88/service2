@@ -420,6 +420,15 @@ def runtime_checks(value):
         def fixed_code(raw):
             require(raw is None or (isinstance(raw, str) and (raw in allowed_codes or re.fullmatch(r"provider_http_[1-5][0-9]{2}", raw))))
             return raw
+        guard_names = {"queried_rows_changed", "shop_xml_snapshot_changed",
+                       "profile_snapshot_changed", "summary_snapshot_changed"}
+        def fixed_guard(raw):
+            require(raw is None or isinstance(raw, str) and raw in guard_names)
+            return raw
+        saved_guard, worker_guard = fixed_guard(row.get("consistency_guard")), fixed_guard(row.get("last_worker_consistency_guard"))
+        require(saved_guard is None or row["check"] == "autoload_report" and row.get("code") == "autoload_report_changed")
+        require(worker_guard is None or row["check"] == "autoload_report" and row["last_worker_verified"]
+                and row.get("last_worker_outcome") == "failed" and row.get("last_worker_code") == "autoload_report_changed")
         result.append({"check": row["check"], "state": row["state"],
             "configured": row["configured"], "enabled": row["enabled"], "scope_valid": row["scope_valid"],
             "code": fixed_code(row.get("code")), "checked_at": timestamp(row.get("checked_at")),
@@ -427,7 +436,8 @@ def runtime_checks(value):
             "last_worker_verified": row["last_worker_verified"],
             "last_worker_outcome": row.get("last_worker_outcome"),
             "last_worker_code": fixed_code(row.get("last_worker_code")),
-            "last_worker_checked_at": timestamp(row.get("last_worker_checked_at"))})
+            "last_worker_checked_at": timestamp(row.get("last_worker_checked_at")),
+            "consistency_guard": saved_guard, "last_worker_consistency_guard": worker_guard})
     require(len({row["check"] for row in result}) == len(result))
     return result
 

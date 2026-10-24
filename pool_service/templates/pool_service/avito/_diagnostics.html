@@ -40,7 +40,9 @@
         {% for check in account.runtime_checks %}<div class="border-top py-2 small">
           <strong>{{ check.label }}</strong> · {{ check.state }}
           {% if check.code %}<span class="text-warning">{{ check.code }}</span>{% endif %}
+          {% if check.consistency_guard_label %}<div>Сохранённая причина: {{ check.consistency_guard_label }}</div>{% endif %}
           <div>Последний фоновый запуск: {% if check.last_worker_verified %}{{ check.last_worker_outcome }}{% if check.last_worker_code %} · {{ check.last_worker_code }}{% endif %} · {{ check.last_worker_checked_at }}{% else %}результат этой проверки не подтверждён{% endif %}</div>
+          {% if check.last_worker_consistency_guard_label %}<div>Причина последнего фонового сбоя: {{ check.last_worker_consistency_guard_label }}</div>{% endif %}
           {% if check.success_at %}<div>Последний успешный результат: {{ check.success_at }}</div>{% endif %}
         </div>{% endfor %}
       </details>

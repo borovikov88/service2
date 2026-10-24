@@ -109,13 +109,16 @@ def _failure(exc):
     # Reuse the existing fixed provider/error mapping; never save exception text.
     from pool_service.avito_management import _workspace_failure
     if str(exc) == BINDING_ERROR:
-        return {"status": "warning", "code": BINDING_ERROR,
+        return {"status": "warning", "code": BINDING_ERROR, "consistency_guard": None,
                 "detail": "Права, подключение или ключи изменились. Требуется повторное включение."}
-    return _workspace_failure("autoload_report", exc)
+    result = _workspace_failure("autoload_report", exc)
+    result["consistency_guard"] = (avito_autoload_report.consistency_guard(getattr(exc, "consistency_guard", None))
+                                   if str(exc) == "autoload_report_changed" else None)
+    return result
 
 
 def _disable(connection, state):
-    state.update(enabled=False, last_error_code=BINDING_ERROR,
+    state.update(enabled=False, last_error_code=BINDING_ERROR, last_consistency_guard=None,
                  last_error_detail=_failure(AvitoError(BINDING_ERROR))["detail"])
     metadata = _metadata(connection)
     metadata[KEY] = state
@@ -200,7 +203,9 @@ def scan_connection(connection_id):
         saved["sections"] = sections
         metadata["avito_workspace"] = saved
         state.update(last_checked_at=finished.isoformat(), last_error_code=update["code"],
-                     last_error_detail=update["detail"])
+                     last_error_detail=update["detail"],
+                     last_consistency_guard=avito_autoload_report.consistency_guard(update.get("consistency_guard"))
+                         if update["code"] == "autoload_report_changed" else None)
         if update["status"] == "ok":
             from .avito_services_publication import correlate_report
             state["last_publication_checked_at"] = finished.isoformat()

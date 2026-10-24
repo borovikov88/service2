@@ -482,13 +482,16 @@ class ShopXmlIdReportTests(SimpleTestCase):
         rows = self.rows()
         responses = [self.shop_upload(), page(rows[:50], total=55),
                      page(rows[:50]), page(rows[50:]), self.shop_upload()]
-        with self.assertRaisesMessage(AvitoError, "autoload_report_changed"):
+        with self.assertRaisesMessage(AvitoError, "autoload_report_changed") as caught:
             self.fetch(responses, [self.xml(), self.xml(suffix="<Ad><Id>1_99_3</Id></Ad>")])
-        with self.assertRaisesMessage(AvitoError, "autoload_report_changed"):
+        self.assertEqual("shop_xml_snapshot_changed", caught.exception.consistency_guard)
+        with self.assertRaisesMessage(AvitoError, "autoload_report_changed") as caught:
             self.fetch([*responses[:-1], self.shop_upload(124)])
+        self.assertEqual("summary_snapshot_changed", caught.exception.consistency_guard)
         changed = [dict(rows[0], messages=[]), *rows[1:50]]
-        with self.assertRaisesMessage(AvitoError, "autoload_report_changed"):
+        with self.assertRaisesMessage(AvitoError, "autoload_report_changed") as caught:
             self.fetch([self.shop_upload(), page(rows[:50], total=55), page(changed), page(rows[50:])])
+        self.assertEqual("queried_rows_changed", caught.exception.consistency_guard)
 
     def test_other_source_current_upload_or_feed_cardinality_mismatch_keep_guarded_pages(self):
         from pool_service import avito_source_audit
@@ -537,8 +540,10 @@ class ShopXmlIdReportTests(SimpleTestCase):
         self.assertNotIn("PRIVATE", str(result))
         proof = avito_profile_source.profile_data({"autoload_enabled": True, "feeds_data": [
             {"feed_url": "https://shop.aqualine22.ru/avito/avitofeed.xml"}]})
-        with self.assertRaisesMessage(AvitoError, "autoload_report_changed"):
+        with self.assertRaisesMessage(AvitoError, "autoload_report_changed") as caught:
             self.fetch(queries, profiles=[proof, (proof[0], "different-private-fingerprint")])
+        self.assertEqual("profile_snapshot_changed", caught.exception.consistency_guard)
+        self.assertNotIn("private", str(vars(caught.exception)))
         legacy = [header, page(rows[:50], total=55), page(rows[50:], 2, 55), header]
         variants = [AvitoError("provider_http_403"),
                     avito_profile_source.profile_data({"autoload_enabled": False, "feeds_data": []}),

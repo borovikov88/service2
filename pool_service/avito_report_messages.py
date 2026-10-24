@@ -25,16 +25,20 @@ def classify(message):
         r"(?:дополнительных\s+)?(?:исправлений|действий|изменений)\s+не\s+требуется|"
         r"не\s+(?:нужно|требуется)\s+(?:ничего\s+)?(?:исправлять|менять|добавлять|делать)|"
         r"ошибок\s+нет|без\s+ошибок", "", text)
-    action = bool(re.search(r"не удалось|невозможно|ошибк|не найден|отклон|заблок|не заполн|исправ|укажите|добавьте|свяжите|необходимо|требуется|нужн|выберите|не\s+(?:был\w*\s+)?(?:привяз|связан|сопоставлен|выполнен)|привязк\w*\s+(?:не|невозмож|отсутств)|нет\s+связ[ьи]", action_text))
-    linked = bool(re.search(r"привязан|привязк|связан|связали|сопоставлен|сопоставили", text))
-    existing = bool(re.search(r"существующ|ранее|уже опубликован", text))
+    action = bool(re.search(r"не удалось|невозможно|ошибк|не найден|отклон|заблок|не заполн|исправ|укажите|добавьте|свяжите|необходимо|требуется|нужн|выберите|не\s+(?:был\w*\s+)?(?:привяз|связан|сопоставлен|выполнен)|не\s*был\w*\s+(?:привяз|связан|сопоставлен)|привязк\w*\s+(?:не|невозмож|отсутств)|нет\s+связ[ьи]", action_text))
+    # Actual provider text may describe the link without the word "existing".
+    # Future/conditional links are not proof of an already completed binding.
+    uncertain_link = bool(re.search(r"\b(?:будет|будут|может|могут|если|чтобы|планируется|предполагается)\b", text)
+                          or re.search(r"\b(?:будет|будут)связан", text))
+    linked = bool(re.search(r"привязан|привязк|связан|связали|сопоставлен|сопоставили", text)) and not uncertain_link
+    existing = bool(re.search(r"существующ|ранее|уже опубликован|связано\s+с\s+объявлением\s+на\s+авито", text))
     kind = message.get("type")
     category = ("action_required" if kind in {"error", "alarm"} or action else
         "existing_listing_link" if linked and existing else "information" if kind == "info" else "review_required")
     original = " ".join(str(message.get(key, "")) for key in ("title", "description"))
     fields = sorted(field for field in FIELDS if re.search(r"(?<![A-Za-z])" + field + r"(?![A-Za-z])", original))
     return {"category": category, "explanation": EXPLANATIONS[category], "fields": fields,
-        "binding_evidence": bool(linked and existing and not action),
+        "binding_evidence": bool(linked and existing and not action and kind not in {"error", "alarm"}),
         "action_evidence": action,
         "reason_keywords": sorted(word for word, pattern in REASONS.items() if re.search(pattern, text))}
 
