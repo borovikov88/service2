@@ -293,6 +293,27 @@ def monitoring(value):
             **{key: value.get(key) for key in nullable},
             "amount_logged": False, "recipient_logged": False}
 
+def cached_configuration(value):
+    """Explicit cached evidence; no callback URL, token, dates or feed contents."""
+    require(isinstance(value, dict))
+    if "error" in value:
+        return {"error": code(value["error"])}
+    require(value.get("source") == "service2_cached_configuration")
+    require(value.get("live_provider_verified") is False)
+    require(value.get("webhook_scope_known") is False)
+    require(value.get("webhook_cache_status") in {"connected", "not_connected", "needs_check", "error", "unknown"})
+    keys = ("webhook_cache_present", "webhook_configured_cached", "webhook_verified_cached",
+            "webhook_received_cached", "autoload_auto_configured", "autoload_auto_enabled",
+            "autoload_auto_scope_valid", "services_feed_configured", "services_feed_account_bound",
+            "services_feed_enabled", "services_feed_revision_current", "services_feed_legacy_photo_limit_exceeded")
+    require(all(value.get(key) is None or type(value.get(key)) is bool for key in keys))
+    require(all(value.get(key) is None for key in (
+        "webhook_configured_cached", "webhook_verified_cached", "webhook_received_cached")))
+    return {"source": "service2_cached_configuration", "live_provider_verified": False,
+            "webhook_scope_known": False, "webhook_cache_status": value["webhook_cache_status"],
+            **{key: value.get(key) for key in keys}}
+
+
 def connection(value):
     require(isinstance(value, dict))
     result = {"connection_id": integer(value.get("connection_id"))}
@@ -304,7 +325,8 @@ def connection(value):
                   active_source_audit=inventory(value.get("active_source_audit", {"error": "audit_inventory_not_requested"})),
                   configured_feed_source=configured_feed_source(value.get("configured_feed_source", {"error": "audit_profile_source_not_requested"})),
                   advance_access=advance_access(value.get("advance_access", {"error": "audit_advance_not_requested"})),
-                  monitoring=monitoring(value.get("monitoring", {"error": "audit_monitoring_not_requested"})))
+                  monitoring=monitoring(value.get("monitoring", {"error": "audit_monitoring_not_requested"})),
+                  cached_configuration=cached_configuration(value.get("cached_configuration", {"error": "audit_cached_configuration_not_requested"})))
     return result
 
 def normalize(value):
