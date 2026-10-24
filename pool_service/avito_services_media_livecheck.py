@@ -253,7 +253,10 @@ def _run(payload, new_files, operation_id):
         _require(len(preview_raw) == asset.byte_size
             and hashlib.sha256(preview_raw).hexdigest() == asset.sha256)
     finally:
-        preview.close()
+        # This FileResponse belongs to an internal view call, not a completed
+        # HTTP request. Response.close() would emit request_finished and could
+        # close the database connection in the enclosing draft transaction.
+        preview.file_to_stream.close()
     try:
         media.services_image_public(_request('GET', actor), asset.public_key)
     except Http404:

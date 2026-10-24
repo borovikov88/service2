@@ -561,7 +561,7 @@ class ScopedServicesReleaseAuditTests(TestCase):
              patch.object(audit.avito_source_audit, "_read_xml") as shop:
             for args in ({"connection_id": 1}, {"account_id": "1001"}, {"revision": 16}, {"connection_id": True}):
                 self.assertEqual("audit_scope_invalid", audit.collect_services(**args)["reason"])
-            self.target.external_id = "1001"
+            self.target.external_id = "999999"
             self.target.save(update_fields=["external_id"])
             self.assertEqual("audit_services_connection_unavailable", audit.collect_services()["reason"])
             self.target.external_id = "446312402"

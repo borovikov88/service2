@@ -90,9 +90,10 @@ def _context(*, locked=False):
         raise Blocked('release_scope_invalid')
     metadata = connection.settings if isinstance(connection.settings, dict) else {}
     setup = metadata.get(SETUP_KEY)
-    if (not isinstance(setup, dict) or setup.get('automatic_reports_configured_once') is not True
-            or any(setup.get(key) != value for key, value in binding.items())):
+    if not isinstance(setup, dict) or setup.get('automatic_reports_configured_once') is not True:
         raise Blocked('release_actor_invalid')
+    if any(setup.get(key) != value for key, value in binding.items()):
+        raise Blocked('release_binding_changed')
     try:
         actor = _actor(connection)
     except Exception:

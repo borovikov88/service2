@@ -10,6 +10,8 @@ import tempfile
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
+from django.core import signing
+from django.core.signals import request_finished
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
@@ -115,6 +117,30 @@ class LiveMediaCheckTests(TestCase):
         self.assertFalse(self.feed.versions.filter(action='publish').exists())
         self.assertIsNone(asset.published_in_feed_at)
         self.assertEqual(self.client.get(reverse('avito_services_image_public', args=[asset.public_key])).status_code, 404)
+
+    def test_internal_preview_closes_only_file_without_finishing_the_outer_request(self):
+        token = self.token()
+        payload = signing.loads(token, salt=live.SALT, max_age=120)
+        operation_id = hashlib.sha256(token.encode()).hexdigest()
+        finished = []
+        def listener(sender, **kwargs):
+            finished.append(sender)
+        request_finished.connect(listener, weak=False)
+        self.addCleanup(request_finished.disconnect, listener)
+        streams, original_preview = [], media.services_image_preview
+        def capture(*args):
+            response = original_preview(*args)
+            streams.append(response.file_to_stream)
+            return response
+        with patch.object(media, '_download', return_value=picture()), \
+                patch.object(media, 'services_image_preview', side_effect=capture) as preview:
+            result = live._run(payload, [], operation_id)
+        self.assertTrue(result['original_draft_restored'])
+        self.assertEqual(finished, [])
+        self.assertTrue(streams[0].closed)
+        self.feed.refresh_from_db()
+        self.assertEqual(self.feed.revision, 3)
+        self.assertEqual(preview.call_count, 1)
 
     def test_readonly_release_source_has_fixed_allowlist_and_no_writes(self):
         before = self.state()

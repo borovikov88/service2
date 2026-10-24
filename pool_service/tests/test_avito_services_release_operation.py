@@ -223,6 +223,17 @@ class ServicesReleaseOperationTests(TestCase):
         self.assertEqual(post.call_count, 1)
         self.assertEqual(self.token.call_count, 1)
 
+    def test_revoked_channel_capability_remains_actor_denial(self):
+        CommunicationAccess.objects.filter(user=self.owner, organization=self.org).update(
+            can_manage_channels=False)
+        with patch.object(operation, '_post_photo') as post:
+            result = self.run_operation()
+        self.assertEqual(result['state'], 'blocked')
+        self.assertEqual(result['code'], 'release_actor_invalid')
+        self.token.assert_not_called()
+        self.account.assert_not_called()
+        post.assert_not_called()
+
     def test_credential_rotation_during_preflight_blocks_before_post(self):
         def rotate(*args):
             AvitoCredential.objects.filter(connection=self.connection).update(

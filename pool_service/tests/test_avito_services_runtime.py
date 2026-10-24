@@ -329,7 +329,8 @@ class ServicesRuntimeTests(TestCase):
             "user_id": user_id, "id": message_id, "chat_id": "PRIVATE_SYNTHETIC_CHAT",
             "author_id": "42", "author_name": "PRIVATE_SYNTHETIC_NAME", "type": "text",
             "content": {"text": "PRIVATE_SYNTHETIC_BODY"}}}}
-        return self.client.post(path, data=json.dumps(payload), content_type="application/json")
+        return self.client.post(path, data=json.dumps(payload), content_type="application/json",
+                                secure=True, HTTP_HOST="service2.aqualine22.ru")
 
     def test_authenticated_webhook_chain_proves_persistence_owner_record_and_dedupe(self):
         _, writes = self.install()
