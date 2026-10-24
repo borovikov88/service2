@@ -74,8 +74,12 @@ def system_title_skeleton(value):
         char = value[position]
         if char in pairs:
             end = value.find(pairs[char], position + 1)
+            interior = value[position + 1:end] if end >= 0 else ""
+            # Nested/mixed openers or escape syntax make the boundary ambiguous.
+            # Hide the remainder instead of exposing a tail inside a user value.
+            ambiguous = "\\" in interior or any(opener in interior for opener in pairs)
             quoted.append(" " + _HIDDEN + " ")
-            position = len(value) if end < 0 else end + 1
+            position = len(value) if end < 0 or ambiguous else end + 1
         else:
             quoted.append(char)
             position += 1
@@ -90,6 +94,12 @@ def system_title_skeleton(value):
                   " " + _HIDDEN + " ", text)
     text = re.sub(r"[^\s<>\"'«»“”\x60]*[/\\][^\s<>\"'«»“”\x60]*",
                   " " + _HIDDEN + " ", text)
+    # A recognised word inside an identifier/value is not a separate system
+    # token. Hide complete compound lexemes and explicit assignment values.
+    text = re.sub(r"(\w+)\s*=\s*[^\s,;]+", lambda match: match.group(1) + " " + _HIDDEN, text)
+    text = re.sub(r"\b(id|avitoid)\s*[:#]\s*[^\s,;]+",
+                  lambda match: match.group(1) + " " + _HIDDEN, text, flags=re.I)
+    text = re.sub(r"(?<!\w)\w+(?:[-_]\w+)+(?!\w)", " " + _HIDDEN + " ", text)
     tokens, redacted = [], False
     for token in re.findall(r"\w+|\x00|[^\w\s]", text, flags=re.UNICODE):
         canonical = token.casefold()

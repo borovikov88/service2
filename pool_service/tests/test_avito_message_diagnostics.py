@@ -129,7 +129,8 @@ class MessageDiagnosticsTests(TestCase):
                             for part in result["system_title_redacted"].split()))
 
     def test_redacted_title_hides_whole_quotes_contacts_paths_and_unknown_values(self):
-        values = ("PrivateName", "1234567890", "https://private.invalid/error/id",
+        values = ("PrivateName", "1234567890", "private-error", "123-error", "error_private_id",
+                  "https://private.invalid/error/id",
                   "user@private.invalid", "id.error", "/home/private/error/id", r"C:\private\error\id",
                   "«Объявление AvitoId»", '"Объявление AvitoId"', "'Объявление AvitoId'",
                   chr(96) + "Объявление AvitoId" + chr(96), "“Объявление AvitoId”",
@@ -143,6 +144,25 @@ class MessageDiagnosticsTests(TestCase):
                 self.assertNotIn("private", skeleton.casefold())
                 self.assertNotIn("объявление", skeleton)
                 self.assertNotIn("avitoid", skeleton)
+
+    def test_skeleton_hides_assignment_and_identifier_values_including_allowed_word_fragments(self):
+        for title in ("AvitoId=error", "AvitoId:error", "AvitoId#error"):
+            with self.subTest(title=title):
+                self.assertEqual(("avitoid [скрыто]", "redacted"), system_title_skeleton(title))
+        self.assertEqual(("параметр [скрыто]", "redacted"), system_title_skeleton("Параметр=error"))
+
+    def test_nested_mixed_and_escaped_quoted_values_cannot_leak_approved_tail_words(self):
+        values = ("«Объявление «Id» Цена»", "[Объявление [Id] Цена]",
+                  "{Объявление {Id} Цена}", "<Объявление <Id> Цена>",
+                  "«Объявление [Id] Цена»", '"Объявление «Id» Цена"',
+                  '"Описание \\" Цена"')
+        for value in values:
+            with self.subTest(value=value):
+                self.assertEqual(("параметр [скрыто]", "redacted"),
+                                 system_title_skeleton("Параметр " + value))
+                result = project_diagnostics(message_diagnostics(
+                    raw_message(title="Параметр " + value), raw_message(title="Параметр " + value)))
+                self.assertEqual("параметр [скрыто]", result["system_title_redacted"])
 
     def test_skeleton_suppresses_complete_title_on_credential_marker_even_inside_quotes(self):
         for title in ("Описание client_secret PRIVATE", "Описание «access_token PRIVATE»",
