@@ -115,6 +115,77 @@ class ServicesRuntimeTests(TestCase):
             result = setup.setup(4, "446312402", "https://service2.aqualine22.ru")
         return result, writes
 
+    @override_settings(SITE_URL="https://legacy.example.invalid",
+                       AVITO_SERVICES_PUBLIC_ORIGIN="https://service2.aqualine22.ru")
+    def test_setup_uses_dedicated_avito_origin_despite_unrelated_generic_site_url(self):
+        result, writes = self.install()
+        self.assertEqual("applied", result["setup"])
+        self.assertTrue(result["automatic_reports_enabled"])
+        self.assertTrue(result["webhook"]["registration_confirmed"])
+        self.assertEqual(1, len(writes))
+        self.assertTrue(writes[0].startswith("https://service2.aqualine22.ru/api/communications/avito/"))
+        self.assertNotIn("legacy.example.invalid", writes[0])
+        self.assertEqual({"source": "avito_services_public_origin", "cli_origin_verified": True,
+                          "generic_site_url_differs": True}, result["origin"])
+        self.assertNotIn("legacy.example.invalid", str(result))
+
+    @override_settings(SITE_URL="https://legacy.example.invalid",
+                       AVITO_SERVICES_PUBLIC_ORIGIN="https://service2.aqualine22.ru")
+    def test_wrong_cli_origin_is_rejected_before_any_configuration_or_provider_write(self):
+        from copy import deepcopy
+        before = deepcopy(self.fresh().settings)
+        with patch.object(setup, "authorized_account_id") as account, \
+             patch.object(auto, "configure") as configure, \
+             patch.object(setup, "subscribe_webhook") as write:
+            with self.assertRaisesMessage(AvitoError, "services_setup_origin_mismatch"):
+                setup.setup(4, "446312402", "https://legacy.example.invalid")
+        account.assert_not_called()
+        configure.assert_not_called()
+        write.assert_not_called()
+        self.assertEqual(before, self.fresh().settings)
+
+    @override_settings(SITE_URL="https://legacy.example.invalid",
+                       AVITO_SERVICES_PUBLIC_ORIGIN="https://service2.aqualine22.ru")
+    def test_wrong_constructed_callback_is_rejected_before_token_hash_or_post(self):
+        from copy import deepcopy
+        original = self.fresh()
+        before, token_hash = deepcopy(original.settings), original.api_token_hash
+        for callback in ("https://other.example.invalid/path",
+                         "http://service2.aqualine22.ru/path",
+                         "https://service2.aqualine22.ru/path?token=synthetic",
+                         "https://service2.aqualine22.ru/wrong-path/"):
+            with self.subTest(callback=callback), \
+                 patch.object(setup, "authorized_account_id", return_value="446312402"), \
+                 patch.object(setup, "verify_messenger_access", return_value=True), \
+                 patch.object(setup, "webhook_subscriptions", return_value=[]), \
+                 patch("pool_service.communication_views._avito_callback_url", return_value=callback), \
+                 patch.object(setup, "subscribe_webhook") as write:
+                with self.assertRaisesMessage(AvitoError, "services_setup_callback_origin_mismatch"):
+                    setup.ensure_webhook(4, setup._binding(self.fresh()), "https://service2.aqualine22.ru")
+            write.assert_not_called()
+            self.assertEqual(token_hash, self.fresh().api_token_hash)
+            self.assertEqual(before, self.fresh().settings)
+
+    @override_settings(SITE_URL="https://legacy.example.invalid",
+                       AVITO_SERVICES_PUBLIC_ORIGIN="https://service2.aqualine22.ru")
+    def test_legacy_generic_origin_subscription_cannot_confirm_avito_registration(self):
+        result, writes = self.install()
+        self.assertTrue(result["webhook"]["registration_confirmed"])
+        current = self.fresh()
+        legacy_url = writes[0].replace("https://service2.aqualine22.ru", "https://legacy.example.invalid")
+        self.assertFalse(setup._registered(current, [legacy_url], "https://legacy.example.invalid"))
+        self.assertFalse(setup._registered(current, [legacy_url], "https://service2.aqualine22.ru"))
+        current.settings[setup.WEBHOOK_KEY]["origin"] = "https://legacy.example.invalid"
+        current.save(update_fields=["settings"])
+        self.assertFalse(setup.webhook_evidence(self.fresh())["registration_confirmed"])
+
+    @override_settings(AVITO_SERVICES_PUBLIC_ORIGIN="http://service2.aqualine22.ru")
+    def test_invalid_trusted_origin_is_not_replaced_with_a_cli_fallback(self):
+        with patch.object(setup, "authorized_account_id") as account:
+            with self.assertRaisesMessage(AvitoError, "services_setup_origin_invalid"):
+                setup.setup(4, "446312402", "https://service2.aqualine22.ru")
+        account.assert_not_called()
+
     def test_setup_uses_valid_existing_actor_and_partial_completed_worker(self):
         result, writes = self.install()
         self.assertEqual("applied", result["setup"])

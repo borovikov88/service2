@@ -53,11 +53,10 @@ def _actor(connection):
 
 
 def _origin(value):
-    configured = getattr(settings, "SITE_URL", "").rstrip("/")
-    candidate = configured or value
-    if configured and value.rstrip("/") != configured:
-        raise AvitoError("services_setup_origin_mismatch")
+    """Use the dedicated trusted Avito origin, never the unrelated SITE_URL."""
+    from .avito_services_publication import public_origin
     try:
+        candidate = public_origin()
         parsed = urlsplit(candidate)
         valid = (parsed.scheme == "https" and parsed.hostname and not parsed.username and
             not parsed.password and not parsed.query and not parsed.fragment and
@@ -67,7 +66,17 @@ def _origin(value):
         valid = False
     if not valid:
         raise AvitoError("services_setup_origin_invalid")
-    return candidate.rstrip("/")
+    if not isinstance(value, str) or value.rstrip("/") != candidate:
+        raise AvitoError("services_setup_origin_mismatch")
+    return candidate
+
+
+def _origin_diagnostics(origin):
+    """Boolean-only proof: no generic URL, callback, path or token is exported."""
+    generic = getattr(settings, "SITE_URL", "")
+    return {"source": "avito_services_public_origin", "cli_origin_verified": True,
+            "generic_site_url_differs": bool(isinstance(generic, str) and generic
+                                            and generic.rstrip("/") != origin)}
 
 
 def _request(origin):
@@ -81,6 +90,10 @@ def _token_stamp(connection):
 
 def _registered(connection, urls, origin):
     from .communication_views import _avito_subscription_token
+    try:
+        origin = _origin(origin)
+    except AvitoError:
+        return False
     request = _request(origin)
     return any(connection.check_api_token(token) for token in
         (_avito_subscription_token(request, connection, url) for url in urls) if token)
@@ -115,7 +128,8 @@ def _save_webhook_evidence(connection_id, binding, origin, expected_hash, *, ver
 
 def ensure_webhook(connection_id, binding, origin):
     """Register only the Service2 callback, then authoritative readback; no replies."""
-    from .communication_views import _avito_callback_url
+    from .communication_views import _avito_callback_url, _avito_subscription_token
+    origin = _origin(origin)
     connection = _connection(connection_id)
     if not _same(connection, binding):
         raise AvitoError("services_setup_binding_changed")
@@ -135,6 +149,10 @@ def ensure_webhook(connection_id, binding, origin):
         return
     raw_token = secrets.token_urlsafe(32)
     callback_url = _avito_callback_url(_request(origin), connection, raw_token)
+    # Validate the actual constructed URL before saving a token hash or posting.
+    # The existing parser checks HTTPS, exact canonical host, path, token and no query/fragment.
+    if _avito_subscription_token(_request(origin), connection, callback_url) != raw_token:
+        raise AvitoError("services_setup_callback_origin_mismatch")
     with transaction.atomic():
         locked = ChannelConnection.objects.select_for_update().select_related("channel").get(pk=connection_id)
         if not _same(locked, binding) or locked.api_token_hash != connection.api_token_hash:
@@ -186,7 +204,11 @@ def stamp_incoming(connection, metadata, result, *, expected_hash, message_prese
 
 def webhook_evidence(connection, *, live=False):
     evidence = connection.settings.get(WEBHOOK_KEY) if isinstance(connection.settings, dict) else None
-    valid = bool(isinstance(evidence, dict) and _same(connection, evidence and
+    try:
+        origin_valid = isinstance(evidence, dict) and _origin(evidence.get("origin")) == evidence.get("origin")
+    except AvitoError:
+        origin_valid = False
+    valid = bool(origin_valid and isinstance(evidence, dict) and _same(connection, evidence and
         {key: evidence.get(key) for key in _binding(connection)}) and
         evidence.get("token_stamp") == _token_stamp(connection))
     registered = bool(valid and evidence.get("verified") is True)
@@ -207,6 +229,7 @@ def safe_setup_error(exc):
     code = str(exc) if isinstance(exc, AvitoError) else ""
     allowed = {"services_setup_actor_unverified", "services_setup_binding_changed",
         "services_setup_origin_mismatch", "services_setup_origin_invalid", "services_setup_worker_unverified",
+        "services_setup_callback_origin_mismatch",
         "provider_webhook_not_confirmed", "provider_webhook_rejected", "provider_subscriptions_invalid",
         "provider_account_mismatch", "provider_unavailable"}
     return code if code in allowed else safe_code(code) if code else "services_setup_internal_error"
@@ -321,6 +344,7 @@ def setup(connection_id, account_id, base_url):
             raise AvitoError("services_setup_actor_unverified")
         if marker.get("webhook_confirmed_once"):
             return {"setup": "already_applied", "connection_id": connection_id,
+                    "origin": _origin_diagnostics(origin),
                     "automatic_reports_enabled": avito_autoload_auto._state(connection).get("enabled") is True,
                     "webhook": webhook_evidence(connection),
                     "storage_probe": passenger_storage_probe(connection_id, binding, origin)}
@@ -353,6 +377,7 @@ def setup(connection_id, account_id, base_url):
         webhook_error = safe_setup_error(exc)
     current = _connection(connection_id)
     result = {"setup": "applied", "connection_id": connection_id,
+        "origin": _origin_diagnostics(origin),
         "automatic_reports_enabled": avito_autoload_auto._state(current).get("enabled") is True,
         "webhook": webhook_evidence(current), "webhook_error": webhook_error,
         "background_report_success": False,
