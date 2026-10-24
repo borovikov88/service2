@@ -36,6 +36,23 @@ CODES = frozenset({
 })
 
 
+DIAGNOSTIC_PHASES = frozenset({
+    'reserve', 'publication_preflight', 'account_read', 'photo_source', 'binding_check',
+    'token_prepare', 'http_pending', 'http_post', 'receipt_read', 'receipt_validate',
+    'finalize', 'unknown',
+})
+EXCEPTION_CLASSES = frozenset({
+    'Blocked', 'AvitoError', 'LiveMediaCheckError', 'ValueError', 'PermissionDenied',
+    'Http404', 'OSError', 'TimeoutError', 'HTTPError', 'URLError', 'JSONDecodeError',
+    'OperationalError', 'IntegrityError', 'FieldError', 'Other',
+})
+
+
+def _exception_class(exc):
+    name = type(exc).__name__
+    return name if name in EXCEPTION_CLASSES else 'Other'
+
+
 class Blocked(ValueError):
     pass
 
@@ -245,7 +262,8 @@ def _reserve(expected_sha):
                 'actor_id': actor.pk, 'expected_sha': expected_sha, 'created_at': now.isoformat(),
                 'draft_revision': feed.revision, 'before_draft_sha256': _digest(feed.draft),
                 'published_sha256': _digest(feed.published), 'avito_id': _selected_id(feed),
-                'operation_id': None, 'phase': 'preflight', 'public_receipt': _result()}
+                'operation_id': None, 'phase': 'preflight', 'public_receipt': _result(),
+                'diagnostic_phase': 'reserve', 'exception_class': None}
         lease = secrets.token_hex(16)
         marker.update(lease=lease, lease_until=(now + timedelta(seconds=LEASE_SECONDS)).isoformat())
         metadata[KEY] = marker
@@ -306,8 +324,10 @@ def run_release_operation(expected_sha, release_generation):
         result['code'] = 'release_generation_invalid'
         return result
     lease = binding = stamp = marker = None
+    stage, failure_phase, failure_class = 'reserve', None, None
     try:
         connection, actor, binding, stamp, lease, marker = _reserve(expected_sha)
+        stage = 'publication_preflight'
         result['publication_preflight'] = publication_release_check(
             connection, revision=PUBLISHED_REVISION, check_http=True)
         if marker.get('operation_id') is not None:
@@ -318,6 +338,7 @@ def run_release_operation(expected_sha, release_generation):
                 if source is not None:
                     result['photo_source'] = _source(source)
         else:
+            stage = 'account_read'
             if authorized_account_id(connection) != ACCOUNT_ID:
                 raise Blocked('release_account_mismatch')
             preflight = result['publication_preflight']
@@ -326,46 +347,108 @@ def run_release_operation(expected_sha, release_generation):
                 raise Blocked('release_preflight_failed')
             from .avito_services_media_livecheck import (
                 media_release_source, make_media_livecheck_token)
+            stage = 'photo_source'
             result['photo_source'] = _source(media_release_source(connection))
+            stage = 'binding_check'
             current, current_actor, current_binding, current_stamp = _context()
             feed = AvitoServicesFeed.objects.get(connection=current)
             if (current_binding != binding or current_stamp != stamp or current_actor.pk != actor.pk
                     or feed.revision != marker['draft_revision']):
                 raise Blocked('release_binding_changed')
+            stage = 'token_prepare'
             token = make_media_livecheck_token(current, current_actor, marker['avito_id'])
             operation_id = hashlib.sha256(token.encode('utf-8')).hexdigest()
             result.update(state='unknown', code='release_photo_pending')
             # Durable generation and operation_id exist BEFORE any POST.
+            stage = 'http_pending'
             _save(lease, binding, stamp, require_original_revision=True, operation_id=operation_id,
-                  phase='pending', public_receipt=result)
+                  phase='pending', public_receipt=result, diagnostic_phase=stage, exception_class=None)
             marker = dict(marker, operation_id=operation_id)
+            stage = 'http_post'
             try:
                 _post_photo(token)
-            except Exception:
-                pass  # No retry: timeout is not evidence the operation did not commit.
+            except Exception as exc:
+                failure_phase, failure_class = stage, _exception_class(exc)
+                # No retry: timeout is not evidence the operation did not commit.
+        stage = 'receipt_read'
         from .avito_services_media_livecheck import media_livecheck_receipt
         current, current_actor, current_binding, current_stamp = _context()
         if current_binding != binding or current_stamp != stamp or current_actor.pk != actor.pk:
             raise Blocked('release_binding_changed')
-        proof = _validated_photo(current, marker,
-                                 media_livecheck_receipt(current, marker['operation_id']))
+        durable_receipt = media_livecheck_receipt(current, marker['operation_id'])
+        stage = 'receipt_validate'
+        proof = _validated_photo(current, marker, durable_receipt)
         if proof is None:
             result.update(state='unknown', code='release_photo_unknown')
         else:
             result.update(state='completed', code='release_completed', photo_proof=proof)
+            failure_phase, failure_class = None, None
+        stage = 'finalize'
         _save(lease, binding, stamp, phase=result['state'], public_receipt=result,
-              lease_until=None)
+              lease_until=None, diagnostic_phase=failure_phase or stage, exception_class=failure_class)
         return result
     except Blocked as exc:
+        failure_phase, failure_class = stage, _exception_class(exc)
         code = str(exc) if str(exc) in CODES else 'release_internal_error'
         result.update(state='busy' if code == 'release_busy' else 'blocked', code=code)
-    except Exception:
+    except Exception as exc:
+        failure_phase, failure_class = stage, _exception_class(exc)
         result.update(state='unknown' if marker and marker.get('operation_id') else 'failed',
                       code='release_internal_error')
     if lease is not None:
         try:
             _save(lease, binding, stamp, phase=result['state'], public_receipt=result,
-                  lease_until=None)
+                  lease_until=None, diagnostic_phase=failure_phase or stage, exception_class=failure_class)
         except Exception:
             pass
     return result
+
+
+def release_operation_diagnostics(connection):
+    """Read only: reservation is not evidence HTTP was sent; receipt is stronger.
+
+    Historical generic exceptions have no reconstructable class/phase. No token
+    hash, source fingerprint, identifier, URL or exception value leaves here.
+    """
+    result = {'state': 'scope_invalid', 'has_operation_id': None, 'pending_http': None,
+        'has_exact_receipt': None, 'phase': 'unknown', 'exception_class': None}
+    if getattr(connection, 'pk', None) != CONNECTION_ID:
+        return result
+    stage = 'binding_check'
+    try:
+        current, actor, binding, stamp = _context()
+        if (current.external_id != connection.external_id or current.channel_id != connection.channel_id
+                or current.channel.organization_id != connection.channel.organization_id):
+            return result
+        marker = current.settings.get(KEY)
+        if marker is None:
+            result.update(state='not_started', has_operation_id=False,
+                          pending_http=False, has_exact_receipt=False)
+            return result
+        if not _matches(marker, binding, stamp):
+            return result
+        operation_id = marker.get('operation_id')
+        if operation_id is not None and (not isinstance(operation_id, str)
+                or not re.fullmatch(r'[0-9a-f]{64}', operation_id)):
+            result['state'] = 'unknown'
+            return result
+        state = marker.get('phase')
+        result['state'] = state if state in {'pending', 'completed', 'unknown', 'failed', 'blocked', 'busy'} else 'unknown'
+        result['phase'] = marker.get('diagnostic_phase') if marker.get('diagnostic_phase') in DIAGNOSTIC_PHASES else 'unknown'
+        result['exception_class'] = marker.get('exception_class') if marker.get('exception_class') in EXCEPTION_CLASSES else None
+        result.update(has_operation_id=operation_id is not None, pending_http=False, has_exact_receipt=False)
+        if operation_id is None:
+            return result
+        result['pending_http'] = True
+        stage = 'receipt_read'
+        from .avito_services_media_livecheck import media_livecheck_receipt
+        receipt = media_livecheck_receipt(current, operation_id)
+        if _validated_photo(current, marker, receipt) is not None:
+            result.update(has_exact_receipt=True, pending_http=False)
+        elif result['state'] == 'completed':
+            result['state'] = 'unknown'
+        return result
+    except Exception as exc:
+        result.update(state='scope_invalid' if stage == 'binding_check' else 'unknown',
+                      phase=stage, exception_class=_exception_class(exc))
+        return result

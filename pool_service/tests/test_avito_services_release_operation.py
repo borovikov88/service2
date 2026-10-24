@@ -276,3 +276,84 @@ class ReleaseOperationTransportTests(SimpleTestCase):
         self.assertNotIn('Authorization', kwargs['headers'])
         self.assertNotIn('Cookie', kwargs['headers'])
         self.assertEqual(kwargs['headers']['Accept-Encoding'], 'identity')
+
+
+
+@override_settings(ALLOWED_HOSTS=['service2.aqualine22.ru'], AVITO_SERVICES_PUBLIC_ORIGIN='https://service2.aqualine22.ru')
+class ReleaseLedgerDiagnosticsTests(TestCase):
+    # Reuse only the fixture/helpers, not the parent's already-run test methods.
+    setUp = ServicesReleaseOperationTests.setUp
+    run_operation = ServicesReleaseOperationTests.run_operation
+    commit_photo = ServicesReleaseOperationTests.commit_photo
+    def test_historical_generic_failure_is_read_only_and_does_not_invent_exception_phase(self):
+        connection, actor, binding, stamp, lease, marker = operation._reserve('a' * 40)
+        connection.refresh_from_db()
+        metadata = deepcopy(connection.settings)
+        metadata[operation.KEY].update(phase='failed', operation_id=None, lease_until=None)
+        metadata[operation.KEY].pop('diagnostic_phase', None)
+        metadata[operation.KEY].pop('exception_class', None)
+        connection.settings = metadata
+        connection.save(update_fields=['settings'])
+        before = deepcopy(connection.settings)
+        with patch.object(operation, '_post_photo') as post:
+            result = operation.release_operation_diagnostics(connection)
+        self.assertEqual(result, {'state': 'failed', 'has_operation_id': False,
+            'pending_http': False, 'has_exact_receipt': False, 'phase': 'unknown',
+            'exception_class': None})
+        connection.refresh_from_db()
+        self.assertEqual(connection.settings, before)
+        self.token.assert_not_called()
+        self.receipt.assert_not_called()
+        post.assert_not_called()
+
+    def test_future_source_failure_records_only_allowlisted_phase_and_class(self):
+        self.source_read.side_effect = ValueError('PRIVATE https://secret.invalid/query?token=value')
+        with patch.object(operation, '_post_photo') as post:
+            result = self.run_operation()
+        self.assertEqual(result['code'], 'release_internal_error')
+        diagnostics = operation.release_operation_diagnostics(self.connection)
+        self.assertEqual(diagnostics['phase'], 'photo_source')
+        self.assertEqual(diagnostics['exception_class'], 'ValueError')
+        self.assertFalse(diagnostics['has_operation_id'])
+        self.assertFalse(diagnostics['pending_http'])
+        self.connection.refresh_from_db()
+        self.assertNotIn('PRIVATE', json.dumps(self.connection.settings))
+        self.assertNotIn('https://', json.dumps(diagnostics))
+        post.assert_not_called()
+        self.token.assert_not_called()
+
+    def test_reserved_unknown_request_is_not_misrepresented_as_sent_or_completed(self):
+        with patch.object(operation, '_post_photo', side_effect=TimeoutError):
+            self.run_operation()
+        self.connection.refresh_from_db()
+        before = deepcopy(self.connection.settings)
+        result = operation.release_operation_diagnostics(self.connection)
+        self.assertTrue(result['has_operation_id'])
+        self.assertTrue(result['pending_http'])
+        self.assertFalse(result['has_exact_receipt'])
+        self.assertEqual(result['phase'], 'http_post')
+        self.assertEqual(result['exception_class'], 'TimeoutError')
+        self.connection.refresh_from_db()
+        self.assertEqual(self.connection.settings, before)
+        self.assertNotIn(before[operation.KEY]['operation_id'], json.dumps(result))
+
+    def test_exact_current_durable_receipt_is_distinct_from_pending_reservation(self):
+        with patch.object(operation, '_post_photo', side_effect=self.commit_photo):
+            self.run_operation()
+        self.connection.refresh_from_db()
+        before = deepcopy(self.connection.settings)
+        result = operation.release_operation_diagnostics(self.connection)
+        self.assertEqual(result['state'], 'completed')
+        self.assertTrue(result['has_operation_id'])
+        self.assertTrue(result['has_exact_receipt'])
+        self.assertFalse(result['pending_http'])
+        self.connection.refresh_from_db()
+        self.assertEqual(self.connection.settings, before)
+
+    def test_foreign_scope_returns_unknown_flags_and_never_reads_a_receipt(self):
+        result = operation.release_operation_diagnostics(self.goods)
+        self.assertEqual(result['state'], 'scope_invalid')
+        self.assertIsNone(result['has_operation_id'])
+        self.assertIsNone(result['pending_http'])
+        self.assertIsNone(result['has_exact_receipt'])
+        self.receipt.assert_not_called()

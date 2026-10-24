@@ -526,6 +526,16 @@ def _services_release_evidence(connection):
         result["approved_photo"] = media_release_source(connection)
     except Exception:
         result["approved_photo"] = {"error": "audit_approved_photo_unavailable"}
+    try:
+        from .avito_services_media_readiness import media_release_readiness
+        result["media_readiness"] = media_release_readiness(connection)
+    except Exception:
+        result["media_readiness"] = {"error": "audit_media_readiness_unavailable"}
+    try:
+        from .avito_services_release_operation import release_operation_diagnostics
+        result["operation_ledger"] = release_operation_diagnostics(connection)
+    except Exception:
+        result["operation_ledger"] = {"error": "audit_operation_ledger_unavailable"}
     return result
 
 
@@ -569,6 +579,7 @@ def collect_services(item_ids=None, *, connection_id=SERVICES_CONNECTION_ID,
     complete = ("error" not in row and all(
         "error" not in row[key] for key in
         ("autoload_report", "listing_scan", "configured_feed_source", "advance_access",
-         "publication_release", "webhook_chain", "approved_photo", "raw_content_fields"))
+         "publication_release", "webhook_chain", "approved_photo", "raw_content_fields",
+         "media_readiness", "operation_ledger"))
         and all("error" not in item for item in row["items"]))
     return normalize(envelope | {"status": "read" if complete else "partial", "connections": [row]})
