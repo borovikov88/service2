@@ -135,6 +135,20 @@ class ServicesRuntimeTests(TestCase):
                 result = classify(dict(positive, title=title))
                 self.assertNotEqual("existing_listing_link", result["category"])
                 self.assertFalse(result["binding_evidence"])
+        unconfirmed = (
+            "Объявление должно быть связано с объявлением на Авито",
+            "Параметр должен быть связан с существующим объявлением",
+            "Карточка должна быть связана с существующим объявлением",
+            "Карточки должны быть связаны с существующим объявлением",
+            "Следует проверить, что объявление связано с объявлением на Авито",
+            "Проверьте, что объявление связано с объявлением на Авито",
+            "Убедитесь, что объявление связано с объявлением на Авито",
+        )
+        for title in unconfirmed:
+            with self.subTest(title=title):
+                result = classify(dict(positive, title=title))
+                self.assertNotEqual("existing_listing_link", result["category"])
+                self.assertFalse(result["binding_evidence"])
         for message in (dict(positive, description="Укажите AvitoId."),
                         dict(positive, type="error"), dict(positive, type="alarm")):
             self.assertEqual("action_required", classify(message)["category"])
