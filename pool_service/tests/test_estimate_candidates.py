@@ -103,7 +103,7 @@ class PreliminaryCoreTests(SimpleTestCase):
         row=target(updated,'pump')
         self.assertEqual((row['price'],row['catalog']['price']),('100.00','100.00'))
         self.assertEqual(row['catalog']['checked_at'],target(original,'pump')['catalog']['checked_at'])
-        self.assertEqual(row['selection_note'],'')
+        self.assertIn('характеристики насоса в карточке магазина', row['selection_note'])
         for edit in [dict(price='77.00'),dict(quantity='2',selection_locked=True),dict(excluded=True),dict(existing=True),dict(unit_price_manual=True)]:
             s=deepcopy(original);target(s,'pump').update(edit)
             preserved,_=catalog.auto_select(s,current,only_variant='economy')
