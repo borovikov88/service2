@@ -8,7 +8,8 @@ from zoneinfo import ZoneInfo
 
 from django.utils import timezone
 
-from pool_service import avito_tariff_reminder
+from pool_service import avito_tariff_reminder, avito_autoload_auto
+from pool_service.avito_feed_models import AvitoServicesFeed
 from pool_service.models import Notification, Profile
 from pool_service import avito_advance, avito_autoload_report, avito_source_audit, avito_workspace, avito_status_monitor, avito_inventory
 from pool_service.avito_profile_source import fetch_profile_source
@@ -199,6 +200,76 @@ def monitoring_state(connection):
     }
 
 
+def _legacy_photos_exceed_limit(sheets):
+    """Inspect bounded saved snapshots without exporting or fetching image URLs."""
+    if not isinstance(sheets, list) or len(sheets) > 200:
+        return None
+    over_limit, count = False, 0
+    for sheet in sheets:
+        if not isinstance(sheet, dict) or not isinstance(sheet.get("rows"), list):
+            return None
+        for row in sheet["rows"]:
+            count += 1
+            if count > 200 or not isinstance(row, dict):
+                return None
+            images = row.get("ImageUrls")
+            if not isinstance(images, str) or len(images) > 32767:
+                return None
+            over_limit |= len([part for part in re.split(r"[|\r\n]+", images) if part.strip()]) > 10
+    return over_limit
+
+
+def cached_configuration_state(connection):
+    """Local configuration only; cached webhook state has no immutable account binding."""
+    current = ChannelConnection.objects.select_related("channel").get(pk=connection.pk)
+    if (not current.is_active or not current.channel.is_active or current.channel.kind != "avito"
+            or current.channel_id != connection.channel_id
+            or current.channel.organization_id != connection.channel.organization_id
+            or current.external_id != connection.external_id):
+        return {"error": "audit_configuration_scope_changed"}
+    metadata = current.settings if isinstance(current.settings, dict) else None
+    auto = metadata.get(avito_autoload_auto.KEY, {}) if metadata is not None else None
+    auto_valid = isinstance(auto, dict)
+    try:
+        auto_allowed = bool(auto and avito_autoload_auto._allowed(current, auto)) if auto_valid else None
+    except (TypeError, ValueError):
+        auto_allowed = None
+    status = metadata.get("avito_webhook_status") if metadata is not None else None
+    if not isinstance(status, str) or status not in {"connected", "not_connected", "needs_check", "error"}:
+        status = "unknown"
+    # Legacy status/received timestamps cannot prove which account/keys produced
+    # them. Never turn them into positive registration or delivery evidence.
+    result = {
+        "source": "service2_cached_configuration", "live_provider_verified": False,
+        "webhook_cache_present": ("avito_webhook_status" in metadata) if metadata is not None else None,
+        "webhook_cache_status": status, "webhook_scope_known": False,
+        "webhook_configured_cached": None, "webhook_verified_cached": None,
+        "webhook_received_cached": None,
+        "autoload_auto_configured": bool(auto) if auto_valid else None,
+        "autoload_auto_enabled": (auto.get("enabled", False) if type(auto.get("enabled", False)) is bool else None) if auto_valid else None,
+        "autoload_auto_scope_valid": auto_allowed,
+        "services_feed_configured": False, "services_feed_account_bound": False,
+        "services_feed_enabled": None, "services_feed_revision_current": None,
+        "services_feed_legacy_photo_limit_exceeded": None,
+    }
+    feed = AvitoServicesFeed.objects.filter(connection=current).first()
+    if feed is not None:
+        bound = (feed.account_id == current.external_id
+                 and feed.organization_id_at_import == current.channel.organization_id)
+        result.update(services_feed_configured=True, services_feed_account_bound=bound)
+        if bound:
+            draft_photos, published_photos = (_legacy_photos_exceed_limit(feed.draft),
+                                               _legacy_photos_exceed_limit(feed.published))
+            result.update(
+                services_feed_enabled=feed.enabled,
+                services_feed_revision_current=bool(feed.published and feed.revision == feed.published_revision),
+                services_feed_legacy_photo_limit_exceeded=(
+                    draft_photos or published_photos
+                    if draft_photos is not None and published_photos is not None else None),
+            )
+    return result
+
+
 def collect_connection(connection, item_ids, index, stocks=None, stock_error=None):
     identity = {"connection_id": connection.pk}
     try:
@@ -267,9 +338,13 @@ def collect_connection(connection, item_ids, index, stocks=None, stock_error=Non
             flags = monitoring_state(connection)
         except Exception:
             flags = {"error": "audit_monitoring_unavailable"}
+        try:
+            cached_flags = cached_configuration_state(connection)
+        except Exception:
+            cached_flags = {"error": "audit_configuration_unavailable"}
         return identity | {"account_id": account_id, "items": items, "autoload_report": summary, "listing_scan": listing_scan, "active_source_audit": active_source,
                            "configured_feed_source": configured_source, "advance_access": advance_access,
-                           "monitoring": flags}
+                           "monitoring": flags, "cached_configuration": cached_flags}
     except Exception as error:
         return identity | {"error": safe_error(error)}
 
