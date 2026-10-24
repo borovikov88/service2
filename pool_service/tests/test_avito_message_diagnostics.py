@@ -6,7 +6,8 @@ from pathlib import Path
 from unittest import TestCase
 
 from pool_service.avito_report_messages import classify, groups, message_diagnostics
-from scripts.avito_message_diagnostics import project_diagnostics, shape
+from scripts.avito_message_diagnostics import (project_diagnostics, shape, system_title_skeleton,
+                                                SKELETON_PLACEHOLDER, SYSTEM_WORDS)
 from scripts import avito_readonly_receipt as receipt
 
 
@@ -116,6 +117,110 @@ class MessageDiagnosticsTests(TestCase):
         bad["raw_title"]["length"] = True
         with self.assertRaises(ValueError):
             project_diagnostics(bad)
+
+    def test_redacted_system_title_retains_only_canonical_words_and_negation_in_order(self):
+        title = "Объявление НЕ найдено: AvitoId 1234567890"
+        result = project_diagnostics(message_diagnostics(raw_message(title=title), raw_message(title=title)))
+        self.assertIsNone(result["system_title"])
+        self.assertEqual("объявление не найдено avitoid [скрыто]", result["system_title_redacted"])
+        self.assertEqual("redacted", result["system_title_redacted_policy"])
+        self.assertNotIn("1234567890", result["system_title_redacted"])
+        self.assertTrue(all(part in SYSTEM_WORDS or part == SKELETON_PLACEHOLDER
+                            for part in result["system_title_redacted"].split()))
+
+    def test_redacted_title_hides_whole_quotes_contacts_paths_and_unknown_values(self):
+        values = ("PrivateName", "1234567890", "private-error", "123-error", "Title-123", "error_private_id",
+                  "https://private.invalid/error/id",
+                  "user@private.invalid", "id.error", "/home/private/error/id", r"C:\private\error\id",
+                  "«Объявление AvitoId»", '"Объявление AvitoId"', "'Объявление AvitoId'",
+                  chr(96) + "Объявление AvitoId" + chr(96), "“Объявление AvitoId”",
+                  "‹Объявление AvitoId›", "„Объявление AvitoId“", "‘Объявление AvitoId’",
+                  "<Объявление AvitoId>", "[Объявление AvitoId]", "{Объявление AvitoId}")
+        for value in values:
+            with self.subTest(value=value):
+                skeleton, policy = system_title_skeleton("Параметр " + value)
+                self.assertEqual("параметр [скрыто]", skeleton)
+                self.assertEqual("redacted", policy)
+                self.assertNotIn("private", skeleton.casefold())
+                self.assertNotIn("объявление", skeleton)
+                self.assertNotIn("avitoid", skeleton)
+
+    def test_skeleton_hides_assignment_and_identifier_values_including_allowed_word_fragments(self):
+        for title in ("AvitoId=error", "AvitoId:error", "AvitoId#error"):
+            with self.subTest(title=title):
+                self.assertEqual(("avitoid [скрыто]", "redacted"), system_title_skeleton(title))
+        self.assertEqual(("параметр [скрыто]", "redacted"), system_title_skeleton("Параметр=error"))
+        self.assertEqual(("параметр id [скрыто]", "redacted"), system_title_skeleton("Параметр id = error"))
+
+    def test_nested_mixed_and_escaped_quoted_values_cannot_leak_approved_tail_words(self):
+        values = ("«Объявление «Id» Цена»", "[Объявление [Id] Цена]",
+                  "{Объявление {Id} Цена}", "<Объявление <Id> Цена>",
+                  "«Объявление [Id] Цена»", '"Объявление «Id» Цена"',
+                  '"Описание \\" Цена"')
+        for value in values:
+            with self.subTest(value=value):
+                self.assertEqual(("параметр [скрыто]", "redacted"),
+                                 system_title_skeleton("Параметр " + value))
+                result = project_diagnostics(message_diagnostics(
+                    raw_message(title="Параметр " + value), raw_message(title="Параметр " + value)))
+                self.assertEqual("параметр [скрыто]", result["system_title_redacted"])
+
+    def test_skeleton_suppresses_complete_title_on_credential_marker_even_inside_quotes(self):
+        for title in ("Описание client_secret PRIVATE", "Описание «access_token PRIVATE»",
+                      "Ошибка Bearer PRIVATE", "Параметр пароль PRIVATE"):
+            with self.subTest(title=title):
+                result = project_diagnostics(message_diagnostics(raw_message(title=title), raw_message(title=title)))
+                self.assertIsNone(result["system_title_redacted"])
+                self.assertEqual("sensitive_marker", result["system_title_redacted_policy"])
+                self.assertNotIn("PRIVATE", json.dumps(result))
+                with self.assertRaises(ValueError):
+                    project_diagnostics(dict(result, system_title_redacted="ошибка",
+                                             system_title_redacted_policy="safe"))
+
+    def test_synthetic_92_character_warning_diagnostic_does_not_guess_numeric_code_meaning(self):
+        title = "Объявление: " + "q" * (92 - len("Объявление: "))
+        entry = raw_message(title=title, description="")
+        entry["diagnostics"] = message_diagnostics(entry, entry)
+        result = groups([{"messages": [entry]}])[0]
+        self.assertEqual(92, result["diagnostics"]["raw_title"]["length"])
+        self.assertEqual(0, result["diagnostics"]["raw_description"]["length"])
+        self.assertEqual("объявление [скрыто]", result["diagnostics"]["system_title_redacted"])
+        self.assertEqual("review_required", result["category"])
+        self.assertFalse(result["binding_evidence"])
+        self.assertFalse(result["action_evidence"])
+        self.assertNotIn("qqq", json.dumps(result))
+
+    def test_skeleton_projection_rejects_forged_value_fragments_policy_or_noncanonical_tokens(self):
+        diagnostic = message_diagnostics(raw_message(title="Параметр PRIVATE"), raw_message(title="Параметр PRIVATE"))
+        for skeleton in ("параметр PrivateName", "параметр 123", "параметр user@example.invalid",
+                         "параметр https://private.invalid", "Параметр [скрыто]",
+                         "параметр [скрыто] [скрыто]", "[скрыто]", "параметр [PRIVATE]"):
+            with self.subTest(skeleton=skeleton):
+                bad = dict(diagnostic, system_title_redacted=skeleton)
+                with self.assertRaises(ValueError):
+                    project_diagnostics(bad)
+        with self.assertRaises(ValueError):
+            project_diagnostics(dict(diagnostic, system_title_redacted_policy="safe"))
+
+    def test_old_cached_diagnostics_and_ad_rows_do_not_gain_title_skeleton_evidence(self):
+        old = message_diagnostics(raw_message(), raw_message())
+        old.pop("system_title_redacted")
+        old.pop("system_title_redacted_policy")
+        self.assertNotIn("system_title_redacted", project_diagnostics(old))
+        ad = {"title": "Объявление: PrivateName", "description": "PRIVATE"}
+        result = project_diagnostics(message_diagnostics(ad, ad))
+        self.assertIsNone(result["system_title_redacted"])
+        self.assertEqual("not_system_message", result["system_title_redacted_policy"])
+
+    def test_skeleton_input_and_output_are_bounded_and_nontext_is_not_stringified(self):
+        for value in ("объявление " * 30, "объявление " * 200, "q" * 2001):
+            self.assertEqual((None, "too_long"), system_title_skeleton(value))
+        self.assertEqual((None, "non_text"), system_title_skeleton({"PRIVATE": "error"}))
+        self.assertEqual((None, "all_withheld"), system_title_skeleton("PRIVATE 123"))
+        self.assertEqual(("параметр [скрыто]", "redacted"),
+                         system_title_skeleton('Параметр «Объявление AvitoId'))
+        self.assertEqual(("параметр [скрыто]", "redacted"),
+                         system_title_skeleton("Параметр １２３abc"))
 
     def test_shape_lengths_are_bounded_and_nonstring_values_are_not_stringified(self):
         result = shape("PRIVATE" * 10000)
