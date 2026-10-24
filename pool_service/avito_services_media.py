@@ -254,6 +254,29 @@ def _image(raw, *, normalize=True):
         raise ValueError('Файл не является доступной фотографией JPEG, PNG или WebP.') from None
 
 
+def _image_host_relation(source, target):
+    """Only identity or a single www DNS alias; no suffix/registry/IP folding."""
+    if source == target:
+        return 'same'
+    if target == 'www.' + source:
+        base = source
+    elif source == 'www.' + target:
+        base = target
+    else:
+        return 'other'
+    if (base == 'www' or base.startswith('www.') or base.endswith('.') or len(base) > 253
+            or re.fullmatch(r'[0-9.]+', base)
+            or re.fullmatch(r'(?:0x[0-9a-f]+|[0-9]+)(?:\.(?:0x[0-9a-f]+|[0-9]+)){0,3}', base)
+            or not all(re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label)
+                       for label in base.split('.'))):
+        return 'other'
+    try:
+        ipaddress.ip_address(base)
+    except ValueError:
+        return 'www_alias'
+    return 'other'
+
+
 def _image_https_upgrade(parts, host, port, response, diagnostics, *, upgraded):
     """One image-only canonical upgrade, never general redirect handling."""
     if response.status not in (301, 308):
@@ -289,11 +312,10 @@ def _image_https_upgrade(parts, host, port, response, diagnostics, *, upgraded):
         reject('upgrade_location_userinfo')
     if target.scheme != 'https' or not target.netloc or not target_host:
         reject('upgrade_target_scheme')
-    diagnostics['host_relation'] = ('same' if target_host == host else
-        'www_alias' if target_host == 'www.' + host or host == 'www.' + target_host else 'other')
+    diagnostics['host_relation'] = _image_host_relation(host, target_host)
     if target_port not in (None, 443):
         reject('upgrade_target_port')
-    if target_host != host:
+    if diagnostics['host_relation'] not in {'same', 'www_alias'}:
         reject('upgrade_target_host')
     if target.path != parts.path:
         reject('upgrade_target_path')
