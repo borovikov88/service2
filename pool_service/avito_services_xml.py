@@ -40,7 +40,19 @@ def xml_bytes(sheets, *, max_images=10):
                 raise ValueError('XML поддерживает только услуги с размещением из пакета.')
             ids.add(item_id); avito_ids.add(avito_id)
             ad = ET.SubElement(root, 'Ad')
-            for name, raw in row.items():
+            # JSON object key order is not preserved by MySQL. Export header
+            # arrays retain order, so the same snapshot must always produce the
+            # same bytes before and after a database round trip.
+            headers = sheet.get('headers')
+            headers = headers if isinstance(headers, list) else []
+            names, seen = [], set()
+            for name in headers:
+                if isinstance(name, str) and name in row and name not in seen:
+                    names.append(name)
+                    seen.add(name)
+            names.extend(sorted(name for name in row if name not in seen))
+            for name in names:
+                raw = row[name]
                 if not raw or name in EXPORT_METADATA:
                     continue
                 value = checked_text(raw)

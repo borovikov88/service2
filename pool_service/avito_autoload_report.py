@@ -145,6 +145,27 @@ def feed_source_diagnostics(feeds):
     return result
 
 
+def source_url_sha256(feeds):
+    """Backend-only exact source fingerprints; raw URLs remain provider-local."""
+    if not isinstance(feeds, list) or len(feeds) > 50:
+        _invalid()
+    result = []
+    for feed in feeds:
+        value = feed.get("url") if isinstance(feed, dict) else feed if isinstance(feed, str) else None
+        if not isinstance(value, str) or not 1 <= len(value) <= 2000:
+            continue
+        try:
+            part = urlsplit(value)
+            valid = (part.scheme == "https" and part.hostname and part.username is None
+                     and part.password is None and part.port in (None, 443)
+                     and not part.fragment and not any(c.isspace() for c in value))
+        except ValueError:
+            valid = False
+        if valid:
+            result.append(hashlib.sha256(value.encode("utf-8")).hexdigest())
+    return result
+
+
 def summary_data(raw):
     if not isinstance(raw, dict):
         _invalid()
@@ -163,6 +184,7 @@ def summary_data(raw):
                                   "description": _text(event.get("description"), 3000)})
     return {"id": str(identifier), "status": status or "", "started_at": _date(raw.get("started_at"), nullable=True),
             "stats": _tree(raw.get("stats")), "events": normalized_events,
+            "source_url_sha256": source_url_sha256(raw["feed_urls"]),
             "shop_feed_source": shop_feed_source(raw["feed_urls"]),
             "shop_feed_diagnostics": feed_source_diagnostics(raw["feed_urls"])}
 
@@ -397,7 +419,12 @@ def fetch_report(token, account_id, *, kind="last_successful"):
             break
         page += 1
     after = summary_data(get(base))
-    if before != after:
+    # Provider-hosted copies may rotate signed URLs without changing the upload.
+    # Preserve the existing report consistency contract; exact source proof is
+    # withheld if its private URL fingerprint changed during this read.
+    source_consistent = before["source_url_sha256"] == after["source_url_sha256"]
+    if ({key: value for key, value in before.items() if key != "source_url_sha256"}
+            != {key: value for key, value in after.items() if key != "source_url_sha256"}):
         raise AvitoError("autoload_report_changed")
     try:
         require_unique_rows(rows)
@@ -413,6 +440,7 @@ def fetch_report(token, account_id, *, kind="last_successful"):
     result = {"version": 1, "complete": True, "kind": kind, "upload_id": before["id"],
               "upload_status": before["status"], "upload_finished": before["status"] in {"success", "success_warning", "error"},
               "started_at": before["started_at"], "stats": before["stats"], "events": before["events"],
+              "source_url_sha256": before["source_url_sha256"] if source_consistent else [],
               "shop_feed_source": before["shop_feed_source"],
               "shop_feed_diagnostics": before["shop_feed_diagnostics"],
               "total": len(rows), "pages": page, "counts": dict(counts), "rows": rows,

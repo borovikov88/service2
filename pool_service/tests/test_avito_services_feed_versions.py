@@ -20,6 +20,9 @@ from pool_service.tests.test_avito_services_feed import export_bytes
 
 class FeedVersionTests(TestCase):
     def setUp(self):
+        availability = patch('pool_service.avito_services_feed.validate_snapshot_media')
+        availability.start()
+        self.addCleanup(availability.stop)
         self.org = Organization.objects.create(name='Version test')
         self.owner = User.objects.create_user('version-owner')
         OrganizationAccess.objects.create(organization=self.org, user=self.owner, role='owner')
@@ -80,7 +83,7 @@ class FeedVersionTests(TestCase):
         feed.refresh_from_db()
         self.assertEqual((feed.versions.count(), feed.last_checked_at), before)
         page = self.client.get(self.url)
-        self.assertContains(page, 'применение изменений пока не подтверждены')
+        self.assertContains(page, 'Ожидается загрузка после публикации')
         self.assertContains(page, 'Неактивное объявление не отправляется повторно')
         self.assertEqual(get.call_count, 1)
 

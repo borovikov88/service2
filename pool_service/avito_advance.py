@@ -295,7 +295,7 @@ def scan_connection(connection_id):
     return "success" if update["status"] == "ok" else "failed"
 
 
-def scan_due(*, deadline, limit=2):
+def scan_due(*, deadline, limit=2, observer=None):
     import time
     counts = {"success": 0, "failed": 0, "skipped": 0}
     ids = list(ChannelConnection.objects.filter(
@@ -306,9 +306,13 @@ def scan_due(*, deadline, limit=2):
     for connection_id in ids:
         if deadline - time.monotonic() < SCAN_RESERVE_SECONDS:
             break
+        failed_with_exception = False
         try:
             outcome = scan_connection(connection_id)
         except Exception:
+            failed_with_exception = True
             outcome = "failed"  # fixed aggregates only; expired leases recover on a later tick
         counts[outcome] += 1
+        if observer is not None:
+            observer(connection_id, "advance", outcome, exception=failed_with_exception)
     return counts

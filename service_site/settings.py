@@ -501,3 +501,8 @@ ONEC_ODATA_PAYROLL_WITHHOLDING_GUIDS = os.getenv("ONEC_ODATA_PAYROLL_WITHHOLDING
 # Stable application-level key for encrypted provider credentials. In production
 # this should be set independently so Django SECRET_KEY can be rotated safely.
 COMMUNICATION_CREDENTIAL_KEY = os.getenv("COMMUNICATION_CREDENTIAL_KEY", "")
+
+# Trusted origin for immutable Avito XML/image URLs; request Host is not evidence.
+AVITO_SERVICES_PUBLIC_ORIGIN = os.getenv("AVITO_SERVICES_PUBLIC_ORIGIN", "") or "https://service2.aqualine22.ru"
+# Keep new Avito photographs outside the web checkout; created by the web worker.
+AVITO_SERVICES_MEDIA_ROOT = os.getenv("AVITO_SERVICES_MEDIA_ROOT", "") or str(BASE_DIR.parent / "private_avito_media")

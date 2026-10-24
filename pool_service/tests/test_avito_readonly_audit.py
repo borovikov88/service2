@@ -105,6 +105,31 @@ class ReadonlyAvitoOperatorTests(TestCase):
 
             return audit.collect_connection(self.connection, ["101", "102"], self.index)
 
+    def test_failed_live_webhook_read_does_not_hide_successful_storage_proof(self):
+        from pool_service import avito_services_workplace_setup as setup
+        proof = {"source": "passenger_http", "checked": True, "cached": True,
+                 "outside_checkout": True, "file_private": True, "directory_private": True,
+                 "readable": True, "synthetic_only": True}
+        with patch.object(setup, "webhook_evidence", side_effect=AvitoError("provider_http_403")), \
+             patch.object(setup, "storage_probe_evidence", return_value=proof):
+            result = self.collect_connection()
+        self.assertEqual({"error": "provider_http_403"}, result["webhook_evidence"])
+        self.assertEqual(proof, result["storage_probe"])
+        self.assertEqual(2, result["autoload_report"]["total"])
+        self.assertTrue(receipt.connection(result)["storage_probe"]["checked"])
+
+    def test_failed_storage_diagnostic_does_not_hide_independent_webhook_readback(self):
+        from pool_service import avito_services_workplace_setup as setup
+        webhook = {"binding_valid": True, "registration_confirmed": True,
+                   "delivery_observed": False, "live_provider_checked": True, "live_registered": True}
+        with patch.object(setup, "webhook_evidence", return_value=webhook), \
+             patch.object(setup, "storage_probe_evidence", side_effect=RuntimeError("PRIVATE")):
+            result = self.collect_connection()
+        self.assertEqual(webhook, result["webhook_evidence"])
+        self.assertEqual("storage_probe_failed", result["storage_probe"]["error"])
+        self.assertEqual(2, result["autoload_report"]["total"])
+        self.assertNotIn("PRIVATE", str(receipt.connection(result)))
+
     def test_full_scan_and_report_codes_are_complete_sanitized_aggregates(self):
         result = self.collect_connection()
         scan = result["listing_scan"]

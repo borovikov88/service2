@@ -30,6 +30,7 @@ class AvitoServicesFeedVersion(models.Model):
         ('import', 'Импорт черновика'), ('edit', 'Изменение черновика'),
         ('restore', 'Восстановление в новый черновик'), ('publish', 'Публикация файла'),
         ('verify', 'Проверка статусов Авито'), ('disable', 'Отключение файла'),
+        ('policy', 'Политика возврата объявления'),
     ]
     feed = models.ForeignKey(AvitoServicesFeed, on_delete=models.CASCADE, related_name='versions')
     revision = models.PositiveIntegerField()

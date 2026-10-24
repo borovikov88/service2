@@ -52,7 +52,7 @@ def require_identities(feed, candidate):
 
 
 def record_version(feed, action, before, snapshot, *, actor=None, reason='',
-                   observations=None, source_version=None, content=None):
+                   observations=None, source_version=None, content=None, extra_changes=None):
     if source_version is None and action == 'publish':
         source_version = feed.versions.filter(revision=feed.revision,
             action__in=('import', 'edit', 'restore', 'baseline')).order_by('-pk').first()
@@ -63,7 +63,7 @@ def record_version(feed, action, before, snapshot, *, actor=None, reason='',
         raise ValueError('Версия относится к другому источнику.')
     return AvitoServicesFeedVersion.objects.create(feed=feed, revision=feed.revision,
         published_revision=feed.published_revision, action=action, actor=actor, reason=reason,
-        snapshot=deepcopy(snapshot), changes=changes_between(before, snapshot),
+        snapshot=deepcopy(snapshot), changes=changes_between(before, snapshot) + deepcopy(extra_changes or []),
         observations=deepcopy(observations or []), source_version=source_version,
         file_digest=hashlib.sha256(content).hexdigest() if content is not None else '')
 

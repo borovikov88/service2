@@ -2,7 +2,7 @@
 <section class="avito-panel mb-3" id="avito-tariff" aria-labelledby="avito-tariff-heading">
   <div class="avito-panel__header">
     <h2 class="avito-panel__title" id="avito-tariff-heading">Продление тарифа</h2>
-    <span class="small {% if not tariff_reminder_state.enabled or tariff_reminder_state.needs_reactivation %}text-warning{% else %}text-muted{% endif %}">{% if tariff_reminder_state.enabled and not tariff_reminder_state.needs_reactivation %}Напоминания включены · {{ tariff_reminder_state.expires_on|date:"d.m.Y" }} · дата указана вручную{% else %}Контроль срока не настроен{% endif %}</span>
+    <span class="small {% if not tariff_reminder_state.enabled or tariff_reminder_state.needs_reactivation %}text-warning{% else %}text-muted{% endif %}">{% if tariff_reminder_state.enabled and not tariff_reminder_state.needs_reactivation %}Напоминания включены · {{ tariff_reminder_state.expires_on|date:"d.m.Y" }} · дата указана вручную{% elif tariff_reminder_state.expires_on %}{{ tariff_reminder_state.expires_on|date:"d.m.Y" }} · дата указана вручную · напоминания выключены{% else %}Дата окончания тарифа не задана{% endif %}</span>
   </div>
   <div class="avito-panel__body">
     {% if tariff_reminder_state.last_error_detail %}<p class="small text-warning mb-2" role="status">{{ tariff_reminder_state.last_error_detail }}</p>{% endif %}

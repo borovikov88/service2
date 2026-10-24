@@ -27,6 +27,9 @@ def export_bytes(ids=('111',)):
 
 class ServicesFeedTests(TestCase):
     def setUp(self):
+        availability = patch('pool_service.avito_services_feed.validate_snapshot_media')
+        availability.start()
+        self.addCleanup(availability.stop)
         org = Organization.objects.create(name='Feed test')
         self.owner = User.objects.create_user('feed-owner')
         self.manager = User.objects.create_user('feed-manager')
