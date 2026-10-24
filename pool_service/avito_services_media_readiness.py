@@ -61,7 +61,8 @@ def media_release_readiness(connection):
     from .avito_services_workplace_setup import KEY
     result = {'state': 'blocked', 'stage': 'connection_scope',
         'reason': REASONS['connection_scope'], 'exception_class': None,
-        'checks': dict.fromkeys(CHECKS)}
+        'checks': dict.fromkeys(CHECKS),
+        'transport': dict.fromkeys(media.TRANSPORT_FIELDS)}
 
     def guard(stage, valid):
         result['stage'], result['reason'] = stage, REASONS[stage]
@@ -126,6 +127,8 @@ def media_release_readiness(connection):
             if item['Id'] == row['Id'] and item['AvitoId'] == row['AvitoId'])
         allowed = [url for url in urls if url in published.get('ImageUrls', '').split(' | ')]
         source = next((url for url in allowed if media._asset(current, url) is None), allowed[0])
+        parts, host, port = media._parse_url(source)
+        result['transport'].update(source_scheme=parts.scheme, path_ascii=parts.path.isascii())
         asset = media._asset(current, source)
         raw = media._read_asset(asset) if asset else media._download(source, time.monotonic() + 10)
         guard('source_read', True)
@@ -138,4 +141,5 @@ def media_release_readiness(connection):
         if result['checks'][result['stage']] is None:
             result['checks'][result['stage']] = False
         result['exception_class'] = _exception_class(error)
+        result['transport'].update(media.photo_transport_failure(error))
     return result

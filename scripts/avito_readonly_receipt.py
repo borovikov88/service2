@@ -664,6 +664,49 @@ MEDIA_READINESS_REASONS = {
 }
 
 
+
+MEDIA_TRANSPORT_FIELDS = (
+    "reason", "phase", "http_status", "source_scheme", "path_ascii", "dns_family",
+    "dns_answer_count", "selected_ip_family", "response_format", "declared_bytes",
+    "received_bytes", "io_errno",
+)
+MEDIA_TRANSPORT_REASONS = {
+    "url_invalid", "url_policy", "private_address", "dns_busy", "dns_timeout", "dns_failed",
+    "dns_private_address", "dns_unavailable", "deadline", "http_status", "content_type",
+    "content_length_invalid", "content_length_limit", "body_limit", "incomplete_body",
+    "tls_certificate", "tls_error", "io_timeout", "io_error", "http_protocol", "request_encoding",
+}
+
+
+def media_transport(value):
+    require(isinstance(value, dict) and all(key in value for key in MEDIA_TRANSPORT_FIELDS))
+    result = {}
+    allowed = {
+        "reason": MEDIA_TRANSPORT_REASONS,
+        "phase": {"url", "dns", "connect", "request", "headers", "body"},
+        "source_scheme": {"http", "https"},
+        "dns_family": {"ipv4", "ipv6", "mixed"},
+        "selected_ip_family": {"ipv4", "ipv6"},
+        "response_format": {"jpeg", "png", "webp", "avif", "html", "json", "octet_stream", "other"},
+    }
+    for key, options in allowed.items():
+        item = value[key]
+        require(item is None or isinstance(item, str) and item in options)
+        result[key] = item
+    ascii_path = value["path_ascii"]
+    require(ascii_path is None or type(ascii_path) is bool)
+    result["path_ascii"] = ascii_path
+    for key, minimum, maximum in (
+        ("http_status", 100, 599), ("dns_answer_count", 1, 32),
+        ("declared_bytes", 0, 8 * 1024 * 1024 + 1),
+        ("received_bytes", 0, 8 * 1024 * 1024 + 1), ("io_errno", 0, 4095),
+    ):
+        item = value[key]
+        require(item is None or type(item) is int and minimum <= item <= maximum)
+        result[key] = item
+    return result
+
+
 def media_readiness(value):
     require(isinstance(value, dict))
     if "error" in value:
@@ -679,6 +722,7 @@ def media_readiness(value):
     require(isinstance(checks, dict))
     result = {key: value[key] for key in ("state", "stage", "reason", "exception_class")}
     result["checks"] = {}
+    result["transport"] = media_transport(value.get("transport"))
     for key in MEDIA_READINESS_CHECKS:
         item = checks.get(key)
         require(key in checks and (item is None or type(item) is bool))

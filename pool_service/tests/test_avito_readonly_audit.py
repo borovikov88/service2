@@ -492,7 +492,8 @@ def release_publication():
 
 def release_readiness():
     return {"state": "ready", "stage": "complete", "reason": "media_ready", "exception_class": None,
-            "checks": {key: True for key in receipt.MEDIA_READINESS_CHECKS}}
+            "checks": {key: True for key in receipt.MEDIA_READINESS_CHECKS},
+            "transport": {key: None for key in receipt.MEDIA_TRANSPORT_FIELDS}}
 
 
 def release_ledger():
@@ -808,3 +809,40 @@ class ServicesReadinessDiagnosticProjectionTests(SimpleTestCase):
         self.assertEqual("unavailable", value["snapshot_source"])
         with self.assertRaises(ValueError):
             receipt.publication_release(raw | {"snapshot_source": "PRIVATE"})
+
+
+class MediaTransportDiagnosticProjectionTests(SimpleTestCase):
+    def test_transport_preserves_early_unknown_and_projects_only_fixed_metadata(self):
+        empty = {key: None for key in receipt.MEDIA_TRANSPORT_FIELDS}
+        self.assertEqual(empty, receipt.media_transport(empty))
+        raw = empty | {"reason": "http_status", "phase": "headers", "http_status": 403,
+            "source_scheme": "https", "path_ascii": True, "dns_family": "mixed",
+            "dns_answer_count": 3, "selected_ip_family": "ipv4", "response_format": "html",
+            "declared_bytes": 100, "received_bytes": 0, "io_errno": None,
+            "url": "PRIVATE", "selected_ip": "PRIVATE", "raw_error": "PRIVATE"}
+        value = receipt.media_transport(raw)
+        self.assertEqual(403, value["http_status"])
+        self.assertEqual(0, value["received_bytes"])
+        self.assertIsNone(value["io_errno"])
+        self.assertNotIn("PRIVATE", str(value))
+        readiness = release_readiness()
+        readiness.update(state="blocked", stage="source_read", reason="media_source_read_failed",
+                         exception_class="ValueError", transport=raw)
+        readiness["checks"].update(source_read=False, image_decode=None)
+        projected = receipt.media_readiness(readiness)
+        self.assertEqual("http_status", projected["transport"]["reason"])
+        self.assertIsNone(projected["checks"]["image_decode"])
+
+    def test_unbounded_or_free_text_transport_fields_are_rejected(self):
+        empty = {key: None for key in receipt.MEDIA_TRANSPORT_FIELDS}
+        changes = (
+            {"reason": "PRIVATE"}, {"phase": "PRIVATE"}, {"source_scheme": "file"},
+            {"http_status": 99}, {"http_status": 600}, {"http_status": True},
+            {"dns_family": "private"}, {"dns_answer_count": 0}, {"dns_answer_count": 33},
+            {"selected_ip_family": "localhost"}, {"response_format": "image/private"},
+            {"declared_bytes": 8 * 1024 * 1024 + 2}, {"received_bytes": -1},
+            {"io_errno": 4096}, {"path_ascii": "true"},
+        )
+        for change in changes:
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                receipt.media_transport(empty | change)

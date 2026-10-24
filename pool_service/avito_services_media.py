@@ -33,6 +33,61 @@ MAX_SCOPE_BYTES = 512 * 1024 * 1024
 PUBLIC_PREFIX = '/api/communications/avito/services-media/'
 _DNS_SLOTS = threading.BoundedSemaphore(4)
 
+TRANSPORT_REASONS = frozenset({
+    'url_invalid', 'url_policy', 'private_address', 'dns_busy', 'dns_timeout',
+    'dns_failed', 'dns_private_address', 'dns_unavailable', 'deadline', 'http_status',
+    'content_type', 'content_length_invalid', 'content_length_limit', 'body_limit',
+    'incomplete_body', 'tls_certificate', 'tls_error', 'io_timeout', 'io_error',
+    'http_protocol', 'request_encoding',
+})
+TRANSPORT_PHASES = frozenset({'url', 'dns', 'connect', 'request', 'headers', 'body'})
+TRANSPORT_FIELDS = ('reason', 'phase', 'http_status', 'source_scheme', 'path_ascii',
+    'dns_family', 'dns_answer_count', 'selected_ip_family', 'response_format',
+    'declared_bytes', 'received_bytes', 'io_errno')
+TRANSPORT_FORMATS = frozenset({'jpeg', 'png', 'webp', 'avif', 'html', 'json', 'octet_stream', 'other'})
+
+
+
+class _PhotoTransportError(ValueError):
+    """Fixed machine-readable diagnostics; user-facing messages remain unchanged."""
+    def __init__(self, message, *, reason, phase, http_status=None):
+        if reason not in TRANSPORT_REASONS or phase not in TRANSPORT_PHASES:
+            raise ValueError('invalid photo transport identifier')
+        super().__init__(message)
+        self.reason, self.phase = reason, phase
+        self.http_status = http_status if type(http_status) is int and 100 <= http_status <= 599 else None
+
+
+def photo_transport_failure(error):
+    """Never export exception text, URL, response headers or body."""
+    result = {'reason': None, 'phase': None, 'http_status': None}
+    if not isinstance(error, _PhotoTransportError):
+        return result
+    result.update(reason=error.reason, phase=error.phase, http_status=error.http_status)
+    values = getattr(error, 'diagnostics', {})
+    values = values if isinstance(values, dict) else {}
+    for key, allowed in (
+            ('source_scheme', {'http', 'https'}), ('dns_family', {'ipv4', 'ipv6', 'mixed'}),
+            ('selected_ip_family', {'ipv4', 'ipv6'}), ('response_format', TRANSPORT_FORMATS)):
+        value = values.get(key)
+        if isinstance(value, str) and value in allowed:
+            result[key] = value
+    if type(values.get('path_ascii')) is bool:
+        result['path_ascii'] = values['path_ascii']
+    for key, lower, upper in (('dns_answer_count', 1, 32),
+            ('declared_bytes', 0, MAX_BYTES + 1), ('received_bytes', 0, MAX_BYTES + 1),
+            ('io_errno', 0, 4095)):
+        value = values.get(key)
+        if type(value) is int and lower <= value <= upper:
+            result[key] = value
+    return result
+
+
+def _response_format(content_type):
+    return {'image/jpeg': 'jpeg', 'image/png': 'png', 'image/webp': 'webp',
+        'image/avif': 'avif', 'text/html': 'html', 'application/json': 'json',
+        'application/octet-stream': 'octet_stream'}.get(content_type, 'other')
+
 
 def _origin():
     from .avito_services_publication import public_origin
@@ -41,7 +96,7 @@ def _origin():
 
 def _parse_url(value):
     if not isinstance(value, str) or len(value) > 2000 or any(ord(c) < 33 or c.isspace() for c in value):
-        raise ValueError('Некорректная ссылка на фотографию.')
+        raise _PhotoTransportError('Некорректная ссылка на фотографию.', reason='url_invalid', phase='url')
     try:
         parts = urlsplit(value)
         host = (parts.hostname or '').encode('idna').decode('ascii').lower()
@@ -50,7 +105,7 @@ def _parse_url(value):
                 or parts.password is not None or parts.fragment or '%' in host or port != (443 if parts.scheme == 'https' else 80)):
             raise ValueError
     except (ValueError, UnicodeError):
-        raise ValueError('Разрешены ссылки HTTP/HTTPS без пароля, фрагмента и нестандартного порта.') from None
+        raise _PhotoTransportError('Разрешены ссылки HTTP/HTTPS без пароля, фрагмента и нестандартного порта.', reason='url_policy', phase='url') from None
     return parts, host, port
 
 
@@ -71,19 +126,21 @@ def _public_ip(value):
         return False
 
 
-def _resolve(host, port, deadline):
+def _resolve(host, port, deadline, *, diagnostics=None):
     try:
         literal = ipaddress.ip_address(host)
     except ValueError:
         literal = None
     if literal is not None:
         if not _public_ip(host):
-            raise ValueError('Локальные и служебные адреса фотографий запрещены.')
+            raise _PhotoTransportError('Локальные и служебные адреса фотографий запрещены.', reason='private_address', phase='dns')
+        if diagnostics is not None:
+            diagnostics.update(dns_family='ipv6' if ':' in host else 'ipv4', dns_answer_count=1)
         return host
     if host.rstrip('.').endswith(('.localhost', '.local', '.internal')) or host.rstrip('.') == 'localhost':
-        raise ValueError('Локальные и служебные адреса фотографий запрещены.')
+        raise _PhotoTransportError('Локальные и служебные адреса фотографий запрещены.', reason='private_address', phase='dns')
     if not _DNS_SLOTS.acquire(blocking=False):
-        raise ValueError('Проверка фотографий занята. Повторите позже.')
+        raise _PhotoTransportError('Проверка фотографий занята. Повторите позже.', reason='dns_busy', phase='dns')
     result = queue.Queue(maxsize=1)
     def lookup():
         try:
@@ -92,16 +149,24 @@ def _resolve(host, port, deadline):
             result.put((False, None))
         finally:
             _DNS_SLOTS.release()
-    threading.Thread(target=lookup, daemon=True).start()
+    try:
+        threading.Thread(target=lookup, daemon=True).start()
+    except RuntimeError:
+        _DNS_SLOTS.release()
+        raise _PhotoTransportError('Не удалось проверить адрес фотографии.', reason='dns_unavailable', phase='dns') from None
     try:
         ok, answers = result.get(timeout=max(.05, min(3, deadline - time.monotonic())))
     except queue.Empty:
-        raise ValueError('Не удалось вовремя проверить адрес фотографии.') from None
+        raise _PhotoTransportError('Не удалось вовремя проверить адрес фотографии.', reason='dns_timeout', phase='dns') from None
     if not ok or not answers or len(answers) > 32:
-        raise ValueError('Не удалось проверить адрес фотографии.')
+        raise _PhotoTransportError('Не удалось проверить адрес фотографии.', reason='dns_failed', phase='dns')
     addresses = [entry[4][0] for entry in answers]
     if not all(_public_ip(address) for address in addresses):
-        raise ValueError('Локальные и служебные адреса фотографий запрещены.')
+        raise _PhotoTransportError('Локальные и служебные адреса фотографий запрещены.', reason='dns_private_address', phase='dns')
+    if diagnostics is not None:
+        families = {'ipv6' if ':' in address else 'ipv4' for address in addresses}
+        diagnostics.update(dns_family=next(iter(families)) if len(families) == 1 else 'mixed',
+                           dns_answer_count=len(answers))
     return addresses[0]
 
 
@@ -180,10 +245,21 @@ def _image(raw, *, normalize=True):
 
 
 def _download(value, deadline):
+    diagnostics = {}
+    try:
+        return _download_image(value, deadline, diagnostics)
+    except _PhotoTransportError as error:
+        error.diagnostics = diagnostics
+        raise
+
+
+def _download_image(value, deadline, diagnostics):
     parts, host, port = _parse_url(value)
+    diagnostics.update(source_scheme=parts.scheme, path_ascii=parts.path.isascii())
     if time.monotonic() >= deadline:
-        raise ValueError('Проверка фотографий заняла слишком много времени. Загрузите изображения в Service2.')
-    address = _resolve(host, port, deadline)
+        raise _PhotoTransportError('Проверка фотографий заняла слишком много времени. Загрузите изображения в Service2.', reason='deadline', phase='url')
+    address = _resolve(host, port, deadline, diagnostics=diagnostics)
+    diagnostics['selected_ip_family'] = 'ipv6' if ':' in address else 'ipv4'
     timeout = max(.05, min(3, deadline - time.monotonic()))
     connection = (_PinnedHTTPS if parts.scheme == 'https' else _PinnedHTTP)(host, port, address, timeout)
     response = None
@@ -201,45 +277,69 @@ def _download(value, deadline):
     timer = threading.Timer(max(.05, deadline - time.monotonic()), abort)
     timer.daemon = True
     timer.start()
+    phase, status = 'connect', None
     try:
         if aborted.is_set() or time.monotonic() >= deadline:
-            raise ValueError('Проверка фотографий заняла слишком много времени.')
+            raise _PhotoTransportError('Проверка фотографий заняла слишком много времени.', reason='deadline', phase=phase)
         connection.connect()
         if aborted.is_set() or time.monotonic() >= deadline:
-            raise ValueError('Проверка фотографий заняла слишком много времени.')
+            raise _PhotoTransportError('Проверка фотографий заняла слишком много времени.', reason='deadline', phase=phase)
+        phase = 'request'
         path = quote(parts.path or '/', safe="/%:@!$&'()*+,;=-._~")
         if parts.query:
             path += '?' + quote(parts.query, safe="/%?:@!$&'()*+,;=-._~")
         authority = '[' + host + ']' if ':' in host else host
         connection.request('GET', path, headers={'Host': authority,
             'Accept': 'image/jpeg,image/png,image/webp', 'User-Agent': 'Service2-AvitoImageCheck/1'})
+        phase = 'headers'
         response = connection.getresponse()
-        if response.status != 200:
-            raise ValueError('Фотография недоступна: нужен прямой URL с ответом HTTP 200 без перенаправлений.')
+        status = response.status
         content_type = response.getheader('Content-Type', '').split(';', 1)[0].strip().lower()
+        diagnostics['response_format'] = _response_format(content_type)
+        if response.status != 200:
+            raise _PhotoTransportError('Фотография недоступна: нужен прямой URL с ответом HTTP 200 без перенаправлений.', reason='http_status', phase=phase, http_status=status)
         if content_type not in {'image/jpeg', 'image/png', 'image/webp'}:
-            raise ValueError('Ссылка не возвращает фотографию JPEG, PNG или WebP.')
+            raise _PhotoTransportError('Ссылка не возвращает фотографию JPEG, PNG или WebP.', reason='content_type', phase=phase, http_status=status)
         length = response.getheader('Content-Length')
-        if length is not None and (len(length) > 10 or not length.isascii() or not length.isdecimal() or not 0 < int(length) <= MAX_BYTES):
-            raise ValueError('Некорректный или слишком большой размер фотографии.')
+        if length is not None:
+            if len(length) <= 10 and length.isascii() and length.isdecimal():
+                diagnostics['declared_bytes'] = min(MAX_BYTES + 1, int(length))
+            if len(length) > 10 or not length.isascii() or not length.isdecimal() or int(length) <= 0:
+                raise _PhotoTransportError('Некорректный или слишком большой размер фотографии.', reason='content_length_invalid', phase=phase, http_status=status)
+            if int(length) > MAX_BYTES:
+                raise _PhotoTransportError('Некорректный или слишком большой размер фотографии.', reason='content_length_limit', phase=phase, http_status=status)
+        phase = 'body'
         chunks, received = [], 0
+        diagnostics['received_bytes'] = 0
         while True:
             if time.monotonic() >= deadline:
-                raise ValueError('Проверка фотографий заняла слишком много времени. Загрузите изображения в Service2.')
+                raise _PhotoTransportError('Проверка фотографий заняла слишком много времени. Загрузите изображения в Service2.', reason='deadline', phase=phase, http_status=status)
             chunk = response.read1(min(65536, MAX_BYTES + 1 - received))
             if not chunk:
                 break
             chunks.append(chunk)
             received += len(chunk)
+            diagnostics['received_bytes'] = min(MAX_BYTES + 1, received)
             if received > MAX_BYTES:
-                raise ValueError('Размер фотографии должен быть не больше 8 МБ.')
+                raise _PhotoTransportError('Размер фотографии должен быть не больше 8 МБ.', reason='body_limit', phase=phase, http_status=status)
         if length is not None and received != int(length):
-            raise ValueError('Фотография получена не полностью. Повторите проверку или загрузите файл.')
+            raise _PhotoTransportError('Фотография получена не полностью. Повторите проверку или загрузите файл.', reason='incomplete_body', phase=phase, http_status=status)
         if time.monotonic() >= deadline:
-            raise ValueError('Проверка фотографий заняла слишком много времени.')
+            raise _PhotoTransportError('Проверка фотографий заняла слишком много времени.', reason='deadline', phase=phase, http_status=status)
         return b''.join(chunks)
-    except (OSError, http.client.HTTPException, UnicodeError):
-        raise ValueError('Не удалось скачать фотографию по указанной ссылке.') from None
+    except (OSError, http.client.HTTPException, UnicodeError) as error:
+        import ssl
+        errno = getattr(error, 'errno', None)
+        if type(errno) is int and 0 <= errno <= 4095:
+            diagnostics['io_errno'] = errno
+        reason = ('deadline' if aborted.is_set() or time.monotonic() >= deadline else
+            'tls_certificate' if isinstance(error, ssl.SSLCertVerificationError) else
+            'tls_error' if isinstance(error, ssl.SSLError) else
+            'io_timeout' if isinstance(error, TimeoutError) else
+            'http_protocol' if isinstance(error, http.client.HTTPException) else
+            'request_encoding' if isinstance(error, UnicodeError) else 'io_error')
+        raise _PhotoTransportError('Не удалось скачать фотографию по указанной ссылке.',
+            reason=reason, phase=phase, http_status=status) from None
     finally:
         timer.cancel()
         if response is not None:
