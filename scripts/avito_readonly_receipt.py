@@ -644,6 +644,9 @@ def approved_photo(value):
     require(result["bytes"] > 0)
     result["checked_at"] = release_timestamp(value.get("checked_at"))
     require(result["checked_at"] is not None)
+    upgraded = value.get("https_upgrade_followed")
+    require(upgraded is None or type(upgraded) is bool)
+    result["https_upgrade_followed"] = upgraded
     return result
 
 
@@ -666,7 +669,7 @@ MEDIA_READINESS_REASONS = {
 
 
 MEDIA_TRANSPORT_FIELDS = (
-    "reason", "phase", "http_status", "source_scheme", "path_ascii", "dns_family",
+    "reason", "phase", "http_status", "source_scheme", "path_ascii", "https_upgrade_followed", "host_relation", "dns_family",
     "dns_answer_count", "selected_ip_family", "response_format", "declared_bytes",
     "received_bytes", "io_errno",
 )
@@ -675,6 +678,10 @@ MEDIA_TRANSPORT_REASONS = {
     "dns_private_address", "dns_unavailable", "deadline", "http_status", "content_type",
     "content_length_invalid", "content_length_limit", "body_limit", "incomplete_body",
     "tls_certificate", "tls_error", "io_timeout", "io_error", "http_protocol", "request_encoding",
+    "upgrade_source_scheme", "upgrade_location_missing", "upgrade_location_multiple",
+    "upgrade_location_invalid", "upgrade_location_controls", "upgrade_location_fragment",
+    "upgrade_location_userinfo", "upgrade_target_scheme", "upgrade_target_port",
+    "upgrade_target_host", "upgrade_target_path", "upgrade_target_query", "upgrade_second_hop",
 }
 
 
@@ -685,6 +692,7 @@ def media_transport(value):
         "reason": MEDIA_TRANSPORT_REASONS,
         "phase": {"url", "dns", "connect", "request", "headers", "body"},
         "source_scheme": {"http", "https"},
+        "host_relation": {"same", "www_alias", "other", "unknown"},
         "dns_family": {"ipv4", "ipv6", "mixed"},
         "selected_ip_family": {"ipv4", "ipv6"},
         "response_format": {"jpeg", "png", "webp", "avif", "html", "json", "octet_stream", "other"},
@@ -693,9 +701,10 @@ def media_transport(value):
         item = value[key]
         require(item is None or isinstance(item, str) and item in options)
         result[key] = item
-    ascii_path = value["path_ascii"]
-    require(ascii_path is None or type(ascii_path) is bool)
-    result["path_ascii"] = ascii_path
+    for key in ("path_ascii", "https_upgrade_followed"):
+        item = value[key]
+        require(item is None or type(item) is bool)
+        result[key] = item
     for key, minimum, maximum in (
         ("http_status", 100, 599), ("dns_answer_count", 1, 32),
         ("declared_bytes", 0, 8 * 1024 * 1024 + 1),

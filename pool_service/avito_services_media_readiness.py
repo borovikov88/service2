@@ -130,7 +130,8 @@ def media_release_readiness(connection):
         parts, host, port = media._parse_url(source)
         result['transport'].update(source_scheme=parts.scheme, path_ascii=parts.path.isascii())
         asset = media._asset(current, source)
-        raw = media._read_asset(asset) if asset else media._download(source, time.monotonic() + 10)
+        raw = media._read_asset(asset) if asset else media._download(
+            source, time.monotonic() + 10, diagnostics=result['transport'])
         guard('source_read', True)
         begin('image_decode')
         media._image(raw, normalize=False)

@@ -841,8 +841,25 @@ class MediaTransportDiagnosticProjectionTests(SimpleTestCase):
             {"dns_family": "private"}, {"dns_answer_count": 0}, {"dns_answer_count": 33},
             {"selected_ip_family": "localhost"}, {"response_format": "image/private"},
             {"declared_bytes": 8 * 1024 * 1024 + 2}, {"received_bytes": -1},
-            {"io_errno": 4096}, {"path_ascii": "true"},
+            {"io_errno": 4096}, {"path_ascii": "true"}, {"https_upgrade_followed": "true"},
+            {"host_relation": "PRIVATE"},
         )
         for change in changes:
             with self.subTest(change=change), self.assertRaises(ValueError):
                 receipt.media_transport(empty | change)
+
+
+class MediaHttpsUpgradeProofProjectionTests(SimpleTestCase):
+    def test_source_upgrade_flag_is_preserved_and_absent_historical_flag_stays_unknown(self):
+        source = release_photo()
+        source.pop("https_upgrade_followed", None)
+        self.assertIsNone(receipt.approved_photo(source)["https_upgrade_followed"])
+        self.assertTrue(receipt.approved_photo(source | {"https_upgrade_followed": True})["https_upgrade_followed"])
+        self.assertFalse(receipt.approved_photo(source | {"https_upgrade_followed": False})["https_upgrade_followed"])
+        with self.assertRaises(ValueError):
+            receipt.approved_photo(source | {"https_upgrade_followed": "true"})
+        transport = {key: None for key in receipt.MEDIA_TRANSPORT_FIELDS}
+        transport.update(source_scheme="http", http_status=200, https_upgrade_followed=True)
+        self.assertTrue(receipt.media_transport(transport)["https_upgrade_followed"])
+        transport.update(reason="upgrade_target_host", phase="headers", host_relation="www_alias")
+        self.assertEqual("www_alias", receipt.media_transport(transport)["host_relation"])
