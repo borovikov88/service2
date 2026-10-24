@@ -333,12 +333,16 @@ def collect_connection(connection, item_ids, index, stocks=None, stock_error=Non
                     raise AvitoError("audit_profile_source_changed")
             except Exception as error:
                 configured_source = {"error": safe_error(error)}
+        from .avito_services_workplace_setup import webhook_evidence, storage_probe_evidence
         try:
-            from .avito_services_workplace_setup import webhook_evidence, storage_probe_evidence
             webhook_state = webhook_evidence(connection, live=True)
-            storage_probe_state = storage_probe_evidence(connection)
         except Exception as error:
             webhook_state = {"error": safe_error(error)}
+        try:
+            storage_probe_state = storage_probe_evidence(connection)
+        except Exception:
+            # Independent local storage proof must survive a provider read failure,
+            # and a storage diagnostic failure must not erase webhook evidence.
             storage_probe_state = {"source": "passenger_http", "checked": False, "cached": True, "error": "storage_probe_failed"}
         final_account_id = authorized_account_id(connection)
         after = binding(connection)
