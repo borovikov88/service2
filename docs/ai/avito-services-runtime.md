@@ -14,7 +14,9 @@ Django/DB evidence failure cannot create a false successful check.
 
 The protected post-deploy command configure_avito_services_workplace requires
 the exact deployed SHA, its deployment-only environment guard and the known
-HTTPS SITE_URL (or explicitly provided canonical origin in ALLOWED_HOSTS).
+HTTPS AVITO_SERVICES_PUBLIC_ORIGIN resolved by public_origin(), with matching
+CLI origin and ALLOWED_HOSTS. The unrelated generic SITE_URL is not an authority
+for this scoped setup.
 It targets only connection4/account446312402 and derives the actor from an
 already valid advance-monitor subscription. Missing/revoked actor or changed
 keys/account fail closed. Auto-report configuration is checkpointed once:
@@ -67,3 +69,13 @@ Only success is checkpointed; failure remains an independent functional result.
 Incoming-message and legacy-event writes compare the original authenticated
 account/channel/org/token/active binding before replacing it under a row lock.
 Quiet digest flushing also rechecks current conversation-view permission.
+
+Origin follow-up: the previous services_setup_origin_mismatch guard compared the
+CLI origin with generic SITE_URL, despite the dedicated Avito origin already
+being configured. Setup, media and publication now share the dedicated authority.
+The constructed callback is checked for canonical HTTPS host, exact connection
+path/token and no query/fragment before token persistence or provider POST.
+Legacy-origin subscriptions and cached legacy-origin proof cannot confirm the
+new canonical webhook. Origin diagnostics export booleans/source only, never
+URL values, callback paths or tokens. Global SITE_URL and account settings are
+not rewritten by this fix.
