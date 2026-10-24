@@ -251,6 +251,148 @@ class MediaNetworkTests(SimpleTestCase):
         self.assertEqual(media.photo_transport_failure(failure),
             {'reason': None, 'phase': None, 'http_status': None})
 
+    def upgrade_response(self, locations=None, status=301):
+        response = self.response(status=status, content_type='text/html')
+        response.getheaders.return_value = [('Location', value) for value in
+            (locations if locations is not None else ['https://photos.invalid/photo.jpg?a=1'])]
+        return response
+
+    def test_single_image_upgrade_rechecks_dns_tls_without_changing_source_or_forwarding_headers(self):
+        original = 'http://photos.invalid/photo.jpg?a=1'
+        for status in (301, 308):
+            with self.subTest(status=status):
+                redirect, final = self.upgrade_response(status=status), self.response()
+                plain, secure = MagicMock(), MagicMock()
+                plain.getresponse.return_value = redirect
+                secure.getresponse.return_value = final
+                observed = {}
+                with patch.object(media, '_resolve', side_effect=['93.184.216.34', '93.184.216.35']) as dns, \
+                        patch.object(media, '_PinnedHTTP', return_value=plain) as http, \
+                        patch.object(media, '_PinnedHTTPS', return_value=secure) as https, \
+                        patch.object(media.threading, 'Timer'):
+                    raw = media._download(original, media.time.monotonic() + 10, diagnostics=observed)
+                media._image(raw, normalize=False)
+                self.assertEqual(original, 'http://photos.invalid/photo.jpg?a=1')
+                self.assertEqual(dns.call_count, 2)
+                self.assertEqual([call.args[:2] for call in dns.call_args_list],
+                                 [('photos.invalid', 80), ('photos.invalid', 443)])
+                self.assertEqual(dns.call_args_list[0].args[2], dns.call_args_list[1].args[2])
+                self.assertEqual(http.call_args.args[:3], ('photos.invalid', 80, '93.184.216.34'))
+                self.assertEqual(https.call_args.args[:3], ('photos.invalid', 443, '93.184.216.35'))
+                self.assertTrue(observed['https_upgrade_followed'])
+                self.assertEqual(observed['source_scheme'], 'http')
+                self.assertEqual(observed['host_relation'], 'same')
+                redirect.read1.assert_not_called()
+                redirect.close.assert_called_once()
+                self.assertEqual(plain.auto_open, 0)
+                self.assertEqual(secure.auto_open, 0)
+                for client in (plain, secure):
+                    args, kwargs = client.request.call_args
+                    self.assertEqual(args, ('GET', '/photo.jpg?a=1'))
+                    self.assertEqual(set(kwargs['headers']), {'Host', 'Accept', 'User-Agent'})
+                    self.assertNotIn('Authorization', kwargs['headers'])
+                    self.assertNotIn('Cookie', kwargs['headers'])
+                    self.assertNotIn('Referer', kwargs['headers'])
+
+    def test_image_upgrade_rejects_every_location_change_without_second_dns_or_get(self):
+        cases = (
+            ([], 'upgrade_location_missing'),
+            (['https://photos.invalid/photo.jpg?a=1'] * 2, 'upgrade_location_multiple'),
+            ([''], 'upgrade_location_invalid'),
+            (['https://photos.invalid/photo.jpg?a=1\r\nPRIVATE'], 'upgrade_location_controls'),
+            (['https://photos.invalid/photo.jpg?a=1#'], 'upgrade_location_fragment'),
+            (['https://user@photos.invalid/photo.jpg?a=1'], 'upgrade_location_userinfo'),
+            (['/photo.jpg?a=1'], 'upgrade_target_scheme'),
+            (['//photos.invalid/photo.jpg?a=1'], 'upgrade_target_scheme'),
+            (['http://photos.invalid/photo.jpg?a=1'], 'upgrade_target_scheme'),
+            (['https://photos.invalid:8443/photo.jpg?a=1'], 'upgrade_target_port'),
+            (['https://other.invalid/photo.jpg?a=1'], 'upgrade_target_host'),
+            (['https://www.photos.invalid/photo.jpg?a=1'], 'upgrade_target_host'),
+            (['https://photos.invalid./photo.jpg?a=1'], 'upgrade_target_host'),
+            (['https://photos.invalid/another.jpg?a=1'], 'upgrade_target_path'),
+            (['https://photos.invalid/photo.jpg?a=2'], 'upgrade_target_query'),
+        )
+        for locations, reason in cases:
+            with self.subTest(reason=reason, locations=locations):
+                plain, redirect = MagicMock(), self.upgrade_response(locations)
+                plain.getresponse.return_value = redirect
+                with patch.object(media, '_resolve', return_value='93.184.216.34') as dns, \
+                        patch.object(media, '_PinnedHTTP', return_value=plain), \
+                        patch.object(media, '_PinnedHTTPS') as https, \
+                        patch.object(media.threading, 'Timer'), self.assertRaises(ValueError) as caught:
+                    media._download('http://photos.invalid/photo.jpg?a=1', media.time.monotonic() + 10)
+                detail = media.photo_transport_failure(caught.exception)
+                self.assertEqual(detail['reason'], reason)
+                self.assertEqual(detail['http_status'], 301)
+                self.assertFalse(detail['https_upgrade_followed'])
+                self.assertNotIn('PRIVATE', str(detail))
+                self.assertNotIn('invalid', str({key: value for key, value in detail.items()
+                                                if key != 'reason'}))
+                self.assertEqual(dns.call_count, 1)
+                https.assert_not_called()
+                redirect.read1.assert_not_called()
+
+    def test_image_upgrade_rejects_second_hop_and_initial_https_redirect(self):
+        plain, secure = MagicMock(), MagicMock()
+        plain.getresponse.return_value = self.upgrade_response()
+        secure.getresponse.return_value = self.upgrade_response()
+        with patch.object(media, '_resolve', return_value='93.184.216.34') as dns, \
+                patch.object(media, '_PinnedHTTP', return_value=plain), \
+                patch.object(media, '_PinnedHTTPS', return_value=secure), \
+                patch.object(media.threading, 'Timer'), self.assertRaises(ValueError) as caught:
+            media._download('http://photos.invalid/photo.jpg?a=1', media.time.monotonic() + 10)
+        detail = media.photo_transport_failure(caught.exception)
+        self.assertEqual(detail['reason'], 'upgrade_second_hop')
+        self.assertTrue(detail['https_upgrade_followed'])
+        self.assertEqual(detail['source_scheme'], 'http')
+        self.assertEqual(dns.call_count, 2)
+        self.assertEqual(plain.request.call_count, 1)
+        self.assertEqual(secure.request.call_count, 1)
+        secure.getresponse.return_value.read1.assert_not_called()
+        error, detail = self.download_failure(secure)
+        self.assertEqual(detail['reason'], 'upgrade_source_scheme')
+        self.assertFalse(detail['https_upgrade_followed'])
+
+    def test_image_upgrade_rechecks_all_target_dns_answers_and_blocks_private_or_mixed(self):
+        public = [(2, 1, 6, '', ('93.184.216.34', 80))]
+        private = [(2, 1, 6, '', ('127.0.0.1', 443))]
+        for target in (private, public + private):
+            with self.subTest(answers=len(target)):
+                plain = MagicMock()
+                plain.getresponse.return_value = self.upgrade_response()
+                with patch.object(media.socket, 'getaddrinfo', side_effect=[public, target]) as dns, \
+                        patch.object(media, '_PinnedHTTP', return_value=plain), \
+                        patch.object(media, '_PinnedHTTPS') as https, \
+                        patch.object(media.threading, 'Timer'), self.assertRaises(ValueError) as caught:
+                    media._download('http://photos.invalid/photo.jpg?a=1', media.time.monotonic() + 10)
+                detail = media.photo_transport_failure(caught.exception)
+                self.assertEqual(detail['reason'], 'dns_private_address')
+                self.assertFalse(detail['https_upgrade_followed'])
+                self.assertEqual(dns.call_count, 2)
+                https.assert_not_called()
+
+    def test_image_upgrade_keeps_original_deadline_and_cannot_send_late_https_get(self):
+        clock = [0.]
+        plain, secure = MagicMock(), MagicMock()
+        redirect = self.upgrade_response()
+        def headers():
+            clock[0] = 9
+            return redirect
+        plain.getresponse.side_effect = headers
+        secure.connect.side_effect = lambda: clock.__setitem__(0, 11)
+        with patch.object(media.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(media, '_resolve', return_value='93.184.216.34') as dns, \
+                patch.object(media, '_PinnedHTTP', return_value=plain), \
+                patch.object(media, '_PinnedHTTPS', return_value=secure) as https, \
+                patch.object(media.threading, 'Timer') as timer, self.assertRaises(ValueError) as caught:
+            media._download('http://photos.invalid/photo.jpg?a=1', 10)
+        self.assertEqual(media.photo_transport_failure(caught.exception)['reason'], 'deadline')
+        self.assertEqual([call.args[2] for call in dns.call_args_list], [10, 10])
+        self.assertEqual(https.call_args.args[3], 1)
+        self.assertEqual([call.args[0] for call in timer.call_args_list], [10, 1])
+        secure.request.assert_not_called()
+        redirect.read1.assert_not_called()
+
 
 class MediaAssetsTests(TestCase):
     def setUp(self):

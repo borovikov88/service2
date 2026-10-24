@@ -39,11 +39,15 @@ TRANSPORT_REASONS = frozenset({
     'content_type', 'content_length_invalid', 'content_length_limit', 'body_limit',
     'incomplete_body', 'tls_certificate', 'tls_error', 'io_timeout', 'io_error',
     'http_protocol', 'request_encoding',
+    'upgrade_source_scheme', 'upgrade_location_missing', 'upgrade_location_multiple',
+    'upgrade_location_invalid', 'upgrade_location_controls', 'upgrade_location_fragment',
+    'upgrade_location_userinfo', 'upgrade_target_scheme', 'upgrade_target_port',
+    'upgrade_target_host', 'upgrade_target_path', 'upgrade_target_query', 'upgrade_second_hop',
 })
 TRANSPORT_PHASES = frozenset({'url', 'dns', 'connect', 'request', 'headers', 'body'})
 TRANSPORT_FIELDS = ('reason', 'phase', 'http_status', 'source_scheme', 'path_ascii',
     'dns_family', 'dns_answer_count', 'selected_ip_family', 'response_format',
-    'declared_bytes', 'received_bytes', 'io_errno')
+    'declared_bytes', 'received_bytes', 'io_errno', 'https_upgrade_followed', 'host_relation')
 TRANSPORT_FORMATS = frozenset({'jpeg', 'png', 'webp', 'avif', 'html', 'json', 'octet_stream', 'other'})
 
 
@@ -58,28 +62,34 @@ class _PhotoTransportError(ValueError):
         self.http_status = http_status if type(http_status) is int and 100 <= http_status <= 599 else None
 
 
-def photo_transport_failure(error):
-    """Never export exception text, URL, response headers or body."""
-    result = {'reason': None, 'phase': None, 'http_status': None}
-    if not isinstance(error, _PhotoTransportError):
-        return result
-    result.update(reason=error.reason, phase=error.phase, http_status=error.http_status)
-    values = getattr(error, 'diagnostics', {})
+def _transport_metadata(values):
+    result = {}
     values = values if isinstance(values, dict) else {}
     for key, allowed in (
             ('source_scheme', {'http', 'https'}), ('dns_family', {'ipv4', 'ipv6', 'mixed'}),
-            ('selected_ip_family', {'ipv4', 'ipv6'}), ('response_format', TRANSPORT_FORMATS)):
+            ('selected_ip_family', {'ipv4', 'ipv6'}), ('response_format', TRANSPORT_FORMATS),
+            ('host_relation', {'same', 'www_alias', 'other', 'unknown'})):
         value = values.get(key)
         if isinstance(value, str) and value in allowed:
             result[key] = value
-    if type(values.get('path_ascii')) is bool:
-        result['path_ascii'] = values['path_ascii']
+    for key in ('path_ascii', 'https_upgrade_followed'):
+        if type(values.get(key)) is bool:
+            result[key] = values[key]
     for key, lower, upper in (('dns_answer_count', 1, 32),
             ('declared_bytes', 0, MAX_BYTES + 1), ('received_bytes', 0, MAX_BYTES + 1),
             ('io_errno', 0, 4095)):
         value = values.get(key)
         if type(value) is int and lower <= value <= upper:
             result[key] = value
+    return result
+
+
+def photo_transport_failure(error):
+    """Never export exception text, URL, response headers or body."""
+    result = {'reason': None, 'phase': None, 'http_status': None}
+    if isinstance(error, _PhotoTransportError):
+        result.update(reason=error.reason, phase=error.phase, http_status=error.http_status)
+        result.update(_transport_metadata(getattr(error, 'diagnostics', {})))
     return result
 
 
@@ -244,18 +254,77 @@ def _image(raw, *, normalize=True):
         raise ValueError('Файл не является доступной фотографией JPEG, PNG или WebP.') from None
 
 
-def _download(value, deadline):
-    diagnostics = {}
+def _image_https_upgrade(parts, host, port, response, diagnostics, *, upgraded):
+    """One image-only canonical upgrade, never general redirect handling."""
+    if response.status not in (301, 308):
+        return None
+    def reject(reason):
+        raise _PhotoTransportError(
+            'Фотография недоступна: нужен прямой URL с ответом HTTP 200 без перенаправлений.',
+            reason=reason, phase='headers', http_status=response.status)
+    if upgraded:
+        reject('upgrade_second_hop')
+    if parts.scheme != 'http' or port != 80:
+        reject('upgrade_source_scheme')
+    diagnostics['host_relation'] = 'unknown'
+    locations = [value for key, value in response.getheaders() if key.lower() == 'location']
+    if not locations:
+        reject('upgrade_location_missing')
+    if len(locations) != 1:
+        reject('upgrade_location_multiple')
+    value = locations[0]
+    if not isinstance(value, str) or not value or len(value) > 2000:
+        reject('upgrade_location_invalid')
+    if any(ord(char) < 33 or 127 <= ord(char) <= 159 or char.isspace() for char in value):
+        reject('upgrade_location_controls')
+    if '#' in value:
+        reject('upgrade_location_fragment')
     try:
-        return _download_image(value, deadline, diagnostics)
+        target = urlsplit(value)
+        target_host = (target.hostname or '').encode('idna').decode('ascii').lower()
+        target_port = target.port
+    except (ValueError, UnicodeError):
+        reject('upgrade_location_invalid')
+    if target.username is not None or target.password is not None:
+        reject('upgrade_location_userinfo')
+    if target.scheme != 'https' or not target.netloc or not target_host:
+        reject('upgrade_target_scheme')
+    diagnostics['host_relation'] = ('same' if target_host == host else
+        'www_alias' if target_host == 'www.' + host or host == 'www.' + target_host else 'other')
+    if target_port not in (None, 443):
+        reject('upgrade_target_port')
+    if target_host != host:
+        reject('upgrade_target_host')
+    if target.path != parts.path:
+        reject('upgrade_target_path')
+    if target.query != parts.query:
+        reject('upgrade_target_query')
+    # Apply the unchanged URL policy as well, before any second DNS/GET.
+    try:
+        _parse_url(value)
+    except ValueError:
+        reject('upgrade_location_invalid')
+    return value
+
+
+def _download(value, deadline, *, diagnostics=None):
+    observed = {}
+    try:
+        return _download_image(value, deadline, observed)
     except _PhotoTransportError as error:
-        error.diagnostics = diagnostics
+        error.diagnostics = observed
         raise
+    finally:
+        if diagnostics is not None:
+            # This observer contains only closed, sanitized metadata.
+            diagnostics.update(_transport_metadata(observed))
 
 
-def _download_image(value, deadline, diagnostics):
+def _download_image(value, deadline, diagnostics, *, upgraded=False):
     parts, host, port = _parse_url(value)
-    diagnostics.update(source_scheme=parts.scheme, path_ascii=parts.path.isascii())
+    diagnostics.setdefault('source_scheme', parts.scheme)
+    diagnostics.setdefault('path_ascii', parts.path.isascii())
+    diagnostics.setdefault('https_upgrade_followed', False)
     if time.monotonic() >= deadline:
         raise _PhotoTransportError('Проверка фотографий заняла слишком много времени. Загрузите изображения в Service2.', reason='deadline', phase='url')
     address = _resolve(host, port, deadline, diagnostics=diagnostics)
@@ -291,11 +360,25 @@ def _download_image(value, deadline, diagnostics):
         authority = '[' + host + ']' if ':' in host else host
         connection.request('GET', path, headers={'Host': authority,
             'Accept': 'image/jpeg,image/png,image/webp', 'User-Agent': 'Service2-AvitoImageCheck/1'})
+        if upgraded:
+            diagnostics['https_upgrade_followed'] = True
         phase = 'headers'
         response = connection.getresponse()
         status = response.status
         content_type = response.getheader('Content-Type', '').split(';', 1)[0].strip().lower()
         diagnostics['response_format'] = _response_format(content_type)
+        target = _image_https_upgrade(parts, host, port, response, diagnostics, upgraded=upgraded)
+        if target is not None:
+            # Release the HTTP response/socket before the fresh target DNS lookup.
+            # Never consume a redirect body or transfer any response cookies.
+            response.close()
+            response = None
+            timer.cancel()
+            connection.close()
+            for key in ('dns_family', 'dns_answer_count', 'selected_ip_family',
+                        'response_format', 'declared_bytes', 'received_bytes', 'io_errno'):
+                diagnostics.pop(key, None)
+            return _download_image(target, deadline, diagnostics, upgraded=True)
         if response.status != 200:
             raise _PhotoTransportError('Фотография недоступна: нужен прямой URL с ответом HTTP 200 без перенаправлений.', reason='http_status', phase=phase, http_status=status)
         if content_type not in {'image/jpeg', 'image/png', 'image/webp'}:

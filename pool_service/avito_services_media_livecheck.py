@@ -93,7 +93,9 @@ def _request(method, actor, data=None):
 
 def _source(connection, row, source, published):
     asset = media._asset(connection, source)
-    raw = media._read_asset(asset) if asset else media._download(source, time.monotonic() + 10)
+    transport = {}
+    raw = media._read_asset(asset) if asset else media._download(
+        source, time.monotonic() + 10, diagnostics=transport)
     media._image(raw, normalize=False)
     with Image.open(BytesIO(raw)) as image:
         format_name, dimensions = image.format, image.size
@@ -103,7 +105,8 @@ def _source(connection, row, source, published):
     evidence = {'scope_valid': True, 'source': SOURCE, 'source_in_published': attached,
         'photo_count': len(row['ImageUrls'].split(' | ')), 'readable': True,
         'format': format_name, 'width': dimensions[0], 'height': dimensions[1],
-        'bytes': len(raw), 'checked_at': timezone.now().isoformat()}
+        'bytes': len(raw), 'checked_at': timezone.now().isoformat(),
+        'https_upgrade_followed': transport.get('https_upgrade_followed')}
     return raw, evidence
 
 

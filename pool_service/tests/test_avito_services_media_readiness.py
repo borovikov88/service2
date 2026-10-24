@@ -137,9 +137,34 @@ class MediaReadinessTests(TestCase):
         self.assertEqual(value['transport'], {**dict.fromkeys(media.TRANSPORT_FIELDS),
             'reason': 'http_status', 'phase': 'headers', 'http_status': 403,
             'source_scheme': 'https', 'path_ascii': True, 'selected_ip_family': 'ipv4',
-            'response_format': 'jpeg'})
+            'response_format': 'jpeg', 'https_upgrade_followed': False})
         client.request.assert_called_once()
         self.assertFalse(value['checks']['source_read'])
         self.assertIsNone(value['checks']['image_decode'])
         self.assertEqual(self.state(), before)
         self.assertNotIn('https://', json.dumps(value))
+
+    def test_ready_image_reports_the_actual_upgrade_without_changing_original_http_source(self):
+        from . import test_avito_services_media as network
+        source = 'http://photos.invalid/photo.jpg?a=1'
+        self.feed.draft[0]['rows'][0]['ImageUrls'] = source
+        self.feed.published = deepcopy(self.feed.draft)
+        self.feed.save()
+        before = self.state()
+        helper = network.MediaNetworkTests()
+        plain, secure = network.MagicMock(), network.MagicMock()
+        plain.getresponse.return_value = helper.upgrade_response()
+        secure.getresponse.return_value = helper.response()
+        with patch.object(media, '_resolve', return_value='93.184.216.34'), \
+                patch.object(media, '_PinnedHTTP', return_value=plain), \
+                patch.object(media, '_PinnedHTTPS', return_value=secure), \
+                patch.object(media.threading, 'Timer'):
+            value = readiness.media_release_readiness(self.connection)
+        self.assertEqual(value['state'], 'ready')
+        self.assertTrue(value['checks']['source_read'])
+        self.assertTrue(value['checks']['image_decode'])
+        self.assertTrue(value['transport']['https_upgrade_followed'])
+        self.assertEqual(value['transport']['source_scheme'], 'http')
+        self.assertEqual(value['transport']['host_relation'], 'same')
+        self.assertEqual(self.state(), before)
+        self.assertNotIn(source, json.dumps(value))

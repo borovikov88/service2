@@ -147,7 +147,8 @@ class LiveMediaCheckTests(TestCase):
         with patch.object(media, '_download', return_value=picture()) as download:
             result = live.media_release_source(self.connection)
         self.assertEqual(set(result), {'scope_valid', 'source', 'source_in_published',
-            'photo_count', 'readable', 'format', 'width', 'height', 'bytes', 'checked_at'})
+            'photo_count', 'readable', 'format', 'width', 'height', 'bytes', 'checked_at',
+            'https_upgrade_followed'})
         self.assertTrue(result['source_in_published'])
         self.assertEqual(result['format'], 'PNG')
         self.assertEqual((result['width'], result['height']), (24, 16))
@@ -299,3 +300,28 @@ class LiveMediaCheckTests(TestCase):
             self.token()
         dns.assert_not_called()
         self.assertEqual(list(Path(self.temp.name).rglob('*.jpg')), [])
+
+    def test_durable_source_metadata_observes_upgrade_from_same_get_without_editing_source(self):
+        from . import test_avito_services_media as network
+        source = 'http://photos.invalid/photo.jpg?a=1'
+        self.feed.draft[0]['rows'][0]['ImageUrls'] = source
+        self.feed.published = deepcopy(self.feed.draft)
+        self.feed.save()
+        before = self.state()
+        helper = network.MediaNetworkTests()
+        plain, secure = network.MagicMock(), network.MagicMock()
+        plain.getresponse.return_value = helper.upgrade_response()
+        secure.getresponse.return_value = helper.response()
+        with patch.object(media, '_resolve', return_value='93.184.216.34'), \
+                patch.object(media, '_PinnedHTTP', return_value=plain), \
+                patch.object(media, '_PinnedHTTPS', return_value=secure), \
+                patch.object(media.threading, 'Timer'):
+            result = live.media_livecheck_source(self.connection, self.owner, '111')
+        self.assertTrue(result['readable'])
+        self.assertTrue(result['source_in_published'])
+        self.assertTrue(result['https_upgrade_followed'])
+        self.assertEqual(self.state(), before)
+        self.assertEqual(AvitoServicesImage.objects.count(), 0)
+        self.assertEqual(plain.request.call_count, 1)
+        self.assertEqual(secure.request.call_count, 1)
+        self.assertNotIn(source, json.dumps(result))
