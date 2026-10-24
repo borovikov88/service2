@@ -156,6 +156,14 @@ class PumpFactsTests(SimpleTestCase):
             self.assertEqual(p['flow'] is not None, has_point)
             self.assertTrue(p['pump_facts']['mode_note'])
             self.assertIn(p['pump_facts']['mode_note'], assess(p, INPUTS, Decimal('8'))[1])
+        for modes in [('Qmax 8 м³/ч, Hmax 8 м', 'При 1450 об/мин'),
+                      ('При 1450 об/мин', 'Qmax 8 м³/ч, Hmax 8 м')]:
+            params = [(k, v) for k, v in PARAMS if k != 'Режим указанной производительности']
+            params += [('Режим указанной производительности', mode) for mode in modes]
+            p = catalog.parse_catalog(feed(pump(params=params)))['products']['1']
+            self.assertIsNone(p['flow'])
+            self.assertIsNone(p['head'])
+            self.assertIn('максимальных', p['pump_facts']['mode_note'])
 
     def test_pool_circulation_with_prefilter_is_provisional_and_filtration_has_priority(self):
         params = [(k, 'Циркуляция воды плавательного бассейна' if k == 'Назначение'

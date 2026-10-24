@@ -110,6 +110,7 @@ def classify(specs, name, description, category, url, offer):
         # Scalar card fields already explicitly link head to the stated flow.
         # Check additional numeric claims without imposing one prose template.
         modes = params.get(FIELDS['mode'], [])
+        has_maximum_mode = False
         for value in modes:
             notes.append(FIELDS['mode'] + ': ' + value)
             claims = {
@@ -120,6 +121,7 @@ def classify(specs, name, description, category, url, offer):
             if any(parsed.get(k) is not None and any(v != parsed[k] for v in values) for k, values in claims.items()):
                 issues.append('Режим указанной производительности противоречит расходу, напору или питанию карточки.')
             if re.search(r'q\s*max|h\s*max|максимальн', value):
+                has_maximum_mode = True
                 facts['mode_note'] = 'рабочая Q–H точка вместо максимальных значений режима'
             elif re.search(r'об/мин|двухскорост|исходного наименования', value):
                 facts['mode_note'] = 'режим и скорость насоса на объекте: ' + value
@@ -130,8 +132,9 @@ def classify(specs, name, description, category, url, offer):
                      flow=parsed.get('flow') if parsed.get('head') else None,
                      power=parsed.get('voltage', 'unknown'),
                      power_options=[parsed['voltage']] if parsed.get('voltage') else [])
-        if facts['mode_note'].startswith('рабочая Q–H точка вместо'):
+        if has_maximum_mode:
             specs.update(flow=None, head=None)
+            facts['mode_note'] = 'рабочая Q–H точка вместо максимальных значений режима'
         if parsed.get('voltage') and parsed.get('phases') and (
                 (parsed['voltage'] == '230' and parsed['phases'] != '1') or
                 (parsed['voltage'] == '400' and parsed['phases'] != '3')):
