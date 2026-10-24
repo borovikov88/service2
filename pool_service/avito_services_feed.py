@@ -298,26 +298,32 @@ def services_feed_edit(request, connection_id, avito_id):
     form = ContentForm(request.POST or None, initial={'title': row['Title'], 'description': row['Description'],
                                                     'image_urls': row['ImageUrls'].replace(' | ', '\n')})
     if request.method == 'POST' and form.is_valid():
-        with transaction.atomic():
-            ChannelConnection.objects.select_for_update().get(pk=connection.pk)
-            connection = connection_for(request, connection_id)
-            locked = AvitoServicesFeed.objects.select_for_update().get(pk=feed.pk)
-            if not bound(locked, connection) or request.POST.get('revision') != str(locked.revision):
-                return HttpResponse('Данные изменились. Откройте объявление заново перед редактированием.', status=409)
-            before = deepcopy(locked.draft)
-            updated = deepcopy(locked.draft)
-            target = next(r for r in entries(updated) if r['AvitoId'] == avito_id)
-            target.update(Title=form.cleaned_data['title'], Description=form.cleaned_data['description'],
-                          ImageUrls=form.cleaned_data['image_urls'])
-            require_identities(locked, updated)
-            ensure_baseline(locked)
-            locked.draft = updated
-            locked.revision += 1
-            locked.updated_by = request.user
-            locked.save()
-            record_version(locked, 'edit', before, updated, actor=request.user,
-                           reason=form.cleaned_data['reason'] or 'Изменение текста и фотографий')
-            return redirect('avito_services_feed', connection_id=connection_id)
+        try:
+            with transaction.atomic():
+                ChannelConnection.objects.select_for_update().get(pk=connection.pk)
+                connection = connection_for(request, connection_id)
+                locked = AvitoServicesFeed.objects.select_for_update().get(pk=feed.pk)
+                if not bound(locked, connection) or request.POST.get('revision') != str(locked.revision):
+                    return HttpResponse('Данные изменились. Откройте объявление заново перед редактированием.', status=409)
+                before = deepcopy(locked.draft)
+                updated = deepcopy(locked.draft)
+                target = next(r for r in entries(updated) if r['AvitoId'] == avito_id)
+                target.update(Title=form.cleaned_data['title'], Description=form.cleaned_data['description'],
+                              ImageUrls=form.cleaned_data['image_urls'])
+                require_identities(locked, updated)
+                ensure_baseline(locked)
+                locked.draft = updated
+                locked.revision += 1
+                locked.updated_by = request.user
+                locked.save()
+                record_version(locked, 'edit', before, updated, actor=request.user,
+                               reason=form.cleaned_data['reason'] or 'Изменение текста и фотографий')
+                return redirect('avito_services_feed', connection_id=connection_id)
+        except ValueError as error:
+            # These are local history/XML validators, not provider response text.
+            form.add_error(None, str(error))
+            return render(request, 'pool_service/avito/services_edit.html',
+                          {'form': form, 'feed': feed, 'connection': connection, 'row': row}, status=400)
     return render(request, 'pool_service/avito/services_edit.html', {'form': form, 'feed': feed, 'connection': connection, 'row': row})
 
 

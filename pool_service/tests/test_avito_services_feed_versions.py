@@ -290,3 +290,33 @@ class FeedVersionTests(TestCase):
         self.assertEqual(len(response.context['history']), 20)
         self.assertTrue(response.context['history'].has_next())
         self.assertEqual(feed.versions.count(), 24)
+
+
+    def test_legacy_identity_conflict_returns_form_error_without_changing_snapshots(self):
+        feed = self.feed()
+        feed.published = deepcopy(feed.draft)
+        feed.published[0]['rows'][0]['Id'] = 'legacy-different-id'
+        feed.enabled = True
+        feed.save()
+        before = (deepcopy(feed.draft), deepcopy(feed.published), feed.revision)
+        response = self.edit(feed)
+        self.assertContains(response, 'Нельзя менять соответствие Id и AvitoId', status_code=400)
+        self.assertTrue(response.context['form'].non_field_errors())
+        feed.refresh_from_db()
+        self.assertEqual((feed.draft, feed.published, feed.revision), before)
+        self.assertEqual(feed.versions.count(), 0)
+
+    def test_invalid_legacy_xml_rolls_back_partial_baseline_and_returns_form_error(self):
+        feed = self.feed()
+        feed.published = deepcopy(feed.draft)
+        feed.published[0]['rows'][0]['PriceList'] = 'broken'
+        feed.enabled = True
+        feed.save()
+        before = (deepcopy(feed.draft), deepcopy(feed.published), feed.revision)
+        response = self.edit(feed)
+        self.assertContains(response, 'Некорректная строка прайс-листа XML', status_code=400)
+        self.assertTrue(response.context['form'].non_field_errors())
+        feed.refresh_from_db()
+        self.assertEqual((feed.draft, feed.published, feed.revision), before)
+        self.assertTrue(feed.enabled)
+        self.assertEqual(feed.versions.count(), 0)
