@@ -24,6 +24,10 @@ STATE_LABELS = {
     'report_identity_mismatch': 'Состав или привязки объявлений в отчёте отличаются',
     'candidate_finished': 'Последующая загрузка сопоставлена; точная версия файла не подтверждена',
     'source_version_confirmed': 'Авито обработал источник этой неизменяемой версии',
+    'source_copy_confirmed': 'Входная XML-копия Авито совпадает с этой версией файла',
+    'source_copy_item_errors': 'XML-копия версии подтверждена; есть ошибки отдельных объявлений',
+    'source_copy_ambiguous': 'Входная копия совпадает с несколькими версиями; точная публикация не определена',
+    'source_copy_mismatch': 'Входная копия не совпадает с подходящей опубликованной версией',
     'upload_failed': 'Загрузка завершилась ошибкой; применение не подтверждено',
     'item_errors': 'Источник версии подтверждён; есть ошибки отдельных объявлений',
 }
@@ -116,6 +120,31 @@ def _report_rows(report):
             'messages': projected_messages})
     return sorted(result, key=lambda row: (row['xml_id'], row['avito_id'] or ''))
 
+
+def _verified_copy_digest(connection, report, rows, started):
+    from .avito_input_copy import identity_sha256, MAX_BYTES
+    proof = report.get('input_copy_proof')
+    if not isinstance(proof, dict):
+        return None
+    if (proof.get('source') != 'provider_report_input_copy' or proof.get('state') != 'verified_xml'
+            or proof.get('code') != 'input_copy_xml_verified' or proof.get('content_kind') != 'xml'
+            or type(proof.get('connection_id')) is not int or proof['connection_id'] != connection.pk
+            or proof.get('account_id') != connection.external_id
+            or type(proof.get('organization_id')) is not int
+            or proof['organization_id'] != connection.channel.organization_id
+            or proof.get('upload_id') != report.get('upload_id')
+            or _date(proof.get('report_started_at')) != started
+            or type(proof.get('identity_count')) is not int or proof['identity_count'] != len(rows)
+            or type(proof.get('byte_count')) is not int or not 0 < proof['byte_count'] <= MAX_BYTES
+            or not isinstance(proof.get('file_sha256'), str)
+            or not re.fullmatch(r'[0-9a-f]{64}', proof['file_sha256'])
+            or any(row['avito_id'] is None for row in rows)):
+        return None
+    pairs = {(row['xml_id'], row['avito_id']) for row in rows}
+    if proof.get('identity_sha256') != identity_sha256(pairs):
+        return None
+    return proof['file_sha256']
+
 def correlate_report(connection, report):
     """DB-only hook after authenticated provider/account/lease checks; never provider writes."""
     if (not isinstance(report, dict) or report.get('complete') is not True
@@ -152,10 +181,14 @@ def correlate_report(connection, report):
         if not isinstance(sources, list) or len(sources) > 50 or any(
                 not isinstance(value, str) or not re.fullmatch(r'[0-9a-f]{64}', value) for value in sources):
             sources = []
+        copy_digest = _verified_copy_digest(current, report, rows, started)
+        copy_matches = list(publications.filter(file_sha256=copy_digest, version__created_at__lt=started)[:2]) if copy_digest else []
+        copy_ambiguous = len(copy_matches) > 1
+        copy_confirmed = len(copy_matches) == 1
         exact = list(publications.filter(immutable_source_sha256=sources[0])[:2]) if len(sources) == 1 else []
         if len(exact) > 1:
             return None  # Ambiguous internal source binding never becomes proof.
-        publication = (exact[0] if exact else
+        publication = (copy_matches[0] if copy_confirmed else exact[0] if exact else
             publications.filter(version__created_at__lt=started).order_by('-version__created_at', '-pk').first() or latest)
         if not _binding_valid(publication, current):
             return None
@@ -180,9 +213,13 @@ def correlate_report(connection, report):
             state = 'report_predates_publication'
         elif not finished:
             state = 'report_unfinished'
-        elif not sources:
+        elif copy_ambiguous:
+            state = 'source_copy_ambiguous'
+        elif copy_digest and not copy_confirmed:
+            state = 'source_copy_mismatch'
+        elif not sources and not copy_confirmed:
             state = 'report_source_unknown'
-        elif not (immutable or stable):
+        elif not (immutable or stable or copy_confirmed):
             state = 'report_source_mismatch'
         elif not identities_match:
             state = 'report_identity_mismatch'
@@ -190,13 +227,17 @@ def correlate_report(connection, report):
             state = 'upload_failed'
         elif status not in {'success', 'success_warning'}:
             state = 'report_unfinished'
+        elif copy_confirmed:
+            state, source_confirmed = ('source_copy_item_errors' if any(row['has_error'] for row in rows)
+                                       else 'source_copy_confirmed'), True
         elif immutable:
             state, source_confirmed = ('item_errors' if any(row['has_error'] for row in rows)
                                        else 'source_version_confirmed'), True
         else:
             state = 'candidate_finished'
         fingerprint_data = {'upload_id': upload_id, 'started_at': started.isoformat(),
-            'upload_status': status, 'finished': finished, 'sources': sources, 'rows': rows}
+            'upload_status': status, 'finished': finished, 'sources': [] if copy_digest else sources,
+            'input_copy_sha256': copy_digest, 'rows': rows}
         digest = _sha(json.dumps(fingerprint_data, ensure_ascii=False, sort_keys=True, separators=(',', ':')))
         attempt, _ = AvitoServicesPublicationAttempt.objects.get_or_create(
             publication=publication, upload_id=upload_id, report_sha256=digest,

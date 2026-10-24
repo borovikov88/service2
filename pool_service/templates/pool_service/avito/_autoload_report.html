@@ -18,6 +18,19 @@
   </div>
   <div class="avito-panel__body">
     {% include 'pool_service/avito/_section_state.html' with state=workspace.autoload_report %}
+    {% if workspace.autoload_report.data.input_copy_proof %}
+      {% with proof=workspace.autoload_report.data.input_copy_proof %}
+      <details class="avito-help mb-3"><summary>Проверка входного файла Авито</summary>
+        {% if proof.state == 'verified_xml' %}
+          <p class="small">XML-копия получена и её полный набор Id/AvitoId совпадает с отчётом. Для подтверждения версии дополнительно нужны точное совпадение файла с одной сохранённой публикацией и начало загрузки после неё.</p>
+        {% else %}
+          <p class="small">Копия входного файла не подтверждена: {{ proof.code }}. Формат: {{ proof.content_kind }}. Сам подробный отчёт остаётся доступным; это не означает ошибку всех объявлений.</p>
+        {% endif %}
+        <p class="small">Фактическое содержимое текста и фотографий в карточке Авито этой проверкой не подтверждается.</p>
+      </details>
+      {% endwith %}
+    {% endif %}
+
     {% if autoload_auto_state.allowed %}
       {% if autoload_auto_state.last_error_detail %}<p class="small text-warning mb-2" role="status">{{ autoload_auto_state.last_error_detail }}</p>{% endif %}
       {% if autoload_auto_state.needs_reactivation %}<p class="small text-warning">Настройки или права изменились. Включите сбор повторно.</p>{% endif %}
