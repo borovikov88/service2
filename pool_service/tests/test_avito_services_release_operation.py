@@ -2,11 +2,11 @@ import io
 import json
 from copy import deepcopy
 from datetime import timedelta
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from django.contrib.auth.models import User
 from django.core.management import call_command, CommandError
-from django.test import TestCase, override_settings
+from django.test import TestCase, SimpleTestCase, override_settings
 from django.utils import timezone
 
 from pool_service import avito_services_release_operation as operation
@@ -234,3 +234,34 @@ class ServicesReleaseOperationTests(TestCase):
         self.assertEqual(result['code'], 'release_binding_changed')
         self.token.assert_not_called()
         post.assert_not_called()
+
+
+
+@override_settings(ALLOWED_HOSTS=['service2.aqualine22.ru'],
+                   AVITO_SERVICES_PUBLIC_ORIGIN='https://service2.aqualine22.ru')
+class ReleaseOperationTransportTests(SimpleTestCase):
+    def test_photo_handler_uses_remaining_deadline_after_bounded_tls_connect(self):
+        response = MagicMock()
+        response.status = 200
+        response.getheader.return_value = 'identity'
+        response.read.return_value = b'{}'
+        client = MagicMock()
+        client.getresponse.return_value = response
+        with patch('pool_service.avito_services_media._resolve', return_value='93.184.216.34'), \
+                patch('pool_service.avito_services_media._PinnedHTTPS', return_value=client) as create, \
+                patch.object(operation.time, 'monotonic', return_value=100), \
+                patch.object(operation.threading, 'Timer') as timer:
+            self.assertEqual(operation._post_photo('synthetic-capability'), {})
+        create.assert_called_once_with('service2.aqualine22.ru', 443, '93.184.216.34', 5)
+        client.connect.assert_called_once_with()
+        client.sock.settimeout.assert_called_once_with(45)
+        self.assertEqual(timer.call_args.args[0], 45)
+        timer.return_value.start.assert_called_once_with()
+        timer.return_value.cancel.assert_called_once_with()
+        args, kwargs = client.request.call_args
+        self.assertEqual(args[0], 'POST')
+        self.assertEqual(args[1], '/api/communications/avito/services-media/livecheck/')
+        self.assertEqual(json.loads(kwargs['body']), {'token': 'synthetic-capability'})
+        self.assertNotIn('Authorization', kwargs['headers'])
+        self.assertNotIn('Cookie', kwargs['headers'])
+        self.assertEqual(kwargs['headers']['Accept-Encoding'], 'identity')

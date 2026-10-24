@@ -168,6 +168,7 @@ def _post_photo(token):
     timer.start()
     try:
         client.connect()
+        client.sock.settimeout(max(.05, deadline - time.monotonic()))
         if aborted.is_set():
             raise ValueError
         body = json.dumps({'token': token}, separators=(',', ':')).encode()
