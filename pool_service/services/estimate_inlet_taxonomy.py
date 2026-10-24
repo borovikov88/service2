@@ -26,7 +26,7 @@ def classify(specs, name, description, category, url, offer):
     if not (specs.get('embedded_role') in {'inlet','vacuum'} or 'форсунк' in title
             or 'форсунк' in text(category) or any(v in TYPES for v in params.get('тип товара', []))):
         return
-    if re.search(r'пылесос', title):
+    if re.match(r'^пылесосн\w*\s+форсунка\b', title):
         specs['embedded_role']='vacuum'
     notes, issue = [], ''
     roles = {TYPES.get(v, 'unknown') for v in params.get('тип товара', [])}
