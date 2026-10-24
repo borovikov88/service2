@@ -30,6 +30,18 @@ CODES = {
     "tariff_reminder_failed", "tariff_notification_preferences_disabled", "notification_preferences_disabled",
     "publication_correlation_failed", "dependency_failed", "deferred_queue_invalid", "conversation_access_denied",
 }
+CONSISTENCY_GUARDS = {
+    "queried_rows_changed": "Строки выборки по XML ID отличаются от проверочной страницы.",
+    "shop_xml_snapshot_changed": "XML магазина изменился или стал непроверяемым во время чтения.",
+    "profile_snapshot_changed": "Настройки источника автозагрузки изменились во время чтения.",
+    "summary_snapshot_changed": "Сводка загрузки изменилась между началом и концом чтения.",
+}
+
+
+def consistency_guard(value):
+    return value if isinstance(value, str) and value in CONSISTENCY_GUARDS else None
+
+
 OUTCOMES = {"baseline", "success", "failed", "skipped", "not_run"}
 
 
@@ -84,6 +96,8 @@ def record(connection_id, check, outcome, *, run_id, exception=False, deferred=F
         entries.append({"connection_id": connection.pk, "account_id": str(connection.external_id),
             "organization_id": connection.channel.organization_id, "channel_id": connection.channel_id,
             "check": check, "outcome": outcome, "code": code,
+            "consistency_guard": state.get("consistency_guard")
+                if check == "autoload_report" and outcome == "failed" and code == "autoload_report_changed" else None,
             "checked_at": timezone.now().isoformat()})
         heartbeat.checks = entries
         heartbeat.save(update_fields=["checks"])
@@ -126,6 +140,8 @@ def _saved(connection, check):
         code = "tariff_notification_preferences_disabled"
     return {"configured": bool(state), "enabled": state.get("enabled") is True,
         "scope_valid": valid if state else None, "code": code if valid or not state else "binding_changed",
+        "consistency_guard": consistency_guard(state.get("last_consistency_guard"))
+            if check == "autoload_report" and valid and code == "autoload_report_changed" else None,
         "checked_at": when(state.get("last_publication_checked_at" if check == "publication_correlation" else "last_checked_at")),
         "success_at": when(state.get("last_publication_success_at" if check == "publication_correlation" else "last_success_at")),
         "next_due_at": when(state.get("next_due_at"))}
@@ -160,5 +176,11 @@ def checks(connection):
             "last_worker_outcome": match["outcome"] if match else None,
             "last_worker_code": safe_code(match["code"]) if match else None,
             "last_worker_checked_at": match["checked_at"] if match else None,
+            "consistency_guard": saved.get("consistency_guard"),
+            "consistency_guard_label": CONSISTENCY_GUARDS.get(saved.get("consistency_guard"), ""),
+            "last_worker_consistency_guard": consistency_guard(match.get("consistency_guard"))
+                if match and key == "autoload_report" and match["outcome"] == "failed" and match["code"] == "autoload_report_changed" else None,
+            "last_worker_consistency_guard_label": CONSISTENCY_GUARDS.get(consistency_guard(match.get("consistency_guard")), "")
+                if match and key == "autoload_report" and match["outcome"] == "failed" and match["code"] == "autoload_report_changed" else "",
             "last_worker_verified": bool(match)})
     return output

@@ -83,6 +83,79 @@ class ServicesRuntimeTests(TestCase):
         self.connection.save(update_fields=["external_id"])
         self.assertFalse(any(row["last_worker_verified"] for row in runtime.checks(self.fresh())))
 
+    def test_consistency_branch_is_run_bound_projected_and_never_inferred_from_old_code(self):
+        from pool_service.avito_autoload_report import CONSISTENCY_GUARDS
+        self.assertEqual(CONSISTENCY_GUARDS, set(runtime.CONSISTENCY_GUARDS))
+        auto.configure(self.connection, self.owner, "enable")
+        connection = self.fresh()
+        state = connection.settings[auto.KEY]
+        state.update(last_error_code="autoload_report_changed", last_consistency_guard="queried_rows_changed")
+        connection.save(update_fields=["settings"])
+        self.begin()
+        runtime.record(connection.pk, "autoload_report", "failed", run_id=str(self.run_id))
+        self.finish()
+        connection = self.fresh()
+        connection.settings[auto.KEY].update(last_error_code="provider_unavailable", last_consistency_guard=None)
+        connection.save(update_fields=["settings"])
+        rows = runtime.checks(connection)
+        row = next(row for row in rows if row["check"] == "autoload_report")
+        self.assertIsNone(row["consistency_guard"])
+        self.assertEqual("queried_rows_changed", row["last_worker_consistency_guard"])
+        self.assertEqual("autoload_report_changed", row["last_worker_code"])
+        projected = next(row for row in receipt.runtime_checks(rows) if row["check"] == "autoload_report")
+        self.assertEqual("queried_rows_changed", projected["last_worker_consistency_guard"])
+        self.assertNotIn("label", projected)
+        self.assertNotIn("http", str(projected))
+        invalid = dict(row, last_worker_consistency_guard="PRIVATE")
+        with self.assertRaises(ValueError):
+            receipt.runtime_checks([invalid])
+        with self.assertRaises(ValueError):
+            receipt.runtime_checks([dict(row, check="advance")])
+        self.heartbeat.checks = []
+        self.heartbeat.save(update_fields=["checks"])
+        connection.settings[auto.KEY].update(last_error_code="autoload_report_changed",
+                                             last_consistency_guard="PRIVATE")
+        connection.save(update_fields=["settings"])
+        unknown = next(row for row in runtime.checks(connection) if row["check"] == "autoload_report")
+        self.assertIsNone(unknown["consistency_guard"])
+        self.assertIsNone(unknown["last_worker_consistency_guard"])
+
+    def test_observed_positive_link_phrase_requires_completed_unconditional_noncorrective_text(self):
+        positive = {"type": "warning", "code": 9999,
+                    "title": "Объявление [значение] связано с объявлением на Авито по [поле] в [файл]",
+                    "description": ""}
+        result = classify(positive)
+        self.assertEqual("existing_listing_link", result["category"])
+        self.assertTrue(result["binding_evidence"])
+        for prefix in ("не связано", "не было связано", "небыло связано", "невозможно связать",
+                       "будет связано", "будетсвязано", "может быть связано",
+                       "если объявление было связано", "чтобы объявление было связано"):
+            title = prefix + " с объявлением на Авито по [поле]"
+            with self.subTest(prefix=prefix):
+                result = classify(dict(positive, title=title))
+                self.assertNotEqual("existing_listing_link", result["category"])
+                self.assertFalse(result["binding_evidence"])
+        unconfirmed = (
+            "Объявление должно быть связано с объявлением на Авито",
+            "Параметр должен быть связан с существующим объявлением",
+            "Карточка должна быть связана с существующим объявлением",
+            "Карточки должны быть связаны с существующим объявлением",
+            "Следует проверить, что объявление связано с объявлением на Авито",
+            "Проверьте, что объявление связано с объявлением на Авито",
+            "Убедитесь, что объявление связано с объявлением на Авито",
+        )
+        for title in unconfirmed:
+            with self.subTest(title=title):
+                result = classify(dict(positive, title=title))
+                self.assertNotEqual("existing_listing_link", result["category"])
+                self.assertFalse(result["binding_evidence"])
+        for message in (dict(positive, description="Укажите AvitoId."),
+                        dict(positive, type="error"), dict(positive, type="alarm")):
+            self.assertEqual("action_required", classify(message)["category"])
+            self.assertFalse(classify(message)["binding_evidence"])
+        self.assertEqual("existing_listing_link", classify(dict(positive, code=1218))["category"])
+        self.assertEqual("review_required", classify(dict(positive, code=1218, title="Неизвестное предупреждение"))["category"])
+
     def test_begin_resets_previous_check_evidence_and_status_stdout_stays_compatible(self):
         self.begin()
         runtime.record(4, "advance", "success", run_id=str(self.run_id))

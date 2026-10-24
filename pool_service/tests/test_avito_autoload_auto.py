@@ -89,6 +89,27 @@ class AutoloadAutoTests(TestCase):
             self.assertNotIn("private-key", str(self.state()))
             self.assertGreater(auto._date(self.state()["next_due_at"]), timezone.now() + timedelta(minutes=14))
 
+    def test_consistency_guard_is_cached_without_payload_and_cleared_on_next_result(self):
+        self.scan()
+        previous = self.snapshot()["data"]
+        self.due()
+        with patch.object(avito_autoload_report, "fetch_report",
+                          side_effect=avito_autoload_report.ReportChanged("profile_snapshot_changed")) as fetch:
+            self.assertEqual("failed", auto.scan_connection(self.connection.pk))
+        self.assertEqual(1, fetch.call_count)
+        self.assertEqual("autoload_report_changed", self.state()["last_error_code"])
+        self.assertEqual("profile_snapshot_changed", self.state()["last_consistency_guard"])
+        self.assertEqual("profile_snapshot_changed", self.snapshot()["consistency_guard"])
+        self.assertEqual(previous, self.snapshot()["data"])
+        self.due()
+        with patch.object(avito_autoload_report, "fetch_report", side_effect=AvitoError("provider_unavailable")):
+            self.assertEqual("failed", auto.scan_connection(self.connection.pk))
+        self.assertIsNone(self.state()["last_consistency_guard"])
+        self.assertIsNone(self.snapshot()["consistency_guard"])
+        self.due()
+        self.assertEqual("success", self.scan()[0])
+        self.assertIsNone(self.state()["last_consistency_guard"])
+
     def test_missing_ready_tick_rejects_activation_without_provider_calls(self):
         auto.configure(self.connection, self.owner, "disable")
         with patch.object(auto, "scheduler_state", return_value={"ready": False}), patch.object(avito_autoload_report, "fetch_report") as fetch:

@@ -33,6 +33,23 @@ ERRORS = {
 }
 
 
+CONSISTENCY_GUARDS = {"queried_rows_changed", "shop_xml_snapshot_changed",
+                      "profile_snapshot_changed", "summary_snapshot_changed"}
+
+
+def consistency_guard(value):
+    return value if isinstance(value, str) and value in CONSISTENCY_GUARDS else None
+
+
+class ReportChanged(AvitoError):
+    """Fixed guard identity only; the original top-level rejection code remains."""
+    def __init__(self, guard):
+        if consistency_guard(guard) is None:
+            raise ValueError("invalid report consistency guard")
+        super().__init__("autoload_report_changed")
+        self.consistency_guard = guard
+
+
 def _invalid():
     raise AvitoError("autoload_report_invalid")
 
@@ -359,10 +376,10 @@ def _query_shop_rows(get, base, snapshot, probe_rows, total, deadline):
         raise AvitoError("autoload_report_pagination")
     by_identity = {(row["ad_id"], row["avito_id"]): row for row in rows}
     if any(by_identity.get((row["ad_id"], row["avito_id"])) != row for row in probe_rows):
-        raise AvitoError("autoload_report_changed")
+        raise ReportChanged("queried_rows_changed")
     after = _shop_snapshot(deadline)
     if after is None or after[1] != digest:
-        raise AvitoError("autoload_report_changed")
+        raise ReportChanged("shop_xml_snapshot_changed")
     return rows
 
 
@@ -413,7 +430,7 @@ def fetch_report(token, account_id, *, kind="last_successful", include_input_pro
                 rows = _query_shop_rows(get, base, snapshot, batch, expected[0], deadline)
                 after_profile, after_fingerprint = fetch_profile_source(token, account_id, deadline=deadline)
                 if after_profile != profile or after_fingerprint != fingerprint:
-                    raise AvitoError("autoload_report_changed")
+                    raise ReportChanged("profile_snapshot_changed")
                 read_strategy = "shop_xml_id_queries"
                 page = max(1, expected[1])
                 break
@@ -432,7 +449,7 @@ def fetch_report(token, account_id, *, kind="last_successful", include_input_pro
     source_consistent = before["source_url_sha256"] == after["source_url_sha256"]
     if ({key: value for key, value in before.items() if key != "source_url_sha256"}
             != {key: value for key, value in after.items() if key != "source_url_sha256"}):
-        raise AvitoError("autoload_report_changed")
+        raise ReportChanged("summary_snapshot_changed")
     try:
         require_unique_rows(rows)
     except AvitoError as error:
