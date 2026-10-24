@@ -23,7 +23,7 @@ from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requ
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
-CACHE_KEY = "pool-estimate-shop-v23"
+CACHE_KEY = "pool-estimate-shop-v24"
 CACHE_SECONDS = 900
 MAX_BYTES = 20_000_000
 FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
@@ -170,6 +170,8 @@ def parse_catalog(payload, checked_at=None):
         if set(specs.get('lining', [])) & set(specs.get('lining_denied', [])):
             specs.update(specification_conflict=True, lining=[], specification_note=(specs.get('specification_note','') + ' Противоречивое указание допуска и запрета отделки.').strip())
         category = categories.get(offer.findtext("categoryId"), "")
+        from .estimate_inlet_taxonomy import classify as classify_inlet
+        classify_inlet(specs,name,description,category_path(offer.findtext('categoryId')),url,offer)
         from .estimate_auxiliary import classify as classify_auxiliary
         from .estimate_geotextile import classify as classify_geotextile
         lighting.classify(specs, name, description, category_path(offer.findtext("categoryId")), offer)
@@ -337,6 +339,7 @@ def apply_product(row, product, catalog, selection="manual"):
     row['catalog']['liner'] = deepcopy(product.get('liner',{}))
     row['catalog']['plaster_product'] = deepcopy(product.get('plaster_product',{}))
     row["catalog"]["geotextile"] = deepcopy(product.get("geotextile", {}))
+    row["catalog"]["inlet_taxonomy"] = deepcopy(product.get("inlet_taxonomy", {}))
     row["catalog"]["body_family"] = product.get("body_family", "")
     row["catalog"]["lining_denied"] = product.get("lining_denied", [])
     row["catalog"]["level_control"] = product.get("level_control", "unknown")
@@ -553,6 +556,8 @@ def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="
         issue = profile_reason(product, inputs, required_flow, profile)
         if product['kind'] == 'level_regulator' and not issue:
             return product.get('specification_note') or 'Предварительный подбор; проверьте монтаж по паспорту модели.'
+        if product.get('inlet_taxonomy',{}).get('issue'):
+            return product['inlet_taxonomy']['issue']
         if kind == 'level_inlet':
             return (issue or 'Для отдельной линии уровня проверьте свободный проход, тип и диаметр присоединений этой форсунки и выбранного регулятора. Совпадение бренда или список артикулов не обязательны.')
         return issue
