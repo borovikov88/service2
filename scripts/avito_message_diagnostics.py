@@ -218,6 +218,8 @@ def project_diagnostics(value):
     if "system_title_redacted" in value or "system_title_redacted_policy" in value:
         skeleton, skeleton_policy = value.get("system_title_redacted"), value.get("system_title_redacted_policy")
         require(isinstance(skeleton_policy, str) and skeleton_policy in SKELETON_POLICIES)
+        if policy == "sensitive_marker":
+            require(skeleton is None and skeleton_policy == "sensitive_marker")
         if skeleton is not None:
             require(isinstance(skeleton, str) and 0 < len(skeleton) <= SKELETON_MAX_LENGTH
                     and skeleton == " ".join(skeleton.split()) and result["provider_message_shape_valid"]

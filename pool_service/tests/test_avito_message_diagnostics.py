@@ -129,7 +129,7 @@ class MessageDiagnosticsTests(TestCase):
                             for part in result["system_title_redacted"].split()))
 
     def test_redacted_title_hides_whole_quotes_contacts_paths_and_unknown_values(self):
-        values = ("PrivateName", "1234567890", "private-error", "123-error", "error_private_id",
+        values = ("PrivateName", "1234567890", "private-error", "123-error", "Title-123", "error_private_id",
                   "https://private.invalid/error/id",
                   "user@private.invalid", "id.error", "/home/private/error/id", r"C:\private\error\id",
                   "«Объявление AvitoId»", '"Объявление AvitoId"', "'Объявление AvitoId'",
@@ -150,6 +150,7 @@ class MessageDiagnosticsTests(TestCase):
             with self.subTest(title=title):
                 self.assertEqual(("avitoid [скрыто]", "redacted"), system_title_skeleton(title))
         self.assertEqual(("параметр [скрыто]", "redacted"), system_title_skeleton("Параметр=error"))
+        self.assertEqual(("параметр id [скрыто]", "redacted"), system_title_skeleton("Параметр id = error"))
 
     def test_nested_mixed_and_escaped_quoted_values_cannot_leak_approved_tail_words(self):
         values = ("«Объявление «Id» Цена»", "[Объявление [Id] Цена]",
@@ -172,6 +173,9 @@ class MessageDiagnosticsTests(TestCase):
                 self.assertIsNone(result["system_title_redacted"])
                 self.assertEqual("sensitive_marker", result["system_title_redacted_policy"])
                 self.assertNotIn("PRIVATE", json.dumps(result))
+                with self.assertRaises(ValueError):
+                    project_diagnostics(dict(result, system_title_redacted="ошибка",
+                                             system_title_redacted_policy="safe"))
 
     def test_synthetic_92_character_warning_diagnostic_does_not_guess_numeric_code_meaning(self):
         title = "Объявление: " + "q" * (92 - len("Объявление: "))
