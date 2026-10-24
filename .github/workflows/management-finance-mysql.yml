@@ -104,6 +104,8 @@ jobs:
             pool_service.tests.test_avito_services_media_livecheck \
             pool_service.tests.test_avito_services_media_readiness \
             pool_service.tests.test_avito_services_release_operation \
+            pool_service.tests.test_avito_services_source_pin \
+            pool_service.tests.test_avito_services_release_integration \
             pool_service.tests.test_avito_services_publication \
             pool_service.tests.test_avito_message_diagnostics \
             pool_service.tests.test_avito_input_copy \

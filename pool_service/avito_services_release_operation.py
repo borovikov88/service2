@@ -230,7 +230,7 @@ def _selected_id(feed):
 def _source(value):
     names = {'scope_valid', 'source', 'source_in_published', 'photo_count', 'readable',
              'format', 'width', 'height', 'bytes', 'checked_at'}
-    if (not isinstance(value, dict) or set(value) != names
+    if (not isinstance(value, dict) or set(value) not in (names, names | {'https_upgrade_followed'})
             or value['scope_valid'] is not True or value['source_in_published'] is not True
             or value['readable'] is not True or value['source'] != 'existing_services_draft_image'
             or value['format'] not in {'JPEG', 'PNG', 'WEBP'}
@@ -240,7 +240,10 @@ def _source(value):
                           ('height', 20_000_000), ('bytes', 8 * 1024 * 1024)):
         if type(value[name]) is not int or not 0 < value[name] <= maximum:
             raise Blocked('release_photo_source_unavailable')
-    return dict(value)
+    upgraded = value.get('https_upgrade_followed')
+    if upgraded is not None and type(upgraded) is not bool:
+        raise Blocked('release_photo_source_unavailable')
+    return dict(value, https_upgrade_followed=upgraded)
 
 
 def _reserve(expected_sha):

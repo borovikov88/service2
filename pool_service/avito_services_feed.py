@@ -459,37 +459,53 @@ def _safe_failure(error):
     return f'Не удалось проверить объявления через API Авито ({safe_code}). Источник не изменён.'
 
 
-@login_required
-@never_cache
-@require_http_methods(['POST'])
-def services_feed_publish(request, connection_id):
-    from .communication_avito import AvitoError
+class PublicationConflict(ValueError):
+    """Current scope/revision changed while preparing this publication."""
+
+
+def publish_services_snapshot(request, connection_id, *, revision, approval=None):
+    """One publication implementation for the normal view and protected adapters.
+
+    approval is an internal server object, never a request parameter. Its strict
+    checks and result callback run before/inside the existing mutation atomic
+    block; external inventory and media reads remain outside that transaction.
+    """
+    from .avito_autoload_auto import _credential_stamp
     connection = connection_for(request, connection_id)
     feed = get_object_or_404(AvitoServicesFeed, connection=connection)
-    if not bound(feed, connection) or request.POST.get('revision') != str(feed.revision):
-        return HttpResponse('Данные изменились. Обновите страницу.', status=409)
-    try:
-        public_origin()  # Reject invalid canonical origin before any provider check or publication.
-        # Legacy inactive rows remain stored; only the active publication must fit10.
-        xml_bytes(feed.draft, max_images=30)
-        require_identities(feed, feed.draft)
-        verified = verify_inventory(connection, feed.draft)
-        if not entries(verified['sheets']):
-            raise ValueError('Нет активных объявлений для публикации. Возвращение из архива требует отдельной проверки стоимости.')
-        content = xml_bytes(verified['sheets'])
-        validate_snapshot_media(connection, verified['sheets'])
-    except (ValueError, AvitoError) as error:
-        return render(request, 'pool_service/avito/services_feed.html',
-                      _page_context(request, connection, feed, _safe_failure(error)), status=400)
+    if not bound(feed, connection) or str(revision) != str(feed.revision):
+        raise PublicationConflict('Данные изменились. Обновите страницу.')
+    scope = (connection.external_id, connection.channel_id, connection.channel.organization_id,
+             _credential_stamp(connection), feed.public_key, request.user.pk)
+    if approval is not None:
+        approval.assert_current(request, connection, feed, locked=False)
+    public_origin()
+    # Legacy inactive rows remain stored; only the active publication must fit10.
+    xml_bytes(feed.draft, max_images=30)
+    require_identities(feed, feed.draft)
+    verified = verify_inventory(connection, feed.draft)
+    if not entries(verified['sheets']):
+        raise ValueError('Нет активных объявлений для публикации. Возвращение из архива требует отдельной проверки стоимости.')
+    content = xml_bytes(verified['sheets'])
+    if approval is not None:
+        approval.assert_inventory(verified, content)
+    validate_snapshot_media(connection, verified['sheets'])
     with transaction.atomic():
         ChannelConnection.objects.select_for_update().get(pk=connection.pk)
         connection = connection_for(request, connection_id)
         locked = AvitoServicesFeed.objects.select_for_update().get(pk=feed.pk)
-        if (not bound(locked, connection) or locked.revision != feed.revision
+        current_scope = (connection.external_id, connection.channel_id, connection.channel.organization_id,
+                         _credential_stamp(connection), locked.public_key, request.user.pk)
+        if (not bound(locked, connection) or locked.revision != feed.revision or current_scope != scope
                 or _older_observation(locked, verified['observations'])):
-            return HttpResponse('Данные изменились. Обновите страницу.', status=409)
+            raise PublicationConflict('Данные изменились. Обновите страницу.')
+        if approval is not None:
+            approval.assert_current(request, connection, locked, locked=True)
+            approval.assert_inventory(verified, content)
         require_identities(locked, locked.draft)
         ensure_baseline(locked)
+        if approval is not None:
+            approval.before_publish_locked(connection, locked)
         before = deepcopy(locked.published)
         for item in entries(verified['sheets']):
             validate_photo_scope(connection, item['ImageUrls'])
@@ -506,7 +522,26 @@ def services_feed_publish(request, connection_id):
         version = record_version(locked, 'publish', before, locked.published, actor=request.user,
                        reason='Публикация файла; применение Авито ещё не подтверждено',
                        observations=verified['observations'], content=content)
-        bind_publication(locked, version)
+        publication = bind_publication(locked, version)
+        if approval is not None:
+            approval.record_locked(connection, locked, version, publication)
+    return version
+
+
+@login_required
+@never_cache
+@require_http_methods(['POST'])
+def services_feed_publish(request, connection_id):
+    from .communication_avito import AvitoError
+    try:
+        publish_services_snapshot(request, connection_id, revision=request.POST.get('revision'))
+    except PublicationConflict:
+        return HttpResponse('Данные изменились. Обновите страницу.', status=409)
+    except (ValueError, AvitoError) as error:
+        connection = connection_for(request, connection_id)
+        feed = get_object_or_404(AvitoServicesFeed, connection=connection)
+        return render(request, 'pool_service/avito/services_feed.html',
+                      _page_context(request, connection, feed, _safe_failure(error)), status=400)
     return redirect('avito_services_feed', connection_id=connection_id)
 
 
