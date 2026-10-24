@@ -105,6 +105,31 @@ class ReadonlyAvitoOperatorTests(TestCase):
 
             return audit.collect_connection(self.connection, ["101", "102"], self.index)
 
+    def test_failed_live_webhook_read_does_not_hide_successful_storage_proof(self):
+        from pool_service import avito_services_workplace_setup as setup
+        proof = {"source": "passenger_http", "checked": True, "cached": True,
+                 "outside_checkout": True, "file_private": True, "directory_private": True,
+                 "readable": True, "synthetic_only": True}
+        with patch.object(setup, "webhook_evidence", side_effect=AvitoError("provider_http_403")), \
+             patch.object(setup, "storage_probe_evidence", return_value=proof):
+            result = self.collect_connection()
+        self.assertEqual({"error": "provider_http_403"}, result["webhook_evidence"])
+        self.assertEqual(proof, result["storage_probe"])
+        self.assertEqual(2, result["autoload_report"]["total"])
+        self.assertTrue(receipt.connection(result)["storage_probe"]["checked"])
+
+    def test_failed_storage_diagnostic_does_not_hide_independent_webhook_readback(self):
+        from pool_service import avito_services_workplace_setup as setup
+        webhook = {"binding_valid": True, "registration_confirmed": True,
+                   "delivery_observed": False, "live_provider_checked": True, "live_registered": True}
+        with patch.object(setup, "webhook_evidence", return_value=webhook), \
+             patch.object(setup, "storage_probe_evidence", side_effect=RuntimeError("PRIVATE")):
+            result = self.collect_connection()
+        self.assertEqual(webhook, result["webhook_evidence"])
+        self.assertEqual("storage_probe_failed", result["storage_probe"]["error"])
+        self.assertEqual(2, result["autoload_report"]["total"])
+        self.assertNotIn("PRIVATE", str(receipt.connection(result)))
+
     def test_full_scan_and_report_codes_are_complete_sanitized_aggregates(self):
         result = self.collect_connection()
         scan = result["listing_scan"]
@@ -237,6 +262,98 @@ class ReadonlyAvitoOperatorTests(TestCase):
         self.assertEqual(result["reason"], "audit_connection_limit")
         source.assert_not_called()
         account.assert_not_called()
+
+    def test_cached_configuration_reports_local_settings_without_claiming_webhook_delivery(self):
+        self.connection.settings = {
+            "avito_webhook_status": "connected", "avito_webhook_checked_at": "2026-10-20T10:00:00+07:00",
+            "avito_webhook_last_received_at": "2026-10-20T10:00:00+07:00",
+            "avito_webhook_error": "PRIVATE", "client_secret": "PRIVATE",
+        }
+        self.connection.save(update_fields=["settings"])
+        with patch.object(audit.avito_autoload_auto, "scheduler_state", return_value={"ready": True}):
+            audit.avito_autoload_auto.configure(self.connection, self.owner, "enable")
+        from pool_service.avito_feed_models import AvitoServicesFeed
+        snapshot = [{"rows": [{"ImageUrls": " | ".join(
+            f"https://photos.invalid/synthetic-{i}.jpg" for i in range(11))}]}]
+        AvitoServicesFeed.objects.create(connection=self.connection, account_id="123",
+            organization_id_at_import=self.org.pk, draft=snapshot, published=snapshot,
+            enabled=True, revision=2, published_revision=2)
+        with patch.object(audit, "access_token") as token:
+            flags = audit.cached_configuration_state(self.connection)
+        token.assert_not_called()
+        self.assertTrue(flags["autoload_auto_scope_valid"])
+        self.assertTrue(flags["autoload_auto_enabled"])
+        self.assertTrue(flags["services_feed_account_bound"])
+        self.assertTrue(flags["services_feed_revision_current"])
+        self.assertTrue(flags["services_feed_legacy_photo_limit_exceeded"])
+        self.assertEqual("connected", flags["webhook_cache_status"])
+        self.assertFalse(flags["webhook_scope_known"])
+        self.assertIsNone(flags["webhook_verified_cached"])
+        self.assertIsNone(flags["webhook_received_cached"])
+        projected = receipt.cached_configuration(dict(flags, public_key="PRIVATE",
+            callback_url="https://private.invalid/PRIVATE", expires_on="PRIVATE"))
+        self.assertFalse(projected["live_provider_verified"])
+        self.assertNotIn("PRIVATE", json.dumps(projected))
+        self.assertNotIn("2026-", json.dumps(projected))
+        self.assertNotIn("photos.invalid", json.dumps(projected))
+
+    def test_cached_configuration_empty_malformed_and_stale_scopes_are_unknown(self):
+        flags = audit.cached_configuration_state(self.connection)
+        self.assertFalse(flags["autoload_auto_configured"])
+        self.assertFalse(flags["services_feed_configured"])
+        self.assertEqual("unknown", flags["webhook_cache_status"])
+        self.connection.settings = {"avito_autoload_auto": "PRIVATE", "avito_webhook_status": ["PRIVATE"]}
+        self.connection.save(update_fields=["settings"])
+        flags = audit.cached_configuration_state(self.connection)
+        self.assertIsNone(flags["autoload_auto_configured"])
+        self.assertIsNone(flags["autoload_auto_enabled"])
+        self.assertIsNone(flags["autoload_auto_scope_valid"])
+        self.assertEqual("unknown", flags["webhook_cache_status"])
+        self.connection.settings = {"avito_autoload_auto": {"enabled": True, "account_id": "999"}}
+        self.connection.save(update_fields=["settings"])
+        flags = audit.cached_configuration_state(self.connection)
+        self.assertTrue(flags["autoload_auto_enabled"])
+        self.assertFalse(flags["autoload_auto_scope_valid"])
+        ChannelConnection.objects.filter(pk=self.connection.pk).update(external_id="999")
+        self.assertEqual({"error": "audit_configuration_scope_changed"},
+                         audit.cached_configuration_state(self.connection))
+
+    def test_cached_photo_inspection_uses_the_feed_separators_without_exporting_urls(self):
+        rows = [{"ImageUrls": "\n".join("https://photos.invalid/synthetic-%s.jpg" % i for i in range(11))}]
+        self.assertTrue(audit._legacy_photos_exceed_limit([{"rows": rows}]))
+        rows[0]["ImageUrls"] = "https://photos.invalid/normal.jpg"
+        self.assertFalse(audit._legacy_photos_exceed_limit([{"rows": rows}]))
+        self.assertIsNone(audit._legacy_photos_exceed_limit([{"rows": ["PRIVATE"]}]))
+
+    def test_cached_feed_drift_does_not_expose_other_account_snapshot_flags(self):
+        from pool_service.avito_feed_models import AvitoServicesFeed
+        feed = AvitoServicesFeed.objects.create(connection=self.connection, account_id="999",
+            organization_id_at_import=self.org.pk, draft=[{"rows": [{"ImageUrls": "PRIVATE"}]}],
+            published=[{"rows": [{"ImageUrls": "PRIVATE"}]}], enabled=True)
+        flags = audit.cached_configuration_state(self.connection)
+        self.assertTrue(flags["services_feed_configured"])
+        self.assertFalse(flags["services_feed_account_bound"])
+        for key in ("services_feed_enabled", "services_feed_revision_current",
+                    "services_feed_legacy_photo_limit_exceeded"):
+            self.assertIsNone(flags[key])
+        feed.account_id = "123"
+        feed.draft = "PRIVATE"
+        feed.save(update_fields=["account_id", "draft"])
+        self.assertIsNone(audit.cached_configuration_state(self.connection)["services_feed_legacy_photo_limit_exceeded"])
+
+    def test_cached_configuration_projection_is_backward_compatible_and_rejects_false_proof(self):
+        flags = audit.cached_configuration_state(self.connection)
+        for changes in ({"live_provider_verified": True}, {"webhook_scope_known": True},
+                        {"webhook_verified_cached": True}, {"autoload_auto_enabled": 1},
+                        {"webhook_cache_status": "PRIVATE"}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                receipt.cached_configuration(flags | changes)
+        old = self.collect_connection()
+        self.assertIn("cached_configuration", old)
+        old.pop("cached_configuration")
+        self.assertEqual({"error": "audit_cached_configuration_not_requested"},
+                         receipt.connection(old)["cached_configuration"])
+
 
 class FullListingProjectionTests(SimpleTestCase):
     def test_full_scan_flags_are_per_scope_and_stock_audit_is_separate(self):

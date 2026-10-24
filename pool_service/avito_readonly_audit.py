@@ -8,7 +8,8 @@ from zoneinfo import ZoneInfo
 
 from django.utils import timezone
 
-from pool_service import avito_tariff_reminder
+from pool_service import avito_tariff_reminder, avito_autoload_auto
+from pool_service.avito_feed_models import AvitoServicesFeed
 from pool_service.models import Notification, Profile
 from pool_service import avito_advance, avito_autoload_report, avito_source_audit, avito_workspace, avito_status_monitor, avito_inventory
 from pool_service.avito_profile_source import fetch_profile_source
@@ -91,12 +92,14 @@ def binding(connection):
     return (current.channel_id, current.channel.organization_id, current.external_id, fingerprint)
 
 def report_summary(report):
+    from .avito_report_messages import groups as message_groups
     samples = []
     rows = sorted(report["rows"], key=lambda row: not any(m["type"] == "error" for m in row["messages"]))
     groups = defaultdict(int)
     for row in rows:
         for key in {(m["type"], m["code"]) for m in row["messages"]}:
             groups[key] += 1
+
         if len(groups) > 200:
             raise AvitoError("audit_report_code_limit")
         critical = [message for message in row["messages"] if message["type"] in ("error", "alarm")]
@@ -105,7 +108,7 @@ def report_summary(report):
                             "avito_id": str(row["avito_id"]) if row["avito_id"] is not None else None,
                             "messages": [{"type": m["type"], "code": m["code"], "title": safe_text(m["title"], 200),
                                           "description": safe_text(m["description"], 700)} for m in critical[:3]]})
-    return {"upload_id": report["upload_id"], "upload_status": report["upload_status"],
+    return ({"input_copy_proof": report["input_copy_proof"]} if "input_copy_proof" in report else {}) | {"upload_id": report["upload_id"], "upload_status": report["upload_status"],
             "read_strategy": report.get("read_strategy", "provider_pages"),
             "complete": report["complete"], "finished": report["upload_finished"], "total": report["total"],
             "counts": report["counts"], "critical_samples": samples,
@@ -113,7 +116,8 @@ def report_summary(report):
             "shop_feed_diagnostics": report.get("shop_feed_diagnostics", []),
             "started_at": datetime.fromisoformat(report["started_at"]).astimezone(ZoneInfo("Asia/Barnaul")).isoformat() if report.get("started_at") else None,
             "message_code_counts": [{"type": kind, "code": code, "rows": count}
-                                    for (kind, code), count in sorted(groups.items())]}
+                                    for (kind, code), count in sorted(groups.items())],
+            "message_groups": message_groups(rows)}
 
 def listing_summary(items, pages):
     # full_scan validates complete pagination and account identity. Titles are
@@ -199,6 +203,100 @@ def monitoring_state(connection):
     }
 
 
+def _legacy_photos_exceed_limit(sheets):
+    """Inspect bounded saved snapshots without exporting or fetching image URLs."""
+    if not isinstance(sheets, list) or len(sheets) > 200:
+        return None
+    over_limit, count = False, 0
+    for sheet in sheets:
+        if not isinstance(sheet, dict) or not isinstance(sheet.get("rows"), list):
+            return None
+        for row in sheet["rows"]:
+            count += 1
+            if count > 200 or not isinstance(row, dict):
+                return None
+            images = row.get("ImageUrls")
+            if not isinstance(images, str) or len(images) > 32767:
+                return None
+            over_limit |= len([part for part in re.split(r"[|\r\n]+", images) if part.strip()]) > 10
+    return over_limit
+
+
+def cached_configuration_state(connection):
+    """Local configuration only; cached webhook state has no immutable account binding."""
+    current = ChannelConnection.objects.select_related("channel").get(pk=connection.pk)
+    if (not current.is_active or not current.channel.is_active or current.channel.kind != "avito"
+            or current.channel_id != connection.channel_id
+            or current.channel.organization_id != connection.channel.organization_id
+            or current.external_id != connection.external_id):
+        return {"error": "audit_configuration_scope_changed"}
+    metadata = current.settings if isinstance(current.settings, dict) else None
+    auto = metadata.get(avito_autoload_auto.KEY, {}) if metadata is not None else None
+    auto_valid = isinstance(auto, dict)
+    try:
+        auto_allowed = bool(auto and avito_autoload_auto._allowed(current, auto)) if auto_valid else None
+    except (TypeError, ValueError):
+        auto_allowed = None
+    status = metadata.get("avito_webhook_status") if metadata is not None else None
+    if not isinstance(status, str) or status not in {"connected", "not_connected", "needs_check", "error"}:
+        status = "unknown"
+    # Legacy status/received timestamps cannot prove which account/keys produced
+    # them. Never turn them into positive registration or delivery evidence.
+    result = {
+        "source": "service2_cached_configuration", "live_provider_verified": False,
+        "webhook_cache_present": ("avito_webhook_status" in metadata) if metadata is not None else None,
+        "webhook_cache_status": status, "webhook_scope_known": False,
+        "webhook_configured_cached": None, "webhook_verified_cached": None,
+        "webhook_received_cached": None,
+        "autoload_auto_configured": bool(auto) if auto_valid else None,
+        "autoload_auto_enabled": (auto.get("enabled", False) if type(auto.get("enabled", False)) is bool else None) if auto_valid else None,
+        "autoload_auto_scope_valid": auto_allowed,
+        "services_feed_configured": False, "services_feed_account_bound": False,
+        "services_feed_enabled": None, "services_feed_revision_current": None,
+        "services_feed_legacy_photo_limit_exceeded": None,
+    }
+    feed = AvitoServicesFeed.objects.filter(connection=current).first()
+    if feed is not None:
+        bound = (feed.account_id == current.external_id
+                 and feed.organization_id_at_import == current.channel.organization_id)
+        result.update(services_feed_configured=True, services_feed_account_bound=bound)
+        if bound:
+            draft_photos, published_photos = (_legacy_photos_exceed_limit(feed.draft),
+                                               _legacy_photos_exceed_limit(feed.published))
+            result.update(
+                services_feed_enabled=feed.enabled,
+                services_feed_revision_current=bool(feed.published and feed.revision == feed.published_revision),
+                services_feed_legacy_photo_limit_exceeded=(
+                    draft_photos or published_photos
+                    if draft_photos is not None and published_photos is not None else None),
+            )
+    return result
+
+
+
+def services_item_link(item_id, detail, feed):
+    rows = [row for sheet in feed.draft for row in sheet['rows']]
+    row = next(row for row in rows if row['AvitoId'] == item_id)
+    source_id = detail['autoload_item_id']
+    state = ('services_feed_identity_only' if not source_id else
+             'services_feed_match' if source_id == row['Id'] else 'services_feed_id_mismatch')
+    return {'item_id': item_id, 'status': detail['status'], 'autoload_xml_id': public_xml_id(source_id),
+            'link_state': state, 'xml_matches': [], 'report_xml_ids': []}
+
+def services_coverage(feed, all_items, *, requested, checked, skipped):
+    draft_ids = {row['AvitoId'] for sheet in feed.draft for row in sheet['rows']}
+    published_ids = {row['AvitoId'] for sheet in feed.published for row in sheet['rows']}
+    complete = isinstance(all_items, dict)
+    active = {key for key, row in all_items.items() if row['status'] == 'active'} if complete else set()
+    inactive = {key for key, row in all_items.items() if row['status'] != 'active'} if complete else set()
+    return {'source': 'service2_services_feed', 'complete': complete,
+        'draft_count': len(draft_ids), 'published_count': len(published_ids),
+        'active_count': len(active) if complete else None,
+        'active_covered': len(active & draft_ids) if complete else None,
+        'active_missing': len(active - draft_ids) if complete else None,
+        'published_inactive': len(published_ids & inactive) if complete else None,
+        'requested_count': requested, 'checked_count': checked, 'skipped_out_of_scope': skipped}
+
 def collect_connection(connection, item_ids, index, stocks=None, stock_error=None):
     identity = {"connection_id": connection.pk}
     try:
@@ -219,15 +317,25 @@ def collect_connection(connection, item_ids, index, stocks=None, stock_error=Non
             advance_access = {"available": True, "source": "cpa_v3", "amount_logged": False}
         except Exception as error:
             advance_access = {"error": safe_error(error)}
+        from .avito_input_copy import bound_services_feed
+        service_feed = bound_services_feed(connection, account_id)
+        service_ids = ({row['AvitoId'] for sheet in service_feed.draft for row in sheet['rows']}
+                       if service_feed is not None else None)
+        scoped_ids = [item_id for item_id in item_ids if service_ids is None or item_id in service_ids]
         items = []
-        for item_id in item_ids:
+        for item_id in scoped_ids:
             try:
-                items.append(item_link(item_id, fetch_detail(token, account_id, item_id), index))
+                detail = fetch_detail(token, account_id, item_id)
+                items.append(services_item_link(item_id, detail, service_feed) if service_feed is not None
+                             else item_link(item_id, detail, index))
             except Exception as error:
                 items.append({"item_id": item_id, "error": safe_error(error)})
         report = None
         try:
-            report = avito_autoload_report.fetch_report(token, account_id, kind="last_successful")
+            from .avito_input_copy import services_input_scope
+            proof_options = ({"include_input_proof": True, "input_proof_connection": connection}
+                             if services_input_scope(connection, account_id) else {})
+            report = avito_autoload_report.fetch_report(token, account_id, kind="last_successful", **proof_options)
             summary = report_summary(report)
             for item in items:
                 if "error" not in item:
@@ -247,11 +355,19 @@ def collect_connection(connection, item_ids, index, stocks=None, stock_error=Non
             listing_scan = listing_summary(all_items, pages)
         except Exception as error:
             listing_scan = {"error": safe_error(error)}
-        try:
-            active_source = (avito_inventory.build_inventory(all_items, report, index, stocks, stock_error)
-                             if "error" not in listing_scan else {"error": "audit_listing_scan_unavailable"})
-        except Exception as error:
-            active_source = {"error": safe_error(error)}
+        if service_feed is not None:
+            active_source = {"scope": "services", "state": "not_applicable",
+                             "reason": "services_have_no_physical_stock"}
+            service_coverage = services_coverage(service_feed, all_items if "error" not in listing_scan else None,
+                requested=len(item_ids), checked=sum("error" not in row for row in items),
+                skipped=len(item_ids) - len(scoped_ids))
+        else:
+            service_coverage = None
+            try:
+                active_source = (avito_inventory.build_inventory(all_items, report, index, stocks, stock_error)
+                                 if "error" not in listing_scan else {"error": "audit_listing_scan_unavailable"})
+            except Exception as error:
+                active_source = {"error": safe_error(error)}
         if profile_fingerprint is not None:
             try:
                 final_source, final_fingerprint = fetch_profile_source(token, account_id)
@@ -259,6 +375,17 @@ def collect_connection(connection, item_ids, index, stocks=None, stock_error=Non
                     raise AvitoError("audit_profile_source_changed")
             except Exception as error:
                 configured_source = {"error": safe_error(error)}
+        from .avito_services_workplace_setup import webhook_evidence, storage_probe_evidence
+        try:
+            webhook_state = webhook_evidence(connection, live=True)
+        except Exception as error:
+            webhook_state = {"error": safe_error(error)}
+        try:
+            storage_probe_state = storage_probe_evidence(connection)
+        except Exception:
+            # Independent local storage proof must survive a provider read failure,
+            # and a storage diagnostic failure must not erase webhook evidence.
+            storage_probe_state = {"source": "passenger_http", "checked": False, "cached": True, "error": "storage_probe_failed"}
         final_account_id = authorized_account_id(connection)
         after = binding(connection)
         if before != after or final_account_id != account_id:
@@ -267,9 +394,16 @@ def collect_connection(connection, item_ids, index, stocks=None, stock_error=Non
             flags = monitoring_state(connection)
         except Exception:
             flags = {"error": "audit_monitoring_unavailable"}
-        return identity | {"account_id": account_id, "items": items, "autoload_report": summary, "listing_scan": listing_scan, "active_source_audit": active_source,
+        try:
+            cached_flags = cached_configuration_state(connection)
+        except Exception:
+            cached_flags = {"error": "audit_configuration_unavailable"}
+        from .avito_runtime import checks
+        runtime_checks = checks(ChannelConnection.objects.select_related("channel").get(pk=connection.pk))
+        return identity | ({"services_coverage": service_coverage} if service_coverage is not None else {}) | {"account_id": account_id, "items": items, "autoload_report": summary, "listing_scan": listing_scan, "active_source_audit": active_source,
                            "configured_feed_source": configured_source, "advance_access": advance_access,
-                           "monitoring": flags}
+                           "monitoring": flags, "cached_configuration": cached_flags, "runtime_checks": runtime_checks,
+                           "webhook_evidence": webhook_state, "storage_probe": storage_probe_state}
     except Exception as error:
         return identity | {"error": safe_error(error)}
 

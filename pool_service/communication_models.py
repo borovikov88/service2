@@ -192,6 +192,7 @@ class AvitoSchedulerHeartbeat(models.Model):
     started_at = models.DateTimeField()
     finished_at = models.DateTimeField(null=True)
     exit_code = models.IntegerField(null=True)
+    checks = models.JSONField(default=list)
 
 
 class AvitoStatusMonitor(models.Model):

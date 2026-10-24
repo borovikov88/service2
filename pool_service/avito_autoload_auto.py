@@ -80,7 +80,8 @@ def configure(connection, user, action):
                 raise ValueError("Нужно активное подключение Авито с корректным ID и сохранёнными ключами.")
             # Re-enabling does not bypass scheduler readiness or change any Avito state.
             if state.get("enabled") is not True or not _allowed(connection, state):
-                if not scheduler_state()["ready"]:
+                readiness = scheduler_state()
+                if not readiness.get("worker_ready", readiness.get("ready", False)):
                     raise ValueError("Сначала подтвердите запуск существующего серверного расписания.")
                 state = {"enabled": True, "generation": uuid.uuid4().hex, "actor_id": user.pk,
                          "organization_id": connection.channel.organization_id, "channel_id": connection.channel_id,
@@ -108,13 +109,16 @@ def _failure(exc):
     # Reuse the existing fixed provider/error mapping; never save exception text.
     from pool_service.avito_management import _workspace_failure
     if str(exc) == BINDING_ERROR:
-        return {"status": "warning", "code": BINDING_ERROR,
+        return {"status": "warning", "code": BINDING_ERROR, "consistency_guard": None,
                 "detail": "Права, подключение или ключи изменились. Требуется повторное включение."}
-    return _workspace_failure("autoload_report", exc)
+    result = _workspace_failure("autoload_report", exc)
+    result["consistency_guard"] = (avito_autoload_report.consistency_guard(getattr(exc, "consistency_guard", None))
+                                   if str(exc) == "autoload_report_changed" else None)
+    return result
 
 
 def _disable(connection, state):
-    state.update(enabled=False, last_error_code=BINDING_ERROR,
+    state.update(enabled=False, last_error_code=BINDING_ERROR, last_consistency_guard=None,
                  last_error_detail=_failure(AvitoError(BINDING_ERROR))["detail"])
     metadata = _metadata(connection)
     metadata[KEY] = state
@@ -153,7 +157,10 @@ def scan_connection(connection_id):
         actual_id = avito_workspace.profile_data(avito_workspace._get(token, "/core/v1/accounts/self"))["id"]
         if actual_id != str(connection.external_id):
             raise AvitoError("provider_account_mismatch")
-        data = avito_autoload_report.fetch_report(token, actual_id, kind="last_successful")
+        from .avito_input_copy import services_input_scope
+        proof_options = ({"include_input_proof": True, "input_proof_connection": connection}
+                         if services_input_scope(connection, actual_id) else {})
+        data = avito_autoload_report.fetch_report(token, actual_id, kind="last_successful", **proof_options)
         if not isinstance(data, dict) or data.get("complete") is not True or data.get("kind") != "last_successful":
             raise AvitoError("autoload_report_invalid")
         finished = timezone.now()
@@ -196,8 +203,21 @@ def scan_connection(connection_id):
         saved["sections"] = sections
         metadata["avito_workspace"] = saved
         state.update(last_checked_at=finished.isoformat(), last_error_code=update["code"],
-                     last_error_detail=update["detail"])
+                     last_error_detail=update["detail"],
+                     last_consistency_guard=avito_autoload_report.consistency_guard(update.get("consistency_guard"))
+                         if update["code"] == "autoload_report_changed" else None)
         if update["status"] == "ok":
+            from .avito_services_publication import correlate_report
+            state["last_publication_checked_at"] = finished.isoformat()
+            try:
+                with transaction.atomic():
+                    attempt = correlate_report(current, data)
+                state["last_publication_error_code"] = ""
+                if attempt is not None:
+                    state["last_publication_success_at"] = finished.isoformat()
+            except Exception:
+                # Correlation failure is a separate subsystem; preserve the valid report.
+                state["last_publication_error_code"] = "publication_correlation_failed"
             state["last_success_at"] = finished.isoformat()
             periods = max(0, (finished - due) // INTERVAL) + 1
             state["next_due_at"] = (due + periods * INTERVAL).isoformat()
@@ -209,7 +229,7 @@ def scan_connection(connection_id):
     return "success" if update["status"] == "ok" else "failed"
 
 
-def scan_due(*, deadline, limit=2):
+def scan_due(*, deadline, limit=2, observer=None):
     import time
     counts = {"success": 0, "failed": 0, "skipped": 0}
     ids = list(ChannelConnection.objects.filter(
@@ -220,9 +240,21 @@ def scan_due(*, deadline, limit=2):
     for connection_id in ids:
         if deadline - time.monotonic() < SCAN_RESERVE_SECONDS:
             break
+        failed_with_exception = False
         try:
             outcome = scan_connection(connection_id)
         except Exception:
+            failed_with_exception = True
             outcome = "failed"  # fixed aggregates only; expired leases recover on a later tick
         counts[outcome] += 1
+        if observer is not None:
+            observer(connection_id, "autoload_report", outcome, exception=failed_with_exception)
+            if outcome == "success":
+                saved = _state(ChannelConnection.objects.get(pk=connection_id))
+                correlation = ("failed" if saved.get("last_publication_error_code") else
+                    "success" if saved.get("last_publication_success_at") == saved.get("last_success_at") else "skipped")
+                observer(connection_id, "publication_correlation", correlation,
+                         reason="not_configured" if correlation == "skipped" else None)
+            elif outcome == "failed":
+                observer(connection_id, "publication_correlation", "skipped", reason="dependency_failed")
     return counts

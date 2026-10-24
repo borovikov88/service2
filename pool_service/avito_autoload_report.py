@@ -33,6 +33,23 @@ ERRORS = {
 }
 
 
+CONSISTENCY_GUARDS = {"queried_rows_changed", "shop_xml_snapshot_changed",
+                      "profile_snapshot_changed", "summary_snapshot_changed"}
+
+
+def consistency_guard(value):
+    return value if isinstance(value, str) and value in CONSISTENCY_GUARDS else None
+
+
+class ReportChanged(AvitoError):
+    """Fixed guard identity only; the original top-level rejection code remains."""
+    def __init__(self, guard):
+        if consistency_guard(guard) is None:
+            raise ValueError("invalid report consistency guard")
+        super().__init__("autoload_report_changed")
+        self.consistency_guard = guard
+
+
 def _invalid():
     raise AvitoError("autoload_report_invalid")
 
@@ -145,6 +162,27 @@ def feed_source_diagnostics(feeds):
     return result
 
 
+def source_url_sha256(feeds):
+    """Backend-only exact source fingerprints; raw URLs remain provider-local."""
+    if not isinstance(feeds, list) or len(feeds) > 50:
+        _invalid()
+    result = []
+    for feed in feeds:
+        value = feed.get("url") if isinstance(feed, dict) else feed if isinstance(feed, str) else None
+        if not isinstance(value, str) or not 1 <= len(value) <= 2000:
+            continue
+        try:
+            part = urlsplit(value)
+            valid = (part.scheme == "https" and part.hostname and part.username is None
+                     and part.password is None and part.port in (None, 443)
+                     and not part.fragment and not any(c.isspace() for c in value))
+        except ValueError:
+            valid = False
+        if valid:
+            result.append(hashlib.sha256(value.encode("utf-8")).hexdigest())
+    return result
+
+
 def summary_data(raw):
     if not isinstance(raw, dict):
         _invalid()
@@ -163,6 +201,7 @@ def summary_data(raw):
                                   "description": _text(event.get("description"), 3000)})
     return {"id": str(identifier), "status": status or "", "started_at": _date(raw.get("started_at"), nullable=True),
             "stats": _tree(raw.get("stats")), "events": normalized_events,
+            "source_url_sha256": source_url_sha256(raw["feed_urls"]),
             "shop_feed_source": shop_feed_source(raw["feed_urls"]),
             "shop_feed_diagnostics": feed_source_diagnostics(raw["feed_urls"])}
 
@@ -203,11 +242,14 @@ def _item(raw):
                 or message["type"] not in MESSAGE_TYPES or type(message.get("code")) is not int):
             _invalid()
         description = message.get("description")
-        normalized.append({
+        entry = {
             "type": message["type"], "code": message["code"], "title": _text(message.get("title"), 200),
             "description": _text(description, 3000), "updated_at": _date(message.get("updated_at")),
             "truncated": message.get("truncated") is True or len(description) > 3000,
-        })
+        }
+        from .avito_report_messages import message_diagnostics
+        entry["diagnostics"] = message_diagnostics(message, entry)
+        normalized.append(entry)
     return {"ad_id": identifier, "avito_id": avito_id, "avito_status": status,
             "avito_date_end": _date(raw.get("avito_date_end"), nullable=True) or None,
             "feed_name": _text(raw["feed_name"], 200) if raw.get("feed_name") is not None else "",
@@ -334,17 +376,19 @@ def _query_shop_rows(get, base, snapshot, probe_rows, total, deadline):
         raise AvitoError("autoload_report_pagination")
     by_identity = {(row["ad_id"], row["avito_id"]): row for row in rows}
     if any(by_identity.get((row["ad_id"], row["avito_id"])) != row for row in probe_rows):
-        raise AvitoError("autoload_report_changed")
+        raise ReportChanged("queried_rows_changed")
     after = _shop_snapshot(deadline)
     if after is None or after[1] != digest:
-        raise AvitoError("autoload_report_changed")
+        raise ReportChanged("shop_xml_snapshot_changed")
     return rows
 
 
-def fetch_report(token, account_id, *, kind="last_successful"):
+def fetch_report(token, account_id, *, kind="last_successful", include_input_proof=False, input_proof_connection=None):
     from pool_service import avito_workspace
     if kind not in KINDS:
         _invalid()
+    if type(include_input_proof) is not bool:
+        raise ValueError("include_input_proof must be boolean")
     deadline = time.monotonic() + MAX_SECONDS
     def get(path):
         while True:
@@ -361,7 +405,8 @@ def fetch_report(token, account_id, *, kind="last_successful"):
         return avito_workspace._get(token, path)
 
     base = f"/autoload/v4/uploads/{kind}"
-    before = summary_data(get(base))
+    before_payload = get(base)
+    before = summary_data(before_payload)
     rows, expected, page, stored_bytes = [], None, 1, 0
     read_strategy = "provider_pages"
     while True:
@@ -385,7 +430,7 @@ def fetch_report(token, account_id, *, kind="last_successful"):
                 rows = _query_shop_rows(get, base, snapshot, batch, expected[0], deadline)
                 after_profile, after_fingerprint = fetch_profile_source(token, account_id, deadline=deadline)
                 if after_profile != profile or after_fingerprint != fingerprint:
-                    raise AvitoError("autoload_report_changed")
+                    raise ReportChanged("profile_snapshot_changed")
                 read_strategy = "shop_xml_id_queries"
                 page = max(1, expected[1])
                 break
@@ -396,9 +441,15 @@ def fetch_report(token, account_id, *, kind="last_successful"):
         if page >= max(1, expected[1]):
             break
         page += 1
-    after = summary_data(get(base))
-    if before != after:
-        raise AvitoError("autoload_report_changed")
+    after_payload = get(base)
+    after = summary_data(after_payload)
+    # Provider-hosted copies may rotate signed URLs without changing the upload.
+    # Preserve the existing report consistency contract; exact source proof is
+    # withheld if its private URL fingerprint changed during this read.
+    source_consistent = before["source_url_sha256"] == after["source_url_sha256"]
+    if ({key: value for key, value in before.items() if key != "source_url_sha256"}
+            != {key: value for key, value in after.items() if key != "source_url_sha256"}):
+        raise ReportChanged("summary_snapshot_changed")
     try:
         require_unique_rows(rows)
     except AvitoError as error:
@@ -413,12 +464,34 @@ def fetch_report(token, account_id, *, kind="last_successful"):
     result = {"version": 1, "complete": True, "kind": kind, "upload_id": before["id"],
               "upload_status": before["status"], "upload_finished": before["status"] in {"success", "success_warning", "error"},
               "started_at": before["started_at"], "stats": before["stats"], "events": before["events"],
+              "source_url_sha256": before["source_url_sha256"] if source_consistent else [],
               "shop_feed_source": before["shop_feed_source"],
               "shop_feed_diagnostics": before["shop_feed_diagnostics"],
               "total": len(rows), "pages": page, "counts": dict(counts), "rows": rows,
               "read_strategy": read_strategy}
     if len(json.dumps(result, ensure_ascii=False).encode()) > MAX_BYTES:
         raise AvitoError("autoload_report_limit")
+    if include_input_proof:
+        from .avito_input_copy import fetch_input_proof, unavailable
+        # Optional proof never turns a complete valid report into a failed read.
+        try:
+            proof = (fetch_input_proof(after_payload, result, input_proof_connection, account_id, deadline=deadline)
+                     if source_consistent else unavailable("input_copy_source_changed"))
+            if proof["state"] == "verified_xml":
+                try:
+                    confirmation = summary_data(get(base))
+                    if ({key: value for key, value in confirmation.items() if key != "source_url_sha256"}
+                            != {key: value for key, value in after.items() if key != "source_url_sha256"}):
+                        proof = unavailable("input_copy_report_changed")
+                    elif confirmation["source_url_sha256"] != after["source_url_sha256"]:
+                        proof = unavailable("input_copy_source_changed")
+                except Exception:
+                    proof = unavailable("input_copy_report_recheck_failed")
+        except Exception:
+            proof = unavailable("input_copy_check_failed")
+        result["input_copy_proof"] = proof
+        if len(json.dumps(result, ensure_ascii=False).encode()) > MAX_BYTES + 4096:
+            result["input_copy_proof"] = unavailable("input_copy_size_invalid")
     return result
 
 

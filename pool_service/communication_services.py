@@ -72,6 +72,17 @@ def optimize_message_image(attachment):
 
 @transaction.atomic
 def receive_message(*, connection, external_conversation_id, participant_name, body, external_message_id=None, participant_phone=""):
+    if connection.pk == 4 and connection.channel.kind == "avito":
+        from .communication_models import ChannelConnection
+        authenticated = (connection.channel_id, connection.channel.organization_id,
+            str(connection.external_id), connection.api_token_hash,
+            connection.is_active, connection.channel.is_active)
+        locked = ChannelConnection.objects.select_for_update().select_related("channel__organization").get(pk=connection.pk)
+        current = (locked.channel_id, locked.channel.organization_id, str(locked.external_id),
+                   locked.api_token_hash, locked.is_active, locked.channel.is_active)
+        if current != authenticated or not locked.is_active or not locked.channel.is_active or locked.channel.kind != "avito":
+            raise ValueError("avito_connection_binding_changed")
+        connection = locked
     external_message_id = external_message_id or None
     conversation, _ = Conversation.objects.select_for_update().get_or_create(
         connection=connection,
@@ -111,8 +122,10 @@ def receive_message(*, connection, external_conversation_id, participant_name, b
     if conversation.status == Conversation.STATUS_DONE:
         conversation.status = Conversation.STATUS_NEW
     conversation.save(update_fields=["participant_name", "participant_phone", "last_message_at", "status", "updated_at"])
+    from .avito_deferred_messages import partition_users
+    recipients = partition_users(connection, message, users_with_conversation_access(conversation.organization))
     notify_users(
-        users_with_conversation_access(conversation.organization),
+        recipients,
         title="Новое сообщение",
         message=f"{connection.channel.get_kind_display()} · {participant_name}: {body[:120]}",
         kind="communication",

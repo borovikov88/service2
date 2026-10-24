@@ -87,12 +87,21 @@ def _avito_connection(request, public_id, webhook_token):
     return connection if connection.check_api_token(webhook_token) else None
 
 
-def _mark_avito_webhook_event(connection, result, *, error=""):
+def _mark_avito_webhook_event(connection, result, *, error="", message_present=False):
+    authenticated = (connection.channel_id, connection.channel.organization_id,
+        str(connection.external_id), connection.api_token_hash,
+        connection.is_active, connection.channel.is_active)
     with transaction.atomic():
-        locked = ChannelConnection.objects.select_for_update().get(pk=connection.pk)
+        locked = ChannelConnection.objects.select_for_update().select_related("channel").get(pk=connection.pk)
+        current = (locked.channel_id, locked.channel.organization_id, str(locked.external_id),
+                   locked.api_token_hash, locked.is_active, locked.channel.is_active)
+        if current != authenticated or not locked.is_active or not locked.channel.is_active:
+            return
         settings_data = dict(locked.settings or {})
         settings_data["avito_webhook_last_received_at"] = timezone.now().isoformat()
         settings_data["avito_webhook_last_result"] = result
+        from .avito_services_workplace_setup import stamp_incoming
+        stamp_incoming(locked, settings_data, result, expected_hash=connection.api_token_hash, message_present=message_present)
         if error:
             settings_data["avito_webhook_last_error"] = error[:120]
         else:
@@ -306,7 +315,7 @@ def avito_webhook(request, public_id, webhook_token):
         _mark_avito_webhook_event(connection, "error", error=str(exc))
         return JsonResponse({"accepted": True, "created": False, "error": str(exc)})
     result = "created" if created else ("duplicate" if message else "ignored")
-    _mark_avito_webhook_event(connection, result)
+    _mark_avito_webhook_event(connection, result, message_present=message is not None)
     return JsonResponse({
         "accepted": True,
         "created": created,

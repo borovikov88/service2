@@ -1,8 +1,29 @@
 {% extends 'pool_service/base.html' %}
+{% load static %}
 {% block title %}Редактировать объявление{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="{% static 'assets/css/avito-services-photos.css' %}?v=1">{% endblock %}
 {% block content %}
 <h1>{{ row.Title }}</h1><p>Аккаунт {{ connection.name }} · AvitoId {{ row.AvitoId }}</p>
-<form method="post">{% csrf_token %}<input type="hidden" name="revision" value="{{ feed.revision }}">
-{{ form.as_p }}<button class="btn btn-primary" type="submit">Сохранить черновик</button>
-<a href="{% url 'avito_services_feed' connection.pk %}">Вернуться к списку</a></form>
+<p>Изменения сохраняются в новый черновик и историю; файл Авито изменится после отдельной публикации.</p>
+<form method="post" class="card card-body">
+{% csrf_token %}<input type="hidden" name="revision" value="{{ feed.revision }}">
+{{ form.as_p }}
+<section data-avito-photos data-upload-url="{{ photo_upload_url }}" data-avito-id="{{ row.AvitoId }}">
+<h2>Фотографии <span class="small" data-photo-count></span></h2>
+<p>Первое фото — обложка. Выберите обложку и порядок перед сохранением. Максимум 10 фотографий.</p>
+<p class="small">JPEG, PNG или WebP до 8 МБ и 20 мегапикселей. Новые файлы и добавленные по ссылке фото сохраняются в Service2. Доступность внешних ссылок проверяется перед публикацией; успешная проверка действует 15 минут. Проверка существующей ссылки создаёт только превью и не меняет саму ссылку.</p>
+<div class="alert alert-danger" role="alert" data-photo-error hidden></div>
+<label>Загрузить фотографии<input class="form-control" type="file" accept="image/jpeg,image/png,image/webp" multiple data-photo-files></label>
+<div class="avito-photo-upload mt-2">
+<input class="form-control" type="text" inputmode="url" placeholder="https://…" aria-label="Ссылка на фотографию" data-photo-url>
+<button class="btn btn-outline-primary" type="button" data-photo-add>Добавить по ссылке</button>
+</div>
+<ul class="avito-photo-list" data-photo-list></ul>
+<noscript><p>Для загрузки файлов и перестановки фотографий включите JavaScript. Ссылки можно указать в поле выше.</p></noscript>
+</section>
+<div class="d-flex gap-2 flex-wrap"><button class="btn btn-primary" type="submit">Сохранить черновик</button>
+<a class="btn btn-outline-secondary" href="{% url 'avito_services_feed' connection.pk %}">Вернуться к списку</a></div>
+</form>
+{{ photo_initial|json_script:"avito-photo-initial" }}
+<script src="{% static 'assets/js/avito-services-photos.js' %}?v=1" defer></script>
 {% endblock %}

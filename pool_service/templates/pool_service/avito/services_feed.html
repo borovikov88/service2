@@ -2,30 +2,117 @@
 {% block title %}Объявления услуг{% endblock %}
 {% block content %}
 <h1>Объявления услуг · {{ connection.name }}</h1>
-<p>Аккаунт {{ connection.external_id }}. Импорт и редактирование сохраняют черновик в Service2.</p>
+<p>Аккаунт {{ connection.external_id }}. Сохранение черновика и публикация файла — отдельные действия.</p>
 <a href="{% url 'avito_dashboard' %}?account={{ connection.pk }}">К Авито</a>
 {% if error %}<div class="alert alert-danger" role="alert">{{ error }}</div>{% endif %}
-<form method="post" enctype="multipart/form-data" class="card card-body my-3">
+{% if feed %}
+<div class="card card-body my-3">
+<p class="mb-2">{{ rows|length }} объявлений в черновике. Версия {{ feed.revision }}. Последнее изменение: {{ feed.updated_at }}.</p>
+<div class="d-flex gap-2 flex-wrap">
+<a class="btn btn-outline-primary" href="{% url 'avito_services_feed_download' connection.pk %}">Скачать черновик Excel</a>
+<form method="post">{% csrf_token %}<input type="hidden" name="action" value="verify"><input type="hidden" name="revision" value="{{ feed.revision }}">
+<button class="btn btn-outline-primary" type="submit">Проверить статусы и сроки</button></form>
+</div>
+{% if feed.last_checked_at %}<p class="small mt-2 mb-0">Последняя успешная проверка Авито: {{ feed.last_checked_at }}. Проверены статусы и доступные сроки размещения. Содержание и применение конкретной версии файла этим не подтверждены.</p>{% endif %}
+</div>
+{% endif %}
+<details class="card card-body my-3"{% if not feed %} open{% endif %}>
+<summary>Импорт существующих объявлений из Авито</summary>
+<form method="post" enctype="multipart/form-data" class="mt-3">
 {% csrf_token %}<input type="hidden" name="action" value="import"><input type="hidden" name="revision" value="{{ feed.revision }}">
-<label for="export">Экспорт существующих объявлений Авито (.xlsx)</label>
-<input id="export" type="file" name="file" accept=".xlsx" required>
+<label for="export">Обратный экспорт Авито (.xlsx), до 10 фотографий на объявление</label>
+<input id="export" class="form-control" type="file" name="file" accept=".xlsx" required>
+<label for="import-reason" class="mt-2">Причина импорта</label><input id="import-reason" class="form-control" name="reason" maxlength="500">
+<p class="small">Известные Id и AvitoId сохраняются. Строки архивных объявлений остаются в черновике; импорт файла с пропущенными известными строками блокируется.</p>
 <button class="btn btn-primary mt-2" type="submit">Импортировать черновик</button>
 </form>
+</details>
 {% if feed %}
-<p>{{ rows|length }} объявлений. Версия {{ feed.revision }}. Последнее изменение: {{ feed.updated_at }}.</p>
-<a class="btn btn-outline-primary" href="{% url 'avito_services_feed_download' connection.pk %}">Скачать черновик Excel</a>
-<form method="post" action="{% url 'avito_services_feed_publish' connection.pk %}" class="my-3">{% csrf_token %}
+<form method="post" action="{% url 'avito_services_feed_publish' connection.pk %}" class="card card-body my-3">{% csrf_token %}
 <input type="hidden" name="revision" value="{{ feed.revision }}">
-<p>Публикация делает весь файл доступным Авито по ссылке. Если ссылка уже подключена в Авито, изменения попадут в следующую загрузку по расписанию.</p>
-<button type="submit" class="btn btn-primary">Проверить аккаунт и опубликовать версию {{ feed.revision }}</button></form>
+<p>Перед публикацией проверяются принадлежность всех строк аккаунту и наличие всех активных объявлений. В новый XML войдут только подтверждённые активные объявления. Неактивные строки останутся в черновике и истории.</p>
+<p class="small">Максимум 10 фотографий на публикуемое объявление. Сохранённые прежние файлы доступны без усечения. Чтобы вернуть объявление из архива, сначала нужна отдельная проверка условий и дополнительной стоимости в Авито; этот экран активацию не выполняет.</p>
+<button type="submit" class="btn btn-primary align-self-start">Проверить аккаунт и опубликовать файл версии {{ feed.revision }}</button>
+</form>
 {% if feed.enabled %}
-<p>Опубликована версия {{ feed.published_revision }}. Приём изменений нужно проверить в отчёте Авито.</p>
-{% if feed_url %}<label for="feed-url">Ссылка XML для автозагрузки в аккаунте {{ connection.external_id }}</label><input class="form-control" id="feed-url" value="{{ feed_url }}" readonly>{% endif %}
-<p>Если раньше был подключён feed.xlsx, замените его на эту ссылку feed.xml. Укажите эту ссылку как источник в настройках автозагрузки выбранного аккаунта Авито. Публикация файла в Service2 сама по себе не подключает автозагрузку.</p>
+<div class="alert alert-info" role="status">
+<p class="mb-1">Файл версии {{ feed.published_revision }} доступен Авито.</p>
+{% if publication %}
+<p class="mb-1"><strong>{{ publication.label }}</strong></p>
+{% if publication.attempt %}<p class="small mb-1">Загрузка {{ publication.attempt.upload_id }} · начало {{ publication.attempt.report_started_at }} · проверка {{ publication.attempt.checked_at }}.</p>{% endif %}
+<p class="mb-0">Подтверждение источника версии и статусы объявлений не подтверждают фактическое содержание текста и фотографий: используемый метод API не возвращает эти поля.</p>
+{% else %}<p class="mb-0">Обработка, модерация и применение изменений пока не подтверждены. Для старого опубликованного снимка ещё нет привязки к неизменяемому источнику.</p>{% endif %}
+</div>
+{% if publication %}
+<details class="card card-body my-3"><summary>Связь версии с загрузкой Авито</summary>
+<label for="version-feed-url" class="mt-2">Неизменяемый XML версии {{ publication.version.revision }}</label>
+<input id="version-feed-url" class="form-control" value="{{ publication.url }}" readonly>
+<p class="small mt-2">Неизменяемый адрес позволяет подтвердить версию, если API отчёта возвращает его напрямую. Старый адрес продолжит отдавать прежнюю версию. Для постоянного feed.xml автоматический читатель может проверить входную XML-копию Авито: полный набор Id/AvitoId и точный SHA-256 должны совпасть с одной версией, опубликованной до начала загрузки. Настройки Авито автоматически не меняются.</p>
+<p class="small">Адрес копии Авито сам по себе не доказывает ошибку настройки. Без подтверждённой XML-копии дата и совпадение Id дают лишь кандидатную связь. Копия XLSX или другого неподдержанного формата, недоступная копия и одинаковые байты нескольких версий оставляют точную публикацию неподтверждённой. Старый отчёт новую публикацию не подтверждает.</p>
+<div class="table-responsive"><table class="table"><thead><tr><th>Объявление</th><th>Результат в отчёте</th><th>Срок</th><th>Сообщения</th></tr></thead><tbody>
+{% for result in publication.rows %}<tr><td>Id {{ result.xml_id }}<br>AvitoId {{ result.avito_id|default_if_none:"не передан" }}</td><td>{{ result.status|default_if_none:"не передан" }}{% if result.has_error %}<br>Требует исправления{% endif %}</td><td>{{ result.finish_time|default_if_none:"не передан" }}</td><td>{% for message in result.messages %}{{ message.type }} {{ message.code }}{% if not forloop.last %}; {% endif %}{% empty %}Нет сообщений{% endfor %}</td></tr>{% empty %}<tr><td colspan="4">Подходящий отчёт после публикации ещё не получен.</td></tr>{% endfor %}
+</tbody></table></div>
+</details>
+{% endif %}
+{% if feed_url %}<details class="card card-body my-3"><summary>Источник XML и подключение автозагрузки</summary>
+<label for="feed-url" class="mt-2">Ссылка XML для аккаунта {{ connection.external_id }}</label><input class="form-control" id="feed-url" value="{{ feed_url }}" readonly>
+<p class="small mt-2">В настройках автозагрузки Авито должен быть подключён именно feed.xml. Публикация в Service2 не меняет настройки Авито и не запускает принудительную загрузку.</p>
 <form method="post">{% csrf_token %}<input type="hidden" name="revision" value="{{ feed.revision }}"><input type="hidden" name="action" value="disable"><button class="btn btn-outline-secondary" type="submit">Отключить доступ к файлу</button></form>
+</details>{% endif %}
 {% else %}<p>Источник пока недоступен Авито.</p>{% endif %}
-<table class="table"><thead><tr><th>Объявление</th><th>AvitoId</th><th></th></tr></thead><tbody>
-{% for row in rows %}<tr><td>{{ row.Title }}</td><td>{{ row.AvitoId }}</td><td><a href="{% url 'avito_services_feed_edit' connection.pk row.AvitoId %}">Изменить текст и фото</a></td></tr>{% endfor %}
-</tbody></table>
+<div class="table-responsive"><table class="table align-middle"><thead><tr><th>Объявление</th><th>Статус и срок в Авито</th><th></th></tr></thead><tbody>
+{% for row in rows %}<tr>
+<td>{{ row.Title }}<div class="small">Id {{ row.Id }} · AvitoId {{ row.AvitoId }}</div></td>
+<td>{% if row.observation %}{% if row.archive_control.code == 'provider_expired' %}{{ row.archive_control.label }}{% else %}{{ row.observation.status_label }}{% endif %}
+{% if not row.observation.included %}<div class="small">{{ row.observation.exclusion_reason }}</div>{% endif %}
+<div class="small">Срок: {% if row.observation.finish_time %}{{ row.observation.finish_time }}<br>Источник: Авито, finish_time{% else %}не передан{% endif %}</div>
+{% else %}Нет сохранённой проверки{% endif %}
+{% if row.observation.reactivation.confirmed %}<div class="small">Повторное размещение подтверждено активным статусом и новым сроком при тех же Id и AvitoId. Инициатор не передан API; Service2 активацию не выполнял, стоимость не подтверждена.</div>{% endif %}
+{% if row.archive_control.owner_withdrawn %}<div class="small">Владелец запретил автоматический возврат в Service2.</div>{% endif %}
+<details class="mt-2"><summary>Возврат после окончания срока</summary>
+{% if row.archive_control.code != 'active' %}<p class="small">{{ row.archive_control.label }}. Источник: {{ row.archive_control.source|default:"не установлен" }}.</p><p class="small">{{ row.archive_control.manual_step }}</p>{% endif %}
+<p class="small">{{ row.archive_control.limitation }} Дополнительная стоимость неизвестна; автоматическая активация заблокирована. Id и AvitoId сохранены.</p>
+<form method="post">{% csrf_token %}<input type="hidden" name="action" value="policy"><input type="hidden" name="revision" value="{{ feed.revision }}"><input type="hidden" name="avito_id" value="{{ row.AvitoId }}"><input type="hidden" name="owner_withdrawn" value="{% if row.archive_control.owner_withdrawn %}0{% else %}1{% endif %}">
+<label class="small">Причина отметки<input class="form-control" name="reason" maxlength="500"></label>
+<p class="small">Отметка действует только в Service2: она не снимает объявление с Авито и не запускает публикацию.</p>
+<button class="btn btn-sm btn-outline-secondary" type="submit">{% if row.archive_control.owner_withdrawn %}Снять запрет автовозврата{% else %}Запретить автоматический возврат{% endif %}</button>
+</form></details></td>
+<td><a href="{% url 'avito_services_feed_edit' connection.pk row.AvitoId %}">Изменить текст и фото</a></td>
+</tr>{% endfor %}
+</tbody></table></div>
+<details class="card card-body my-3"{% if selected_version %} open{% endif %}>
+<summary>История изменений и восстановление</summary>
+<p class="small mt-2">Сохранение черновика, публикация файла и чтение статусов записываются раздельно. История прежних действий до запуска этого журнала неизвестна.</p>
+{% if selected_version %}
+<div class="border rounded p-2 my-2">
+<p><strong>{{ selected_version.get_action_display }}</strong> · версия {{ selected_version.revision }} · {{ selected_version.created_at }}<br>
+Автор: {% if selected_version.actor %}{{ selected_version.actor }}{% else %}не установлен{% endif %}<br>{{ selected_version.reason }}</p>
+{% if selected_version.source_version_id %}<p class="small">Связанная запись: {{ selected_version.source_version_id }}.</p>{% endif %}
+{% if selected_version.file_digest %}<p class="small text-break">SHA-256 файла: {{ selected_version.file_digest }}</p>{% endif %}
+<details><summary>Изменения полей: {{ selected_version.changes|length }}</summary>
+{% for change in selected_version.changes %}<div class="border-top py-2">
+<strong>AvitoId {{ change.avito_id }} · {{ change.field }}</strong>
+<div class="small">До</div><pre class="text-break" style="white-space:pre-wrap">{{ change.before|default_if_none:"—" }}</pre>
+<div class="small">После</div><pre class="text-break" style="white-space:pre-wrap">{{ change.after|default_if_none:"—" }}</pre>
+</div>{% empty %}<p>Содержание не изменялось.</p>{% endfor %}</details>
+{% if selected_version.action != 'verify' and selected_version.action != 'disable' and selected_version.action != 'policy' %}
+<form method="post" class="mt-3">{% csrf_token %}<input type="hidden" name="action" value="restore"><input type="hidden" name="revision" value="{{ feed.revision }}"><input type="hidden" name="version_id" value="{{ selected_version.pk }}">
+<label for="restore-reason">Причина восстановления</label><input id="restore-reason" class="form-control" name="reason" maxlength="500">
+<p class="small">Будет создан новый черновик. Добавленные позже объявления сохранятся. Публикация потребует новой проверки, включая лимит 10 фотографий.</p>
+<button class="btn btn-outline-primary" type="submit">Восстановить содержание в новый черновик</button>
+</form>{% endif %}
+</div>
+{% endif %}
+<ul class="list-unstyled">
+{% for version in history %}<li class="border-top py-2"><a href="?history_version={{ version.pk }}&amp;history_page={{ history.number }}">{{ version.get_action_display }} · версия {{ version.revision }}</a>
+<div class="small">{{ version.created_at }} · {% if version.actor %}{{ version.actor }}{% else %}автор не установлен{% endif %} · {{ version.reason }}</div></li>
+{% empty %}<li>Журнал начнётся при следующем изменении или явной проверке.</li>{% endfor %}
+</ul>
+{% if history.has_other_pages %}<nav aria-label="История версий">
+{% if history.has_previous %}<a href="?history_page={{ history.previous_page_number }}">Новые записи</a>{% endif %}
+<span>Страница {{ history.number }} из {{ history.paginator.num_pages }}</span>
+{% if history.has_next %}<a href="?history_page={{ history.next_page_number }}">Предыдущие записи</a>{% endif %}
+</nav>{% endif %}
+</details>
 {% endif %}
 {% endblock %}

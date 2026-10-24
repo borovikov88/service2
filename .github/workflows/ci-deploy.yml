@@ -286,6 +286,22 @@ jobs:
             echo "Health check returned HTTP $status, expected 2xx" >&2
             exit 1
           }
+      - name: Set up authorised Avito services connection once
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          printf -v REMOTE_COMMAND \
+            'set -Eeuo pipefail; cd %q; test "$(git rev-parse HEAD)" = %q; exec 9>../tmp/service2-deploy.lock; flock -s -n 9; test "$(git rev-parse HEAD)" = %q; SERVICE2_AVITO_DEPLOY_SETUP=1 timeout 120 ../venv/bin/python manage.py configure_avito_services_workplace --expected-sha %q --base-url https://service2.aqualine22.ru' \
+            "$DEPLOY_APP_PATH" "$GITHUB_SHA" "$GITHUB_SHA" "$GITHUB_SHA"
+          ssh -i ~/.ssh/service2_deploy \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
       - name: Verify Diagnostic MCP metadata is live after activation
         if: steps.activate_diag.outputs.smoke_required == 'true'
         env:

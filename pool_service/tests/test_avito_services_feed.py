@@ -27,6 +27,9 @@ def export_bytes(ids=('111',)):
 
 class ServicesFeedTests(TestCase):
     def setUp(self):
+        availability = patch('pool_service.avito_services_feed.validate_snapshot_media')
+        availability.start()
+        self.addCleanup(availability.stop)
         org = Organization.objects.create(name='Feed test')
         self.owner = User.objects.create_user('feed-owner')
         self.manager = User.objects.create_user('feed-manager')
@@ -125,6 +128,7 @@ class ServicesFeedTests(TestCase):
     @patch('pool_service.avito_services_feed.verify_inventory')
     def test_publish_is_explicit_and_uses_reviewed_revision(self, verify):
         self.upload(); feed = AvitoServicesFeed.objects.get()
+        verify.return_value = {'sheets': feed.draft, 'observations': []}
         url = reverse('avito_services_feed_publish', args=[self.connection.pk])
         self.assertEqual(self.client.get(url).status_code, 405)
         self.assertEqual(self.client.post(url, {'revision': 0}).status_code, 409)

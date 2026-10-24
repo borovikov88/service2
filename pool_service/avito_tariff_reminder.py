@@ -196,7 +196,7 @@ def scan_connection(connection_id):
         return "success"
 
 
-def scan_due(*, deadline, limit=4):
+def scan_due(*, deadline, limit=4, observer=None):
     import time
     counts = {"success": 0, "failed": 0, "skipped": 0}
     ids = list(ChannelConnection.objects.filter(
@@ -206,9 +206,13 @@ def scan_due(*, deadline, limit=4):
     for connection_id in ids:
         if deadline - time.monotonic() < 5:
             break
+        failed_with_exception = False
         try:
             outcome = scan_connection(connection_id)
         except Exception:
+            failed_with_exception = True
             outcome = "failed"
         counts[outcome] += 1
+        if observer is not None:
+            observer(connection_id, "tariff", outcome, exception=failed_with_exception)
     return counts

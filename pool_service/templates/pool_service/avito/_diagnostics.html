@@ -34,6 +34,19 @@
           {% if account.checked_at %}<span class="text-muted small">Проверено: <time datetime="{{ account.checked_at }}" data-avito-time>{{ account.checked_at }}</time></span>{% endif %}
         </div>
       </div>
+      {% if account.runtime_checks %}
+      <details class="border-top p-3"><summary>Фоновые проверки этого подключения</summary>
+        <p class="small">Сохранённое состояние и результат последнего завершённого запуска показаны раздельно. Старое состояние не подтверждает результат нового запуска.</p>
+        {% for check in account.runtime_checks %}<div class="border-top py-2 small">
+          <strong>{{ check.label }}</strong> · {{ check.state }}
+          {% if check.code %}<span class="text-warning">{{ check.code }}</span>{% endif %}
+          {% if check.consistency_guard_label %}<div>Сохранённая причина: {{ check.consistency_guard_label }}</div>{% endif %}
+          <div>Последний фоновый запуск: {% if check.last_worker_verified %}{{ check.last_worker_outcome }}{% if check.last_worker_code %} · {{ check.last_worker_code }}{% endif %} · {{ check.last_worker_checked_at }}{% else %}результат этой проверки не подтверждён{% endif %}</div>
+          {% if check.last_worker_consistency_guard_label %}<div>Причина последнего фонового сбоя: {{ check.last_worker_consistency_guard_label }}</div>{% endif %}
+          {% if check.success_at %}<div>Последний успешный результат: {{ check.success_at }}</div>{% endif %}
+        </div>{% endfor %}
+      </details>
+      {% endif %}
       {% if account.results %}
         <div class="border-top px-3 py-2 bg-body-tertiary small fw-semibold">Доступность функций</div>
         {% for check in account.results %}

@@ -34,7 +34,9 @@ def diagnostic_account(connection, *, has_credentials=False):
     rows = data.get("avito_api_results", [])
     if not isinstance(rows, list):
         rows = []
+    from .avito_runtime import checks
     return {
+        "runtime_checks": checks(connection),
         "connection": connection, "has_credentials": has_credentials,
         "checked_at": data.get("avito_api_checked_at") or "",
         "results": [row for row in rows if isinstance(row, dict) and isinstance(row.get("key"), str) and row.get("key") in DIAGNOSTIC_KEYS][:7],
