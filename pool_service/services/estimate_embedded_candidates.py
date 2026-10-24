@@ -68,6 +68,8 @@ def assess(product, profile, finish):
         return 'Назначение товара как нужной закладной не подтверждено.', []
     if product.get('specification_conflict') or product.get('level_data_issue') == 'conflict':
         return 'Конфликт характеристик закладной. ' + product.get('specification_note', ''), []
+    if product.get('inlet_taxonomy',{}).get('issue'):
+        return product['inlet_taxonomy']['issue'], []
     issue = title_conflict(product.get('name', ''))
     if issue:
         return issue, []

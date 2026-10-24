@@ -489,6 +489,8 @@ def normalize_catalog(raw):
     if result['body_family'] not in {'','plastic','steel','other_metal'} or not isinstance(denied, list) or len(denied) > 2 or any(x not in ('film','concrete') for x in denied):
         raise EstimateInputError('Некорректные ограничения материала/отделки.')
     result['lining_denied'] = denied[:]
+    from .estimate_inlet_taxonomy import normalize as normalize_inlet_taxonomy
+    result['inlet_taxonomy'] = normalize_inlet_taxonomy(raw.get('inlet_taxonomy'))
     result["filtration"] = None if raw.get("filtration") is None else boolean(raw["filtration"])
     result["heater_purpose_note"] = string(raw.get("heater_purpose_note", ""), "Назначение нагревателя", 300)
     from .estimate_auxiliary import normalize_facts
