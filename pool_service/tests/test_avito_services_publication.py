@@ -262,7 +262,7 @@ class PublicationResultTests(TestCase):
             'checked_at': now.isoformat(), 'finish_time': (now + timedelta(days=20)).isoformat(),
             'finish_time_source': 'avito_item_detail.finish_time'}]
         intent = AvitoServicesListingIntent.objects.create(feed=self.feed, avito_id='111',
-            owner_withdrawn=True, marked_by=self.owner)
+            account_id='123', organization_id=self.org.pk, owner_withdrawn=True, marked_by=self.owner)
         result = annotate_reactivation(previous, current)
         intent.refresh_from_db()
         self.assertTrue(intent.owner_withdrawn)
@@ -305,3 +305,25 @@ class PublicationResultTests(TestCase):
         self.assertEqual(attempt.state, 'item_errors')
         self.assertTrue(all(row['has_error'] for row in attempt.rows))
         self.assertFalse(attempt.content_verified)
+
+    def test_xml_hash_survives_database_object_key_reordering(self):
+        before = xml_bytes(self.feed.published)
+        self.feed.refresh_from_db()
+        persisted = xml_bytes(self.feed.published)
+        # This exercises the real JSONField adapter on SQLite and MySQL CI.
+        self.assertEqual(before, persisted)
+        reordered = json.loads(json.dumps(self.feed.published, sort_keys=True))
+        self.assertEqual(xml_bytes(reordered), before)
+        without_headers = [{'rows': deepcopy(self.feed.published[0]['rows'])}]
+        reordered_without_headers = json.loads(json.dumps(without_headers, sort_keys=True))
+        self.assertEqual(xml_bytes(without_headers), xml_bytes(reordered_without_headers))
+        invalid_headers = deepcopy(without_headers)
+        invalid_headers[0]['headers'] = {'invalid': 'shape'}
+        self.assertEqual(xml_bytes(without_headers), xml_bytes(invalid_headers))
+        self.assertEqual(correlate_report(self.connection, self.report()).state, 'source_version_confirmed')
+
+    def test_immutable_source_uses_anonymous_api_route_and_retains_capability_scope(self):
+        url = reverse('avito_services_feed_version_public', args=[self.feed.public_key, self.version.pk])
+        self.assertTrue(url.startswith('/api/communications/avito/services-feed/'))
+        self.assertEqual(Client().get(url).status_code, 200)
+        self.assertNotIn('/accounts/login/', Client().get(url).get('Location', ''))
