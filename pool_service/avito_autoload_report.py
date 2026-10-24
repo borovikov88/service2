@@ -225,11 +225,14 @@ def _item(raw):
                 or message["type"] not in MESSAGE_TYPES or type(message.get("code")) is not int):
             _invalid()
         description = message.get("description")
-        normalized.append({
+        entry = {
             "type": message["type"], "code": message["code"], "title": _text(message.get("title"), 200),
             "description": _text(description, 3000), "updated_at": _date(message.get("updated_at")),
             "truncated": message.get("truncated") is True or len(description) > 3000,
-        })
+        }
+        from .avito_report_messages import message_diagnostics
+        entry["diagnostics"] = message_diagnostics(message, entry)
+        normalized.append(entry)
     return {"ad_id": identifier, "avito_id": avito_id, "avito_status": status,
             "avito_date_end": _date(raw.get("avito_date_end"), nullable=True) or None,
             "feed_name": _text(raw["feed_name"], 200) if raw.get("feed_name") is not None else "",
@@ -363,10 +366,12 @@ def _query_shop_rows(get, base, snapshot, probe_rows, total, deadline):
     return rows
 
 
-def fetch_report(token, account_id, *, kind="last_successful"):
+def fetch_report(token, account_id, *, kind="last_successful", include_input_proof=False, input_proof_connection=None):
     from pool_service import avito_workspace
     if kind not in KINDS:
         _invalid()
+    if type(include_input_proof) is not bool:
+        raise ValueError("include_input_proof must be boolean")
     deadline = time.monotonic() + MAX_SECONDS
     def get(path):
         while True:
@@ -383,7 +388,8 @@ def fetch_report(token, account_id, *, kind="last_successful"):
         return avito_workspace._get(token, path)
 
     base = f"/autoload/v4/uploads/{kind}"
-    before = summary_data(get(base))
+    before_payload = get(base)
+    before = summary_data(before_payload)
     rows, expected, page, stored_bytes = [], None, 1, 0
     read_strategy = "provider_pages"
     while True:
@@ -418,7 +424,8 @@ def fetch_report(token, account_id, *, kind="last_successful"):
         if page >= max(1, expected[1]):
             break
         page += 1
-    after = summary_data(get(base))
+    after_payload = get(base)
+    after = summary_data(after_payload)
     # Provider-hosted copies may rotate signed URLs without changing the upload.
     # Preserve the existing report consistency contract; exact source proof is
     # withheld if its private URL fingerprint changed during this read.
@@ -447,6 +454,27 @@ def fetch_report(token, account_id, *, kind="last_successful"):
               "read_strategy": read_strategy}
     if len(json.dumps(result, ensure_ascii=False).encode()) > MAX_BYTES:
         raise AvitoError("autoload_report_limit")
+    if include_input_proof:
+        from .avito_input_copy import fetch_input_proof, unavailable
+        # Optional proof never turns a complete valid report into a failed read.
+        try:
+            proof = (fetch_input_proof(after_payload, result, input_proof_connection, account_id, deadline=deadline)
+                     if source_consistent else unavailable("input_copy_source_changed"))
+            if proof["state"] == "verified_xml":
+                try:
+                    confirmation = summary_data(get(base))
+                    if ({key: value for key, value in confirmation.items() if key != "source_url_sha256"}
+                            != {key: value for key, value in after.items() if key != "source_url_sha256"}):
+                        proof = unavailable("input_copy_report_changed")
+                    elif confirmation["source_url_sha256"] != after["source_url_sha256"]:
+                        proof = unavailable("input_copy_source_changed")
+                except Exception:
+                    proof = unavailable("input_copy_report_recheck_failed")
+        except Exception:
+            proof = unavailable("input_copy_check_failed")
+        result["input_copy_proof"] = proof
+        if len(json.dumps(result, ensure_ascii=False).encode()) > MAX_BYTES + 4096:
+            result["input_copy_proof"] = unavailable("input_copy_size_invalid")
     return result
 
 

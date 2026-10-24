@@ -6,6 +6,15 @@ import sys
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
+try:
+    from scripts.avito_message_diagnostics import project_diagnostics
+except ModuleNotFoundError as exc:
+    if exc.name not in {"scripts", "scripts.avito_message_diagnostics"}:
+        raise
+    # The deployed standalone CLI starts with scripts/ on sys.path.
+    from avito_message_diagnostics import project_diagnostics
+
+
 FRAME = "AVITO_READONLY_AUDIT_RECEIPT "
 MAX_BYTES = 262144
 STATES = {"active", "removed", "old", "blocked", "rejected"}
@@ -76,7 +85,10 @@ def item(value):
         result["error"] = code(value["error"])
         return result
     require(value.get("status") in STATES)
-    require(value.get("link_state") in {"exact_xml_match", "xml_id_ambiguous", "not_in_current_xml", "no_autoload_id", "xml_unavailable"})
+    require(value.get("link_state") in {"exact_xml_match", "xml_id_ambiguous", "not_in_current_xml", "no_autoload_id", "xml_unavailable",
+        "services_feed_match", "services_feed_identity_only", "services_feed_id_mismatch"})
+    if value["link_state"].startswith("services_"):
+        require(value.get("xml_matches") == [])
     result.update(status=value["status"], autoload_xml_id=xml_id(value.get("autoload_xml_id")),
                   link_state=value["link_state"],
                   xml_matches=sequence(value.get("xml_matches"), feed_item, 10),
@@ -148,6 +160,28 @@ def duplicate_report_diagnostics(value):
     return result
 
 
+def input_copy_proof(value):
+    require(isinstance(value, dict) and value.get("source") == "provider_report_input_copy")
+    require(value.get("state") in {"verified_xml", "unavailable", "unsupported"})
+    require(value.get("content_kind") in {"xml", "xlsx", "other", "unknown"})
+    suffixes = {"xml_verified", "scope_unavailable", "report_ineligible", "url_count", "url_invalid",
+        "host_not_allowed", "address_unavailable", "budget_exhausted", "redirect_denied",
+        "encoding_unsupported", "size_invalid", "too_large", "incomplete", "transport_failed",
+        "xml_forbidden", "xml_invalid", "xml_structure", "xml_limit", "not_xml",
+        "identity_mismatch", "source_changed", "report_changed", "report_recheck_failed", "check_failed"}
+    fixed = value.get("code")
+    require(isinstance(fixed, str) and (fixed in {"input_copy_" + suffix for suffix in suffixes}
+            or re.fullmatch(r"input_copy_http_[1-5][0-9]{2}", fixed)))
+    count, size = integer(value.get("identity_count"), 200), integer(value.get("byte_count"), 4194304)
+    if value["state"] == "verified_xml":
+        require(fixed == "input_copy_xml_verified" and value["content_kind"] == "xml" and count > 0 and size > 0)
+    else:
+        require(fixed != "input_copy_xml_verified")
+    # SHA, account/org bindings, downloaded URLs and headers remain server-private.
+    return {"source": "provider_report_input_copy", "state": value["state"], "code": fixed,
+            "content_kind": value["content_kind"], "identity_count": count, "byte_count": size}
+
+
 def report(value):
     require(isinstance(value, dict))
     if "error" in value:
@@ -185,6 +219,8 @@ def report(value):
         groups = sequence(value["message_code_counts"], message_count, 200)
         require(len({(row["type"], row["code"]) for row in groups}) == len(groups))
         result["message_code_counts"] = groups
+    if "input_copy_proof" in value:
+        result["input_copy_proof"] = input_copy_proof(value["input_copy_proof"])
     if "message_groups" in value:
         allowed_explanations = {
             "existing_listing_link": "Сообщение о привязке существующего объявления; само по себе исправления не требует.",
@@ -206,10 +242,15 @@ def report(value):
             fields = row.get("fields")
             require(isinstance(fields, list) and len(fields) <= len(allowed_fields)
                     and all(field in allowed_fields for field in fields))
-            return {"type": row["type"], "code": integer(row.get("code"), 10**12),
+            result = {"type": row["type"], "code": integer(row.get("code"), 10**12),
                 "rows": integer(row.get("rows"), 5000), "category": row["category"],
                 "explanation": row["explanation"], "fields": fields,
                 "reason_keywords": reasons, "binding_evidence": row["binding_evidence"], "action_evidence": row["action_evidence"]}
+            if "diagnostics" in row:
+                require(type(row.get("diagnostics_consistent")) is bool)
+                result["diagnostics"] = project_diagnostics(row["diagnostics"])
+                result["diagnostics_consistent"] = row["diagnostics_consistent"]
+            return result
         result["message_groups"] = sequence(value["message_groups"], message_group, 200)
     return result
 
@@ -248,6 +289,9 @@ INVENTORY_LABELS = {
 
 def inventory(value):
     require(isinstance(value, dict))
+    if value.get("scope") == "services":
+        require(value.get("state") == "not_applicable" and value.get("reason") == "services_have_no_physical_stock")
+        return {"scope": "services", "state": "not_applicable", "reason": "services_have_no_physical_stock"}
     if "error" in value:
         return {"error": code(value["error"])}
     require(value.get("complete") is True)
@@ -418,6 +462,26 @@ def storage_probe(value):
     return result
 
 
+def services_coverage(value):
+    require(isinstance(value, dict) and value.get("source") == "service2_services_feed")
+    require(type(value.get("complete")) is bool)
+    result = {"source": "service2_services_feed", "complete": value["complete"]}
+    local = ("draft_count", "published_count", "requested_count", "checked_count", "skipped_out_of_scope")
+    provider = ("active_count", "active_covered", "active_missing", "published_inactive")
+    for key in local:
+        result[key] = integer(value.get(key), 5000)
+    for key in provider:
+        item = value.get(key)
+        require(value["complete"] or item is None or type(item) is int)
+        result[key] = integer(item, 5000) if item is not None else None
+        require(not value["complete"] or result[key] is not None)
+    if value["complete"]:
+        require(result["active_covered"] + result["active_missing"] == result["active_count"])
+    require(result["checked_count"] <= result["requested_count"])
+    require(result["skipped_out_of_scope"] <= result["requested_count"])
+    return result
+
+
 def connection(value):
     require(isinstance(value, dict))
     result = {"connection_id": integer(value.get("connection_id"))}
@@ -431,6 +495,8 @@ def connection(value):
                   advance_access=advance_access(value.get("advance_access", {"error": "audit_advance_not_requested"})),
                   monitoring=monitoring(value.get("monitoring", {"error": "audit_monitoring_not_requested"})),
                   cached_configuration=cached_configuration(value.get("cached_configuration", {"error": "audit_cached_configuration_not_requested"})))
+    if "services_coverage" in value:
+        result["services_coverage"] = services_coverage(value["services_coverage"])
     if "runtime_checks" in value:
         result["runtime_checks"] = runtime_checks(value["runtime_checks"])
     if "webhook_evidence" in value:

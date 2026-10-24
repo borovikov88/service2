@@ -108,7 +108,7 @@ def report_summary(report):
                             "avito_id": str(row["avito_id"]) if row["avito_id"] is not None else None,
                             "messages": [{"type": m["type"], "code": m["code"], "title": safe_text(m["title"], 200),
                                           "description": safe_text(m["description"], 700)} for m in critical[:3]]})
-    return {"upload_id": report["upload_id"], "upload_status": report["upload_status"],
+    return ({"input_copy_proof": report["input_copy_proof"]} if "input_copy_proof" in report else {}) | {"upload_id": report["upload_id"], "upload_status": report["upload_status"],
             "read_strategy": report.get("read_strategy", "provider_pages"),
             "complete": report["complete"], "finished": report["upload_finished"], "total": report["total"],
             "counts": report["counts"], "critical_samples": samples,
@@ -273,6 +273,30 @@ def cached_configuration_state(connection):
     return result
 
 
+
+def services_item_link(item_id, detail, feed):
+    rows = [row for sheet in feed.draft for row in sheet['rows']]
+    row = next(row for row in rows if row['AvitoId'] == item_id)
+    source_id = detail['autoload_item_id']
+    state = ('services_feed_identity_only' if not source_id else
+             'services_feed_match' if source_id == row['Id'] else 'services_feed_id_mismatch')
+    return {'item_id': item_id, 'status': detail['status'], 'autoload_xml_id': public_xml_id(source_id),
+            'link_state': state, 'xml_matches': [], 'report_xml_ids': []}
+
+def services_coverage(feed, all_items, *, requested, checked, skipped):
+    draft_ids = {row['AvitoId'] for sheet in feed.draft for row in sheet['rows']}
+    published_ids = {row['AvitoId'] for sheet in feed.published for row in sheet['rows']}
+    complete = isinstance(all_items, dict)
+    active = {key for key, row in all_items.items() if row['status'] == 'active'} if complete else set()
+    inactive = {key for key, row in all_items.items() if row['status'] != 'active'} if complete else set()
+    return {'source': 'service2_services_feed', 'complete': complete,
+        'draft_count': len(draft_ids), 'published_count': len(published_ids),
+        'active_count': len(active) if complete else None,
+        'active_covered': len(active & draft_ids) if complete else None,
+        'active_missing': len(active - draft_ids) if complete else None,
+        'published_inactive': len(published_ids & inactive) if complete else None,
+        'requested_count': requested, 'checked_count': checked, 'skipped_out_of_scope': skipped}
+
 def collect_connection(connection, item_ids, index, stocks=None, stock_error=None):
     identity = {"connection_id": connection.pk}
     try:
@@ -293,15 +317,25 @@ def collect_connection(connection, item_ids, index, stocks=None, stock_error=Non
             advance_access = {"available": True, "source": "cpa_v3", "amount_logged": False}
         except Exception as error:
             advance_access = {"error": safe_error(error)}
+        from .avito_input_copy import bound_services_feed
+        service_feed = bound_services_feed(connection, account_id)
+        service_ids = ({row['AvitoId'] for sheet in service_feed.draft for row in sheet['rows']}
+                       if service_feed is not None else None)
+        scoped_ids = [item_id for item_id in item_ids if service_ids is None or item_id in service_ids]
         items = []
-        for item_id in item_ids:
+        for item_id in scoped_ids:
             try:
-                items.append(item_link(item_id, fetch_detail(token, account_id, item_id), index))
+                detail = fetch_detail(token, account_id, item_id)
+                items.append(services_item_link(item_id, detail, service_feed) if service_feed is not None
+                             else item_link(item_id, detail, index))
             except Exception as error:
                 items.append({"item_id": item_id, "error": safe_error(error)})
         report = None
         try:
-            report = avito_autoload_report.fetch_report(token, account_id, kind="last_successful")
+            from .avito_input_copy import services_input_scope
+            proof_options = ({"include_input_proof": True, "input_proof_connection": connection}
+                             if services_input_scope(connection, account_id) else {})
+            report = avito_autoload_report.fetch_report(token, account_id, kind="last_successful", **proof_options)
             summary = report_summary(report)
             for item in items:
                 if "error" not in item:
@@ -321,11 +355,19 @@ def collect_connection(connection, item_ids, index, stocks=None, stock_error=Non
             listing_scan = listing_summary(all_items, pages)
         except Exception as error:
             listing_scan = {"error": safe_error(error)}
-        try:
-            active_source = (avito_inventory.build_inventory(all_items, report, index, stocks, stock_error)
-                             if "error" not in listing_scan else {"error": "audit_listing_scan_unavailable"})
-        except Exception as error:
-            active_source = {"error": safe_error(error)}
+        if service_feed is not None:
+            active_source = {"scope": "services", "state": "not_applicable",
+                             "reason": "services_have_no_physical_stock"}
+            service_coverage = services_coverage(service_feed, all_items if "error" not in listing_scan else None,
+                requested=len(item_ids), checked=sum("error" not in row for row in items),
+                skipped=len(item_ids) - len(scoped_ids))
+        else:
+            service_coverage = None
+            try:
+                active_source = (avito_inventory.build_inventory(all_items, report, index, stocks, stock_error)
+                                 if "error" not in listing_scan else {"error": "audit_listing_scan_unavailable"})
+            except Exception as error:
+                active_source = {"error": safe_error(error)}
         if profile_fingerprint is not None:
             try:
                 final_source, final_fingerprint = fetch_profile_source(token, account_id)
@@ -358,7 +400,7 @@ def collect_connection(connection, item_ids, index, stocks=None, stock_error=Non
             cached_flags = {"error": "audit_configuration_unavailable"}
         from .avito_runtime import checks
         runtime_checks = checks(ChannelConnection.objects.select_related("channel").get(pk=connection.pk))
-        return identity | {"account_id": account_id, "items": items, "autoload_report": summary, "listing_scan": listing_scan, "active_source_audit": active_source,
+        return identity | ({"services_coverage": service_coverage} if service_coverage is not None else {}) | {"account_id": account_id, "items": items, "autoload_report": summary, "listing_scan": listing_scan, "active_source_audit": active_source,
                            "configured_feed_source": configured_source, "advance_access": advance_access,
                            "monitoring": flags, "cached_configuration": cached_flags, "runtime_checks": runtime_checks,
                            "webhook_evidence": webhook_state, "storage_probe": storage_probe_state}

@@ -154,7 +154,10 @@ def scan_connection(connection_id):
         actual_id = avito_workspace.profile_data(avito_workspace._get(token, "/core/v1/accounts/self"))["id"]
         if actual_id != str(connection.external_id):
             raise AvitoError("provider_account_mismatch")
-        data = avito_autoload_report.fetch_report(token, actual_id, kind="last_successful")
+        from .avito_input_copy import services_input_scope
+        proof_options = ({"include_input_proof": True, "input_proof_connection": connection}
+                         if services_input_scope(connection, actual_id) else {})
+        data = avito_autoload_report.fetch_report(token, actual_id, kind="last_successful", **proof_options)
         if not isinstance(data, dict) or data.get("complete") is not True or data.get("kind") != "last_successful":
             raise AvitoError("autoload_report_invalid")
         finished = timezone.now()
