@@ -26,6 +26,8 @@ def classify(specs, name, description, category, url, offer):
     if not (specs.get('embedded_role') in {'inlet','vacuum'} or 'форсунк' in title
             or 'форсунк' in text(category) or any(v in TYPES for v in params.get('тип товара', []))):
         return
+    if re.search(r'пылесос', title):
+        specs['embedded_role']='vacuum'
     notes, issue = [], ''
     roles = {TYPES.get(v, 'unknown') for v in params.get('тип товара', [])}
     if roles:
@@ -41,9 +43,12 @@ def classify(specs, name, description, category, url, offer):
             else:
                 specs['embedded_role'] = role
     # Known other duties override a generic noun or an incorrectly labelled return type.
-    clean = text(name + '. ' + description)
-    clean = re.sub(r'\bне\s+(?:(?:предназначен\w*|подходит)\s+)?(?:для|под)\s+(?:фонтан|гидромассаж|всасыван)\w*', ' ', clean)
-    known_wrong = re.search(r'фонтанн\w*\s+форсунк|форсунк\w*\s+(?:для\s+)?фонтан|(?:для|назначение\s*:)\s*(?:фонтан|гидромассаж|всасыван)\w*|гидромассажн\w*\s+форсунк|воздушн\w*\s+форсунк|всасывающ\w*\s+форсунк|донн\w*\s+форсунк', clean)
+    other = r'(?:фонтан\w*|гидромасс\w*|противоток\w*|всасыва\w*|воздуш\w*|донн\w*|перелив\w*)'
+    def positive_duties(value):
+        return re.sub(r'\b(?:не\s+(?:(?:предназначен\w*|подходит)\s+)?(?:(?:для|под)\s+)?|без\s+)' + other, ' ', text(value))
+    clean = positive_duties(name + '. ' + description)
+    known_wrong = re.search(other, positive_duties(name)) or re.search(
+        r'(?:для|назначение\s*:)\s*' + other + r'|(?:гидромассажн|воздушн|всасывающ|донн)\w*\s+форсунк', clean)
     fountain_path = re.search(r'фонтан|fountain|/fontany(?:/|\.html)|dlya-fontan', text(category + ' ' + url))
     if known_wrong or fountain_path:
         issue = 'Подтверждено иное назначение форсунки (фонтан, гидромассаж, всасывание или донное размещение); для стенового возврата воды не подбирается.'
@@ -70,6 +75,9 @@ def classify(specs, name, description, category, url, offer):
             ET.SubElement(mapped,'param',{'name':'Марка стали корпуса'}).text = value
         elif value in {'abs','абс','abs-пластик'}:
             ET.SubElement(mapped,'param',{'name':'Материал корпуса'}).text = value
+        else:
+            # Never drop an unrecognised repeated grade and thereby confirm its neighbour.
+            ET.SubElement(mapped,'param',{'name':'Марка стали корпуса'}).text = value
         notes.append('Марка материала: ' + value)
     if len(mapped) != len(offer):
         apply_params(specs,mapped)

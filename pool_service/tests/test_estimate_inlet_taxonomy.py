@@ -43,6 +43,21 @@ class InletTaxonomyTests(SimpleTestCase):
         p=product('Форсунка ABS под пленку',description='Возврат воды в бассейн. Не для фонтанов.')
         self.assertIsNone(assess(p,'plastic_budget','film')[0])
 
+    def test_explicit_other_duty_cannot_be_overridden_by_structured_return_type(self):
+        for name in ['Форсунка гидромассажная Test ABS под пленку','Форсунка донная Test ABS под пленку',
+                     'Пылесосная форсунка Test ABS под пленку','Возвратная форсунка противотока Test ABS под пленку',
+                     'Форсунка воздушная Test ABS под пленку']:
+            for params in ([],[('Тип товара','Возвратная форсунка')]):
+                p=product(name,params=params)
+                self.assertTrue(p['embedded_role'] != 'inlet' or assess(p,'plastic_budget','film')[0],name)
+
+    def test_unknown_duplicate_material_grade_is_not_silently_discarded(self):
+        p=product('Форсунка Test под пленку',params=[('Тип товара','Возвратная форсунка'),
+            ('Материал','Нержавеющая сталь'),('Марка материала','AISI 304'),('Марка материала','AISI 999')])
+        self.assertTrue(p['specification_conflict'])
+        self.assertNotEqual(p['material'],'steel304')
+        self.assertIsNotNone(assess(p,'steel304','film')[0])
+
     def test_category_ancestry_and_explicit_fountain_url_are_not_pool_returns(self):
         xml=feed(item(1,'Форсунка ABS под пленку')).decode().replace('<offers>', '<categories><category id="7">Фонтанное оборудование</category><category id="8" parentId="7">Форсунки</category></categories><offers>').replace('<price>', '<categoryId>8</categoryId><price>',1)
         p=catalog.parse_catalog(xml.encode())['products']['1']
