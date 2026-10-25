@@ -11,7 +11,8 @@ CORE = {'pump', 'filter', 'heater'}
 def assess(product, inputs, required_flow, profile=None):
     from .pool_estimates import heating_requirement, heating_types
     if not product.get('available'):
-        return 'Доступность товара к заказу не подтверждена.', []
+        from .estimate_availability import reason
+        return reason(product), []
     if product.get('specification_conflict') or product.get('level_data_issue') == 'conflict':
         return 'Конфликт характеристик: ' + product.get('specification_note', 'уточните данные каталога'), []
     if product.get('embedded_role'):
