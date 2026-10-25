@@ -169,6 +169,23 @@ class ImprovementProjectTests(ProposalFixture, TestCase):
         self.assertEqual(result['results'][0]['code'], 'inactive_or_unknown')
         self.assertEqual(self.events().count(), 2)
 
+    def test_status_clock_is_refreshed_after_report_read_before_project_append(self):
+        clock = [self.now]
+        identifier = next(iter(projects.TARGETS))
+        def received_new_report(*args, **kwargs):
+            clock[0] = self.now + timedelta(seconds=2)
+            rows = deepcopy(self.attempt.rows)
+            next(item for item in rows if item['avito_id'] == identifier).update(status='blocked', has_error=True)
+            AvitoServicesPublicationAttempt.objects.create(publication=self.publication,
+                upload_id='899', report_sha256='e'*64, report_started_at=self.now+timedelta(seconds=1),
+                state='upload_failed', upload_status='error', rows=rows)
+            return deepcopy(self.analysis)
+        self.evidence.side_effect = received_new_report
+        with patch.object(projects.timezone, 'now', side_effect=lambda: clock[0]):
+            result = self.prepare()
+        self.assertEqual(result['results'][0]['code'], 'inactive_or_unknown')
+        self.assertEqual(self.events().count(), 2)
+
     def test_newer_completed_error_report_vetoes_each_affected_ad_but_not_other_ads(self):
         # Re-fetching the old success gives it a newer receipt time, not source time.
         AvitoServicesPublicationAttempt.objects.filter(pk=self.attempt.pk).update(checked_at=self.now)

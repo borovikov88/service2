@@ -286,6 +286,8 @@ def prepare(connection, actor, *, expected_revision=None, expected_source=None):
         if (not _pilot(current) or binding != _digest(_binding(current)) or not bound(feed, current)
                 or before_source != (feed.published, feed.published_revision, feed.draft, feed.revision, _source(current, feed)['version'].pk)):
             raise ProposalError('scope_changed')
+        # Evaluate source freshness after lock waits and the shared report read.
+        now = timezone.now()
         source_rows = {row['AvitoId']: row for row in entries(feed.published)}
         draft_rows = {row['AvitoId']: row for row in entries(feed.draft)}
         withdrawn = set(feed.listing_intents.filter(account_id=ACCOUNT,
