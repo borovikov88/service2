@@ -1614,6 +1614,7 @@ def communication_connection_edit(request, connection_id):
         kind == CommunicationChannel.KIND_AVITO
         and AvitoCredential.objects.filter(connection=connection).exists()
     )
+    from pool_service.avito_outbox_display import for_connection as outbox_display
     avito_diagnostic_accounts = []
     if kind == CommunicationChannel.KIND_AVITO:
         from pool_service.avito_workspace import diagnostic_account
@@ -1633,6 +1634,14 @@ def communication_connection_edit(request, connection_id):
             "avito_diagnostic_accounts": avito_diagnostic_accounts,
             "avito_timezone": getattr(settings, "COMMUNICATION_TIME_ZONE", "UTC"),
             "status_monitor_state": display_state(connection, request.user) if kind == CommunicationChannel.KIND_AVITO else {},
+            # The settings view already enforces organization + channel-management access.
+            # Keep operational commands out of client conversations and other connections.
+            "avito_outbox_state": (
+                outbox_display(connection, user=request.user)
+                if kind == CommunicationChannel.KIND_AVITO
+                and connection.pk == 4 and str(connection.external_id) == "446312402"
+                else None
+            ),
         },
     )
 
