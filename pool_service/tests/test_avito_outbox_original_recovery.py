@@ -77,6 +77,23 @@ class OriginalRecoveryTests(TransactionTestCase):
         self.assertEqual((result["outcome"], sends), ("unknown", 0))
         self.message.refresh_from_db()
         self.assertEqual((self.message.delivery_status, self.message.delivery_attempts), ("pending", 0))
+        self.assertEqual(self.message.delivery_error, "provider_reconcile_incomplete")
+
+    def test_concurrent_claim_is_not_reverted_by_recording_a_read_block(self):
+        unknown = {**ABSENT, "state": "unknown", "complete": False,
+            "pages": 0, "messages_checked": 0, "error_code": "provider_reconcile_incomplete"}
+        record = service._record
+        def concurrent_claim(*args, **kwargs):
+            ConversationMessage.objects.filter(pk=self.message.pk).update(
+                delivery_status="sending", delivery_attempts=1, delivery_error="provider_delivery_unknown")
+            return record(*args, **kwargs)
+        with patch.object(service, "_record", side_effect=concurrent_claim):
+            result, _, sends = self.recover(proof=unknown)
+        self.assertEqual(sends, 0)
+        self.assertEqual(result["outcome"], "unknown")
+        self.message.refresh_from_db()
+        self.assertEqual((self.message.delivery_status, self.message.delivery_attempts), ("sending", 1))
+        self.assertEqual(self.message.delivery_error, "provider_delivery_unknown")
 
     def test_previous_attempt_and_apparent_absence_never_authorizes_post(self):
         ConversationMessage.objects.filter(pk=self.message.pk).update(delivery_status="sending", delivery_attempts=1)

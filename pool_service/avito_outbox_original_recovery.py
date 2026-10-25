@@ -76,7 +76,7 @@ def _current(result, message):
 
 def recover(*, expected_sha):
     _authorized_release(expected_sha)
-    from .avito_outbox import reconcile_message, run_outbox, record_reconciled_message, message_snapshot
+    from .avito_outbox import reconcile_message, run_outbox, record_reconciled_message, message_snapshot, _record, safe_error as outbox_safe_error
     result = _base()
     connection = ChannelConnection.objects.select_related("channel").filter(
         pk=CONNECTION_ID, external_id=ACCOUNT_ID, channel__kind="avito", is_active=True, channel__is_active=True,
@@ -145,7 +145,7 @@ def recover(*, expected_sha):
                 and fresh.delivery_status == "pending" and fresh.delivery_attempts == 0 and not fresh.external_id):
             def approved_sender(message, *, token=None):
                 if not current_guard(message):
-                    raise communication_avito.AvitoError("original_target_changed")
+                    raise communication_avito.AvitoError("outbox_binding_changed")
                 result["send_function_invocations"] += 1
                 return communication_avito.send_message(message, token=token)
             run_outbox(CONNECTION_ID, message_id=original.pk, explicit=True,
@@ -153,6 +153,16 @@ def recover(*, expected_sha):
         else:
             result.update(outcome="unknown" if proof.get("state") == "unknown" or fresh.delivery_status == "sending" else "held",
                           error_code=safe_error(proof.get("error_code")) or "original_recovery_unconfirmed")
+            if proof.get("state") == "unknown":
+                # Record the known block without pretending a POST was started.
+                # The status predicate runs under the shared recorder's row lock,
+                # so a concurrent claim can never be reverted to pending.
+                hold_code = outbox_safe_error(proof.get("error_code")) or "provider_delivery_unknown"
+                def pending_hold_guard(message):
+                    return bool(current_guard(message) and message.delivery_status == "pending"
+                        and message.delivery_attempts == 0 and not message.external_id)
+                _record(CONNECTION_ID, original.pk, status="pending", error=hold_code,
+                    expected_snapshot=original_snapshot, expected_guard=pending_hold_guard)
         final = _message(original.pk)
         _current(result, final)
         if result["outcome"] not in {"accepted"} and result["error_code"] == "":
