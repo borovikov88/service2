@@ -234,6 +234,7 @@ class PartialPhotoEvidenceTests(TestCase):
         repeated = evidence.record_owner_photo_report_once()
         self.assertEqual(result['state'], 'recorded')
         self.assertEqual(result['provider_report']['error_code'], 'provider_http_403')
+        self.assertTrue(result['facts']['file_published'])
         self.assertEqual(repeated['provider_report']['state'], 'already_checked')
         self.assertEqual(fetch.call_count, 1)
         self.assertTrue(self.feed.versions.filter(action='verify').exists())

@@ -370,6 +370,7 @@ def _read_owner_report_once(manual):
     facts = dict.fromkeys(('file_published', 'upload_found', 'source_confirmed',
                           'rows_processed', 'live_content_verified'), False)
     result = _report_result()
+    stamp = None
     try:
         with transaction.atomic():
             connection, feed, publication, stamp = _report_context(locked=True)
@@ -434,7 +435,9 @@ def _read_owner_report_once(manual):
                 current, unused_feed, unused_publication, current_stamp = _report_context(locked=True)
                 metadata = dict(current.settings)
                 saved = metadata.get(REPORT_ONCE_KEY)
-                if isinstance(saved, dict) and saved.get('stamp') == current_stamp and saved.get('state') == 'pending':
+                if (stamp is not None and current_stamp == stamp and isinstance(saved, dict)
+                        and saved.get('stamp') == stamp and saved.get('state') == 'pending'):
+                    facts = publication_facts(unused_publication, unused_publication.attempts.first())
                     metadata[REPORT_ONCE_KEY] = {**saved, 'state': 'finished',
                         'checked_at': timezone.now().isoformat(), 'result_state': 'unavailable'}
                     current.settings = metadata
