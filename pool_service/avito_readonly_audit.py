@@ -539,6 +539,11 @@ def _services_release_evidence(connection, *, revision=SERVICES_REVISION):
         result["operation_ledger"] = release_operation_diagnostics(connection)
     except Exception:
         result["operation_ledger"] = {"error": "audit_operation_ledger_unavailable"}
+    try:
+        from .avito_daily_statistics import source_period_evidence
+        result["statistics_source_evidence"] = source_period_evidence(connection)
+    except Exception:
+        result["statistics_source_evidence"] = {"error": "audit_statistics_source_evidence_unavailable"}
     return result
 
 

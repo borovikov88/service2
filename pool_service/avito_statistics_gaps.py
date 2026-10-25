@@ -82,13 +82,19 @@ def _attempt(state, runs, daily):
             or not isinstance(raw.get('exception_class'), str) or raw['exception_class'] not in EXCEPTIONS | {''}
             or not isinstance(raw.get('outcome'), str) or raw['outcome'] not in {'success', 'failed', 'skipped'}
             or _count(raw.get('offset')) is None
-            or daily._date(raw.get('started_at')) is None or daily._date(raw.get('finished_at')) is None):
+            or daily._date(raw.get('started_at')) is None or daily._date(raw.get('finished_at')) is None
+            or 'statistics_reason' in raw and (raw.get('error_code') != 'provider_data_invalid'
+                or not isinstance(raw['statistics_reason'], str)
+                or raw['statistics_reason'] not in daily.avito_workspace.STATISTICS_INVALID_REASONS)):
         return {'state': 'unconfirmed', 'phase': 'unknown', 'error_code': 'statistics_unavailable'}
-    return {'state': 'observed', 'run_id': run.pk, 'source_date': run.day.isoformat(),
+    output = {'state': 'observed', 'run_id': run.pk, 'source_date': run.day.isoformat(),
         'offset': raw['offset'], 'phase': raw['phase'], 'exception_class': raw['exception_class'],
         'error_code': daily._error_code(raw['error_code']) if raw.get('error_code') else '',
         'outcome': raw['outcome'], 'started_at': daily._date(raw['started_at']).isoformat(),
         'finished_at': daily._date(raw['finished_at']).isoformat()}
+    if 'statistics_reason' in raw:
+        output['statistics_reason'] = raw['statistics_reason']
+    return output
 
 
 def evidence(connection, now=None):

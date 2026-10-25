@@ -618,7 +618,8 @@ class ScopedServicesReleaseAuditTests(TestCase):
         from pool_service import avito_services_workplace_setup as setup
         helpers = {"publication_release": release_publication(),
                    "webhook_chain": release_chain(), "approved_photo": release_photo(),
-                   "media_readiness": release_readiness(), "operation_ledger": release_ledger()}
+                   "media_readiness": release_readiness(), "operation_ledger": release_ledger(),
+                   "statistics_source_evidence": statistics_evidence()}
         before = list(ChannelConnection.objects.order_by("pk").values_list("pk", "settings"))
         for final_account in ("446312402", "1001"):
             with self.subTest(final_account=final_account), \
@@ -647,6 +648,7 @@ class ScopedServicesReleaseAuditTests(TestCase):
             row = value["connections"][0]
             if final_account == "446312402":
                 self.assertEqual("awaiting_first", row["webhook_chain"]["state"])
+                self.assertEqual(30, len(row["statistics_source_evidence"]["gap_diagnostics"]["dates"]))
                 self.assertEqual(2, row["publication_release"]["snapshot_count"])
                 self.assertTrue(row["approved_photo"]["source_in_published"])
                 self.assertEqual(1, row["services_coverage"]["skipped_out_of_scope"])
@@ -655,6 +657,39 @@ class ScopedServicesReleaseAuditTests(TestCase):
                 self.assertEqual({"connection_id": 4, "error": "provider_account_mismatch"}, row)
             self.assertEqual(before, list(ChannelConnection.objects.order_by("pk").values_list("pk", "settings")))
             self.assertFalse(Notification.objects.exists())
+
+    def test_statistics_evidence_reads_db_only_independently_of_legacy_release_failures(self):
+        from pool_service import avito_daily_statistics as daily, avito_workspace
+        from pool_service import avito_services_publication as publication, avito_webhook_chain as chain
+        from pool_service import avito_services_media_livecheck as media, avito_services_media_readiness as readiness
+        from pool_service import avito_services_release_operation as operation
+        before = list(ChannelConnection.objects.order_by("pk").values_list("pk", "settings"))
+        with patch.object(publication, "publication_release_check", side_effect=RuntimeError("PRIVATE")), \
+             patch.object(chain, "summary", side_effect=RuntimeError("PRIVATE")), \
+             patch.object(media, "media_release_source", side_effect=RuntimeError("PRIVATE")), \
+             patch.object(readiness, "media_release_readiness", side_effect=RuntimeError("PRIVATE")), \
+             patch.object(operation, "release_operation_diagnostics", side_effect=RuntimeError("PRIVATE")), \
+             patch.object(daily, "collect_next") as collector, \
+             patch.object(avito_workspace, "fetch_statistics") as provider:
+            value = audit._services_release_evidence(self.target)
+        self.assertEqual({"schema_version": 1, "state": "blocked", "code": "statistics_binding_changed"},
+            value["statistics_source_evidence"])
+        self.assertEqual(before, list(ChannelConnection.objects.order_by("pk").values_list("pk", "settings")))
+        collector.assert_not_called()
+        provider.assert_not_called()
+        self.assertNotIn("PRIVATE", str(value))
+        self.assertFalse(Notification.objects.exists())
+        with patch.object(daily, "source_period_evidence", side_effect=RuntimeError("PRIVATE")):
+            # Other helpers are independent; their outcomes do not become this child's cause.
+            with patch.object(publication, "publication_release_check", side_effect=RuntimeError("PRIVATE")), \
+                 patch.object(chain, "summary", return_value=release_chain()), \
+                 patch.object(media, "media_release_source", return_value=release_photo()), \
+                 patch.object(readiness, "media_release_readiness", return_value=release_readiness()), \
+                 patch.object(operation, "release_operation_diagnostics", return_value=release_ledger()):
+                failed = audit._services_release_evidence(self.target)
+        self.assertEqual({"error": "audit_statistics_source_evidence_unavailable"}, failed["statistics_source_evidence"])
+        self.assertEqual("awaiting_first", failed["webhook_chain"]["state"])
+        self.assertNotIn("PRIVATE", str(failed))
 
     def test_release_helpers_survive_independent_failure_and_never_enter_legacy_collection(self):
         from pool_service import avito_services_publication as publication
@@ -989,3 +1024,191 @@ class MediaHttpsUpgradeProofProjectionTests(SimpleTestCase):
         self.assertTrue(receipt.media_transport(transport)["https_upgrade_followed"])
         transport.update(reason="upgrade_target_host", phase="headers", host_relation="www_alias")
         self.assertEqual("www_alias", receipt.media_transport(transport)["host_relation"])
+
+def statistics_evidence():
+    """Synthetic closed metadata; no customer records or metric values."""
+    from datetime import date, timedelta
+    cutoff = date(2026, 10, 24)
+    dates = []
+    for offset in range(30):
+        day = (cutoff-timedelta(days=offset)).isoformat()
+        dates.append({"date": day, "date_from": day, "date_to": day, "grouping": "item",
+            "latest_complete_run_id": None, "completed_at": None, "pages_complete": False,
+            "request_provenance_consistent": False, "pages": [], "expected_total": None,
+            "received_rows": None, "expected_manifest_member": None, "provider_row_present": None,
+            "stored_row_present": False, "stored_row_matches_run": False, "stored_row_consistent": False,
+            "known_metric_count": 0, "missing_metric_codes": list(receipt.STAT_METRIC_CODES),
+            "zero_metric_codes": [], "state": "no_completed_request",
+            "latest_attempt_run_id": None, "latest_attempt_state": None,
+            "latest_attempt_error_code": "", "latest_attempt_finished_at": None})
+    periods = []
+    for key, first, last in (("day", 0, 0), ("previous_day", 1, 1), ("seven_days", 6, 0),
+            ("previous_seven_days", 13, 7), ("thirty_days", 29, 0)):
+        periods.append({"key": key, "from": (cutoff-timedelta(days=first)).isoformat(),
+            "to": (cutoff-timedelta(days=last)).isoformat(), "missing_dates": first-last+1,
+            "expected_ad_cells": 0, "reported_ad_cells": 0, "pages_complete": False,
+            "ad_rows_complete": False, "comparison_applicable": key != "thirty_days",
+            "same_cohort": False, "comparison_available": False})
+    return {"schema_version": 1, "state": "observed", "source": "avito_stats_v2_items",
+        "cutoff": cutoff.isoformat(), "provider_timezone": "unknown", "barnaul_calendar_confirmed": False,
+        "completed_dates": 0, "expected_dates": 30, "comparison_rule": "all_requested_metrics_known",
+        "periods": periods, "gap_diagnostics": {"schema_version": 1, "state": "observed",
+            "connection_id": 4, "account_id": "446312402", "avito_id": "8450664985",
+            "source": "avito_stats_v2_items", "provider_timezone": "unknown",
+            "from": dates[-1]["date"], "to": dates[0]["date"],
+            "request_scope": "all_account_items_no_item_filter", "unit_contract": "stats_v2_confirmed_metrics_v1",
+            "manifest_is_request_filter": False, "completed_dates": 0, "expected_dates": 30,
+            "states": {code: 30 if code == "no_completed_request" else 0 for code in receipt.STAT_GAP_STATES},
+            "last_attempt": {"state": "not_observed", "phase": "unknown", "error_code": "", "finished_at": None},
+            "dates": dates}}
+
+
+class StatisticsSourceProjectionTests(SimpleTestCase):
+    def parent(self, child, **changes):
+        return {"connection_id": 4, "account_id": "446312402", "items": [],
+            "autoload_report": {"error": "audit_report_unavailable"},
+            "statistics_source_evidence": child, **changes}
+
+    def test_saved_source_dates_are_projected_twice_without_values_or_private_fields(self):
+        raw = statistics_evidence()
+        for row in raw["gap_diagnostics"]["dates"]:
+            row.update(title="PRIVATE TITLE", metrics={"views": "98765"}, customer_uuid="PRIVATE UUID")
+        raw["gap_diagnostics"]["private_url"] = "https://private.invalid/PRIVATE"
+        raw["decision_report"] = {"ad_title": "PRIVATE", "metric_values": "98765"}
+        result = receipt.statistics_source_evidence(raw)
+        self.assertEqual(result, receipt.statistics_source_evidence(result))
+        self.assertEqual(30, len(result["gap_diagnostics"]["dates"]))
+        self.assertIsNone(result["gap_diagnostics"]["dates"][0]["provider_row_present"])
+        self.assertEqual(13, len(result["gap_diagnostics"]["dates"][0]["missing_metric_codes"]))
+        self.assertEqual("unknown", result["provider_timezone"])
+        text = json.dumps(result)
+        for value in ("PRIVATE", "98765", "metric_values", "customer_uuid", "private_url", "title"):
+            self.assertNotIn(value, text)
+
+    def test_observed_failure_phase_and_completed_omitted_row_remain_distinct(self):
+        raw = statistics_evidence()
+        gap = raw["gap_diagnostics"]
+        first = gap["dates"][0]
+        first.update(pages_complete=True, request_provenance_consistent=True,
+            latest_complete_run_id=91, completed_at="2026-10-25T17:20:00+00:00",
+            pages=[{"offset": 0, "rows": 11, "PRIVATE": "PRIVATE"}], expected_total=11,
+            received_rows=11, expected_manifest_member=True, provider_row_present=False,
+            stored_row_present=True, stored_row_matches_run=True, stored_row_consistent=True,
+            state="provider_omitted_row", latest_attempt_run_id=92, latest_attempt_state="failed",
+            latest_attempt_error_code="provider_http_403", latest_attempt_finished_at="2026-10-25T17:22:00+00:00")
+        gap["completed_dates"] = 1
+        gap["states"]["no_completed_request"], gap["states"]["provider_omitted_row"] = 29, 1
+        gap["last_attempt"] = {"state": "observed", "run_id": 92, "source_date": first["date"],
+            "offset": 0, "phase": "fetch_statistics", "exception_class": "AvitoError",
+            "error_code": "provider_http_403", "outcome": "failed",
+            "started_at": "2026-10-25T17:21:59+00:00", "finished_at": "2026-10-25T17:22:00+00:00"}
+        raw["completed_dates"] = 1
+        for row in raw["periods"]:
+            if row["key"] in {"day", "seven_days", "thirty_days"}:
+                row["missing_dates"] -= 1
+                row["pages_complete"] = row["missing_dates"] == 0
+                row["expected_ad_cells"], row["reported_ad_cells"] = 11, 10
+        result = receipt.statistics_source_evidence(raw)
+        self.assertEqual("provider_omitted_row", result["gap_diagnostics"]["dates"][0]["state"])
+        self.assertFalse(result["gap_diagnostics"]["dates"][0]["provider_row_present"])
+        self.assertEqual("provider_http_403", result["gap_diagnostics"]["last_attempt"]["error_code"])
+        self.assertEqual("fetch_statistics", result["gap_diagnostics"]["last_attempt"]["phase"])
+        self.assertEqual(1, result["gap_diagnostics"]["dates"][0]["page_count"])
+        self.assertNotIn("pages", result["gap_diagnostics"]["dates"][0])
+        self.assertNotIn("PRIVATE", json.dumps(result))
+        self.assertEqual(result, receipt.statistics_source_evidence(result))
+
+    def test_invalid_child_is_unavailable_without_erasing_other_account_checks(self):
+        cases = []
+        for path, value in (
+                (("expected_dates",), True), (("provider_timezone",), "Asia/Barnaul"),
+                (("gap_diagnostics", "account_id"), "FOREIGN"),
+                (("gap_diagnostics", "connection_id"), 1),
+                (("gap_diagnostics", "avito_id"), "8346503274"),
+                (("gap_diagnostics", "expected_dates"), 31),
+                (("gap_diagnostics", "dates", 0, "missing_metric_codes"), ["PRIVATE"]),
+                (("gap_diagnostics", "last_attempt", "phase"), "PRIVATE authorization")):
+            raw = statistics_evidence()
+            target = raw
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = value
+            cases.append(raw)
+        raw = statistics_evidence()
+        raw["gap_diagnostics"]["dates"].append(deepcopy(raw["gap_diagnostics"]["dates"][0]))
+        cases.append(raw)
+        false_success = statistics_evidence()
+        false_success["gap_diagnostics"]["dates"][0]["state"] = "known"
+        false_success["gap_diagnostics"]["states"].update(no_completed_request=29, known=1)
+        cases.append(false_success)
+        false_known = statistics_evidence()
+        false_known["gap_diagnostics"]["dates"][0].update(
+            known_metric_count=13, missing_metric_codes=[], zero_metric_codes=["views"])
+        cases.append(false_known)
+        missing_fact = statistics_evidence()
+        missing_fact["completed_dates"] = 1
+        gap = missing_fact["gap_diagnostics"]
+        gap["completed_dates"] = 1
+        gap["states"].update(no_completed_request=29, local_fact_missing=1)
+        gap["dates"][0].update(state="local_fact_missing", pages_complete=True,
+            request_provenance_consistent=True, latest_complete_run_id=91,
+            completed_at="2026-10-25T17:20:00+00:00", pages=[{"offset": 0, "rows": 11}],
+            expected_total=11, received_rows=11, expected_manifest_member=True,
+            provider_row_present=True, known_metric_count=13, missing_metric_codes=[])
+        for row in missing_fact["periods"]:
+            if row["key"] in {"day", "seven_days", "thirty_days"}:
+                row["missing_dates"] -= 1
+                row["pages_complete"] = row["missing_dates"] == 0
+                row["expected_ad_cells"], row["reported_ad_cells"] = 11, 10
+        cases.append(missing_fact)
+        for raw in cases:
+            with self.subTest(raw=raw), self.assertRaises((ValueError, TypeError)):
+                receipt.statistics_source_evidence(raw)
+            result = receipt.connection(self.parent(raw))
+            self.assertEqual({"error": "audit_statistics_source_evidence_unavailable"},
+                result["statistics_source_evidence"])
+            self.assertEqual({"error": "audit_report_unavailable"}, result["autoload_report"])
+            self.assertNotIn("PRIVATE", json.dumps(result))
+
+    def test_optional_statistics_reason_is_fixed_typed_conditional_and_idempotent(self):
+        raw = statistics_evidence()
+        attempt = {"state": "observed", "run_id": 92, "source_date": raw["cutoff"],
+            "offset": 0, "phase": "fetch_statistics", "exception_class": "AvitoError",
+            "error_code": "provider_data_invalid", "outcome": "failed",
+            "started_at": "2026-10-25T18:04:00+00:00", "finished_at": "2026-10-25T18:04:00.45+00:00"}
+        raw["gap_diagnostics"]["last_attempt"] = attempt
+        legacy = receipt.statistics_source_evidence(raw)
+        self.assertNotIn("statistics_reason", legacy["gap_diagnostics"]["last_attempt"])
+        for reason in receipt.STAT_INVALID_REASONS:
+            with self.subTest(reason=reason):
+                attempt["statistics_reason"] = reason
+                result = receipt.statistics_source_evidence(raw)
+                self.assertEqual(reason, result["gap_diagnostics"]["last_attempt"]["statistics_reason"])
+                self.assertEqual(result, receipt.statistics_source_evidence(result))
+        for reason in ("PRIVATE https://private.invalid/payload", "+79990000001", "unknown_reason", 1, [], None):
+            with self.subTest(reason=reason):
+                attempt["statistics_reason"] = reason
+                result = receipt.connection(self.parent(raw))
+                self.assertEqual({"error": "audit_statistics_source_evidence_unavailable"},
+                    result["statistics_source_evidence"])
+                self.assertEqual({"error": "audit_report_unavailable"}, result["autoload_report"])
+                self.assertNotIn("PRIVATE", json.dumps(result))
+                self.assertNotIn("+79990000001", json.dumps(result))
+        attempt.update(statistics_reason="result_missing", error_code="statistics_unavailable")
+        self.assertEqual({"error": "audit_statistics_source_evidence_unavailable"},
+            receipt.connection(self.parent(raw))["statistics_source_evidence"])
+        historical = statistics_evidence()
+        historical["gap_diagnostics"]["last_attempt"]["statistics_reason"] = "result_missing"
+        self.assertEqual({"error": "audit_statistics_source_evidence_unavailable"},
+            receipt.connection(self.parent(historical))["statistics_source_evidence"])
+
+    def test_foreign_parent_never_exports_statistics_and_disabled_is_not_an_api_error(self):
+        child = {"schema_version": 1, "state": "blocked", "code": "statistics_binding_changed", "PRIVATE": "PRIVATE"}
+        result = receipt.connection(self.parent(child))
+        self.assertEqual({"schema_version": 1, "state": "blocked", "code": "statistics_binding_changed"},
+            result["statistics_source_evidence"])
+        self.assertNotIn("error", result["statistics_source_evidence"])
+        for changes in ({"connection_id": 1}, {"account_id": "1001"}):
+            self.assertEqual({"error": "audit_statistics_source_evidence_unavailable"},
+                receipt.connection(self.parent(statistics_evidence(), **changes))["statistics_source_evidence"])
+        self.assertNotIn("PRIVATE", json.dumps(result))
