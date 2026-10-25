@@ -459,35 +459,65 @@ def _safe_failure(error):
     return f'Не удалось проверить объявления через API Авито ({safe_code}). Источник не изменён.'
 
 
-@login_required
-@never_cache
-@require_http_methods(['POST'])
-def services_feed_publish(request, connection_id):
-    from .communication_avito import AvitoError
-    connection = connection_for(request, connection_id)
-    feed = get_object_or_404(AvitoServicesFeed, connection=connection)
-    if not bound(feed, connection) or request.POST.get('revision') != str(feed.revision):
-        return HttpResponse('Данные изменились. Обновите страницу.', status=409)
-    try:
-        public_origin()  # Reject invalid canonical origin before any provider check or publication.
-        # Legacy inactive rows remain stored; only the active publication must fit10.
-        xml_bytes(feed.draft, max_images=30)
-        require_identities(feed, feed.draft)
-        verified = verify_inventory(connection, feed.draft)
-        if not entries(verified['sheets']):
-            raise ValueError('Нет активных объявлений для публикации. Возвращение из архива требует отдельной проверки стоимости.')
-        content = xml_bytes(verified['sheets'])
-        validate_snapshot_media(connection, verified['sheets'])
-    except (ValueError, AvitoError) as error:
-        return render(request, 'pool_service/avito/services_feed.html',
-                      _page_context(request, connection, feed, _safe_failure(error)), status=400)
+class PublicationConflict(ValueError):
+    pass
+
+
+def _publication_connection(connection_id, actor, *, locked=False):
+    """Current actor/org permissions, both before I/O and under publication locks."""
+    from django.contrib.auth import get_user_model
+    from django.core.exceptions import PermissionDenied
+    from .communication_services import organization_access, conversation_capability
+    current_actor = get_user_model().objects.filter(pk=getattr(actor, 'pk', None), is_active=True).first()
+    query = ChannelConnection.objects.select_related('channel', 'avito_credential')
+    if locked:
+        query = query.select_for_update()
+    connection = query.filter(pk=connection_id, is_active=True, channel__is_active=True,
+                              channel__kind='avito').first()
+    if (current_actor is None or connection is None
+            or organization_access(current_actor, connection.channel.organization) is None
+            or not conversation_capability(current_actor, 'can_manage_channels', connection.channel.organization)):
+        raise PermissionDenied
+    return connection, current_actor
+
+
+def publish_services_snapshot(connection, actor, *, expected_revision, expected_guard=None, published_callback=None):
+    """The ordinary publisher shared by UI and a separately guarded operator.
+
+    Provider/network I/O is outside the transaction. Internal guard runs before
+    I/O and again on locked current rows; the optional trusted callback may save
+    only local ledger metadata and must not perform provider/network I/O.
+    """
+    from .avito_services_workplace_setup import _binding
+    connection, actor = _publication_connection(connection.pk, actor)
+    binding = _binding(connection)
+    feed = AvitoServicesFeed.objects.get(connection=connection)
+    if not bound(feed, connection) or str(expected_revision) != str(feed.revision):
+        raise PublicationConflict('Данные изменились. Обновите страницу.')
+    if expected_guard is not None and expected_guard(connection, feed) is not True:
+        raise PublicationConflict('Состав согласованного изменения изменился. Публикация остановлена.')
+    public_origin()
+    # Capture the precise retention authority, not just the draft revision.
+    baseline = (deepcopy(feed.published), feed.published_revision, feed.published_photo_limit,
+                feed.enabled, feed.public_key, deepcopy(feed.draft))
+    xml_bytes(feed.draft, max_images=30)
+    require_identities(feed, feed.draft)
+    verified = verify_inventory(connection, feed.draft)
+    if not entries(verified['sheets']):
+        raise ValueError('Нет активных объявлений для публикации. Возвращение из архива требует отдельной проверки стоимости.')
+    content = xml_bytes(verified['sheets'])
+    media_result = validate_snapshot_media(connection, verified['sheets'],
+                                          verified_observations=verified['observations'])
     with transaction.atomic():
-        ChannelConnection.objects.select_for_update().get(pk=connection.pk)
-        connection = connection_for(request, connection_id)
+        connection, actor = _publication_connection(connection.pk, actor, locked=True)
         locked = AvitoServicesFeed.objects.select_for_update().get(pk=feed.pk)
-        if (not bound(locked, connection) or locked.revision != feed.revision
-                or _older_observation(locked, verified['observations'])):
-            return HttpResponse('Данные изменились. Обновите страницу.', status=409)
+        current_baseline = (locked.published, locked.published_revision, locked.published_photo_limit,
+                            locked.enabled, locked.public_key, locked.draft)
+        if (not bound(locked, connection) or _binding(connection) != binding or locked.revision != feed.revision
+                or current_baseline != baseline or _older_observation(locked, verified['observations'])):
+            raise PublicationConflict('Данные изменились. Обновите страницу.')
+        if expected_guard is not None and expected_guard(connection, locked) is not True:
+            raise PublicationConflict('Состав согласованного изменения изменился. Публикация остановлена.')
         require_identities(locked, locked.draft)
         ensure_baseline(locked)
         before = deepcopy(locked.published)
@@ -500,13 +530,36 @@ def services_feed_publish(request, connection_id):
         verified['observations'] = annotate_reactivation(locked.latest_observations, verified['observations'])
         locked.latest_observations = verified['observations']
         locked.last_checked_at = timezone.now()
-        locked.updated_by = request.user
+        locked.updated_by = actor
         locked.save()
         mark_snapshot_media_published(connection, locked.published)
-        version = record_version(locked, 'publish', before, locked.published, actor=request.user,
-                       reason='Публикация файла; применение Авито ещё не подтверждено',
-                       observations=verified['observations'], content=content)
+        retained = len(media_result.get('retained', [])) if isinstance(media_result, dict) else 0
+        reason = 'Публикация файла; применение Авито ещё не подтверждено'
+        if retained:
+            reason += f'; {retained} прежних ссылок сохранены по опубликованному снимку, доступность источников заново не подтверждена'
+        version = record_version(locked, 'publish', before, locked.published, actor=actor,
+                       reason=reason, observations=verified['observations'], content=content)
         bind_publication(locked, version)
+        if published_callback is not None:
+            published_callback(connection, locked, version)
+    return {'feed': locked, 'version': version, 'content': content,
+            'observations': verified['observations'], 'media': media_result}
+
+
+@login_required
+@never_cache
+@require_http_methods(['POST'])
+def services_feed_publish(request, connection_id):
+    from .communication_avito import AvitoError
+    connection = connection_for(request, connection_id)
+    feed = get_object_or_404(AvitoServicesFeed, connection=connection)
+    try:
+        publish_services_snapshot(connection, request.user, expected_revision=request.POST.get('revision'))
+    except PublicationConflict as error:
+        return HttpResponse(str(error), status=409)
+    except (ValueError, AvitoError) as error:
+        return render(request, 'pool_service/avito/services_feed.html',
+                      _page_context(request, connection, feed, _safe_failure(error)), status=400)
     return redirect('avito_services_feed', connection_id=connection_id)
 
 
