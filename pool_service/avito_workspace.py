@@ -298,33 +298,62 @@ def statistics_for_display(data):
     return result
 
 
+STATISTICS_INVALID_REASONS = frozenset({
+    "result_missing", "result_type", "grouping_missing_with_explicit_zero_total",
+    "groupings_type", "groupings_limit", "totals_multiple_groups", "group_type",
+    "metrics_type", "id_type", "id_duplicate", "metric_type", "metric_slug_type",
+    "metric_duplicate",
+})
+
+
+def _statistics_data_invalid(reason):
+    # Same public exception/code; only a fixed structural reason may be retained.
+    error = AvitoError("provider_data_invalid")
+    error.statistics_reason = reason
+    raise error
+
+
 def statistics_data(response, *, start, end, grouping, offset):
     result = response.get("result")
-    groups = result.get("groupings") if isinstance(result, dict) else None
-    if not isinstance(groups, list) or len(groups) > PAGE_SIZE:
-        raise AvitoError("provider_data_invalid")
+    if "result" not in response:
+        _statistics_data_invalid("result_missing")
+    if not isinstance(result, dict):
+        _statistics_data_invalid("result_type")
+    groups = result.get("groupings")
+    if not isinstance(groups, list):
+        explicit_zero = type(result.get("dataTotalCount")) is int and result["dataTotalCount"] == 0
+        has_error = any(container.get(key) for container in (response, result)
+                        for key in ("error", "errors"))
+        _statistics_data_invalid("grouping_missing_with_explicit_zero_total"
+            if groups is None and explicit_zero and not has_error else "groupings_type")
+    if len(groups) > PAGE_SIZE:
+        _statistics_data_invalid("groupings_limit")
     rows = []
     labels = [{"slug": slug, "label": label, "unit": "₽" if unit == "kopeks" else unit} for slug, label, unit in METRICS]
     seen = set()
     if grouping == "totals" and len(groups) > 1:
-        raise AvitoError("provider_data_invalid")
+        _statistics_data_invalid("totals_multiple_groups")
     for group in groups:
-        if not isinstance(group, dict) or not isinstance(group.get("metrics"), list):
-            raise AvitoError("provider_data_invalid")
+        if not isinstance(group, dict):
+            _statistics_data_invalid("group_type")
+        if not isinstance(group.get("metrics"), list):
+            _statistics_data_invalid("metrics_type")
         group = dict(group)
         if grouping == "totals" and "id" not in group:
             group["id"] = 0
         if type(group.get("id")) is not int:
-            raise AvitoError("provider_data_invalid")
+            _statistics_data_invalid("id_type")
         if group["id"] in seen:
-            raise AvitoError("provider_data_invalid")
+            _statistics_data_invalid("id_duplicate")
         seen.add(group["id"])
         values = {}
         for item in group["metrics"]:
-            if not isinstance(item, dict) or not isinstance(item.get("slug"), str):
-                raise AvitoError("provider_data_invalid")
+            if not isinstance(item, dict):
+                _statistics_data_invalid("metric_type")
+            if not isinstance(item.get("slug"), str):
+                _statistics_data_invalid("metric_slug_type")
             if item["slug"] in values:
-                raise AvitoError("provider_data_invalid")
+                _statistics_data_invalid("metric_duplicate")
             values[item["slug"]] = item.get("value")
         metrics = []
         for slug, label, unit in METRICS:

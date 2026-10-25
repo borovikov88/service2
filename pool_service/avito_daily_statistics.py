@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
-from django.db.models import F
+from django.db.models import F, Max
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -197,8 +197,20 @@ def _choose_day(connection, now):
         connection=connection, account_id=ACCOUNT,
         organization_id_at_collection=connection.channel.organization_id, state='success', pagination_complete=True,
         day__range=(latest - timedelta(days=BACKFILL_DAYS-1), latest)).values_list('day', flat=True))
-    return next((latest - timedelta(days=n) for n in range(BACKFILL_DAYS)
-                 if latest - timedelta(days=n) not in completed), None)
+    missing = [latest-timedelta(days=n) for n in range(BACKFILL_DAYS)
+               if latest-timedelta(days=n) not in completed]
+    if not missing:
+        return None
+    # New dates get their first attempt before any retry. Once all have been
+    # tried, retry the least recently created attempt sequence, independent of
+    # clock ties/drift. A failed date must not starve another missing date.
+    attempts = dict(AvitoStatisticsRun.objects.filter(
+        connection=connection, account_id=ACCOUNT,
+        organization_id_at_collection=connection.channel.organization_id,
+        source='avito_stats_v2_items', binding_digest=_stamp(connection),
+        day__in=missing).values('day').annotate(last_run=Max('pk'))
+        .values_list('day', 'last_run'))
+    return min(missing, key=lambda day: (attempts.get(day, 0), -day.toordinal()))
 
 
 def _reserve(connection_id):
@@ -271,6 +283,7 @@ def collect_next(connection_id=4):
     connection, state, run, lease = reserved
     error, page, retry_at = '', None, None
     phase, exception_class, attempt_started_at = 'authorization', '', timezone.now()
+    statistics_reason = ''
     try:
         token = access_token(connection)
         if authorized_account_id(connection) != ACCOUNT:
@@ -300,6 +313,10 @@ def collect_next(connection_id=4):
     except Exception as exc:
         code = exc.args[0] if isinstance(exc, AvitoError) and len(exc.args) == 1 else None
         error, exception_class = _error_code(code), _exception_class(exc)
+        reason = vars(exc).get('statistics_reason') if isinstance(exc, AvitoError) else None
+        if (error == 'provider_data_invalid' and isinstance(reason, str)
+                and reason in avito_workspace.STATISTICS_INVALID_REASONS):
+            statistics_reason = reason
     with transaction.atomic():
         current = ChannelConnection.objects.select_for_update().select_related('channel').get(pk=connection_id)
         metadata, active, now = dict(current.settings), _state(current), timezone.now()
@@ -376,6 +393,8 @@ def collect_next(connection_id=4):
             'exception_class': exception_class, 'error_code': active.get('last_error_code', ''),
             'started_at': attempt_started_at.isoformat(), 'finished_at': now.isoformat(),
             'outcome': status}
+        if statistics_reason:
+            active['last_attempt']['statistics_reason'] = statistics_reason
         locked.save()
         metadata[KEY] = active
         current.settings = metadata

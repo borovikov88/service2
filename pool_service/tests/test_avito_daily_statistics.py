@@ -143,7 +143,9 @@ class DailyHistoryTests(TestCase):
             first.state = 'failed'
             first.save(update_fields=['state'])
             self.retry()
-            daily.collect_next()
+            # Isolate daily-fact replacement from the fair missing-date selector.
+            with patch.object(daily, '_choose_day', return_value=first.day):
+                daily.collect_next()
         self.assertEqual(AvitoStatisticsRun.objects.count(), 2)
         self.assertEqual(AvitoDailyStatistic.objects.count(), 2)
         self.assertTrue(AvitoDailyStatistic.objects.exclude(source_run=first).count() == 2)
@@ -273,7 +275,8 @@ class DailyHistoryTests(TestCase):
         run.state = 'failed'
         run.save(update_fields=['state'])
         self.retry()
-        with patch.object(avito_workspace, 'fetch_statistics', return_value=self.page(total=None)):
+        with patch.object(daily, '_choose_day', return_value=run.day), \
+                patch.object(avito_workspace, 'fetch_statistics', return_value=self.page(total=None)):
             self.assertEqual(daily.collect_next(), 'failed')
         self.assertEqual(list(AvitoDailyStatistic.objects.values('avito_id', 'metrics', 'source_run_id')), original)
 
@@ -655,6 +658,193 @@ class DailyHistoryTests(TestCase):
                          {'sentinel': 'newer-worker-evidence'})
         self.assertEqual(self.connection.settings[daily.KEY]['last_error_code'],
                          baseline[daily.KEY]['last_error_code'])
+        self.assertEqual(AvitoStatisticsRun.objects.get().state, 'collecting')
+        self.assertFalse(AvitoDailyStatistic.objects.exists())
+
+
+
+    def seed_completed_dates_except(self, missing, now=None):
+        cutoff = daily.collection_cutoff(now or self.now)
+        digest = daily._stamp(self.connection)
+        AvitoStatisticsRun.objects.bulk_create([
+            AvitoStatisticsRun(connection=self.connection, account_id=daily.ACCOUNT,
+                organization_id_at_collection=self.org.pk, day=cutoff-timedelta(days=offset),
+                binding_digest=digest, state='success', pagination_complete=True)
+            for offset in range(daily.BACKFILL_DAYS)
+            if cutoff-timedelta(days=offset) not in missing])
+
+    def failed_date_attempt(self, day, **overrides):
+        values = {'connection': self.connection, 'account_id': daily.ACCOUNT,
+            'organization_id_at_collection': self.org.pk, 'day': day,
+            'binding_digest': daily._stamp(self.connection), 'state': 'failed',
+            'error_code': 'statistics_unavailable'}
+        values.update(overrides)
+        return AvitoStatisticsRun.objects.create(**values)
+
+    def test_failed_september_26_cannot_starve_untried_september_25_on_native_ticks(self):
+        now = datetime(2026, 10, 25, 18, 30, tzinfo=dt_timezone.utc)
+        september_26 = daily.collection_cutoff(now)-timedelta(days=28)
+        september_25 = daily.collection_cutoff(now)-timedelta(days=29)
+        self.assertEqual((september_26.isoformat(), september_25.isoformat()),
+                         ('2026-09-26', '2026-09-25'))
+        self.seed_completed_dates_except({september_26, september_25}, now)
+        self.failed_date_attempt(september_26)
+        self.assertEqual(daily._choose_day(self.connection, now), september_25)
+        with patch.object(daily.timezone, 'now', return_value=now), \
+                patch.object(avito_workspace, 'fetch_statistics', return_value=self.page()) as fetch:
+            self.assertEqual(daily.collect_next(), 'success')
+            self.assertEqual(daily.collect_next(), 'skipped')
+        fetch.assert_called_once_with('opaque', daily.ACCOUNT, start='2026-09-25',
+            end='2026-09-25', grouping='item', offset=0)
+        self.assertTrue(AvitoStatisticsRun.objects.filter(day=september_25,
+            state='success', pagination_complete=True).exists())
+        self.assertFalse(AvitoStatisticsRun.objects.filter(day=september_26, state='success').exists())
+        later = now+timedelta(minutes=1)
+        with patch.object(daily.timezone, 'now', return_value=later), \
+                patch.object(avito_workspace, 'fetch_statistics',
+                    side_effect=daily.AvitoError('provider_http_400')) as fetch:
+            self.assertEqual(daily.collect_next(), 'failed')
+            self.assertEqual(daily.collect_next(), 'skipped')
+        fetch.assert_called_once_with('opaque', daily.ACCOUNT, start='2026-09-26',
+            end='2026-09-26', grouping='item', offset=0)
+        self.connection.refresh_from_db()
+        self.assertEqual(self.connection.settings[daily.KEY]['next_due_at'],
+                         (later+timedelta(minutes=15)).isoformat())
+
+    def test_failed_dates_retry_fairly_by_last_attempt_sequence_with_clock_ties(self):
+        cutoff = daily.collection_cutoff(self.now)
+        days = [cutoff-timedelta(days=offset) for offset in range(3)]
+        self.seed_completed_dates_except(set(days))
+        # pk order is a durable attempt sequence, including equal wall clocks.
+        self.failed_date_attempt(days[2])
+        self.failed_date_attempt(days[0])
+        self.failed_date_attempt(days[1])
+        self.assertEqual(daily._choose_day(self.connection, self.now), days[2])
+        self.failed_date_attempt(days[2])
+        self.assertEqual(daily._choose_day(self.connection, self.now), days[0])
+        self.failed_date_attempt(days[0])
+        self.assertEqual(daily._choose_day(self.connection, self.now), days[1])
+
+    def test_new_missing_date_has_priority_over_retries_but_active_page_cursor_resumes_first(self):
+        first = self.page(tuple(range(11, 61)), total=51)
+        with patch.object(avito_workspace, 'fetch_statistics', return_value=first) as fetch:
+            self.assertEqual(daily.collect_next(), 'skipped')
+        fetch.assert_called_once()
+        run = AvitoStatisticsRun.objects.get()
+        self.assertEqual(run.next_offset, 50)
+        # Plenty of dates remain untried, but a valid in-progress page owns the cursor.
+        with patch.object(daily.timezone, 'now', return_value=self.now+timedelta(minutes=1)), \
+                patch.object(daily, '_choose_day', side_effect=AssertionError('resume existing run')), \
+                patch.object(avito_workspace, 'fetch_statistics',
+                    return_value=self.page((61,), total=51)) as fetch:
+            self.assertEqual(daily.collect_next(), 'success')
+        fetch.assert_called_once_with('opaque', daily.ACCOUNT, start=run.day.isoformat(),
+            end=run.day.isoformat(), grouping='item', offset=50)
+        self.assertEqual(AvitoStatisticsRun.objects.count(), 1)
+        run.refresh_from_db()
+        self.assertTrue(run.pagination_complete)
+        self.assertEqual(run.received_rows, 51)
+
+    def test_foreign_attempt_history_cannot_change_date_priority(self):
+        cutoff = daily.collection_cutoff(self.now)
+        self.seed_completed_dates_except({cutoff, cutoff-timedelta(days=1)})
+        for overrides in ({'binding_digest': 'previous-generation'},
+                {'account_id': 'foreign-account'}, {'organization_id_at_collection': self.org.pk+1},
+                {'connection': self.goods}, {'source': 'unrelated-source'}):
+            with self.subTest(overrides=overrides):
+                self.failed_date_attempt(cutoff, **overrides)
+                self.assertEqual(daily._choose_day(self.connection, self.now), cutoff)
+        self.failed_date_attempt(cutoff)
+        self.assertEqual(daily._choose_day(self.connection, self.now), cutoff-timedelta(days=1))
+        self.goods.refresh_from_db()
+        self.assertEqual(self.goods.settings, {'preserve': 'goods sentinel'})
+
+    def test_all_complete_dates_keep_next_morning_schedule_and_new_cutoff_becomes_due(self):
+        self.seed_completed_dates_except(set())
+        self.assertIsNone(daily._choose_day(self.connection, self.now))
+        with patch.object(avito_workspace, 'fetch_statistics') as fetch:
+            self.assertEqual(daily.collect_next(), 'skipped')
+        fetch.assert_not_called()
+        self.connection.refresh_from_db()
+        self.assertEqual(daily._date(self.connection.settings[daily.KEY]['next_due_at']),
+            datetime(2026, 10, 26, 8, tzinfo=daily.ZONE))
+        tomorrow = self.now+timedelta(days=1)
+        self.assertEqual(daily._choose_day(self.connection, tomorrow), daily.collection_cutoff(tomorrow))
+
+
+
+    def test_statistics_structural_reason_is_persisted_without_payload_or_accepting_empty_groups(self):
+        def rejected(*args, **kwargs):
+            return avito_workspace.statistics_data(
+                {'result': {'groupings': None, 'dataTotalCount': 0}, 'PRIVATE': 'PRIVATE'},
+                start='2026-10-23', end='2026-10-23', grouping='item', offset=0)
+        with patch.object(avito_workspace, 'fetch_statistics', side_effect=rejected) as fetch:
+            self.assertEqual(daily.collect_next(), 'failed')
+        fetch.assert_called_once()
+        self.connection.refresh_from_db()
+        attempt = self.connection.settings[daily.KEY]['last_attempt']
+        self.assertEqual(attempt['error_code'], 'provider_data_invalid')
+        self.assertEqual(attempt['statistics_reason'], 'grouping_missing_with_explicit_zero_total')
+        self.assertEqual(attempt['exception_class'], 'AvitoError')
+        self.assertEqual(attempt['phase'], 'fetch_statistics')
+        self.assertFalse(AvitoStatisticsRun.objects.get().pagination_complete)
+        self.assertFalse(AvitoDailyStatistic.objects.exists())
+        evidence = self.gap_evidence()
+        self.assertEqual(evidence['last_attempt']['statistics_reason'],
+                         'grouping_missing_with_explicit_zero_total')
+        self.assertNotIn('PRIVATE', str(self.connection.settings))
+        self.assertNotIn('PRIVATE', str(evidence))
+        self.goods.refresh_from_db()
+        self.assertEqual(self.goods.settings, {'preserve': 'goods sentinel'})
+
+    def test_statistics_reason_requires_exact_code_exception_type_and_allowlisted_string(self):
+        for error, reason in ((daily.AvitoError('provider_data_invalid'), 'PRIVATE'),
+                (daily.AvitoError('provider_data_invalid'), ['result_type']),
+                (daily.AvitoError('provider_http_400'), 'result_type'),
+                (RuntimeError('provider_data_invalid'), 'result_type')):
+            error.statistics_reason = reason
+            self.retry()
+            with patch.object(avito_workspace, 'fetch_statistics', side_effect=error):
+                self.assertEqual(daily.collect_next(), 'failed')
+            self.connection.refresh_from_db()
+            self.assertNotIn('statistics_reason', self.connection.settings[daily.KEY]['last_attempt'])
+            self.assertNotIn('PRIVATE', str(self.connection.settings))
+        # Previously persisted attempts without the new field remain valid.
+        self.retry()
+        with patch.object(avito_workspace, 'fetch_statistics',
+                side_effect=daily.AvitoError('provider_data_invalid')):
+            daily.collect_next()
+        self.assertEqual(self.gap_evidence()['last_attempt']['state'], 'observed')
+        self.assertNotIn('statistics_reason', self.gap_evidence()['last_attempt'])
+
+    def test_saved_unknown_or_misbound_statistics_reason_is_rejected_without_echoing_it(self):
+        with patch.object(avito_workspace, 'fetch_statistics',
+                side_effect=daily.AvitoError('provider_data_invalid')):
+            daily.collect_next()
+        self.connection.refresh_from_db()
+        for reason, code in (('PRIVATE', 'provider_data_invalid'),
+                (['result_type'], 'provider_data_invalid'), ('result_type', 'provider_http_403')):
+            self.connection.settings[daily.KEY]['last_attempt'].update(
+                statistics_reason=reason, error_code=code)
+            self.connection.save(update_fields=['settings'])
+            attempt = self.gap_evidence()['last_attempt']
+            self.assertEqual(attempt['state'], 'unconfirmed')
+            self.assertNotIn('statistics_reason', attempt)
+            self.assertNotIn('PRIVATE', str(attempt))
+
+    def test_lost_lease_cannot_persist_even_an_allowlisted_statistics_reason(self):
+        def rejected_after_lease_change(*args, **kwargs):
+            current = ChannelConnection.objects.get(pk=4)
+            current.settings[daily.KEY].update(lease='other-worker',
+                last_attempt={'sentinel': 'newer-worker-evidence'})
+            current.save(update_fields=['settings'])
+            return avito_workspace.statistics_data({'result': None},
+                start='2026-10-23', end='2026-10-23', grouping='item', offset=0)
+        with patch.object(avito_workspace, 'fetch_statistics', side_effect=rejected_after_lease_change):
+            self.assertEqual(daily.collect_next(), 'failed')
+        self.connection.refresh_from_db()
+        self.assertEqual(self.connection.settings[daily.KEY]['last_attempt'],
+                         {'sentinel': 'newer-worker-evidence'})
         self.assertEqual(AvitoStatisticsRun.objects.get().state, 'collecting')
         self.assertFalse(AvitoDailyStatistic.objects.exists())
 

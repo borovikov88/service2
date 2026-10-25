@@ -801,6 +801,226 @@ def operation_ledger(value):
     return result
 
 
+
+# Public metadata only: no provider payloads, metric values or working customer IDs.
+STAT_METRIC_CODES = ('impressions', 'views', 'contacts', 'favorites', 'contactsShowPhone',
+    'contactsMessenger', 'contactsShowPhoneAndMessenger', 'allSpending', 'spending',
+    'presenceSpending', 'promoSpending', 'restSpending', 'commission')
+STAT_GAP_STATES = {'no_completed_request', 'not_in_known_manifest', 'provider_omitted_row',
+    'local_fact_missing', 'local_fact_mismatch', 'request_provenance_inconsistent',
+    'provider_metrics_missing', 'known'}
+STAT_INVALID_REASONS = frozenset({
+    "result_missing", "result_type", "grouping_missing_with_explicit_zero_total",
+    "groupings_type", "groupings_limit", "totals_multiple_groups", "group_type",
+    "metrics_type", "id_type", "id_duplicate", "metric_type", "metric_slug_type",
+    "metric_duplicate"})
+STAT_ERROR_CODES = {'', 'statistics_binding_changed', 'statistics_data_invalid',
+    'statistics_total_unavailable', 'statistics_limit', 'statistics_unavailable',
+    'statistics_incomplete', 'provider_cooldown', 'provider_unavailable',
+    'provider_response_too_large', 'provider_invalid_json', 'provider_invalid_response',
+    'provider_data_invalid'}
+
+
+def _statistics_date(value):
+    require(isinstance(value, str) and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value))
+    parsed = datetime.strptime(value, "%Y-%m-%d").date()
+    require(parsed.isoformat() == value)
+    return parsed
+
+
+def _statistics_error(value):
+    require(isinstance(value, str) and (value in STAT_ERROR_CODES
+        or re.fullmatch(r"provider_http_[1-5][0-9]{2}", value)))
+    return value
+
+
+def _statistics_attempt(value, first, last):
+    require(isinstance(value, dict) and value.get("state") in {
+        "observed", "historical_unknown", "not_observed", "unconfirmed"})
+    state = value["state"]
+    if state != "observed":
+        require(value.get("phase") == "unknown" and "statistics_reason" not in value)
+        return {"state": state, "phase": "unknown",
+            "error_code": _statistics_error(value.get("error_code")),
+            "finished_at": release_timestamp(value.get("finished_at"))}
+    require(value.get("phase") in {
+        "authorization", "fetch_statistics", "verify_account", "validate_response", "pagination"})
+    require(value.get("exception_class") in {"", "AvitoCooldownError", "AvitoRetryableError",
+        "AvitoError", "ValueError", "TypeError", "KeyError", "RuntimeError",
+        "InvalidOperation", "unexpected_exception"})
+    require(value.get("outcome") in {"success", "failed", "skipped"})
+    require(first <= _statistics_date(value.get("source_date")) <= last)
+    started, finished = release_timestamp(value.get("started_at")), release_timestamp(value.get("finished_at"))
+    require(started is not None and finished is not None
+        and datetime.fromisoformat(started) <= datetime.fromisoformat(finished))
+    run_id = integer(value.get("run_id"))
+    require(run_id > 0)
+    result = {"state": "observed", "run_id": run_id, "source_date": value["source_date"],
+        "offset": integer(value.get("offset"), 200), "phase": value["phase"],
+        "exception_class": value["exception_class"], "outcome": value["outcome"],
+        "error_code": _statistics_error(value.get("error_code")),
+        "started_at": started, "finished_at": finished}
+    if "statistics_reason" in value:
+        reason = value["statistics_reason"]
+        require(result["error_code"] == "provider_data_invalid"
+            and isinstance(reason, str) and reason in STAT_INVALID_REASONS)
+        result["statistics_reason"] = reason
+    return result
+
+
+def _statistics_gaps(value, cutoff):
+    require(isinstance(value, dict) and type(value.get("schema_version")) is int and value["schema_version"] == 1)
+    if value.get("state") == "blocked":
+        require(value.get("code") == "statistics_binding_changed")
+        return {"schema_version": 1, "state": "blocked", "code": value["code"]}
+    require(value.get("state") == "observed" and value.get("source") == "avito_stats_v2_items"
+        and type(value.get("connection_id")) is int and value["connection_id"] == 4
+        and value.get("account_id") == "446312402" and value.get("avito_id") == "8450664985"
+        and value.get("provider_timezone") == "unknown"
+        and value.get("request_scope") == "all_account_items_no_item_filter"
+        and value.get("unit_contract") == "stats_v2_confirmed_metrics_v1"
+        and value.get("manifest_is_request_filter") is False)
+    first = cutoff-timedelta(days=29)
+    require(_statistics_date(value.get("from")) == first and _statistics_date(value.get("to")) == cutoff)
+    require(type(value.get("expected_dates")) is int and value["expected_dates"] == 30)
+    completed = integer(value.get("completed_dates"), 30)
+    rows = value.get("dates")
+    require(isinstance(rows, list) and len(rows) == 30)
+    output = []
+    for index, row in enumerate(rows):
+        require(isinstance(row, dict) and row.get("grouping") == "item")
+        day = cutoff-timedelta(days=index)
+        require(all(_statistics_date(row.get(key)) == day for key in ("date", "date_from", "date_to")))
+        require(row.get("state") in STAT_GAP_STATES)
+        flags = ("pages_complete", "request_provenance_consistent", "stored_row_present",
+            "stored_row_matches_run", "stored_row_consistent")
+        nullable = ("expected_manifest_member", "provider_row_present")
+        require(all(type(row.get(key)) is bool for key in flags))
+        require(all(row.get(key) is None or type(row.get(key)) is bool for key in nullable))
+        codes = {}
+        for key in ("missing_metric_codes", "zero_metric_codes"):
+            raw = row.get(key)
+            require(isinstance(raw, list) and len(raw) <= len(STAT_METRIC_CODES)
+                and all(isinstance(code, str) and code in STAT_METRIC_CODES for code in raw)
+                and len(set(raw)) == len(raw))
+            codes[key] = list(raw)
+        known = integer(row.get("known_metric_count"), len(STAT_METRIC_CODES))
+        require(known + len(codes["missing_metric_codes"]) == len(STAT_METRIC_CODES)
+            and not set(codes["missing_metric_codes"]) & set(codes["zero_metric_codes"])
+            and (not known or row["stored_row_consistent"] and row["provider_row_present"] is True))
+        counts = {key: integer(row[key], 200) if row.get(key) is not None else None
+            for key in ("expected_total", "received_rows")}
+        ids = {}
+        for key in ("latest_complete_run_id", "latest_attempt_run_id"):
+            raw = row.get(key)
+            ids[key] = integer(raw) if raw is not None else None
+            require(ids[key] is None or ids[key] > 0)
+        require(row.get("latest_attempt_state") in {None, "collecting", "success", "partial", "failed"})
+        if "pages" in row:
+            pages = row["pages"]
+            require(isinstance(pages, list) and len(pages) <= 200)
+            require(all(isinstance(page, dict)
+                and type(page.get("offset")) is int and 0 <= page["offset"] <= 200
+                and type(page.get("rows")) is int and 0 <= page["rows"] <= 50 for page in pages))
+            page_count = len(pages)
+        else:
+            # The host already projects before the runner validates the same receipt.
+            page_count = integer(row.get("page_count"), 200)
+        completed_at = release_timestamp(row.get("completed_at"))
+        require(row["pages_complete"] == (ids["latest_complete_run_id"] is not None)
+            and (not row["pages_complete"] or completed_at is not None)
+            and (not row["request_provenance_consistent"] or row["pages_complete"])
+            and (not row["stored_row_matches_run"] or row["stored_row_present"] and row["pages_complete"])
+            and (not row["stored_row_consistent"] or row["stored_row_matches_run"]))
+        if row["state"] == "no_completed_request":
+            require(not row["pages_complete"] and row["expected_manifest_member"] is None
+                and row["provider_row_present"] is None)
+        else:
+            require(row["pages_complete"] and type(row["expected_manifest_member"]) is bool
+                and type(row["provider_row_present"]) is bool)
+            if row["state"] == "request_provenance_inconsistent":
+                require(not row["request_provenance_consistent"])
+            else:
+                require(row["request_provenance_consistent"])
+                if row["state"] == "not_in_known_manifest":
+                    require(row["expected_manifest_member"] is False)
+                else:
+                    require(row["expected_manifest_member"] is True)
+                    if row["state"] == "local_fact_missing":
+                        require(not row["stored_row_present"])
+                    elif row["state"] == "local_fact_mismatch":
+                        require(row["stored_row_present"] and not row["stored_row_consistent"])
+                    else:
+                        require(row["stored_row_consistent"])
+                        require((row["state"] == "provider_omitted_row" and row["provider_row_present"] is False and known == 0)
+                            or (row["state"] == "provider_metrics_missing" and row["provider_row_present"] is True and known < len(STAT_METRIC_CODES))
+                            or (row["state"] == "known" and row["provider_row_present"] is True and known == len(STAT_METRIC_CODES)))
+        output.append({"date": day.isoformat(), "date_from": day.isoformat(), "date_to": day.isoformat(),
+            "grouping": "item", "state": row["state"],
+            **{key: row[key] for key in flags+nullable}, **codes, **counts, **ids,
+            "page_count": page_count, "known_metric_count": known, "completed_at": completed_at,
+            "latest_attempt_state": row.get("latest_attempt_state"),
+            "latest_attempt_error_code": _statistics_error(row.get("latest_attempt_error_code")),
+            "latest_attempt_finished_at": release_timestamp(row.get("latest_attempt_finished_at"))})
+    states = value.get("states")
+    require(isinstance(states, dict) and set(states) == STAT_GAP_STATES)
+    projected_states = {key: integer(states[key], 30) for key in sorted(STAT_GAP_STATES)}
+    require(all(projected_states[key] == sum(row["state"] == key for row in output) for key in STAT_GAP_STATES)
+        and completed == sum(row["pages_complete"] for row in output))
+    return {"schema_version": 1, "state": "observed", "source": "avito_stats_v2_items",
+        "connection_id": 4, "account_id": "446312402", "avito_id": "8450664985",
+        "provider_timezone": "unknown", "from": first.isoformat(), "to": cutoff.isoformat(),
+        "request_scope": "all_account_items_no_item_filter", "unit_contract": "stats_v2_confirmed_metrics_v1",
+        "manifest_is_request_filter": False, "expected_dates": 30, "completed_dates": completed,
+        "states": projected_states, "dates": output,
+        "last_attempt": _statistics_attempt(value.get("last_attempt"), first, cutoff)}
+
+
+def statistics_source_evidence(value):
+    """Strict projection of the existing saved-statistics helper, not a collector."""
+    require(isinstance(value, dict))
+    if "error" in value:
+        require(value["error"] == "audit_statistics_source_evidence_unavailable")
+        return {"error": value["error"]}
+    require(type(value.get("schema_version")) is int and value["schema_version"] == 1)
+    if value.get("state") == "blocked":
+        require(value.get("code") == "statistics_binding_changed")
+        return {"schema_version": 1, "state": "blocked", "code": value["code"]}
+    require(value.get("state") == "observed" and value.get("source") == "avito_stats_v2_items"
+        and value.get("provider_timezone") == "unknown"
+        and value.get("barnaul_calendar_confirmed") is False
+        and value.get("comparison_rule") == "all_requested_metrics_known"
+        and type(value.get("expected_dates")) is int and value["expected_dates"] == 30)
+    cutoff = _statistics_date(value.get("cutoff"))
+    completed = integer(value.get("completed_dates"), 30)
+    periods = value.get("periods")
+    windows = (("day", 0, 0), ("previous_day", 1, 1), ("seven_days", 6, 0),
+        ("previous_seven_days", 13, 7), ("thirty_days", 29, 0))
+    require(isinstance(periods, list) and len(periods) == len(windows))
+    output = []
+    for row, (key, start, end) in zip(periods, windows):
+        require(isinstance(row, dict) and row.get("key") == key
+            and _statistics_date(row.get("from")) == cutoff-timedelta(days=start)
+            and _statistics_date(row.get("to")) == cutoff-timedelta(days=end))
+        missing = integer(row.get("missing_dates"), start-end+1)
+        expected, reported = integer(row.get("expected_ad_cells"), 12000), integer(row.get("reported_ad_cells"), 6000)
+        flags = ("pages_complete", "ad_rows_complete", "comparison_applicable", "same_cohort", "comparison_available")
+        require(all(type(row.get(flag)) is bool for flag in flags)
+            and row["pages_complete"] == (missing == 0)
+            and row["comparison_applicable"] == (key != "thirty_days")
+            and (not row["ad_rows_complete"] or row["pages_complete"] and expected > 0 and expected == reported)
+            and (not row["comparison_available"] or row["comparison_applicable"] and row["same_cohort"] and row["pages_complete"]))
+        output.append({"key": key, "from": row["from"], "to": row["to"], "missing_dates": missing,
+            "expected_ad_cells": expected, "reported_ad_cells": reported,
+            **{flag: row[flag] for flag in flags}})
+    require(completed == 30-output[-1]["missing_dates"])
+    return {"schema_version": 1, "state": "observed", "source": "avito_stats_v2_items",
+        "provider_timezone": "unknown", "barnaul_calendar_confirmed": False,
+        "comparison_rule": "all_requested_metrics_known", "cutoff": cutoff.isoformat(),
+        "completed_dates": completed, "expected_dates": 30, "periods": output,
+        "gap_diagnostics": _statistics_gaps(value.get("gap_diagnostics"), cutoff)}
+
+
 def connection(value):
     require(isinstance(value, dict))
     result = {"connection_id": integer(value.get("connection_id"))}
@@ -824,6 +1044,13 @@ def connection(value):
                          ("media_readiness", media_readiness), ("operation_ledger", operation_ledger)):
         if key in value:
             result[key] = project(value[key])
+    if "statistics_source_evidence" in value:
+        try:
+            require(result["connection_id"] == 4 and result["account_id"] == "446312402")
+            result["statistics_source_evidence"] = statistics_source_evidence(value["statistics_source_evidence"])
+        except (ValueError, TypeError, KeyError, OverflowError):
+            # The optional child is unavailable; independent account proofs survive.
+            result["statistics_source_evidence"] = {"error": "audit_statistics_source_evidence_unavailable"}
     if "services_coverage" in value:
         result["services_coverage"] = services_coverage(value["services_coverage"])
     if "runtime_checks" in value:
