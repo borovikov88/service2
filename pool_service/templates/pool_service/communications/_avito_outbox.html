@@ -1,5 +1,5 @@
 {% if outbox %}
-<section id="avito-outbox-admin" class="border-bottom p-3" aria-label="Исходящие сообщения Авито">
+<section{% if outbox.configuration %} id="avito-outbox-admin"{% endif %} class="border-bottom p-3" aria-label="Исходящие сообщения Авито">
   <div class="d-flex flex-wrap justify-content-between gap-2">
     <strong>Исходящие Авито</strong>
     <span class="{% if outbox.worker_warning %}text-warning-emphasis{% else %}text-success{% endif %}">{{ outbox.worker_label }}</span>
