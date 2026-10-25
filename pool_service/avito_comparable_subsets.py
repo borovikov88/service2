@@ -140,6 +140,7 @@ def safe_setup_evidence(now=None):
             and daily._allowed(connection, daily._state(connection)))
 
     try:
+        now = now or daily.timezone.now()
         current = ChannelConnection.objects.select_related('channel').filter(pk=4).first()
         if current is None or not daily._scope(current):
             return unavailable

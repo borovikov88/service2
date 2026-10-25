@@ -470,3 +470,22 @@ class ComparableSubsetSetupTests(TestCase):
         self.assertEqual(result, {'schema_version': 1, 'state': 'unavailable',
                                  'code': 'statistics_subset_unavailable'})
         self.assertNotIn('PRIVATE', str(result))
+
+
+    def test_setup_captures_one_clock_before_history_and_build_across_local_midnight(self):
+        from pool_service.avito_comparable_subsets import safe_setup_evidence
+        before = datetime(2026, 10, 25, 16, 59, 59, tzinfo=dt_timezone.utc)
+        after = before+timedelta(seconds=2)
+        observed = []
+        def history(connection, now=None):
+            observed.append(now or daily.timezone.now())
+            return daily.collection_cutoff(observed[-1]), self.rows, self.runs
+        with patch('pool_service.avito_services_workplace_setup._actor', return_value=self.owner), \
+                patch.object(daily, '_allowed', return_value=True), \
+                patch.object(daily, '_source_history', side_effect=history), \
+                patch.object(daily.timezone, 'now', side_effect=[before, after]) as clock:
+            result = safe_setup_evidence()
+        self.assertEqual(result['state'], 'observed')
+        self.assertEqual(observed, [before])
+        self.assertEqual(result['pairs'][0]['current_to'], '2026-10-23')
+        self.assertEqual(clock.call_count, 1)
