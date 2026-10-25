@@ -498,3 +498,27 @@ class CrmOrganizationScopeTests(TestCase):
         self.service.refresh_from_db()
         self.assertEqual(self.service.stage, CrmItem.STAGE_SERVICE_NEW)
         self.assertEqual(response.status_code, 403)
+
+    def test_review_archive_conflicting_pool_client_orgs_reject_both_directions(self):
+        self.access_a.role = "admin"
+        self.access_a.save()
+        for pool_org, client in ((self.a, self.client_b), (self.b, self.client_a)):
+            pool = Pool.objects.create(organization=pool_org, client=client, address="Synthetic inconsistent", is_deleted=True)
+            reading = WaterReading.objects.create(pool=pool, date=timezone.now(), is_deleted=True)
+            for field, value in (("pool_uuids", pool.uuid), ("reading_uuids", reading.uuid)):
+                with self.subTest(pool_org=pool_org.pk, client_org=client.organization_id, field=field):
+                    self.service.is_archived = True
+                    self.service.archived_reason = CrmItem.ARCHIVE_REASON_DELETED
+                    self.service.save()
+                    before_audits = DataAuditLog.objects.count()
+                    response = self.client.post(reverse("archive_bulk_update"), {
+                        "org_id": self.a.pk, "item_ids": [self.service.pk], "archive_action": "restore", field: [value],
+                    })
+                    self.service.refresh_from_db()
+                    pool.refresh_from_db()
+                    reading.refresh_from_db()
+                    self.assertTrue(self.service.is_archived)
+                    self.assertTrue(pool.is_deleted)
+                    self.assertTrue(reading.is_deleted)
+                    self.assertEqual(DataAuditLog.objects.count(), before_audits)
+                    self.assertEqual(response.status_code, 403)

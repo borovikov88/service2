@@ -1208,7 +1208,7 @@ def _reading_edit_allowed(reading, user):
 def _can_restore_pool_data(user, pool):
     if not user or not user.is_authenticated or not user.is_active or user.is_superuser:
         return False
-    if not pool.organization_id:
+    if not pool.organization_id or pool.client.organization_id != pool.organization_id:
         return False
     return OrganizationAccess.objects.filter(
         user=user, organization_id=pool.organization_id, role__in={"owner", "admin"},
