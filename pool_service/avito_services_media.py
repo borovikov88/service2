@@ -764,11 +764,13 @@ def diagnose_snapshot_media(connection, sheets, *, target_ids, seconds=10):
         raise ValueError('Выберите до двух объявлений для диагностики.')
     baseline = {(row['Id'], row['AvitoId']): row for row in entries(feed.published)}
     deadline, hosts, result, updates = time.monotonic() + min(10, max(1, seconds)), set(), [], {}
+    seen_ads = set()
     failures = _read_checks(connection, failures=True)
     try:
         for row in entries(sheets):
-            if row.get('AvitoId') not in target_ids:
+            if row.get('AvitoId') not in target_ids or row.get('AvitoId') in seen_ads:
                 continue
+            seen_ads.add(row['AvitoId'])
             previous = baseline.get((row.get('Id'), row.get('AvitoId')))
             if previous is None:
                 raise ValueError('Объявление отсутствует в опубликованном источнике.')

@@ -469,7 +469,7 @@ def _publication_connection(connection_id, actor, *, locked=False):
     from django.core.exceptions import PermissionDenied
     from .communication_services import organization_access, conversation_capability
     current_actor = get_user_model().objects.filter(pk=getattr(actor, 'pk', None), is_active=True).first()
-    query = ChannelConnection.objects.select_related('channel')
+    query = ChannelConnection.objects.select_related('channel', 'avito_credential')
     if locked:
         query = query.select_for_update()
     connection = query.filter(pk=connection_id, is_active=True, channel__is_active=True,
@@ -488,7 +488,9 @@ def publish_services_snapshot(connection, actor, *, expected_revision, expected_
     I/O and again on locked current rows; the optional trusted callback may save
     only local ledger metadata and must not perform provider/network I/O.
     """
+    from .avito_services_workplace_setup import _binding
     connection, actor = _publication_connection(connection.pk, actor)
+    binding = _binding(connection)
     feed = AvitoServicesFeed.objects.get(connection=connection)
     if not bound(feed, connection) or str(expected_revision) != str(feed.revision):
         raise PublicationConflict('Данные изменились. Обновите страницу.')
@@ -511,7 +513,7 @@ def publish_services_snapshot(connection, actor, *, expected_revision, expected_
         locked = AvitoServicesFeed.objects.select_for_update().get(pk=feed.pk)
         current_baseline = (locked.published, locked.published_revision, locked.published_photo_limit,
                             locked.enabled, locked.public_key, locked.draft)
-        if (not bound(locked, connection) or locked.revision != feed.revision
+        if (not bound(locked, connection) or _binding(connection) != binding or locked.revision != feed.revision
                 or current_baseline != baseline or _older_observation(locked, verified['observations'])):
             raise PublicationConflict('Данные изменились. Обновите страницу.')
         if expected_guard is not None and expected_guard(connection, locked) is not True:

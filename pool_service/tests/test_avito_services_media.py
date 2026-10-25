@@ -895,3 +895,13 @@ class PublishedReferenceRetentionTests(TestCase):
             result = media.validate_snapshot_media(self.connection, active, verified_observations=observations)
         get.assert_not_called()
         self.assertEqual(len(result['retained']), 10)
+
+
+    def test_diagnostic_duplicate_rows_cannot_expand_two_ad_probe_bound(self):
+        data = self.services_feed()
+        duplicate = deepcopy(data)
+        duplicate[0]['rows'] = [deepcopy(data[0]['rows'][0]) for _ in range(12)]
+        with patch.object(media, '_download', return_value=picture(format='JPEG')) as get:
+            result = media.diagnose_snapshot_media(self.connection, duplicate, target_ids=['111'])
+        self.assertEqual(get.call_count, 1)
+        self.assertEqual(len(result), 1)

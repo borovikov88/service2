@@ -397,3 +397,28 @@ class FeedVersionTests(TestCase):
         self.assertFalse(feed.enabled)
         self.assertEqual(feed.versions.count(), 0)
         self.assertEqual(AvitoServicesPublication.objects.count(), 0)
+
+
+    def test_shared_publisher_rejects_credential_or_channel_change_during_preflight(self):
+        from pool_service.avito_services_feed import publish_services_snapshot, PublicationConflict
+        from pool_service.communication_models import AvitoCredential
+        feed = self.feed()
+        credential = AvitoCredential.objects.create(connection=self.connection,
+            client_id_encrypted='synthetic-client', client_secret_encrypted='synthetic-secret')
+        for kind in ('credential', 'channel'):
+            with self.subTest(kind=kind):
+                def changed(connection, candidate):
+                    if kind == 'credential':
+                        AvitoCredential.objects.filter(pk=credential.pk).update(client_secret_encrypted='rotated-synthetic')
+                    else:
+                        channel = CommunicationChannel.objects.create(organization=self.org,
+                            kind='avito', name='Other current channel')
+                        ChannelConnection.objects.filter(pk=connection.pk).update(channel=channel)
+                    return {'sheets': candidate, 'observations': []}
+                with patch('pool_service.avito_services_feed.verify_inventory', side_effect=changed):
+                    with self.assertRaises(PublicationConflict):
+                        publish_services_snapshot(self.connection, self.owner, expected_revision=feed.revision)
+                feed.refresh_from_db()
+                self.assertFalse(feed.enabled)
+                self.assertEqual(feed.versions.count(), 0)
+                self.assertEqual(feed.published_revision, 0)
