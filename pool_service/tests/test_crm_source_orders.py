@@ -129,6 +129,37 @@ class ObservedOrderReferenceTests(TestCase):
         self.owner.save(update_fields=["is_active"])
         self.assertFalse(orders.allowed(self.owner, self.org))
 
+    def test_cached_actor_cannot_retain_db_revoked_role_active_or_superuser_access(self):
+        from pool_service.services.finance import can_access_finance_overview
+        self.assertTrue(can_access_finance_overview(self.owner, self.org))
+        self.assertTrue(hasattr(self.owner, "_organization_accesses_cache"))
+        link = SimpleNamespace(order_guid=self.guid, order_evidence=self.manual_evidence())
+        OrganizationAccess.objects.filter(pk=self.owner_access.pk).update(role="manager")
+        self.assertFalse(orders.allowed(self.owner, self.org))
+        self.assertIsNone(orders.candidates(self.owner, self.org, self.item))
+        with self.assertRaises(PermissionDenied):
+            self.observed()
+        self.assertEqual(orders.state(self.owner, self.org, link, self.item)["state"], "restricted")
+        OrganizationAccess.objects.filter(pk=self.owner_access.pk).update(role="owner")
+        self.assertTrue(orders.allowed(self.owner, self.org))
+        User.objects.filter(pk=self.owner.pk).update(is_active=False)
+        self.assertTrue(self.owner.is_active)  # Authentication instance remains stale.
+        self.assertFalse(orders.allowed(self.owner, self.org))
+        with self.assertRaises(PermissionDenied):
+            self.observed()
+        User.objects.filter(pk=self.owner.pk).update(is_active=True, is_superuser=True)
+        OrganizationAccess.objects.filter(pk=self.owner_access.pk).update(role="manager")
+        stale_superuser = User.objects.get(pk=self.owner.pk)
+        self.assertTrue(orders.allowed(stale_superuser, self.org))
+        User.objects.filter(pk=self.owner.pk).update(is_superuser=False)
+        self.assertTrue(stale_superuser.is_superuser)
+        self.assertFalse(orders.allowed(stale_superuser, self.org))
+        OrganizationAccess.objects.filter(pk=self.owner_access.pk).update(role="owner")
+        self.assertTrue(orders.allowed(self.owner, self.org))
+        OrganizationAccess.objects.filter(pk=self.owner_access.pk).delete()
+        self.assertFalse(orders.allowed(self.owner, self.org))
+        self.assertEqual(orders.state(self.owner, self.org, link, self.item)["state"], "restricted")
+
     def test_foreign_item_or_client_is_rejected_even_with_matching_display_values(self):
         foreign_client = Client.objects.create(
             organization=self.other_org, name=self.client_record.name,

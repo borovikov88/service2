@@ -3,6 +3,7 @@ import hashlib
 import json
 import uuid
 
+from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -16,7 +17,14 @@ LABEL = "Наблюдаемый документ заказа 1С; связь п
 
 
 def allowed(actor, organization):
-    return bool(actor is not None and actor.is_authenticated and actor.is_active and can_access_finance_overview(actor, organization))
+    if (actor is None or not actor.is_authenticated or not actor.is_active
+            or actor.pk is None or organization is None):
+        return False
+    # The finance policy caches organization roles on a User instance. A new
+    # instance keeps the existing policy but rechecks DB revocation on every
+    # read/save/replay, including stale authentication/superuser attributes.
+    current_actor = get_user_model().objects.filter(pk=actor.pk, is_active=True).first()
+    return bool(current_actor is not None and can_access_finance_overview(current_actor, organization))
 
 
 def _uuid(value):
