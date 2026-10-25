@@ -10,6 +10,7 @@ import threading
 import time
 from urllib.parse import quote, unquote, urlsplit
 import warnings
+from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 from django.contrib.auth.decorators import login_required
@@ -528,23 +529,34 @@ def _fresh_check(value):
         return False
 
 
-def _read_checks(connection):
+def _fresh_failure(value):
+    if not isinstance(value, dict) or type(value.get('http_status')) is not int or value['http_status'] not in {403, 429}:
+        return False
+    try:
+        checked = parse_datetime(value.get('checked_at', ''))
+        return checked is not None and timezone.is_aware(checked) and 0 <= (timezone.now() - checked).total_seconds() <= 900
+    except (TypeError, ValueError):
+        return False
+
+
+def _read_checks(connection, *, failures=False):
     from .communication_models import ChannelConnection
     current = ChannelConnection.objects.select_related('channel').get(pk=connection.pk)
     if not _cache_scope(connection, current):
         raise ValueError('Подключение изменилось во время проверки фотографий.')
     settings = current.settings if isinstance(current.settings, dict) else {}
     state = settings.get('avito_services_image_checks', {})
+    field, valid = ('failures', _fresh_failure) if failures else ('checks', _fresh_check)
     if (not isinstance(state, dict) or state.get('account_id') != connection.external_id
             or state.get('organization_id') != connection.channel.organization_id
-            or not isinstance(state.get('checks'), dict) or len(state['checks']) > 512):
+            or not isinstance(state.get(field), dict) or len(state[field]) > 512):
         return {}
-    return {key: value for key, value in state['checks'].items()
-            if isinstance(key, str) and re.fullmatch(r'[0-9a-f]{64}', key) and _fresh_check(value)}
+    return {key: value for key, value in state[field].items()
+            if isinstance(key, str) and re.fullmatch(r'[0-9a-f]{64}', key) and valid(value)}
 
 
-def _save_checks(connection, checks):
-    if not checks:
+def _save_checks(connection, checks, *, failures=None):
+    if not checks and not failures:
         return
     from .communication_models import ChannelConnection
     with transaction.atomic():
@@ -553,52 +565,252 @@ def _save_checks(connection, checks):
             raise ValueError('Подключение изменилось во время проверки фотографий.')
         settings = dict(current.settings) if isinstance(current.settings, dict) else {}
         previous = settings.get('avito_services_image_checks', {})
-        if (isinstance(previous, dict) and previous.get('account_id') == connection.external_id
-                and previous.get('organization_id') == connection.channel.organization_id
-                and isinstance(previous.get('checks'), dict) and len(previous['checks']) <= 512):
-            saved = {key: value for key, value in previous['checks'].items()
-                     if isinstance(key, str) and re.fullmatch(r'[0-9a-f]{64}', key) and _fresh_check(value)}
-        else:
-            saved = {}
-        saved.update(checks)
-        saved = dict(sorted(saved.items(), key=lambda pair: pair[1]['checked_at'])[-512:])
+        scope_valid = (isinstance(previous, dict) and previous.get('account_id') == connection.external_id
+                       and previous.get('organization_id') == connection.channel.organization_id)
+        saved = {}
+        for field, valid, updates in (('checks', _fresh_check, checks), ('failures', _fresh_failure, failures or {})):
+            old = previous.get(field) if scope_valid else None
+            values = {key: value for key, value in old.items()
+                      if isinstance(key, str) and re.fullmatch(r'[0-9a-f]{64}', key) and valid(value)
+                      } if isinstance(old, dict) and len(old) <= 512 else {}
+            values.update(updates)
+            saved[field] = dict(sorted(values.items(), key=lambda pair: pair[1]['checked_at'])[-512:])
         settings['avito_services_image_checks'] = {
             'account_id': connection.external_id,
-            'organization_id': connection.channel.organization_id, 'checks': saved}
+            'organization_id': connection.channel.organization_id, **saved}
         current.settings = settings
         current.save(update_fields=['settings'])
 
 
-def validate_snapshot_media(connection, sheets, *, seconds=30):
-    """All URLs checked locally or within15min; successful bounded progress survives retry."""
-    deadline, received, checked = time.monotonic() + min(30, seconds), 0, set()
-    cache, updates = _read_checks(connection), {}
-    urls = []
+class SnapshotMediaError(ValueError):
+    """Location-specific, safe diagnostics; never include a URL or response body."""
+    def __init__(self, row, number, url, error, *, cached=False, local=False):
+        identifier = row.get('AvitoId')
+        identifier = identifier if isinstance(identifier, str) and re.fullmatch(r'[0-9]{1,32}', identifier) else 'неизвестно'
+        transport = photo_transport_failure(error)
+        status, reason = transport['http_status'], transport['reason']
+        reason = reason or ('image_invalid' if isinstance(error, _PhotoInputError) else
+                            'local_image_unavailable' if local else 'photo_validation_failed')
+        checked = timezone.now()
+        item_id = row.get('Id', '')
+        item_id = item_id if isinstance(item_id, str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,200}', item_id) else ''
+        self.diagnostic = {'avito_id': identifier, 'item_id': item_id, 'photo_number': number, 'checked_at': checked.isoformat(),
+            'reason': reason, 'http_status': status, 'cached': cached,
+            'url_sha256': hashlib.sha256(url.encode('utf-8')).hexdigest() if isinstance(url, str) else ''}
+        if status == 403:
+            detail = 'Источник запрещает доступ (HTTP 403); причина авторизации не подтверждена.'
+        elif status == 401:
+            detail = 'Источник требует авторизацию (HTTP 401).'
+        elif status == 429:
+            detail = 'Источник ограничил частоту запросов (HTTP 429).'
+        elif status is not None and 300 <= status < 400:
+            detail = 'Источник перенаправляет запрос; допустимый прямой адрес не подтверждён.'
+        elif reason == 'image_invalid':
+            detail = 'Данные не являются допустимой фотографией JPEG, PNG или WebP.'
+        elif reason == 'local_image_unavailable':
+            detail = 'Зарегистрированный файл недоступен или повреждён в хранилище Service2.'
+        else:
+            detail = 'Фотография не прошла проверку безопасности, формата, размера или доступности.'
+        if cached:
+            detail += ' Повторный запрос временно удержан; сохранена недавняя причина отказа.'
+        stamp = timezone.localtime(checked, ZoneInfo('Asia/Barnaul')).strftime('%d.%m.%Y %H:%M:%S')
+        super().__init__(f'Объявление {identifier}, фото №{number}, проверка {stamp} (Барнаул): {detail}')
+
+
+def _published_references(connection, sheets, observations):
+    """Local provenance only; does not claim Avito cached/fetched an image.
+
+    Called only with a fresh, complete owned-active inventory from the normal
+    publisher. Retention is exact row AND position AND URL, never a domain bypass.
+    Other callers and connections retain the strict download/decode policy.
+    """
+    from .avito_services_feed import bound, entries, images
+    if (connection.pk != 4 or connection.external_id != '446312402'
+            or not connection.is_active or not connection.channel.is_active
+            or connection.channel.kind != 'avito' or not isinstance(observations, list)):
+        return set()
+    feed = AvitoServicesFeed.objects.filter(connection=connection, enabled=True).first()
+    if feed is None or not bound(feed, connection) or not feed.published or feed.published_revision < 1:
+        return set()
+    verified = {}
+    now = timezone.now()
+    for item in observations:
+        if not isinstance(item, dict):
+            return set()
+        try:
+            checked = parse_datetime(item.get('checked_at', ''))
+        except (TypeError, ValueError):
+            return set()
+        if (item.get('source') != 'avito_item_detail' or checked is None or timezone.is_naive(checked)
+                or not 0 <= (now - checked).total_seconds() <= 90):
+            return set()
+        if item.get('status') != 'active':
+            if item.get('status') in {'old', 'removed', 'rejected', 'blocked'} and item.get('included') is False:
+                continue
+            return set()
+        if item.get('included') is not True:
+            return set()
+        pair = (item.get('id'), item.get('avito_id'))
+        if not all(isinstance(part, str) and part for part in pair):
+            return set()
+        if pair in verified:
+            return set()
+        verified[pair] = True
+    candidate = entries(sheets)
+    pairs = [(row.get('Id'), row.get('AvitoId')) for row in candidate]
+    if (not all(all(isinstance(part, str) and part for part in pair) for pair in pairs)
+            or len(set(pairs)) != len(pairs) or set(pairs) != set(verified)):
+        return set()
+    published = entries(feed.published)
+    old_pairs = [(row.get('Id'), row.get('AvitoId')) for row in published]
+    if (not all(all(isinstance(part, str) and part for part in pair) for pair in old_pairs)
+            or len(set(old_pairs)) != len(old_pairs)):
+        return set()
+    previous = {pair: images(row.get('ImageUrls', ''), max_count=30).split(' | ')
+                for pair, row in zip(old_pairs, published)}
+    retained = set()
+    for row in candidate:
+        pair = (row.get('Id'), row.get('AvitoId'))
+        old = previous.get(pair, [])
+        for offset, url in enumerate(images(row.get('ImageUrls', '')).split(' | ')):
+            if offset < len(old) and old[offset] == url:
+                retained.add((pair[0], pair[1], offset + 1, url))
+    return retained
+
+
+def validate_snapshot_media(connection, sheets, *, seconds=30, verified_observations=None):
+    """Validate new images; preserve only proven unchanged published references.
+
+    A retained reference is syntax/public-DNS checked without an external GET.
+    It is NOT fresh availability, provider ingestion or live-card content proof.
+    Registered draft assets are read and decoded privately, never self-fetched.
+    """
+    from .avito_services_feed import images
+    deadline, received, checked, checked_hosts = time.monotonic() + min(30, seconds), 0, set(), set()
+    cache, failures, updates, negative = _read_checks(connection), _read_checks(connection, failures=True), {}, {}
+    retained = _published_references(connection, sheets, verified_observations)
+    result = {'checked_at': timezone.now().isoformat(), 'retained': [], 'checked_count': 0, 'local_count': 0}
+    locations = []
     for sheet in sheets:
         for row in sheet['rows']:
-            urls.extend(validate_photo_scope(connection, row.get('ImageUrls', '')).split(' | '))
+            try:
+                urls = validate_photo_scope(connection, row.get('ImageUrls', '')).split(' | ')
+            except ValueError as error:
+                raise SnapshotMediaError(row, 1, '', error) from None
+            locations.extend((row, number, url) for number, url in enumerate(urls, 1))
     try:
-        for url in urls:
-            if url in checked:
-                continue
+        for row, number, url in locations:
             if time.monotonic() >= deadline:
-                raise ValueError('Проверка фотографий достигла лимита времени. Результаты сохранены; повторите публикацию для оставшихся ссылок.')
-            asset = _asset(connection, url)
-            if asset is not None:
-                _read_asset(asset)
-            else:
+                raise SnapshotMediaError(row, number, url, _PhotoTransportError('Лимит времени проверки.', reason='deadline', phase='body'))
+            asset, cached = None, False
+            try:
+                asset = _asset(connection, url)
                 key = hashlib.sha256(url.encode('utf-8')).hexdigest()
-                if key not in cache:
-                    raw = _download(url, deadline)
-                    _image(raw, normalize=False)
-                    updates[key] = {'checked_at': timezone.now().isoformat(),
-                                    'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
-                    received += len(raw)
-            checked.add(url)
-            if received > 32 * 1024 * 1024:
-                raise ValueError('Проверка фотографий достигла лимита загрузки. Результаты сохранены; повторите публикацию для оставшихся ссылок.')
+                if asset is not None:
+                    if ('asset', url) not in checked:
+                        _read_asset(asset)
+                        checked.add(('asset', url))
+                    result['local_count'] += 1
+                elif (row.get('Id'), row.get('AvitoId'), number, url) in retained:
+                    _, host, port = _parse_url(url)
+                    if (host, port) not in checked_hosts:
+                        _resolve(host, port, deadline)
+                        checked_hosts.add((host, port))
+                    result['retained'].append({'avito_id': row['AvitoId'], 'photo_number': number,
+                        'code': 'published_reference_retained', 'url_sha256': key})
+                elif ('external', url) not in checked:
+                    if key in failures:
+                        cached = True
+                        raise _PhotoTransportError('Недавний отказ источника.',
+                            reason='http_status', phase='headers', http_status=failures[key]['http_status'])
+                    if key not in cache:
+                        raw = _download(url, deadline)
+                        try:
+                            _image(raw, normalize=False)
+                        except ValueError:
+                            raise _PhotoInputError('Изображение не декодируется.') from None
+                        updates[key] = {'checked_at': timezone.now().isoformat(),
+                                        'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+                        received += len(raw)
+                    checked.add(('external', url))
+                    result['checked_count'] += 1
+                if received > 32 * 1024 * 1024:
+                    raise ValueError('image_total_limit')
+            except ValueError as error:
+                transport = photo_transport_failure(error)
+                if not cached and transport.get('http_status') in {403, 429}:
+                    negative[key] = {'checked_at': timezone.now().isoformat(), 'http_status': transport['http_status']}
+                raise SnapshotMediaError(row, number, url, error, cached=cached, local=asset is not None) from None
     finally:
-        _save_checks(connection, updates)
+        _save_checks(connection, updates, failures=negative)
+    return result
+
+def diagnose_snapshot_media(connection, sheets, *, target_ids, seconds=10):
+    """Bounded first-old-photo probe, never a publication or an upload.
+
+    At most two selected ads and one GET per hostname. A second URL on that
+    host is explicitly unprobed, not assigned the first URL's error. No raw
+    URL/body/header is returned. Existing authenticated editor has the URL.
+    """
+    from .avito_services_feed import entries, images, bound
+    if connection.pk != 4 or connection.external_id != '446312402':
+        raise ValueError('Недопустимая область диагностики фотографий.')
+    feed = AvitoServicesFeed.objects.filter(connection=connection, enabled=True).first()
+    if (feed is None or not bound(feed, connection) or not connection.is_active
+            or not connection.channel.is_active or connection.channel.kind != 'avito'):
+        raise ValueError('Привязка источника фотографий не подтверждена.')
+    if (not isinstance(target_ids, (list, tuple, set)) or not 1 <= len(target_ids) <= 2
+            or not all(isinstance(value, str) and re.fullmatch(r'[0-9]{1,32}', value) for value in target_ids)):
+        raise ValueError('Выберите до двух объявлений для диагностики.')
+    baseline = {(row['Id'], row['AvitoId']): row for row in entries(feed.published)}
+    deadline, hosts, result, updates = time.monotonic() + min(10, max(1, seconds)), set(), [], {}
+    failures = _read_checks(connection, failures=True)
+    try:
+        for row in entries(sheets):
+            if row.get('AvitoId') not in target_ids:
+                continue
+            previous = baseline.get((row.get('Id'), row.get('AvitoId')))
+            if previous is None:
+                raise ValueError('Объявление отсутствует в опубликованном источнике.')
+            old = images(previous.get('ImageUrls', ''), max_count=30).split(' | ')
+            for number, url in enumerate(images(row.get('ImageUrls', '')).split(' | '), 1):
+                if number > len(old) or old[number - 1] != url:
+                    continue
+                cached, host = False, ''
+                try:
+                    if _asset(connection, url) is not None:
+                        continue
+                    _, host, _ = _parse_url(url)
+                    key = hashlib.sha256(url.encode('utf-8')).hexdigest()
+                    if host in hosts:
+                        result.append({'avito_id': row['AvitoId'], 'photo_number': number,
+                            'checked_at': timezone.now().isoformat(), 'url_sha256': key, 'source_host': host,
+                            'reason': 'not_probed_same_host', 'http_status': None, 'cached': False})
+                        break
+                    hosts.add(host)
+                    if key in failures:
+                        cached = True
+                        raise _PhotoTransportError('Недавний отказ источника.',
+                            reason='http_status', phase='headers', http_status=failures[key]['http_status'])
+                    raw = _download(url, deadline)
+                    try:
+                        _image(raw, normalize=False)
+                    except ValueError:
+                        raise _PhotoInputError('Изображение не декодируется.') from None
+                    result.append({'avito_id': row['AvitoId'], 'photo_number': number,
+                        'checked_at': timezone.now().isoformat(), 'url_sha256': key, 'source_host': host,
+                        'reason': 'available_image', 'http_status': 200, 'cached': False})
+                except ValueError as error:
+                    report = SnapshotMediaError(row, number, url, error, cached=cached).diagnostic
+                    report['source_host'] = host
+                    result.append(report)
+                    if not cached and report['http_status'] in {403, 429}:
+                        updates[report['url_sha256']] = {'checked_at': report['checked_at'],
+                                                       'http_status': report['http_status']}
+                break
+    finally:
+        _save_checks(connection, {}, failures=updates)
+    return result
 
 
 def mark_snapshot_media_published(connection, sheets):

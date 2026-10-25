@@ -323,3 +323,77 @@ class FeedVersionTests(TestCase):
         self.assertEqual((feed.draft, feed.published, feed.revision), before)
         self.assertTrue(feed.enabled)
         self.assertEqual(feed.versions.count(), 0)
+
+
+    def test_shared_publisher_rejects_changed_retention_baseline_under_lock(self):
+        from pool_service.avito_services_feed import publish_services_snapshot, PublicationConflict
+        feed = self.feed()
+        feed.published = deepcopy(feed.draft)
+        feed.published_revision = 1
+        feed.enabled = True
+        feed.save()
+        def checked(connection, candidate):
+            current = AvitoServicesFeed.objects.get(pk=feed.pk)
+            current.published[0]['rows'][0]['Title'] = 'Concurrent publication baseline'
+            current.save(update_fields=['published'])
+            return {'sheets': candidate, 'observations': []}
+        binding = patch('pool_service.avito_services_feed.bind_publication')
+        callback = binding.start()
+        self.addCleanup(binding.stop)
+        with patch('pool_service.avito_services_feed.verify_inventory', side_effect=checked):
+            with self.assertRaises(PublicationConflict):
+                publish_services_snapshot(self.connection, self.owner, expected_revision=feed.revision)
+        callback.assert_not_called()
+        feed.refresh_from_db()
+        self.assertEqual(feed.versions.count(), 0)
+        self.assertEqual(feed.published[0]['rows'][0]['Title'], 'Concurrent publication baseline')
+
+    def test_shared_publisher_revalidates_actor_and_guard_before_atomic_publish(self):
+        from django.core.exceptions import PermissionDenied
+        from pool_service.avito_services_feed import publish_services_snapshot, PublicationConflict
+        feed = self.feed()
+        checked = {'sheets': deepcopy(feed.draft), 'observations': []}
+        calls = []
+        def guard(connection, current):
+            calls.append(current.revision)
+            return len(calls) == 1
+        with patch('pool_service.avito_services_feed.verify_inventory', return_value=checked):
+            with self.assertRaises(PublicationConflict):
+                publish_services_snapshot(self.connection, self.owner, expected_revision=feed.revision,
+                                           expected_guard=guard)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(feed.versions.count(), 0)
+        def revoked(connection, candidate):
+            User.objects.filter(pk=self.owner.pk).update(is_active=False)
+            return checked
+        with patch('pool_service.avito_services_feed.verify_inventory', side_effect=revoked):
+            with self.assertRaises(PermissionDenied):
+                publish_services_snapshot(self.connection, self.owner, expected_revision=feed.revision)
+        feed.refresh_from_db()
+        self.assertFalse(feed.enabled)
+        self.assertEqual(feed.versions.count(), 0)
+
+    def test_shared_publisher_callback_is_atomic_with_file_history_and_binding(self):
+        from django.db import connection as database
+        from pool_service.avito_services_feed import publish_services_snapshot
+        from pool_service.avito_publication_models import AvitoServicesPublication
+        feed = self.feed()
+        before = deepcopy(feed.published)
+        baseline_depth = len(database.savepoint_ids)
+        def inventory(connection, candidate):
+            self.assertEqual(len(database.savepoint_ids), baseline_depth)
+            return {'sheets': candidate, 'observations': []}
+        def fail(connection, current, version):
+            self.assertGreater(len(database.savepoint_ids), baseline_depth)
+            self.assertTrue(current.enabled)
+            self.assertTrue(AvitoServicesPublication.objects.filter(version=version).exists())
+            raise ValueError('Ledger validation failed')
+        with patch('pool_service.avito_services_feed.verify_inventory', side_effect=inventory):
+            with self.assertRaises(ValueError):
+                publish_services_snapshot(self.connection, self.owner, expected_revision=feed.revision,
+                                           published_callback=fail)
+        feed.refresh_from_db()
+        self.assertEqual(feed.published, before)
+        self.assertFalse(feed.enabled)
+        self.assertEqual(feed.versions.count(), 0)
+        self.assertEqual(AvitoServicesPublication.objects.count(), 0)
