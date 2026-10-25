@@ -46,7 +46,7 @@
 <dt class="col-8">Найдена загрузка после публикации</dt><dd class="col-4">{% if publication.facts.upload_found %}Да{% else %}Ожидается{% endif %}</dd>
 <dt class="col-8">Источник загрузки связан с этой версией</dt><dd class="col-4">{% if publication.facts.source_confirmed %}Подтверждено{% else %}Не подтверждено{% endif %}</dd>
 <dt class="col-8">Строки найденной загрузки обработаны</dt><dd class="col-4">{% if publication.facts.rows_processed %}Да, см. результаты{% else %}Не подтверждено{% endif %}</dd>
-<dt class="col-8">Текст и порядок фотографий в живой карточке</dt><dd class="col-4">Не проверены</dd>
+<dt class="col-8">Полная сверка текста и порядка всех фотографий</dt><dd class="col-4">Не выполнена; частичные подтверждения — ниже</dd>
 </dl>
 {% if publication.facts.rows_processed and not publication.facts.source_confirmed %}<p class="small mb-1">Строки обработаны в найденной загрузке, но её связь с этой версией файла ещё не доказана.</p>{% endif %}
 {% if publication.attempt %}<p class="small mb-1">Загрузка {{ publication.attempt.upload_id }} · начало {{ publication.attempt.report_started_at }} · проверка {{ publication.attempt.checked_at }}.</p>{% endif %}
@@ -83,7 +83,7 @@
 {% if row.archive_control.owner_withdrawn %}<div class="small">Владелец запретил автоматический возврат в Service2.</div>{% endif %}
 <details class="mt-2"><summary>Возврат после окончания срока</summary>
 {% if row.archive_control.code != 'active' %}<p class="small">{{ row.archive_control.label }}. Источник: {{ row.archive_control.source|default:"не установлен" }}.</p><p class="small">{{ row.archive_control.manual_step }}</p>{% endif %}
-<p class="small">{{ row.archive_control.limitation }} Дополнительная стоимость неизвестна; автоматическая активация заблокирована; даже бесплатное продление требует отдельного согласования владельца. Id и AvitoId сохранены.</p>
+<p class="small">{{ row.archive_control.limitation }} Автоматический возврат заблокирован до подтверждения поддерживаемого способа и нулевой дополнительной стоимости именно повторного размещения. Платный или неясный вариант требует согласования владельца. Id и AvitoId сохранены.</p>
 <form method="post">{% csrf_token %}<input type="hidden" name="action" value="policy"><input type="hidden" name="revision" value="{{ feed.revision }}"><input type="hidden" name="avito_id" value="{{ row.AvitoId }}"><input type="hidden" name="owner_withdrawn" value="{% if row.archive_control.owner_withdrawn %}0{% else %}1{% endif %}">
 <label class="small">Причина отметки<input class="form-control" name="reason" maxlength="500"></label>
 <p class="small">Отметка действует только в Service2: она не снимает объявление с Авито и не запускает публикацию.</p>
@@ -97,7 +97,7 @@
 <p class="small mt-2">Сохранение черновика, публикация файла и чтение статусов записываются раздельно. История прежних действий до запуска этого журнала неизвестна.</p>
 {% if selected_version %}
 <div class="border rounded p-2 my-2">
-<p><strong>{{ selected_version.get_action_display }}</strong> · версия {{ selected_version.revision }} · {{ selected_version.created_at }}<br>
+<p><strong>{% if selected_version.manual_photo_evidence %}Ручная сверка фото №{{ selected_version.changes.0.evidence.photo_number }}{% else %}{{ selected_version.get_action_display }}{% endif %}</strong> · версия {{ selected_version.revision }} · {{ selected_version.created_at }}<br>
 Автор: {% if selected_version.actor %}{{ selected_version.actor }}{% else %}не установлен{% endif %}<br>{{ selected_version.reason }}</p>
 {% if selected_version.source_version_id %}<p class="small">Связанная запись: {{ selected_version.source_version_id }}.</p>{% endif %}
 {% if selected_version.file_digest %}<p class="small text-break">SHA-256 файла: {{ selected_version.file_digest }}</p>{% endif %}
@@ -116,7 +116,7 @@
 </div>
 {% endif %}
 <ul class="list-unstyled">
-{% for version in history %}<li class="border-top py-2"><a href="?history_version={{ version.pk }}&amp;history_page={{ history.number }}">{{ version.get_action_display }} · версия {{ version.revision }}</a>
+{% for version in history %}<li class="border-top py-2"><a href="?history_version={{ version.pk }}&amp;history_page={{ history.number }}">{% if version.manual_photo_evidence %}Ручная сверка фото №{{ version.changes.0.evidence.photo_number }} · опубликованная версия {{ version.source_version.revision }}{% else %}{{ version.get_action_display }} · версия {{ version.revision }}{% endif %}</a>
 <div class="small">{{ version.created_at }} · {% if version.actor %}{{ version.actor }}{% else %}автор не установлен{% endif %} · {{ version.reason }}</div></li>
 {% empty %}<li>Журнал начнётся при следующем изменении или явной проверке.</li>{% endfor %}
 </ul>

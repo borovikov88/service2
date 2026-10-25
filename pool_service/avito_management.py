@@ -345,7 +345,7 @@ def avito_check_api(request, connection_id):
 
 class WorkspaceRefreshForm(forms.Form):
     autoload_kind = forms.ChoiceField(choices=[(x, x) for x in avito_autoload_report.KINDS], required=False)
-    section = forms.ChoiceField(choices=[(x, x) for x in ("all", *avito_workspace.SECTIONS, "advance_enable", "advance_disable", "advance_retry", "tariff_enable", "tariff_disable", "tariff_retry")])
+    section = forms.ChoiceField(choices=[(x, x) for x in ("all", *avito_workspace.SECTIONS, "advance_enable", "advance_disable", "advance_retry", "tariff_enable", "tariff_disable", "tariff_retry", "tariff_save_date")])
     page = forms.IntegerField(min_value=1, max_value=10000, required=False, initial=1)
     status = forms.ChoiceField(choices=[("", "Все"), *avito_workspace.ITEM_STATUSES.items()], required=False)
     expires_on = forms.DateField(required=False)
@@ -465,7 +465,7 @@ def avito_refresh_data(request, connection_id):
         except ValueError as error:
             messages.error(request, str(error))
         return redirect(destination + "#avito-advance")
-    if section in {"tariff_enable", "tariff_disable", "tariff_retry"}:
+    if section in {"tariff_enable", "tariff_disable", "tariff_retry", "tariff_save_date"}:
         try:
             avito_tariff_reminder.configure(
                 connection, request.user, section.removeprefix("tariff_"),

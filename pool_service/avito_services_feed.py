@@ -215,12 +215,19 @@ def _page_context(request, connection, feed, error=''):
              'archive_control': archive_context(row, observations.get(row['AvitoId']),
                  intents.get(row['AvitoId']), reported.get(row['AvitoId']))}
             for row in entries(feed.draft)] if feed else []
-    history = Paginator(feed.versions.select_related('actor').order_by('-pk'), 20).get_page(
+    history = Paginator(feed.versions.select_related('actor', 'source_version').order_by('-pk'), 20).get_page(
         request.GET.get('history_page')) if feed else None
     selected = None
     if feed and request.GET.get('history_version'):
         selected = _version(feed, request.GET['history_version'])
+    from .avito_services_content_evidence import manual_photo_context, is_manual_photo_event
+    for item in (history.object_list if history else []):
+        item.manual_photo_evidence = is_manual_photo_event(item)
+    if selected:
+        selected.manual_photo_evidence = is_manual_photo_event(selected)
+    manual_photo = manual_photo_context(connection, feed, publication['version'] if publication else None)
     return {
+        'manual_photo': manual_photo,
         'connection': connection, 'feed': feed, 'rows': rows, 'error': error,
         'history': history, 'selected_version': selected, 'publication': publication,
         'feed_url': request.build_absolute_uri(reverse('avito_services_feed_public', args=[feed.public_key]))
@@ -241,6 +248,9 @@ def services_feed(request, connection_id):
         action = request.POST.get('action')
         if action == 'verify' and feed:
             return _verify_publication(request, connection, feed)
+        if action == 'confirm_photo' and feed:
+            from .avito_services_content_evidence import handle_photo_evidence_post
+            return handle_photo_evidence_post(request, connection, feed)
         try:
             imported = None
             if action == 'import':
