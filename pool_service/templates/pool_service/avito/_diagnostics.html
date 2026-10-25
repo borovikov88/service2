@@ -3,7 +3,7 @@
       <div class="avito-account__header">
         <div>
           <h2 class="h5 mb-1">{{ account.connection.name }}</h2>
-          <div class="small text-muted">ID в Service2: {{ account.connection.external_id }}</div>
+          <div class="small text-muted">Подключение №{{ account.connection.pk }} · ID Авито: {{ account.connection.external_id }}</div>
           {% if account.actual_id and account.actual_id != account.connection.external_id %}
             <div class="small text-warning-emphasis mt-1">ID по API: {{ account.actual_id }} — отличается от сохранённого</div>
           {% endif %}
@@ -44,12 +44,12 @@
       <details class="border-top p-3"><summary>Фоновые проверки этого подключения</summary>
         <p class="small">Сохранённое состояние и результат последнего завершённого запуска показаны раздельно. Старое состояние не подтверждает результат нового запуска.</p>
         {% for check in account.runtime_checks %}<div class="border-top py-2 small">
-          <strong>{{ check.label }}</strong> · {{ check.state }}
-          {% if check.code %}<span class="text-warning">{{ check.code }}</span>{% endif %}
+          <strong>Подключение №{{ account.connection.pk }} · {{ check.label }}</strong> · {% if check.state == "due" %}Ожидает планового запуска{% elif check.state == "disabled" %}Выключено / не настроено{% elif check.state == "pending" %}Результат ещё не подтверждён{% elif check.state == "blocked" %}Требует проверки настроек{% elif check.state == "failed" %}Сохранена ошибка проверки{% elif check.state == "ok" %}Есть успешный результат{% else %}{{ check.state }}{% endif %}
+          {% if check.code %}<details class="mt-1"><summary>Сохранённый код проверки</summary><span class="{% if check.state == 'failed' or check.state == 'blocked' %}text-warning{% else %}text-muted{% endif %}">{{ check.code }}</span></details>{% endif %}
           {% if check.consistency_guard_label %}<div>Сохранённая причина: {{ check.consistency_guard_label }}</div>{% endif %}
-          <div>Последний фоновый запуск: {% if check.last_worker_verified %}{{ check.last_worker_outcome }}{% if check.last_worker_code %} · {{ check.last_worker_code }}{% endif %} · {{ check.last_worker_checked_at }}{% else %}результат этой проверки не подтверждён{% endif %}</div>
+          <div>Последний фоновый запуск: {% if check.last_worker_verified %}{% if check.last_worker_outcome == "failed" %}<span class="text-warning">Ошибка проверки{% if check.last_worker_code %} · {{ check.last_worker_code }}{% endif %}</span>{% elif check.last_worker_outcome == "success" or check.last_worker_outcome == "baseline" %}Успешно{% elif check.last_worker_outcome == "skipped" or check.last_worker_outcome == "not_run" %}В этом запуске проверка не выполнялась{% if check.last_worker_code %} · {{ check.last_worker_code }}{% endif %}{% endif %} · <time datetime="{{ check.last_worker_checked_at }}" data-avito-time>{{ check.last_worker_checked_at }}</time>{% else %}результат этой проверки не подтверждён{% endif %}</div>
           {% if check.last_worker_consistency_guard_label %}<div>Причина последнего фонового сбоя: {{ check.last_worker_consistency_guard_label }}</div>{% endif %}
-          {% if check.success_at %}<div>Последний успешный результат: {{ check.success_at }}</div>{% endif %}
+          {% if check.success_at %}<div>Последний успешный результат: <time datetime="{{ check.success_at }}" data-avito-time>{{ check.success_at }}</time></div>{% endif %}
         </div>{% endfor %}
       </details>
       {% endif %}

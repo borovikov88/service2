@@ -175,3 +175,30 @@ class ScopedWorkerDisplayTests(TestCase):
         self.assertIn("check_error_unclassified", result["detail"])
         self.assertNotIn("SECRET", result["detail"])
         self.assertNotIn("private.invalid", result["detail"])
+
+    def test_scoped_display_reads_only_the_selected_component(self):
+        with patch.object(runtime, "_saved", wraps=runtime._saved) as saved:
+            self.display()
+        saved.assert_called_once()
+        self.assertEqual("advance", saved.call_args.args[1])
+
+    def test_admin_template_attributes_selected_check_and_keeps_non_failure_states_neutral(self):
+        row = {"check": "advance", "label": "Аванс", "state": "due", "code": "provider_http_403",
+            "last_worker_verified": True, "last_worker_outcome": "skipped",
+            "last_worker_code": "workspace_busy", "last_worker_checked_at": timezone.now().isoformat()}
+        account = {"connection": self.connection, "has_credentials": False,
+            "webhook_status": "connected", "runtime_checks": [row]}
+        html = render_to_string("pool_service/avito/_diagnostics.html", {"accounts": [account]})
+        self.assertIn("Подключение №4 · ID Авито: 446312402", html)
+        self.assertIn("Подключение №4 · Аванс", html)
+        self.assertIn("Ожидает планового запуска", html)
+        self.assertIn("В этом запуске проверка не выполнялась", html)
+        self.assertIn('<span class="text-muted">provider_http_403</span>', html)
+        self.assertIn('data-avito-time', html)
+        self.assertNotIn("Ошибка проверки", html)
+        for state, label in (("disabled", "Выключено / не настроено"),
+                             ("pending", "Результат ещё не подтверждён")):
+            row.update(state=state, last_worker_verified=False)
+            html = render_to_string("pool_service/avito/_diagnostics.html", {"accounts": [account]})
+            self.assertIn(label, html)
+            self.assertNotIn("Ошибка проверки", html)

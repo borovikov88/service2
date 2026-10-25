@@ -150,7 +150,7 @@ def _saved(connection, check):
         "next_due_at": when(state.get("next_due_at"))}
 
 
-def checks(connection):
+def checks(connection, *, only_check=None):
     """Auth scope is checked by the caller; rows expose only this exact binding."""
     try:
         heartbeat = AvitoSchedulerHeartbeat.objects.filter(pk="avito-status-monitor").first()
@@ -161,6 +161,8 @@ def checks(connection):
     recorded = heartbeat.checks if complete and isinstance(heartbeat.checks, list) else []
     output = []
     for key, label in CHECKS.items():
+        if only_check is not None and key != only_check:
+            continue
         saved = _saved(connection, key)
         match = next((row for row in recorded if isinstance(row, dict) and
             row.get("connection_id") == connection.pk and row.get("account_id") == str(connection.external_id)
@@ -198,7 +200,7 @@ def scoped_scheduler_display(connection, check, scheduler):
         raise ValueError("Unknown Avito check")
     output = dict(scheduler)
     label = f"Подключение №{connection.pk} · {CHECKS[check]}"
-    row = next(item for item in checks(connection) if item["check"] == check)
+    row = next(item for item in checks(connection, only_check=check) if item["check"] == check)
     now = timezone.now()
     stamp = when(row.get("last_worker_checked_at"))
     saved_stamp = when(row.get("checked_at"))
