@@ -577,6 +577,8 @@ def collect_services(item_ids=None, *, connection_id=SERVICES_CONNECTION_ID,
             raise AvitoError("provider_account_mismatch")
         if current_publication:
             selected = feed.published_revision
+            selected_enabled = feed.enabled
+            selected_photo_limit = feed.published_photo_limit
             if type(selected) is not int or not 0 < selected <= 1000000000 or not feed.enabled or not feed.published:
                 raise AvitoError("provider_account_mismatch")
             revision = selected
@@ -595,6 +597,8 @@ def collect_services(item_ids=None, *, connection_id=SERVICES_CONNECTION_ID,
             fresh = bound_services_feed(current, SERVICES_ACCOUNT_ID)
             if (binding(current) != selected_binding or fresh is None
                     or fresh.pk != feed.pk or fresh.published_revision != revision
+                    or fresh.enabled is not True or fresh.enabled != selected_enabled
+                    or fresh.published_photo_limit != selected_photo_limit
                     or fresh.public_key != feed.public_key or fresh.published != feed.published):
                 raise ValueError
         except Exception:

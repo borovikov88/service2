@@ -775,6 +775,22 @@ class ScopedServicesReleaseAuditTests(TestCase):
                     ChannelConnection.objects.filter(pk=4).update(channel_id=original_channel)
 
 
+    def test_current_selection_discards_result_after_enable_or_photo_contract_change(self):
+        for field, value in (("enabled", False), ("published_photo_limit", 30)):
+            with self.subTest(field=field):
+                def changed(*args, **kwargs):
+                    AvitoServicesFeed.objects.filter(pk=self.feed.pk).update(**{field: value})
+                    return {"connection_id": 4, "error": "provider_http_403"}
+                try:
+                    with patch.object(audit, "collect_connection", side_effect=changed):
+                        result = audit.collect_services(current_publication=True)
+                    self.assertEqual([{"connection_id": 4, "error": "audit_publication_changed"}],
+                                     result["connections"])
+                finally:
+                    AvitoServicesFeed.objects.filter(pk=self.feed.pk).update(
+                        enabled=True, published_photo_limit=10)
+
+
 class ServicesReleaseProjectionTests(SimpleTestCase):
     def test_publication_and_photo_projection_never_exports_urls_hashes_values_or_actors(self):
         for projector, raw in ((receipt.publication_release, release_publication()),
