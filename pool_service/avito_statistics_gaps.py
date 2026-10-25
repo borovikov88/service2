@@ -71,7 +71,8 @@ def _attempt(state, runs, daily):
     """Only current-binding runs can back new telemetry; old generic failures stay unknown."""
     raw = state.get('last_attempt')
     if not isinstance(raw, dict):
-        return {'state': 'historical_unknown', 'phase': 'unknown',
+        return {'state': 'historical_unknown' if state.get('last_error_code') or state.get('last_checked_at')
+                else 'not_observed', 'phase': 'unknown',
             'error_code': daily._error_code(state.get('last_error_code')) if state.get('last_error_code') else '',
             'finished_at': _iso(daily._date(state.get('last_checked_at')))}
     run = next((item for item in runs if item.pk == raw.get('run_id')), None)

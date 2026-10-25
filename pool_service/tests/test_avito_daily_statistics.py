@@ -489,6 +489,8 @@ class DailyHistoryTests(TestCase):
             'avito_id', 'source', 'provider_timezone', 'from', 'to', 'request_scope',
             'unit_contract', 'manifest_is_request_filter', 'completed_dates', 'expected_dates',
             'states', 'last_attempt', 'dates'})
+        self.assertEqual(set(evidence['last_attempt']), {'state', 'run_id', 'source_date',
+            'offset', 'phase', 'exception_class', 'error_code', 'outcome', 'started_at', 'finished_at'})
         self.assertEqual(evidence['request_scope'], 'all_account_items_no_item_filter')
         self.assertFalse(evidence['manifest_is_request_filter'])
         self.assertEqual((evidence['from'], evidence['to']), ('2026-09-24', '2026-10-23'))
@@ -617,6 +619,25 @@ class DailyHistoryTests(TestCase):
             self.assertEqual(self.gap_evidence()['last_attempt']['error_code'], expected)
         self.assertEqual(list(AvitoDailyStatistic.objects.filter(source_run=complete).values()), before)
         self.assertEqual(self.gap_evidence()['dates'][0]['latest_complete_run_id'], complete.pk)
+
+    def test_gap_rejects_other_binding_runs_and_malformed_attempt_metadata(self):
+        target = self.priority_manifest()
+        with patch.object(avito_workspace, 'fetch_statistics',
+                return_value=self.page((int(target),), total=1)):
+            daily.collect_next()
+        complete = AvitoStatisticsRun.objects.get()
+        foreign = AvitoStatisticsRun.objects.create(connection=self.connection, account_id=daily.ACCOUNT,
+            organization_id_at_collection=self.org.pk, binding_digest='different-generation',
+            day=complete.day, state='success', pagination_complete=True,
+            dimensions={'PRIVATE': {}}, staged_rows=[{'id': 'PRIVATE'}])
+        self.connection.refresh_from_db()
+        self.connection.settings[daily.KEY]['last_attempt']['phase'] = ['PRIVATE']
+        self.connection.save(update_fields=['settings'])
+        receipt = self.gap_evidence()
+        self.assertEqual(receipt['dates'][0]['latest_complete_run_id'], complete.pk)
+        self.assertNotEqual(receipt['dates'][0]['latest_attempt_run_id'], foreign.pk)
+        self.assertEqual(receipt['last_attempt']['state'], 'unconfirmed')
+        self.assertNotIn('PRIVATE', str(receipt))
 
     def test_lost_lease_does_not_transfer_failure_telemetry(self):
         self.connection.refresh_from_db()
