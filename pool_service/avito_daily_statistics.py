@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
+from django.db.models import F
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -393,8 +394,19 @@ def metric_display(metrics):
     ]
 
 
-def source_periods(rows, completed_days, now=None):
-    """Sums of provider daily counters; never labelled unique people or Barnaul days."""
+def _expected_ids(run):
+    """Known manifest at collection, not a reconstructed historic active inventory."""
+    if run is None:
+        return set()
+    dimensions = run.dimensions if isinstance(run.dimensions, dict) else {}
+    staged = run.staged_rows if isinstance(run.staged_rows, list) else []
+    return {str(key) for key in dimensions if str(key).isdigit()} | {
+        str(row['id']) for row in staged
+        if isinstance(row, dict) and str(row.get('id', '')).isdigit()}
+
+
+def source_periods(rows, completed_days, now=None, *, day_runs=None):
+    """Provider-date sums with separate page, ad-row and calendar coverage."""
     end = collection_cutoff(now)
     windows = [
         ('Последняя дата источника', end, end),
@@ -403,20 +415,132 @@ def source_periods(rows, completed_days, now=None):
         ('Предыдущие 7 дат источника', end-timedelta(days=13), end-timedelta(days=7)),
         ('30 дат источника', end-timedelta(days=29), end),
     ]
+    day_runs = day_runs or {}
     output = []
     for label, start, finish in windows:
-        selected = [row for row in rows if start <= row.day <= finish]
-        missing_days = sum(start+timedelta(days=i) not in completed_days
-                           for i in range((finish-start).days+1))
-        metrics = {}
+        days = [start+timedelta(days=i) for i in range((finish-start).days+1)]
+        missing_days = sum(day not in completed_days for day in days)
+        selected = [row for row in rows if start <= row.day <= finish
+                    and row.day in day_runs and row.source_run_id == day_runs[row.day].pk]
+        expected, cohort_days = set(), []
+        for day in days:
+            run = day_runs.get(day)
+            if run is None:
+                continue
+            known = _expected_ids(run) | {row.avito_id for row in selected if row.day == day}
+            expected.update((day, identifier) for identifier in known)
+            cohort_days.append(known)
+        reported = {(row.day, row.avito_id) for row in selected if row.provider_row_present}
+        stored = {(row.day, row.avito_id) for row in selected}
+        missing_rows = len(expected - reported)
+        metrics, metric_coverage = {}, {}
         for slug in COUNTERS + MONEY:
-            values = [row.metrics.get(slug) for row in selected]
+            values = [row.metrics.get(slug) if row.provider_row_present else None for row in selected]
+            metric_coverage[slug] = sum(value is not None for value in values)
             metrics[slug] = (format(sum(Decimal(value) for value in values), 'f')
-                if values and not missing_days and all(value is not None for value in values) else None)
-        output.append({'label': label, 'from': start, 'to': finish, 'missing_days': missing_days,
-            'metrics': metric_display(metrics), 'reported_cells': sum(row.provider_row_present for row in selected),
-            'expected_cells': len(selected), 'provider_calendar_aligned': False})
+                if values and not missing_days and not missing_rows
+                and expected == stored and all(value is not None for value in values) else None)
+        shown = metric_display(metrics)
+        for item in shown:
+            item['known_cells'] = metric_coverage.get(item['key'])
+        output.append({'label': label, 'from': start, 'to': finish,
+            'source': 'avito_stats_v2_items', 'provider_timezone': 'unknown',
+            'missing_days': missing_days, 'completed_days': len(days)-missing_days,
+            'total_days': len(days), 'pages_complete': not missing_days,
+            'metrics': shown, 'metric_values': {item['key']: item['value'] for item in shown},
+            'metric_coverage': metric_coverage, 'reported_cells': len(reported),
+            'expected_cells': len(expected), 'stored_cells': len(stored),
+            'missing_ad_cells': missing_rows, 'expected_cells_known': not missing_days,
+            'cohort_ids': sorted({identifier for _, identifier in expected}),
+            'cohort_stable': bool(cohort_days) and not missing_days
+                and all(ids == cohort_days[0] for ids in cohort_days),
+            'run_ids': [day_runs[day].pk for day in days if day in day_runs],
+            'received_at': max((day_runs[day].finished_at for day in days
+                if day in day_runs and day_runs[day].finished_at is not None), default=None),
+            'provider_calendar_aligned': False})
     return output
+
+
+def source_comparisons(periods):
+    """Deltas compare provider date labels only; no local-calendar conversion."""
+    output = []
+    for title, current, previous in (
+            ('Дата источника с предыдущей', periods[0], periods[1]),
+            ('7 дат источника с предыдущими 7', periods[2], periods[3])):
+        same_cohort = (current['cohort_stable'] and previous['cohort_stable']
+            and current['cohort_ids'] == previous['cohort_ids'])
+        reason = ('missing_days' if current['missing_days'] or previous['missing_days']
+            else 'cohort_changed' if not same_cohort
+            else 'missing_ad_rows' if current['missing_ad_cells'] or previous['missing_ad_cells']
+            else '')
+        metrics = []
+        for item in current['metrics']:
+            key = item['key']
+            value, before = item['value'], previous['metric_values'].get(key)
+            comparable = not reason and value is not None and before is not None
+            delta = format(Decimal(value)-Decimal(before), 'f') if comparable else None
+            relative = (ratio({'current': Decimal(value)-Decimal(before), 'previous': before},
+                'current', 'previous', Decimal('100')) if comparable else None)
+            metrics.append({**item, 'current': value, 'previous': before,
+                'delta': delta, 'delta_unit': 'п.п.' if item['unit'] == '%' else item['unit'],
+                'relative_change': relative, 'comparable': comparable})
+        output.append({'label': title, 'current': current, 'previous': previous,
+            'reason': reason, 'same_cohort': same_cohort, 'metrics': metrics,
+            'provider_calendar_aligned': False})
+    return output
+
+
+def _source_history(connection, now=None):
+    """Shared bounded DB read; callers establish the current connection scope."""
+    cutoff = collection_cutoff(now)
+    rows = list(AvitoDailyStatistic.objects.filter(connection=connection, account_id=ACCOUNT,
+        organization_id_at_collection=connection.channel.organization_id,
+        day__range=(cutoff-timedelta(days=29), cutoff),
+        source_run__connection=connection, source_run__account_id=ACCOUNT,
+        source_run__organization_id_at_collection=connection.channel.organization_id,
+        source_run__state='success', source_run__pagination_complete=True,
+        source_run__day=F('day')).select_related('source_run')
+        .order_by('-day', 'avito_id')[:MAX_ROWS*BACKFILL_DAYS*2])
+    complete_runs = AvitoStatisticsRun.objects.filter(
+        connection=connection, account_id=ACCOUNT,
+        organization_id_at_collection=connection.channel.organization_id, state='success', pagination_complete=True,
+        day__range=(cutoff-timedelta(days=29), cutoff)).order_by('-pk')
+    day_runs = {}
+    for run in complete_runs:
+        day_runs.setdefault(run.day, run)
+    return cutoff, rows, day_runs
+
+
+def source_period_evidence(connection, now=None):
+    """Closed metadata for the protected setup receipt; never metric values."""
+    with transaction.atomic():
+        current = ChannelConnection.objects.select_for_update().select_related('channel').filter(pk=connection.pk).first()
+        if current is None or not _scope(current) or not _allowed(current, _state(current)):
+            return {'schema_version': 1, 'state': 'blocked', 'code': 'statistics_binding_changed'}
+        cutoff, rows, day_runs = _source_history(current, now)
+        periods = source_periods(rows, set(day_runs), now, day_runs=day_runs)
+        comparisons = source_comparisons(periods)
+        names = ('day', 'previous_day', 'seven_days', 'previous_seven_days', 'thirty_days')
+        windows = []
+        for index, period in enumerate(periods):
+            comparison = comparisons[index // 2] if index < 4 else None
+            windows.append({'key': names[index], 'from': period['from'].isoformat(),
+                'to': period['to'].isoformat(), 'missing_dates': period['missing_days'],
+                'expected_ad_cells': period['expected_cells'],
+                'reported_ad_cells': period['reported_cells'],
+                'pages_complete': period['pages_complete'],
+                'ad_rows_complete': bool(period['expected_cells']) and period['pages_complete']
+                    and not period['missing_ad_cells']
+                    and period['stored_cells'] == period['expected_cells'],
+                'comparison_applicable': comparison is not None,
+                'same_cohort': comparison['same_cohort'] if comparison is not None else False,
+                'comparison_available': bool(comparison is not None and not comparison['reason']
+                    and comparison['metrics'] and all(item['comparable'] for item in comparison['metrics']))})
+        return {'schema_version': 1, 'state': 'observed', 'source': 'avito_stats_v2_items',
+            'cutoff': cutoff.isoformat(), 'provider_timezone': 'unknown',
+            'barnaul_calendar_confirmed': False, 'completed_dates': len(day_runs),
+            'expected_dates': BACKFILL_DAYS,
+            'comparison_rule': 'all_requested_metrics_known', 'periods': windows}
 
 
 def display(connection, actor, now=None):
@@ -425,15 +549,8 @@ def display(connection, actor, now=None):
             or not conversation_capability(actor, 'can_manage_channels', connection.channel.organization)):
         return None
     state = _state(connection)
-    cutoff = collection_cutoff(now)
-    rows = list(AvitoDailyStatistic.objects.filter(connection=connection, account_id=ACCOUNT,
-        organization_id_at_collection=connection.channel.organization_id,
-        day__range=(cutoff-timedelta(days=29), cutoff)).select_related('source_run')
-        .order_by('-day', 'avito_id')[:MAX_ROWS*BACKFILL_DAYS*2])
-    completed_days = set(AvitoStatisticsRun.objects.filter(
-        connection=connection, account_id=ACCOUNT,
-        organization_id_at_collection=connection.channel.organization_id, state='success', pagination_complete=True,
-        day__range=(cutoff-timedelta(days=29), cutoff)).values_list('day', flat=True))
+    cutoff, rows, day_runs = _source_history(connection, now)
+    completed_days = set(day_runs)
     latest = AvitoStatisticsRun.objects.filter(connection=connection, account_id=ACCOUNT,
         organization_id_at_collection=connection.channel.organization_id).order_by('-pk').first()
     output = {'enabled': state.get('enabled') is True and _allowed(connection, state),
@@ -446,12 +563,19 @@ def display(connection, actor, now=None):
         'aligned_comparisons_available': False,
         'windows': [{'label': label, 'from': start, 'to': end} for label, start, end in requested_windows(now)],
         'rows': [], 'groups': [], 'changes': [], 'total_cells': len(rows),
-        'provider_periods': source_periods(rows, completed_days, now)}
+        'provider_periods': source_periods(rows, completed_days, now, day_runs=day_runs)}
+    output['provider_comparisons'] = source_comparisons(output['provider_periods'])
+    output['backfill'] = {'from': cutoff-timedelta(days=BACKFILL_DAYS-1), 'to': cutoff,
+        'completed_days': len(completed_days), 'remaining_days': BACKFILL_DAYS-len(completed_days),
+        'total_days': BACKFILL_DAYS, 'oldest_complete_day': min(completed_days, default=None),
+        'latest_complete_day': max(completed_days, default=None)}
+    output['bonus_spending'] = {'value': None, 'unit': '',
+        'reason': 'Единица spendingBonus официально не подтверждена; бонусы не вычисляются из разницы расходов.'}
     for row in rows[:100]:
         output['rows'].append({'day': row.day, 'avito_id': row.avito_id, 'title': row.title,
             'service': row.service_label, 'service_source': row.service_source, 'city': row.city_label,
             'city_source': row.source_run.dimensions.get(row.avito_id, {}).get('city_source', 'unknown'),
-            'fetched_at': row.fetched_at, 'metrics': metric_display(row.metrics),
+            'fetched_at': row.fetched_at, 'metrics': metric_display(row.metrics if row.provider_row_present else {}),
             'provider_row_present': row.provider_row_present, 'run': row.source_run})
     # These are provider date labels, not converted Barnaul calendar days.
     grouped = {}
@@ -461,7 +585,7 @@ def display(connection, actor, now=None):
     for (day, service, service_source, city), items in sorted(grouped.items()):
         metrics = {}
         for slug in COUNTERS + MONEY:
-            values = [item.metrics.get(slug) for item in items]
+            values = [item.metrics.get(slug) if item.provider_row_present else None for item in items]
             metrics[slug] = (format(sum(Decimal(value) for value in values), 'f')
                 if all(value is not None for value in values) else None)
         output['groups'].append({'day': day, 'service': service,
@@ -557,6 +681,7 @@ def setup_once():
         'pagination_complete': latest.pagination_complete if latest else False,
         'provider_timezone': 'unknown', 'barnaul_calendar_confirmed': False,
         'error_code': code,
+        'source_period_evidence': source_period_evidence(connection),
         'natural_background_verified': background.get('last_worker_verified') is True
             and background.get('last_worker_outcome') == 'success',
         'natural_background_checked_at': background.get('last_worker_checked_at')}
