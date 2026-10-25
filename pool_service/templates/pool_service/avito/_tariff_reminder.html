@@ -16,11 +16,28 @@
     {% if tariff_reminder_state.quiet_until_display %}<p class="small text-muted mb-2">Тихие часы: напоминание отложено до {{ tariff_reminder_state.quiet_until_display }} · Барнаул. Этап не считается доставленным.</p>{% endif %}
     <details class="avito-help"><summary>{% if tariff_reminder_state.enabled %}Изменить дату или отключить{% else %}Настроить напоминания{% endif %}</summary>
       <p class="small text-muted mt-2 mb-2">Укажите дату из кабинета Авито. Сообщения внутри Service2: {% if tariff_reminder_state.services_schedule %}за 7 и 3 дня, за день и в указанную дату{% else %}за 3 дня, за день и в указанную дату{% endif %}, по часовому поясу {{ tariff_reminder_state.timezone }}. {% if tariff_reminder_state.services_schedule %}Тихие часы 21:00–08:00 по Барнаулу действуют также для повторных попыток. {% endif %} Пуш, SMS и письма не отправляются. После продления обновите дату. Это напоминание по введённой дате; фактическое состояние тарифа API не подтверждает.</p>
+      {% if tariff_reminder_state.services_schedule %}
+      <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" class="d-flex flex-wrap align-items-end gap-2" data-avito-submit>
+        {% include 'pool_service/avito/_refresh_fields.html' %}<input type="hidden" name="section" value="tariff_save_date">
+        <div><label for="avito-tariff-date" class="small mb-1">Дата окончания тарифа из кабинета Авито</label><input id="avito-tariff-date" name="expires_on" type="date" class="form-control form-control-sm" value="{{ tariff_reminder_state.expires_on|date:'Y-m-d' }}" required></div>
+        <button type="submit" class="btn btn-sm btn-outline-primary">Сохранить дату</button>
+      </form>
+      {% if tariff_reminder_state.expires_on %}{% if not tariff_reminder_state.enabled or tariff_reminder_state.needs_reactivation %}
+      <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" class="mt-2" data-avito-submit>
+        {% include 'pool_service/avito/_refresh_fields.html' %}<input type="hidden" name="section" value="tariff_enable">
+        <input type="hidden" name="expires_on" value="{{ tariff_reminder_state.expires_on|date:'Y-m-d' }}">
+        <p class="small mb-2">Дата для напоминаний: {{ tariff_reminder_state.expires_on|date:"d.m.Y" }}. Если она изменилась, сначала сохраните новую дату выше.</p>
+        <button type="submit" class="btn btn-sm btn-primary" {% if not tariff_reminder_state.scheduler.ready or not tariff_reminder_state.in_app_enabled %}disabled{% endif %}>Подтвердить сохранённую дату и включить напоминания</button>
+      </form>
+      {% endif %}{% endif %}
+      {% else %}
       <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" class="d-flex flex-wrap align-items-end gap-2" data-avito-submit>
         {% include 'pool_service/avito/_refresh_fields.html' %}<input type="hidden" name="section" value="tariff_enable">
         <div><label for="avito-tariff-date" class="small mb-1">Дата окончания тарифа в Авито</label><input id="avito-tariff-date" name="expires_on" type="date" class="form-control form-control-sm" value="{{ tariff_reminder_state.expires_on|date:'Y-m-d' }}" required></div>
         <button type="submit" class="btn btn-sm btn-primary" {% if not tariff_reminder_state.scheduler.ready or not tariff_reminder_state.in_app_enabled %}disabled{% endif %}>{% if tariff_reminder_state.enabled %}Сохранить дату{% else %}Включить напоминания{% endif %}</button>
       </form>
+      {% endif %}
+      {% if tariff_reminder_state.services_schedule %}<p class="small text-muted mt-2">Сохранение даты не включает выключенные напоминания. Уже включённые останутся включёнными; для их первого или повторного включения нужна готовность фонового обработчика.</p>{% endif %}
       {% if tariff_reminder_state.enabled %}
       <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" class="mt-2" data-avito-submit>
         {% include 'pool_service/avito/_refresh_fields.html' %}<input type="hidden" name="section" value="tariff_disable">

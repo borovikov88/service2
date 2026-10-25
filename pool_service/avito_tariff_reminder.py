@@ -104,12 +104,14 @@ def _scheduler():
 
 
 def configure(connection, user, action, *, expires_on=None):
-    if action not in {"enable", "disable", "retry"}:
+    if action not in {"enable", "disable", "retry", "save_date"}:
         raise ValueError("Неизвестное действие.")
     with transaction.atomic():
         connection = ChannelConnection.objects.select_for_update().select_related("channel").get(pk=connection.pk)
         if connection.channel.kind != "avito" or not subscriber_allowed(user, connection.channel.organization):
             raise PermissionDenied
+        if action == "save_date" and not _services(connection):
+            raise ValueError("Отдельное сохранение даты доступно только для подключения услуг №4.")
         state = _state(connection)
         if state.get("actor_id") is not None and state["actor_id"] != user.pk:
             raise PermissionDenied
@@ -124,18 +126,22 @@ def configure(connection, user, action, *, expires_on=None):
                 raise ValueError("Укажите дату окончания тарифа из кабинета Авито.")
             if not connection.is_active or not connection.channel.is_active:
                 raise ValueError("Нужно активное подключение Авито.")
-            if not _in_app(user.pk):
-                raise ValueError(ERROR_PREFS)
-            if not _scheduler()["ready"]:
-                raise ValueError("Сначала подтвердите работу серверного расписания.")
-            if (state.get("enabled") is not True or not _allowed(connection, state)
-                    or state.get("expires_on") != expires_on.isoformat()):
+            if action == "enable":
+                if not _in_app(user.pk):
+                    raise ValueError(ERROR_PREFS)
+                if not _scheduler()["ready"]:
+                    raise ValueError("Сначала подтвердите работу серверного расписания.")
+            valid = _allowed(connection, state)
+            previously_enabled = state.get("enabled") is True and valid
+            if (not valid or state.get("expires_on") != expires_on.isoformat()
+                    or (action == "enable" and not previously_enabled)):
                 state = {
-                    "enabled": True, "generation": uuid.uuid4().hex,
+                    "enabled": action == "enable" or previously_enabled, "generation": uuid.uuid4().hex,
                     "actor_id": user.pk, "organization_id": connection.channel.organization_id,
                     "channel_id": connection.channel_id, "account_id": str(connection.external_id),
                     "expires_on": expires_on.isoformat(), "source": "manual",
-                    "next_due_at": timezone.now().isoformat(), "last_error_detail": "",
+                    "next_due_at": timezone.now().isoformat() if action == "enable" or previously_enabled else None,
+                    "last_error_detail": "",
                 }
             if _services(connection):
                 # Only an explicit authenticated save confirms a supplied date.

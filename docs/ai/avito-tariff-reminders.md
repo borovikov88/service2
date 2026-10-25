@@ -69,3 +69,19 @@ The UI gives an exact existing-card manual sequence and keeps automatic return
 blocked. Tariff/contact/promotion charges are separate from the incremental
 price of returning that card. Do not create a copy, deactivate an active card
 for a test or buy a paid option merely to check this feature.
+
+
+The scoped save_date action records only a manual date and its confirmation;
+it does not require scheduler readiness or in-app opt-in and never turns a
+disabled reminder on. With no existing configuration, it creates a disabled record.
+A valid already-enabled subscription keeps that state on date-only save.
+Changing the date creates a fresh generation/stage history; keeping the same
+date preserves both. Enabling or re-enabling still requires the original
+scheduler-readiness, notification-preference and access checks. The separate
+action/UI is unavailable for other connections.
+
+The date-only form always has a hidden tariff_save_date action; enabling uses a
+separate form containing the saved date and an explicit date-confirmation button.
+This works with the existing busy-submit handler, which disables submit buttons
+before native form serialization. It does not rely on a disabled submit button's
+name/value to select the action.

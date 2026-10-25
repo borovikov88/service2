@@ -333,3 +333,65 @@ class ServicesTariffReminderTests(TestCase):
             shown = calendar.display_state(self.connection, self.owner)
         self.assertEqual(shown["timezone"], "Asia/Barnaul")
         self.assertEqual(shown["confirmed_at_display"], "16.01.2026 01:00:00")
+
+
+    def test_save_date_works_without_worker_but_never_enables_opted_out_reminders(self):
+        with patch.object(calendar, "scheduler_state", return_value={"ready": False, "worker_ready": False}):
+            saved = calendar.configure(self.connection, self.owner, "save_date", expires_on=date(2026, 1, 22))
+            self.assertFalse(saved["enabled"])
+            self.assertIsNone(saved["next_due_at"])
+            self.assertEqual(saved["confirmation_source"], calendar.MANUAL_SOURCE)
+            self.assertEqual(saved["confirmed_by"], self.owner.pk)
+            self.assertEqual(self.poll(date(2026, 1, 15)), "skipped")
+            self.assertFalse(Notification.objects.exists())
+            with self.assertRaises(ValueError):
+                self.enable(date(2026, 1, 22))
+        self.enable(date(2026, 1, 22))
+        self.poll(date(2026, 1, 15))
+        self.assertEqual(Notification.objects.count(), 1)
+        calendar.configure(self.connection, self.owner, "disable")
+        with patch.object(calendar, "scheduler_state", return_value={"ready": False, "worker_ready": False}):
+            saved = calendar.configure(self.connection, self.owner, "save_date", expires_on=date(2026, 1, 23))
+        self.assertFalse(saved["enabled"])
+        self.assertIsNone(saved["next_due_at"])
+        self.assertNotIn("last_stage", saved)
+
+    def test_date_only_save_preserves_enabled_state_and_resets_only_changed_date_dedupe(self):
+        first = self.enable(date(2026, 1, 22))
+        self.poll(date(2026, 1, 15))
+        with patch.object(calendar, "scheduler_state", return_value={"ready": False, "worker_ready": False}):
+            same = calendar.configure(self.connection, self.owner, "save_date", expires_on=date(2026, 1, 22))
+            self.assertTrue(same["enabled"])
+            self.assertEqual(same["generation"], first["generation"])
+            self.assertEqual(same["last_stage"], "week")
+            changed = calendar.configure(self.connection, self.owner, "save_date", expires_on=date(2026, 1, 23))
+        self.assertTrue(changed["enabled"])
+        self.assertNotEqual(changed["generation"], first["generation"])
+        self.assertNotIn("last_stage", changed)
+        self.assertEqual(self.poll(date(2026, 1, 16)), "success")
+        self.assertEqual(Notification.objects.count(), 2)
+
+    def test_date_only_form_is_self_scoped_csrf_protected_and_unavailable_for_goods(self):
+        url = reverse("avito_refresh_data", args=[4])
+        self.client.force_login(self.owner)
+        with patch.object(calendar, "scheduler_state", return_value={"ready": False, "worker_ready": False}), \
+             patch("pool_service.communication_avito.access_token") as token:
+            response = self.client.post(url, {"section": "tariff_save_date", "expires_on": "2026-01-22",
+                                             "actor_id": self.manager.pk})
+        self.assertEqual(response.status_code, 302)
+        token.assert_not_called()
+        self.assertEqual(self.state()["actor_id"], self.owner.pk)
+        self.assertFalse(self.state()["enabled"])
+        client = Client(enforce_csrf_checks=True)
+        client.force_login(self.owner)
+        self.assertEqual(client.post(url, {"section": "tariff_save_date",
+                         "expires_on": "2026-01-22"}).status_code, 403)
+        self.client.force_login(self.manager)
+        self.assertEqual(self.client.post(url, {"section": "tariff_save_date",
+                         "expires_on": "2026-01-22"}).status_code, 403)
+        self.goods.refresh_from_db()
+        before = dict(self.goods.settings)
+        with self.assertRaises(ValueError):
+            calendar.configure(self.goods, self.owner, "save_date", expires_on=date(2026, 1, 22))
+        self.goods.refresh_from_db()
+        self.assertEqual(self.goods.settings, before)
