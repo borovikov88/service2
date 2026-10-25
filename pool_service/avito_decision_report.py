@@ -163,7 +163,7 @@ def build(rows, day_runs, now=None):
             and ad['current']['known_manifest_days'] == ad['current']['total_days'] for ad in ads),
         'core_metrics_known_ads_7': sum(ad['core_metrics_known'] for ad in ads),
         'low_volume_ads': sum(ad['low_volume'] for ad in ads), 'actions': actions,
-        'received_at': max((run.finished_at for run in day_runs.values() if run.finished_at is not None), default=None),
+        'received_at': current['received_at'],
         'limitations': [
             'Часовой пояс суточных групп Авито не подтверждён; используются даты источника.',
             'Отсутствующая строка или показатель остаются неизвестными. Полнота страниц не подтверждает полноту показателей.',
