@@ -8,6 +8,19 @@
   <p class="text-muted">Подключение №{{ connection.pk }}. Выберите диалог или звонок и подтвердите существующую заявку. Сообщения не создают новые заявки автоматически.</p>
   <div class="row g-3">
     <aside class="col-lg-4">
+      <section class="card card-body mb-3" aria-label="Водоочистка: обращения без оценки">
+        <h2 class="h6">Водоочистка · 8346503274</h2>
+        {% if water_quality_queue.state == "available" %}
+        <p class="small text-muted">Обращения с подтверждённым контекстом объявления, которым ещё нужна оценка качества. Диалог учитывается один раз; сообщения не равны заявкам или заказам.</p>
+        {% for row in water_quality_queue.rows %}
+        <a class="d-block py-1 text-break" href="{{ row.manager_url }}">{% if row.kind == "conversation" %}Диалог{% else %}Звонок{% endif %} {{ row.id }}</a>
+        <div class="small text-muted">{% if row.source_method == "stored_provider_context" %}Контекст Авито{% else %}Подтверждено менеджером{% endif %} · {% if row.crm_item_id %}заявка №{{ row.crm_item_id }}{% else %}заявка не связана{% endif %}{% if not row.can_edit %} · изменение ограничено правами{% endif %}.</div>
+        {% empty %}<p class="small">В доступном охвате нет подтверждённых обращений водоочистки без оценки. Это не означает отсутствия обращений.</p>{% endfor %}
+        <p class="small mb-0 mt-2">Нужна оценка: {{ water_quality_queue.awaiting_quality_inspected }}; уже оценены: {{ water_quality_queue.assessed_water_sources_inspected }}. Неизвестный источник среди проверенных доступных обращений: {{ water_quality_queue.unknown_source_inspected }} — к водоочистке не приписан.</p>
+        {% if not water_quality_queue.scan_complete or not water_quality_queue.display_complete %}<p class="small text-warning-emphasis">Охват ограничен: до 500 источников каждого вида, до 50 ссылок. Оставшаяся часть неизвестна.</p>{% endif %}
+        <p class="small text-muted mb-0 mt-2">Откройте источник, выберите существующую заявку, оценку и следующий шаг из её существующих задач. Связи и сообщения здесь не создаются автоматически.</p>
+        {% else %}<p class="small mb-0">Список недоступен: проверьте права или актуальность подтверждения источников.</p>{% endif %}
+      </section>
       <details open class="card card-body"><summary>Диалоги подключения · последние 50</summary>
       {% for row in dialogs %}<a class="d-block py-1" href="{{ row.url }}">{{ row.label }}</a>{% empty %}<p class="small">Нет доступных диалогов.</p>{% endfor %}</details>
       <details class="card card-body mt-3"><summary>Звонки организации · последние 50 доступных</summary>

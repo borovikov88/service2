@@ -217,6 +217,11 @@ def attribution(request, connection_id):
         except PermissionDenied:
             continue
         calls.append({"id": call.pk, "started_at": call.started_at, "url": _url(connection, "call", call)})
+    from .avito_owner_review import water_quality_queue
+    try:
+        quality_queue = water_quality_queue(request.user, connection)
+    except PermissionDenied:
+        quality_queue = {'state': 'unavailable'}
     from .views import CRM_STAGE_LABELS
     order_state = orders.state(request.user, connection.channel.organization, link, item)
     order_fetched_at = parse_datetime(order_state.get("fetched_at", "")) if order_state.get("fetched_at") else None
@@ -228,6 +233,7 @@ def attribution(request, connection_id):
         "crm_stage_label": CRM_STAGE_LABELS.get(item.stage, item.stage) if item else "",
         "history": _history(link, connection.channel.organization, can_finance),
         "dialogs": dialogs, "calls": calls, "coverage": links.coverage(request.user, connection),
+        "water_quality_queue": quality_queue,
         "lookup_url": reverse("avito_crm_request_lookup", args=[connection.pk]) + "?" + urlencode({
             "conversation" if kind == "conversation" else "call": identifier}) if source else "",
         "quality_note": "Оценка менеджера не является результатом оплаты или уникальным клиентом.",
