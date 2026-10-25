@@ -17,6 +17,20 @@ WORKER_LABELS = {
     "stale": "Нет свежего подтверждения работы обработчика",
     "error": "Последний запуск обработчика завершился ошибкой",
 }
+PERIODIC_LABELS = {
+    "disabled": "Резервная обработка: не включена",
+    "never_run": "Резервная обработка: ещё не подтверждена",
+    "running": "Резервная обработка: выполняется",
+    "healthy": "Резервная обработка: последний запуск успешен",
+    "stale": "Нет свежего подтверждения периодической обработки очереди",
+    "error": "Последняя периодическая обработка завершилась ошибкой",
+    "unknown": "Результат периодической обработки не подтверждён",
+}
+IMMEDIATE_LABELS = {
+    "disabled": "не включена", "never_run": "первый отдельный запуск ещё не зафиксирован",
+    "running": "выполняется", "healthy": "последний запуск успешен",
+    "error": "последний запуск завершился ошибкой", "unknown": "результат не подтверждён",
+}
 ERROR_LABELS = {
     "provider_delivery_unknown": "Авито мог принять сообщение. Результат отправки неизвестен; повтор заблокирован до сверки.",
     "provider_message_id_missing": "В ответе Авито нет подтверждённого ID сообщения. Результат отправки неизвестен.",
@@ -142,10 +156,40 @@ def for_connection(connection, user=None):
                              webhook, "Регистрация подписки не подтверждена")
     worker_state = raw.get("worker_state")
     worker_state = worker_state if isinstance(worker_state, str) else None
+    periodic_state = raw.get("periodic_state")
+    periodic_state = periodic_state if isinstance(periodic_state, str) and periodic_state in PERIODIC_LABELS else "unknown"
+    immediate_state = raw.get("immediate_state")
+    immediate_state = immediate_state if isinstance(immediate_state, str) and immediate_state in IMMEDIATE_LABELS else "unknown"
+    history = raw.get("periodic_runs")
+    history = history if isinstance(history, list) else []
+    periodic_runs = []
+    for row in history[-4:]:
+        if not isinstance(row, dict) or row.get("state") not in {"success", "error", "running", "unknown"}:
+            continue
+        result = row.get("result")
+        before, after = row.get("queue_before"), row.get("queue_after")
+        periodic_runs.append({
+            "started_at": _time(row.get("started_at")), "completed_at": _time(row.get("completed_at")),
+            "label": {"success": "завершён успешно", "error": "завершён с ошибкой",
+                      "running": "выполняется", "unknown": "завершение не подтверждено"}[row["state"]],
+            "empty_queue": (isinstance(before, dict) and isinstance(after, dict)
+                            and all(type(value.get(key)) is int and value[key] == 0
+                                    for value in (before, after) for key in ("pending", "unknown", "failed"))),
+            "accepted": _count(result.get("accepted")) if isinstance(result, dict) else None,
+        })
     return {
         "worker_state": worker_state if worker_state in WORKER_LABELS else "unknown",
-        "worker_label": WORKER_LABELS.get(worker_state, "Состояние обработчика не подтверждено"),
-        "worker_warning": worker_state != "healthy",
+        "worker_label": PERIODIC_LABELS[periodic_state],
+        "worker_warning": periodic_state != "healthy",
+        "periodic_state": periodic_state, "immediate_state": immediate_state,
+        "immediate_label": IMMEDIATE_LABELS[immediate_state],
+        "last_immediate_started_at": _time(raw.get("last_immediate_started_at")),
+        "last_immediate_completed_at": _time(raw.get("last_immediate_completed_at")),
+        "last_immediate_success_at": _time(raw.get("last_immediate_success_at")),
+        "last_immediate_error_label": error_label(raw.get("last_immediate_error_code")),
+        "last_periodic_completed_at": _time(raw.get("last_periodic_completed_at")),
+        "last_periodic_error_label": error_label(raw.get("last_periodic_error_code")),
+        "periodic_runs": periodic_runs,
         "last_started_at": _time(raw.get("last_started_at")),
         "last_success_at": _time(raw.get("last_success_at")),
         "post_commit_enabled": raw.get("enabled") is True and raw.get("binding_valid") is True,

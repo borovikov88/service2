@@ -24,7 +24,7 @@ class AvitoOutboxDisplayTests(TestCase):
             organization=self.organization, connection=self.connection,
             external_id="ui-chat", participant_name="Test participant")
         self.queue = {
-            "worker_state": "never_run", "last_started_at": None, "last_success_at": None,
+            "worker_state": "never_run", "periodic_state": "never_run", "immediate_state": "never_run", "last_started_at": None, "last_success_at": None,
             "last_error_code": "", "pending_count": 1, "oldest_pending_at": timezone.now().isoformat(),
             "oldest_pending_age_seconds": 780, "unknown_count": 0, "failed_count": 0, "legacy_held_count": 1,
         }
@@ -85,7 +85,7 @@ class AvitoOutboxDisplayTests(TestCase):
         self.assertIn("подтверждено", state["read_label"])
         self.assertEqual(state["webhook_label"], "Подписка зарегистрирована на текущей привязке")
         content = render_to_string("pool_service/communications/_avito_outbox.html", {"outbox": state})
-        self.assertIn("Обработчик ещё не запускался", content)
+        self.assertIn("Резервная обработка: ещё не подтверждена", content)
         self.assertIn("13 мин.", content)
         self.assertIn("Чтение чатов и приём webhook не подтверждают отправку", content)
         self.assertIn("Доставка push на устройство отдельно не подтверждена", content)
@@ -199,3 +199,21 @@ class AvitoOutboxDisplayTests(TestCase):
         self.assertContains(response, "Попыток: 2")
         self.assertNotContains(response, "SECRET")
         request.assert_not_called()
+
+    @patch("pool_service.avito_webhook_chain.display")
+    @patch("pool_service.avito_outbox.outbox_diagnostics")
+    def test_stale_warning_names_periodic_mechanism_and_does_not_invalidate_immediate_success(self, diagnostics, chain):
+        diagnostics.return_value = {
+            **self.queue, "periodic_state": "stale", "immediate_state": "healthy",
+            "last_immediate_success_at": "2026-10-25T03:23:11+00:00",
+            "last_periodic_success_at": None, "periodic_runs": [],
+        }
+        chain.return_value = {"state": "awaiting_first", "state_label": "Ожидается событие.",
+                              "owner_notification_label": "Не проверено."}
+        state = for_connection(self.connection)
+        content = render_to_string("pool_service/communications/_avito_outbox.html", {"outbox": state})
+        self.assertIn("Нет свежего подтверждения периодической обработки очереди", content)
+        self.assertIn("Отправка после сохранения — последний запуск успешен", content)
+        self.assertIn("25.10.2026 10:23:11", content)
+        self.assertNotIn("Нет свежего подтверждения работы обработчика", content)
+        self.assertNotIn("очередь пуста до и после", content)
