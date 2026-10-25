@@ -54,12 +54,31 @@ test('server-linked exclusions refresh structure but quantity edits preserve the
 
 test('loading an old version clears technology dimensions and schemes from the newer form', () => {
   const controls = {tech_sand:{value:'on'},tech_sand_thickness:{value:'0.2'}};
+  const uv = {value:'on',type:'checkbox',checked:true};
   const fallback = {value:''};
-  const context = vm.createContext({form:{querySelectorAll:()=>Object.values(controls), elements:{light_color:{value:'rgb'},drain_scheme:{value:'empty_only'},lighting:{value:'yes'},light_count:{value:'2'},construction_scheme:{value:''},height_mode:{value:''},freeboard:{value:''},namedItem:key=>controls[key]||fallback}},
+  const context = vm.createContext({form:{querySelectorAll:()=>Object.values(controls), elements:{uv_enabled:uv,light_color:{value:'rgb'},drain_scheme:{value:'empty_only'},lighting:{value:'yes'},light_count:{value:'2'},construction_scheme:{value:''},height_mode:{value:''},freeboard:{value:''},namedItem:key=>controls[key]||fallback}},
     snapshot:{inputs:{}}, setHeating:()=>{}, heatingFields:()=>{}, parametersDirty:true});
   vm.runInContext(fn('fillParameters')+';fillParameters()',context);
   assert.equal(controls.tech_sand.value,'');
   assert.equal(controls.tech_sand_thickness.value,'');
+  assert.equal(uv.checked,false);
+  assert.equal(uv.value,'on');
+  context.snapshot.inputs={uv_enabled:true};
+  vm.runInContext('fillParameters()',context);
+  assert.equal(uv.checked,true);
+  assert.equal(uv.value,'on');
+});
+
+test('UV checkbox always submits an explicit boolean, including when unchecked', () => {
+  const uv = {checked:true};
+  const context = vm.createContext({form:{elements:{uv_enabled:uv,height_mode:{value:'legacy'},bowl_height:{value:''},tech_insulation_wall_height_mode:{value:'manual'}}}, FormData:class {
+    delete() {} getAll() { return []; }
+    [Symbol.iterator]() { return (uv.checked ? [['uv_enabled','on']] : [])[Symbol.iterator](); }
+  }});
+  vm.runInContext(fn('inputs'),context);
+  assert.equal(vm.runInContext('inputs().uv_enabled',context),true);
+  uv.checked=false;
+  assert.equal(vm.runInContext('inputs().uv_enabled',context),false);
 });
 
 test('automatic wall insulation height follows H while manual height stays fixed', () => {
