@@ -357,3 +357,28 @@ class ReleaseLedgerDiagnosticsTests(TestCase):
         self.assertIsNone(result['pending_http'])
         self.assertIsNone(result['has_exact_receipt'])
         self.receipt.assert_not_called()
+
+
+
+class SourceMetadataCompatibilityTests(SimpleTestCase):
+    def metadata(self):
+        return {'scope_valid': True, 'source': 'existing_services_draft_image',
+            'source_in_published': True, 'photo_count': 1, 'readable': True,
+            'format': 'JPEG', 'width': 24, 'height': 16, 'bytes': 100,
+            'checked_at': timezone.now().isoformat()}
+
+    def test_legacy_unknown_and_actual_upgrade_evidence_remain_distinct(self):
+        source = self.metadata()
+        self.assertIsNone(operation._source(source)['https_upgrade_followed'])
+        for flag in (None, False, True):
+            with self.subTest(flag=flag):
+                self.assertIs(operation._source(dict(source, https_upgrade_followed=flag))[
+                    'https_upgrade_followed'], flag)
+
+    def test_upgrade_flag_is_closed_boolean_metadata_and_other_fields_are_not_accepted(self):
+        source = self.metadata()
+        for invalid in ('true', 1, {}, []):
+            with self.subTest(invalid=invalid), self.assertRaises(operation.Blocked):
+                operation._source(dict(source, https_upgrade_followed=invalid))
+        with self.assertRaises(operation.Blocked):
+            operation._source(dict(source, transport={'url': 'PRIVATE'}))
