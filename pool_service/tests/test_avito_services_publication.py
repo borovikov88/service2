@@ -595,3 +595,15 @@ class PublicationResultTests(TestCase):
         self.assertTrue(result['snapshot_valid'])
         self.assertIsNone(result['draft_matches_published'])
         self.assertEqual(result['snapshot_count'], 2)
+
+
+    def test_manual_return_guidance_preserves_identity_and_never_claims_zero_cost(self):
+        row = {'Id': 'existing-service', 'AvitoId': '123456'}
+        result = archive_context(row, {'status': 'old'}, None)
+        self.assertFalse(result['can_reactivate'])
+        self.assertIsNone(result['cost'])
+        self.assertIn('№123456', result['manual_step'])
+        self.assertIn('не создавайте копию', result['manual_step'])
+        self.assertIn('0 ₽', result['manual_step'])
+        self.assertIn('новый подтверждённый срок', result['manual_step'])
+        self.assertIn('не подтверждены', result['limitation'])

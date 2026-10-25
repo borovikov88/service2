@@ -17,9 +17,12 @@ from pool_service.avito_status_monitor import subscriber_allowed
 from pool_service.communication_models import ChannelConnection
 from pool_service.models import Notification, Profile
 from pool_service.services.notifications import notify_users
+from pool_service.avito_deferred_messages import daylight
 
 KEY = "avito_tariff_reminder"
 INTERVAL = timedelta(minutes=15)
+SERVICES_ZONE = ZoneInfo("Asia/Barnaul")
+MANUAL_SOURCE = "avito_cabinet_manual"
 ERROR_BINDING = "Настройки подключения или права изменились. Включите напоминания повторно."
 ERROR_PREFS = "Уведомления внутри Service2 выключены в вашем профиле. Напоминание не считается доставленным."
 
@@ -30,6 +33,14 @@ def zone():
 
 def today():
     return timezone.localdate(timezone=zone())
+
+
+def _services(connection):
+    return connection.pk == 4 and str(connection.external_id) == "446312402"
+
+
+def _today_for(connection):
+    return timezone.localdate(timezone=SERVICES_ZONE) if _services(connection) else today()
 
 
 def _date(value):
@@ -109,7 +120,7 @@ def configure(connection, user, action, *, expires_on=None):
                 raise ValueError("Сначала включите напоминания о продлении.")
             state["next_due_at"] = timezone.now().isoformat()
         else:
-            if type(expires_on) is not date or not today() - timedelta(days=366) <= expires_on <= today() + timedelta(days=3660):
+            if type(expires_on) is not date or not _today_for(connection) - timedelta(days=366) <= expires_on <= _today_for(connection) + timedelta(days=3660):
                 raise ValueError("Укажите дату окончания тарифа из кабинета Авито.")
             if not connection.is_active or not connection.channel.is_active:
                 raise ValueError("Нужно активное подключение Авито.")
@@ -126,6 +137,11 @@ def configure(connection, user, action, *, expires_on=None):
                     "expires_on": expires_on.isoformat(), "source": "manual",
                     "next_due_at": timezone.now().isoformat(), "last_error_detail": "",
                 }
+            if _services(connection):
+                # Only an explicit authenticated save confirms a supplied date.
+                # Same-date saves refresh provenance without rearming delivery.
+                state.update(confirmation_source=MANUAL_SOURCE,
+                             confirmed_at=timezone.now().isoformat(), confirmed_by=user.pk)
         _save(connection, state)
     return state
 
@@ -136,19 +152,29 @@ def display_state(connection, user):
     state = _state(connection)
     if state.get("actor_id") is not None and state["actor_id"] != user.pk:
         return {}
+    services = _services(connection)
+    confirmed = (_time(state.get("confirmed_at")) if services and _allowed(connection, state)
+                 and state.get("confirmation_source") == MANUAL_SOURCE
+                 and state.get("confirmed_by") == user.pk else None)
+    quiet_until = _time(state.get("quiet_until_at")) if services and _allowed(connection, state) else None
     return {
         "allowed": True, "enabled": state.get("enabled") is True,
         "needs_reactivation": state.get("enabled") is True and not _allowed(connection, state),
         "expires_on": _date(state.get("expires_on")),
         "last_checked_at": _time(state.get("last_checked_at")),
         "last_error_detail": state.get("last_error_detail", ""),
-        "in_app_enabled": _in_app(user.pk), "timezone": str(zone()), "scheduler": _scheduler(),
+        "in_app_enabled": _in_app(user.pk), "timezone": str(SERVICES_ZONE if services else zone()), "scheduler": _scheduler(),
+        "services_schedule": services,
+        "confirmation_source_label": "Введено вручную из кабинета Авито" if confirmed else "",
+        "confirmed_at_display": confirmed.astimezone(SERVICES_ZONE).strftime("%d.%m.%Y %H:%M:%S") if confirmed else "",
+        "quiet_until_display": quiet_until.astimezone(SERVICES_ZONE).strftime("%d.%m.%Y %H:%M:%S") if quiet_until else "",
     }
 
 
-def _stage(expires_on, current_date):
+def _stage(expires_on, current_date, *, include_week=False):
     days = (expires_on - current_date).days
-    return "due" if days <= 0 else "tomorrow" if days == 1 else "soon" if days <= 3 else ""
+    return ("due" if days <= 0 else "tomorrow" if days == 1 else "soon" if days <= 3
+            else "week" if include_week and days <= 7 else "")
 
 
 def scan_connection(connection_id):
@@ -162,18 +188,31 @@ def scan_connection(connection_id):
             state.update(enabled=False, last_error_detail=ERROR_BINDING)
             _save(connection, state)
             return "failed"
+        if _services(connection) and not daylight(now):
+            local = now.astimezone(SERVICES_ZONE)
+            morning = local.replace(hour=8, minute=0, second=0, microsecond=0)
+            if local.hour >= 21:
+                morning += timedelta(days=1)
+            state.update(next_due_at=morning.isoformat(), quiet_until_at=morning.isoformat(),
+                         last_checked_at=now.isoformat())
+            _save(connection, state)
+            return "skipped"
+        state.pop("quiet_until_at", None)
         state.update(next_due_at=(now + INTERVAL).isoformat(), last_checked_at=now.isoformat())
         if not _in_app(state["actor_id"]):
             state["last_error_detail"] = ERROR_PREFS
             _save(connection, state)
             return "failed"
         expiry = _date(state["expires_on"])
-        stage = _stage(expiry, today())
+        stage = _stage(expiry, _today_for(connection), include_week=_services(connection))
         if stage and state.get("last_stage") != stage:
             actor = User.objects.get(pk=state["actor_id"])
-            label = {"soon": "Дата продления тарифа приближается",
+            label = {"week": "Указанная дата окончания тарифа — в ближайшие 7 дней",
+                     "soon": "Дата продления тарифа приближается",
                      "tomorrow": "Указанная дата окончания тарифа — завтра",
                      "due": "Наступила указанная дата окончания тарифа"}[stage]
+            if _services(connection) and stage == "soon":
+                label = "Указанная дата окончания тарифа — в ближайшие 3 дня"
             dedupe = f"avito-tariff:{connection.pk}:{state['generation']}:{stage}"
             notify_users(
                 [actor], organization=connection.channel.organization, kind="communication",
