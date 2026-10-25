@@ -111,7 +111,7 @@ class CommunicationsTests(TestCase):
         self.assertContains(page, 'rel="noopener noreferrer"')
         self.assertContains(page, 'class="message-meta"')
         self.assertContains(page, "Test message")
-        outgoing = page.content.decode().split("Test outgoing", 1)[1]
+        outgoing = page.content.decode().split('<div class="bubble out">', 1)[1]
         self.assertLess(outgoing.index("Попыток:"), outgoing.index('class="message-meta"'))
         conversation.external_id = "../chat?x=1#fragment"
         self.assertTrue(conversation.external_chat_url.endswith("..%2Fchat%3Fx%3D1%23fragment"))
