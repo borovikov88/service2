@@ -37,6 +37,12 @@ html[data-theme="dark"] .call-direction--in{color:#73b5ff}html[data-theme="dark"
 .conversation-row{position:relative}
 .conversation-row .conversation-select{display:block;margin:-.55rem -.65rem;padding:.55rem 2rem .55rem .65rem;color:inherit;text-decoration:none}
 .conversation-external{position:absolute;right:.5rem;bottom:.35rem;font-size:.9rem;text-decoration:none}
+.conversation-client-shortcut{position:absolute;right:2rem;bottom:.35rem;text-decoration:none;font-size:.8rem}
+.conversation-client-name{color:inherit;text-decoration:none;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.conversation-client-name:hover{text-decoration:underline;color:var(--bs-primary)}
+.conversation-listing{display:flex;align-items:center;gap:.6rem;padding:.5rem .65rem;border-bottom:1px solid var(--bs-border-color);font-size:.82rem}
+.conversation-listing img{object-fit:cover;border-radius:.3rem;flex:0 0 64px}
+.conversation-listing__body{min-width:0;overflow-wrap:anywhere}
 .bubble{overflow-wrap:anywhere;min-width:100px}
 .message-meta{display:flex;justify-content:flex-end;align-items:baseline;gap:.3rem;flex-wrap:wrap;text-align:right;font-size:.65rem;line-height:1.25;margin-top:.2rem;color:var(--bs-secondary-color)}
 .message-meta__sender{max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

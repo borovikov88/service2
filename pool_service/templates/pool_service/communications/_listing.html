@@ -1,0 +1,10 @@
+{% with item=conversation.listing %}{% if item %}
+<div class="conversation-listing d-flex align-items-center gap-2" aria-label="Объявление Avito">
+  {% if item.image_url %}<img class="rounded" src="{{ item.image_url }}" alt="" width="64" height="48" loading="lazy" referrerpolicy="no-referrer">{% endif %}
+  <div class="conversation-listing__body">
+    <div class="text-muted small">Объявление Avito</div>
+    {% if item.url %}<a href="{{ item.url }}" target="_blank" rel="noopener noreferrer" class="fw-semibold">{{ item.title|default:"Открыть объявление" }} ↗</a>{% else %}<strong>{{ item.title|default:"Объявление" }}</strong>{% endif %}
+    {% if item.price or item.location %}<div class="small text-muted">{{ item.price }}{% if item.price and item.location %} · {% endif %}{{ item.location }}</div>{% endif %}
+  </div>
+</div>
+{% endif %}{% endwith %}

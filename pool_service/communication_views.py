@@ -21,7 +21,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.cache import never_cache
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.debug import sensitive_post_parameters
 from docx import Document
@@ -141,7 +141,7 @@ def conversations(request):
     latest_message = ConversationMessage.objects.filter(conversation=OuterRef("pk")).order_by("-created_at", "-pk")
     items = list(
         Conversation.objects.filter(organization=organization)
-        .select_related("connection__channel", "assignee", "website_request")
+        .select_related("connection__channel", "assignee", "website_request", "client")
         .annotate(last_message_preview=Subquery(latest_message.values("body")[:1]))
     )
     states = {state.conversation_id: state.last_read_at for state in ConversationReadState.objects.filter(user=request.user, conversation__organization=organization)}
@@ -168,15 +168,36 @@ def conversations(request):
             action_url__contains=str(selected.uuid),
             is_resolved=False,
         ).update(is_read=True, is_resolved=True, resolved_at=timezone.now())
+    from .communication_enrichment import start_client_enrichment_worker
+    requested = ([selected.pk] if selected else []) + [item.pk for item in items if not item.client_id][:19]
+    transaction.on_commit(lambda: start_client_enrichment_worker(requested))
     return render(request, "pool_service/communications/conversations.html", {
         "active_tab": "communications", "conversations": items, "selected": selected,
-        **conversation_context(selected, organization, request.user),
+        **conversation_context(selected, organization, request.user, include_outbox=False),
         "can_reply": conversation_capability(request.user, "can_reply_conversations", organization),
         "can_take": conversation_capability(request.user, "can_take_conversation", organization),
         "can_assign": conversation_capability(request.user, "can_assign_conversation", organization),
         "can_access_manual_recordings": _can_access_manual_recordings(request.user, organization),
         "staff": OrganizationAccess.objects.filter(organization=organization).exclude(role="accountant").select_related("user"),
     })
+
+
+@login_required
+@require_GET
+def conversation_identity(request, conversation_uuid):
+    from django.template.loader import render_to_string
+    organization = _context(request, "can_view_conversations")
+    conversation = get_object_or_404(Conversation.objects.select_related("client", "connection__channel"),
+        uuid=conversation_uuid, organization=organization, connection__channel__organization=organization)
+    response = JsonResponse({
+        "identity_html": render_to_string("pool_service/communications/_conversation_identity.html", {"conversation": conversation}),
+        "listing_html": render_to_string("pool_service/communications/_listing.html", {"conversation": conversation}),
+        "name": conversation.display_name, "client_url": conversation.client_card_url,
+        "pending": bool(not conversation.client_id or conversation.connection.channel.kind == "avito" and (
+            not conversation.context_synced_at or conversation.context_attempted_at and conversation.context_attempted_at > conversation.context_synced_at)),
+    })
+    response["Cache-Control"] = "private, no-store"
+    return response
 
 
 @login_required

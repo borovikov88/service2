@@ -83,6 +83,20 @@
 
     <div class="tab-content">
       <div class="tab-pane fade{% if card_tab == 'overview' %} show active{% endif %}" id="client-overview" role="tabpanel">
+        {% if client_conversations %}
+        <section class="border rounded-3 p-3 mb-3" aria-label="Диалоги клиента">
+          <h6 class="fw-bold mb-2">Диалоги клиента</h6>
+          {% for conversation in client_conversations %}
+          <div class="{% if not forloop.last %}border-bottom pb-2 mb-2{% endif %}">
+            <a href="{% url 'communications_conversations' %}?conversation={{ conversation.uuid }}">{{ conversation.connection.channel.get_kind_display }} · {{ conversation.participant_name }} ↗</a>
+            {% if conversation.contact_data.name %}<div class="small mt-1">Имя из сообщения: {{ conversation.contact_data.name }}</div>{% endif %}
+            {% if conversation.contact_data.address %}<div class="small mt-1">Адрес из сообщения: {{ conversation.contact_data.address }}</div>{% endif %}
+            {% if conversation.contact_data.company %}<div class="small mt-1">Компания из сообщения: {{ conversation.contact_data.company }}</div>{% endif %}
+            {% include "pool_service/communications/_listing.html" with conversation=conversation only %}
+          </div>
+          {% endfor %}
+        </section>
+        {% endif %}
         <div class="row g-4">
           <div class="col-12 col-xl-7">
             <div class="border rounded-3 p-4 h-100">

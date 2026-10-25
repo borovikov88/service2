@@ -96,6 +96,7 @@ def ingest_webhook(connection, payload):
         participant_name=incoming.participant_name,
         body=incoming.body,
         external_message_id=incoming.message_id,
+        participant_external_id=incoming.author_id,
     )
 
 
@@ -266,25 +267,8 @@ def _message_body(message):
 
 
 def _chat_participant_name(chat, account_id):
-    if not isinstance(chat, dict):
-        return "Клиент Авито"
-    users = chat.get("users")
-    if not isinstance(users, list):
-        return "Клиент Авито"
-    fallback = ""
-    for user in users:
-        if not isinstance(user, dict):
-            continue
-        name = user.get("name")
-        if not isinstance(name, str) or not name.strip():
-            continue
-        fallback = fallback or name.strip()[:255]
-        public_profile = user.get("public_user_profile")
-        provider_user_id = public_profile.get("user_id") if isinstance(public_profile, dict) else None
-        if provider_user_id is not None and str(provider_user_id) == str(account_id):
-            continue
-        return name.strip()[:255]
-    return fallback or "Клиент Авито"
+    from .communication_enrichment import chat_context
+    return chat_context(chat, account_id).get("participant", {}).get("name") or "Клиент Авито"
 
 
 def sync_recent_messages(connection, *, chat_limit=20, messages_per_chat=50, max_age_hours=48):
@@ -326,6 +310,8 @@ def sync_recent_messages(connection, *, chat_limit=20, messages_per_chat=50, max
             },
         )
         participant_name = _chat_participant_name(chat, account_id)
+        from .communication_enrichment import chat_context
+        context = chat_context(chat, account_id)
         recent_messages = []
         for item in provider_messages[:messages_per_chat]:
             if not isinstance(item, dict):
@@ -345,9 +331,7 @@ def sync_recent_messages(connection, *, chat_limit=20, messages_per_chat=50, max
                 continue
             direction = item.get("direction")
             author_id = item.get("author_id")
-            if direction == "out" or (
-                direction not in {"in", "out"} and str(author_id or "") == str(account_id)
-            ):
+            if direction == "out" or str(author_id or "") == str(account_id):
                 skipped += 1
                 continue
             body = _message_body(item)
@@ -360,6 +344,8 @@ def sync_recent_messages(connection, *, chat_limit=20, messages_per_chat=50, max
                 participant_name=participant_name,
                 body=body,
                 external_message_id=message_id,
+                participant_external_id=str(author_id or context.get("participant", {}).get("id") or "")[:255],
+                provider_context=context,
             )
             if was_created:
                 created += 1

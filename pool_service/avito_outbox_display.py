@@ -188,14 +188,15 @@ def message_display(message):
             "accepted_at": _time(message.delivered_at) if state == ConversationMessage.DELIVERY_DELIVERED and message.external_id else ""}
 
 
-def conversation_context(selected, organization, user=None):
+def conversation_context(selected, organization, user=None, *, include_outbox=True):
     """The view has checked capability; still reject any cross-org relation."""
     context = {"selected_messages": [], "avito_outbox_state": None}
     if selected is None or selected.organization_id != organization.pk or selected.connection.channel.organization_id != organization.pk:
         return context
     messages = list(selected.messages.prefetch_related("attachments"))
     if selected.connection.channel.kind == CommunicationChannel.KIND_AVITO:
-        context["avito_outbox_state"] = for_connection(selected.connection, user=user)
+        if include_outbox:
+            context["avito_outbox_state"] = for_connection(selected.connection, user=user)
         for message in messages:
             if message.direction == ConversationMessage.DIRECTION_OUT:
                 message.avito_delivery = message_display(message)

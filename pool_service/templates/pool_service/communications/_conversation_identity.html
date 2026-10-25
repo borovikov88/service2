@@ -1,0 +1,7 @@
+<div class="conversation-title">
+  {% include "pool_service/communications/_channel_icon.html" with channel=conversation.connection.channel only %}
+  {% if conversation.client_card_url %}<a class="conversation-client-name" href="{{ conversation.client_card_url }}" title="Открыть карточку клиента"><strong>{{ conversation.display_name }}</strong></a>
+  {% else %}<strong>{{ conversation.display_name }}</strong>{% endif %}
+  {% if conversation.external_chat_url %}<a class="conversation-source-link" href="{{ conversation.external_chat_url }}" target="_blank" rel="noopener noreferrer">Avito <span aria-hidden="true">↗</span></a>{% endif %}
+</div>
+{% if conversation.client_card_url and conversation.client.phone %}<div class="small text-muted">{{ conversation.client.phone }}</div>{% elif conversation.participant_phone %}<div class="small text-muted">{{ conversation.participant_phone }}</div>{% endif %}
