@@ -151,7 +151,7 @@ class TariffSubscriptionTests(TestCase):
         self.assertFalse(result["request_performed"])
         before = copy.deepcopy(self.saved())
         # A capability in another organization cannot rescue the revoked local ACL.
-        OrganizationAccess.objects.create(user=self.manager, organization=self.other_org, role="owner")
+        OrganizationAccess.objects.create(user=self.manager, organization=self.other_org, role="admin")
         CommunicationAccess.objects.filter(user=self.manager, organization=self.other_org).update(
             can_manage_channels=True)
         CommunicationAccess.objects.filter(user=self.manager, organization=self.org).update(
