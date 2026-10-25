@@ -44,4 +44,6 @@ class Command(BaseCommand):
                     "connection_id": 4, "account_id": "446312402"}
             from pool_service.avito_improvement_proposals import setup_owner_cycle_once
             result["improvement_projects"] = setup_owner_cycle_once()
+            from pool_service.avito_owner_review import safe_owner_review_receipt
+            result["owner_review"] = safe_owner_review_receipt()
         self.stdout.write("AVITO_SERVICES_SETUP " + json.dumps(result, sort_keys=True))
