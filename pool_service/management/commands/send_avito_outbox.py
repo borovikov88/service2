@@ -1,90 +1,53 @@
-from django.core.management.base import BaseCommand
-from django.db import transaction
+import json
+from django.core.management.base import BaseCommand, CommandError
 
-from pool_service.communication_avito import (
-    AvitoAmbiguousDeliveryError,
-    AvitoError,
-    AvitoRetryableError,
-    send_message,
+from pool_service.avito_outbox import (
+    claim_message, configure_outbox, outbox_diagnostics, reconcile_message, run_outbox,
 )
-from pool_service.communication_models import ChannelConnection, CommunicationChannel, ConversationMessage
-
+from pool_service.communication_avito import AvitoError, send_message
+from pool_service.communication_models import ChannelConnection
 
 MAX_TRANSIENT_ATTEMPTS = 3
 
 
-def claim_message(message_id):
-    """Claim only while channel and connection remain active under row locks."""
-    with transaction.atomic():
-        message = ConversationMessage.objects.select_for_update().select_related(
-            "conversation__connection__channel",
-        ).filter(
-            pk=message_id,
-            delivery_status=ConversationMessage.DELIVERY_PENDING,
-        ).first()
-        if message is None:
-            return None
-        connection_id = message.conversation.connection_id
-        channel_id = message.conversation.connection.channel_id
-        channel = CommunicationChannel.objects.select_for_update().get(pk=channel_id)
-        connection = ChannelConnection.objects.select_for_update().get(pk=connection_id)
-        if not channel.is_active or not connection.is_active:
-            return None
-        message.delivery_status = ConversationMessage.DELIVERY_SENDING
-        message.delivery_attempts += 1
-        message.save(update_fields=["delivery_status", "delivery_attempts"])
-        return message
-
-
 class Command(BaseCommand):
-    help = "Send pending text messages for active Avito connections."
+    help = "Process one explicitly selected Avito connection; old backlog is held."
 
     def add_arguments(self, parser):
-        parser.add_argument("--limit", type=int, default=100)
+        parser.add_argument("--connection-id", type=int, required=True)
+        parser.add_argument("--message-id", type=int)
+        parser.add_argument("--limit", type=int, default=10)
+        parser.add_argument("--status", action="store_true")
+        parser.add_argument("--configure", action="store_true")
+        parser.add_argument("--account-id")
+        parser.add_argument("--reconcile-only", action="store_true")
+        parser.add_argument("--periodic", action="store_true")
 
     def handle(self, *args, **options):
-        limit = max(1, min(options["limit"], 500))
-        message_ids = list(ConversationMessage.objects.filter(
-            direction=ConversationMessage.DIRECTION_OUT,
-            delivery_status=ConversationMessage.DELIVERY_PENDING,
-            conversation__connection__channel__kind="avito",
-            conversation__connection__channel__is_active=True,
-            conversation__connection__is_active=True,
-        ).order_by("pk").values_list("pk", flat=True)[:limit])
-        delivered = retrying = failed = 0
-        for message_id in message_ids:
-            # Conditional update is the single-flight claim. A crashed/uncertain
-            # delivery intentionally remains "sending" for manual reconciliation:
-            # blind retries can duplicate a message accepted by the provider.
-            message = claim_message(message_id)
-            if message is None:
-                continue
-            try:
-                send_message(message)
-                delivered += 1
-            except AvitoAmbiguousDeliveryError as exc:
-                # Keep the claimed state: an operator must reconcile this with
-                # Avito before deciding whether a retry is safe.
-                message.delivery_error = str(exc)[:500]
-                message.save(update_fields=["delivery_error"])
-                failed += 1
-            except AvitoRetryableError as exc:
-                # Token acquisition and other pre-send transient failures are
-                # known not to have delivered a customer message. Requeue them
-                # only for a bounded number of attempts.
-                message.delivery_error = str(exc)[:500]
-                if message.delivery_attempts < MAX_TRANSIENT_ATTEMPTS:
-                    message.delivery_status = ConversationMessage.DELIVERY_PENDING
-                    retrying += 1
-                else:
-                    message.delivery_status = ConversationMessage.DELIVERY_FAILED
-                    failed += 1
-                message.save(update_fields=["delivery_status", "delivery_error"])
-            except AvitoError as exc:
-                message.delivery_status = ConversationMessage.DELIVERY_FAILED
-                message.delivery_error = str(exc)[:500]
-                message.save(update_fields=["delivery_status", "delivery_error"])
-                failed += 1
-        self.stdout.write(
-            f"delivered={delivered} retrying={retrying} failed={failed}"
-        )
+        connection_id = options["connection_id"]
+        if sum(bool(options[name]) for name in ("status", "configure", "reconcile_only")) > 1:
+            raise CommandError("outbox_invalid_mode")
+        try:
+            connection = ChannelConnection.objects.select_related("channel").get(pk=connection_id)
+            if not outbox_diagnostics(connection)["binding_valid"]:
+                raise CommandError("outbox_scope_invalid")
+            if options["status"]:
+                result = outbox_diagnostics(connection)
+            elif options["configure"]:
+                if not options["account_id"] or options["message_id"]:
+                    raise CommandError("outbox_invalid_mode")
+                result = configure_outbox(connection_id, options["account_id"])
+            elif options["reconcile_only"]:
+                if options["message_id"] is None:
+                    raise CommandError("outbox_message_required")
+                result = reconcile_message(connection_id, options["message_id"])
+                result["provider_id_present"] = bool(result.pop("provider_id", None))
+            else:
+                result = run_outbox(connection_id, message_id=options["message_id"],
+                    limit=options["limit"], explicit=options["message_id"] is not None, sender=send_message,
+                    periodic=options["periodic"])
+        except ChannelConnection.DoesNotExist:
+            raise CommandError("outbox_scope_invalid") from None
+        except AvitoError as error:
+            raise CommandError(str(error)) from None
+        self.stdout.write(json.dumps(result, sort_keys=True))

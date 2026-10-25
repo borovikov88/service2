@@ -39,6 +39,8 @@ from pool_service.communication_avito import (
     verify_messenger_access as avito_verify_messenger_access,
     webhook_subscriptions as avito_webhook_subscriptions,
 )
+from pool_service.avito_outbox import dispatch_committed_reply, register_reply_intent
+from pool_service.avito_outbox_display import conversation_context
 from pool_service.communication_forms import CommunicationConnectionForm, TelephonyConnectionForm
 from pool_service.communication_models import (
     AvitoCredential, ChannelConnection, CommunicationChannel, Conversation,
@@ -168,6 +170,7 @@ def conversations(request):
         ).update(is_read=True, is_resolved=True, resolved_at=timezone.now())
     return render(request, "pool_service/communications/conversations.html", {
         "active_tab": "communications", "conversations": items, "selected": selected,
+        **conversation_context(selected, organization, request.user),
         "can_reply": conversation_capability(request.user, "can_reply_conversations", organization),
         "can_take": conversation_capability(request.user, "can_take_conversation", organization),
         "can_assign": conversation_capability(request.user, "can_assign_conversation", organization),
@@ -196,6 +199,8 @@ def conversation_reply(request, conversation_uuid):
         pk=conversation.connection_id,
         channel=channel,
     )
+    connection.channel = channel
+    conversation.connection = connection
     if not connection.is_active or not channel.is_active:
         messages.error(request, "Канал или подключение отключено. Отправка ответа недоступна.")
         return redirect(f"/communications/?conversation={conversation.uuid}")
@@ -249,7 +254,10 @@ def conversation_reply(request, conversation_uuid):
             pass
     conversation.last_message_at = message.created_at
     conversation.save(update_fields=["last_message_at", "updated_at"])
-    # Channel adapters send queued outbound messages; the persisted message is the source of truth.
+    # Register only the new manager action, under the existing reply transaction.
+    # The callback executes after the outermost commit, never under row locks.
+    if register_reply_intent(message):
+        transaction.on_commit(lambda: dispatch_committed_reply(connection.pk, message.pk))
     return redirect(f"/communications/?conversation={conversation.uuid}")
 
 

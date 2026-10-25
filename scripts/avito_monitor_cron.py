@@ -67,6 +67,12 @@ def bounded(command, *, timeout=20, **kwargs):
 
 
 class CronManager:
+    begin = BEGIN
+    end = END
+    schedule = SCHEDULE
+    unmanaged_tokens = (b"SERVICE2 AVITO STATUS MONITOR", b"run_avito_status_monitor", b"monitor_avito_statuses", b"avito_monitor_cron.py")
+    worker_lock_name = "service2-avito-status-monitor.lock"
+
     def __init__(self, app, expected_sha=None):
         self.app = checked_path(str(app))
         self.tmp = checked_path(str(self.app.parent / "tmp"))
@@ -113,13 +119,13 @@ class CronManager:
         return shlex.join(command) + " >/dev/null 2>&1"
 
     def block(self):
-        return BEGIN + (SCHEDULE + " " + self.command() + "\n").encode() + END
+        return self.begin + (self.schedule + " " + self.command() + "\n").encode() + self.end
 
     def without_block(self, table):
-        if BEGIN in table or END in table:
-            if table.count(BEGIN) != 1 or table.count(END) != 1:
+        if self.begin in table or self.end in table:
+            if table.count(self.begin) != 1 or table.count(self.end) != 1:
                 raise CronError("ambiguous_managed_block")
-            start, end = table.index(BEGIN), table.index(END) + len(END)
+            start, end = table.index(self.begin), table.index(self.end) + len(self.end)
             if end <= start or table[start:end] != self.block():
                 raise CronError("unexpected_managed_block")
             if start and table[start - 1:start] != b"\n":
@@ -127,7 +133,7 @@ class CronManager:
             other = table[:start] + table[end:]
         else:
             other = table
-        if any(token in other for token in (b"SERVICE2 AVITO STATUS MONITOR", b"run_avito_status_monitor", b"monitor_avito_statuses", b"avito_monitor_cron.py")):
+        if any(token in other for token in self.unmanaged_tokens):
             raise CronError("unmanaged_monitor_entry")
         return other
 
@@ -195,9 +201,12 @@ class CronManager:
         self.preflight()
         self.private_directory()
         with ExitStack() as stack:
+            # All managers mutate the same hosting-user crontab. Their private
+            # backups/worker locks differ, but authorized writes must serialize.
+            stack.enter_context(self.lock(self.tmp / "service2-crontab-installer.lock"))
             stack.enter_context(self.lock(self.private / "installer.lock"))
             stack.enter_context(self.lock(self.tmp / "service2-deploy.lock", shared=True))
-            stack.enter_context(self.lock(self.tmp / "service2-avito-status-monitor.lock"))
+            stack.enter_context(self.lock(self.tmp / self.worker_lock_name))
             self.verify_release()
             if not remove:
                 self.readiness()

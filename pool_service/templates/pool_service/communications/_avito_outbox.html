@@ -1,0 +1,42 @@
+{% if outbox %}
+<section class="border-bottom p-3" aria-label="Исходящие сообщения Авито">
+  <div class="d-flex flex-wrap justify-content-between gap-2">
+    <strong>Исходящие Авито</strong>
+    <span class="{% if outbox.worker_warning %}text-warning-emphasis{% else %}text-success{% endif %}">{{ outbox.worker_label }}</span>
+  </div>
+  <div class="small mt-1">
+    В очереди: <strong>{{ outbox.pending_count|default_if_none:"неизвестно" }}</strong>
+    {% if outbox.oldest_pending_age %} · Старейшее ожидает {{ outbox.oldest_pending_age }}{% endif %}
+    · Результат неизвестен: {{ outbox.unknown_count|default_if_none:"неизвестно" }}
+    · Ошибки: {{ outbox.failed_count|default_if_none:"неизвестно" }}
+  </div>
+  <div class="small text-muted mt-1">Последний успешный запуск: {{ outbox.last_success_at|default:"не подтверждён" }}{% if outbox.last_success_at %} · Барнаул{% endif %}</div>
+  <div class="small mt-1">Отправка после сохранения: {% if outbox.post_commit_enabled %}включена{% else %}включение не подтверждено{% endif %}. Периодический запуск: {% if outbox.last_periodic_success_at %}последний успешный {{ outbox.last_periodic_success_at }} · Барнаул{% else %}ещё не подтверждён{% endif %}.</div>
+  {% if outbox.last_error_label %}<div class="small text-danger mt-1">{{ outbox.last_error_label }}</div>{% endif %}
+  <details class="small mt-2">
+    <summary>Работа обработчика и подтверждения доступа</summary>
+    <div class="mt-2">Последний старт: {{ outbox.last_started_at|default:"не подтверждён" }}{% if outbox.last_started_at %} · Барнаул{% endif %}</div>
+    {% if outbox.oldest_pending_at %}<div>Старейшая запись: {{ outbox.oldest_pending_at }} · Барнаул</div>{% endif %}
+    {% if outbox.legacy_held_count %}<div>Старых сообщений удерживается до отдельной проверки: {{ outbox.legacy_held_count }}</div>{% endif %}
+    <div class="mt-2">Webhook: {{ outbox.webhook_label }}</div>
+    <div>Входящие: {{ outbox.inbound_label }}{% if outbox.inbound_at %} · {{ outbox.inbound_at }} · Барнаул{% endif %}</div>
+    <div>{{ outbox.owner_notification_label }}{% if outbox.owner_notification_recorded %} Доставка push на устройство отдельно не подтверждена.{% endif %}</div>
+    <div>{{ outbox.read_label }}{% if outbox.read_checked_at %} · {{ outbox.read_checked_at }} · Барнаул{% endif %}</div>
+    <div class="text-muted mt-1">Чтение чатов и приём webhook не подтверждают отправку ответа. Результат каждого ответа показан под сообщением. Тихие часы уведомлений владельцу не задерживают явно отправленные ответы клиентам.</div>
+  </details>
+  {% if outbox.configuration %}
+  <details class="small mt-2">
+    <summary>Владельцу: регулярная обработка очереди на хостинге</summary>
+    <p class="mt-2 mb-2">Отправка после сохранения и периодический запуск — разные механизмы. Успешная отправка одного ответа не подтверждает настройку расписания.</p>
+    {% if outbox.configuration.available %}
+      <p class="mb-2">Если задание ещё не добавлено, в панели Beget откройте «Cron / Планировщик» и создайте одно задание с расписанием <code>{{ outbox.configuration.schedule }}</code> — каждую минуту. Дублирующее задание создавать не нужно.</p>
+      <label class="form-label" for="avito-outbox-panel-command">Команда для текущего Service2</label>
+      <textarea id="avito-outbox-panel-command" class="form-control font-monospace" rows="4" readonly>{{ outbox.configuration.command }}</textarea>
+      <p class="text-muted mt-2 mb-0">Команда ограничена очередью подключения «Услуги» №4. Старые удержанные сообщения сама не рассылает. Наличие этой инструкции не означает, что задание уже установлено.</p>
+    {% else %}
+      <p class="mt-2 mb-0">Не удалось подготовить команду для текущего размещения. Нужна проверка настройки обработчика администратором.</p>
+    {% endif %}
+  </details>
+  {% endif %}
+</section>
+{% endif %}

@@ -1,0 +1,81 @@
+name: Avito Services outbox read-only evidence
+on:
+  workflow_run:
+    workflows: ["Test and deploy main"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      confirm_main_sha:
+        description: "Exact current main SHA; read-only Services outbox connection4/account446312402"
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: service2-avito-outbox-readonly-audit
+  cancel-in-progress: false
+jobs:
+  audit:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        contains(fromJSON('["push","workflow_dispatch"]'), github.event.workflow_run.event)))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - name: Verify current main and successful exact-head production CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AVITO_EXPECTED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          AVITO_MANUAL_SHA: ${{ inputs.confirm_main_sha }}
+        run: python3 .github/scripts/avito_readonly_gate.py
+      - name: Read only the Services outbox incident through the deployed operator
+        env:
+          AVITO_EXPECTED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          avito_temp="$(mktemp -d "$RUNNER_TEMP/avito-outbox-readonly.XXXXXX")"
+          trap 'rm -rf -- "$avito_temp"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$avito_temp/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$avito_temp/known_hosts"
+          chmod 600 "$avito_temp/key" "$avito_temp/known_hosts"
+          ssh-keygen -y -f "$avito_temp/key" >/dev/null
+          avito_port="${DEPLOY_PORT:-22}"
+          [[ "$avito_port" =~ ^[0-9]+$ ]]
+          avito_lookup="$DEPLOY_HOST"
+          if [[ "$avito_port" != 22 ]]; then avito_lookup="[$DEPLOY_HOST]:$avito_port"; fi
+          ssh-keygen -F "$avito_lookup" -f "$avito_temp/known_hosts" >/dev/null
+          avito_ssh=(ssh -i "$avito_temp/key" -p "$avito_port"
+            -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$avito_temp/known_hosts"
+            -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=3)
+          printf -v avito_command 'bash -s -- %q %q preflight' "$AVITO_EXPECTED_SHA" "$DEPLOY_APP_PATH"
+          "${avito_ssh[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "$avito_command" < update.sh \
+            >"$avito_temp/preflight-out" 2>"$avito_temp/preflight-err" || {
+              echo "AVITO_OUTBOX_READONLY_PREFLIGHT_BLOCKED"; exit 2;
+            }
+          printf -v avito_command 'bash -s -- %q %q' "$AVITO_EXPECTED_SHA" "$DEPLOY_APP_PATH"
+          avito_exit=0
+          "${avito_ssh[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "$avito_command" \
+            < .github/scripts/avito_outbox_readonly_remote.sh \
+            >"$avito_temp/stdout" 2>"$avito_temp/stderr" || avito_exit=$?
+          python3 scripts/avito_outbox_receipt.py "$avito_temp/stdout"
+          [[ "$avito_exit" == 0 ]] || { echo "AVITO_OUTBOX_READONLY_TRANSPORT_BLOCKED"; exit 2; }

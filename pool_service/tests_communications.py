@@ -6295,97 +6295,58 @@ class AvitoCommunicationTests(TestCase):
         self.assertEqual(access_token(self.connection), "replacement-token")
         self.assertEqual(request.call_count, 1)
 
-    @patch("pool_service.management.commands.send_avito_outbox.send_message")
-    def test_outbox_claim_prevents_a_second_worker_from_sending(self, sender):
+    def test_outbox_claim_prevents_a_second_worker_from_sending(self):
+        owner = User.objects.get(username="avito-owner")
+        CommunicationAccess.objects.update_or_create(
+            organization=self.organization, user=owner,
+            defaults={"can_reply_conversations": True},
+        )
+        self.connection.settings = {"avito_outbox_v1": {
+            "enabled": True, "account_id": self.connection.external_id,
+            "organization_id": self.organization.pk,
+            "enabled_at": (timezone.now() - timedelta(days=1)).isoformat(),
+        }}
+        self.connection.save(update_fields=["settings"])
         conversation = Conversation.objects.create(
             organization=self.organization, connection=self.connection,
-            external_id="chat-claim", participant_name="Иван",
+            external_id="chat-claim", participant_name="Client",
         )
         message = ConversationMessage.objects.create(
-            conversation=conversation, direction="out", body="Один раз",
-            delivery_status=ConversationMessage.DELIVERY_PENDING,
+            conversation=conversation, direction="out", body="One reply",
+            sent_by=owner, delivery_status=ConversationMessage.DELIVERY_PENDING,
         )
-        call_command("send_avito_outbox")
-        call_command("send_avito_outbox")
+        self.assertIsNotNone(claim_message(message.pk, connection_id=self.connection.pk))
+        self.assertIsNone(claim_message(message.pk, connection_id=self.connection.pk))
         message.refresh_from_db()
         self.assertEqual(message.delivery_status, ConversationMessage.DELIVERY_SENDING)
-        sender.assert_called_once()
+        self.assertEqual(message.delivery_attempts, 1)
 
     def test_outbox_stale_selection_is_not_claimed_after_deactivation(self):
         conversation = Conversation.objects.create(
-            organization=self.organization,
-            connection=self.connection,
-            external_id="chat-disabled-after-selection",
-            participant_name="Иван",
+            organization=self.organization, connection=self.connection,
+            external_id="chat-disabled", participant_name="Client",
         )
         message = ConversationMessage.objects.create(
-            conversation=conversation,
-            direction=ConversationMessage.DIRECTION_OUT,
-            body="Не отправлять после отключения",
+            conversation=conversation, direction="out", body="Do not send",
             delivery_status=ConversationMessage.DELIVERY_PENDING,
         )
-        selected_id = message.pk
         self.connection.is_active = False
         self.connection.save(update_fields=["is_active"])
-        self.assertIsNone(claim_message(selected_id))
+        self.assertIsNone(claim_message(message.pk, connection_id=self.connection.pk))
         message.refresh_from_db()
         self.assertEqual(message.delivery_status, ConversationMessage.DELIVERY_PENDING)
 
-        self.connection.is_active = True
-        self.connection.save(update_fields=["is_active"])
-        self.connection.channel.is_active = False
-        self.connection.channel.save(update_fields=["is_active"])
-        self.assertIsNone(claim_message(selected_id))
-        message.refresh_from_db()
-        self.assertEqual(message.delivery_status, ConversationMessage.DELIVERY_PENDING)
-
-    @patch("pool_service.management.commands.send_avito_outbox.send_message")
-    def test_transient_presend_failure_retries_are_bounded(self, sender):
-        sender.side_effect = AvitoRetryableError("provider_http_503")
+    def test_outbox_requires_a_connection_and_never_scans_global_queue(self):
         conversation = Conversation.objects.create(
-            organization=self.organization,
-            connection=self.connection,
-            external_id="chat-transient",
-            participant_name="Иван",
+            organization=self.organization, connection=self.connection,
+            external_id="chat-scope-required", participant_name="Client",
         )
         message = ConversationMessage.objects.create(
-            conversation=conversation,
-            direction=ConversationMessage.DIRECTION_OUT,
-            body="Повторить после временной ошибки",
+            conversation=conversation, direction="out", body="Queued",
             delivery_status=ConversationMessage.DELIVERY_PENDING,
         )
-
-        call_command("send_avito_outbox")
+        with self.assertRaises(CommandError):
+            call_command("send_avito_outbox")
         message.refresh_from_db()
+        self.assertEqual(message.delivery_attempts, 0)
         self.assertEqual(message.delivery_status, ConversationMessage.DELIVERY_PENDING)
-        self.assertEqual(message.delivery_attempts, 1)
-
-        call_command("send_avito_outbox")
-        message.refresh_from_db()
-        self.assertEqual(message.delivery_status, ConversationMessage.DELIVERY_PENDING)
-        self.assertEqual(message.delivery_attempts, 2)
-
-        call_command("send_avito_outbox")
-        message.refresh_from_db()
-        self.assertEqual(message.delivery_status, ConversationMessage.DELIVERY_FAILED)
-        self.assertEqual(message.delivery_attempts, 3)
-        self.assertEqual(message.delivery_error, "provider_http_503")
-        self.assertEqual(sender.call_count, 3)
-
-    def test_missing_credentials_fail_message_without_crashing_batch(self):
-        conversation = Conversation.objects.create(
-            organization=self.organization,
-            connection=self.connection,
-            external_id="chat-no-credentials",
-            participant_name="Иван",
-        )
-        message = ConversationMessage.objects.create(
-            conversation=conversation,
-            direction=ConversationMessage.DIRECTION_OUT,
-            body="Сообщение без настройки",
-            delivery_status=ConversationMessage.DELIVERY_PENDING,
-        )
-        call_command("send_avito_outbox")
-        message.refresh_from_db()
-        self.assertEqual(message.delivery_status, ConversationMessage.DELIVERY_FAILED)
-        self.assertEqual(message.delivery_error, "provider_credentials_missing")

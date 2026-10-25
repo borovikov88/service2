@@ -89,7 +89,8 @@ jobs:
             .github/workflows/direct-pr-review.yml .github/workflows/ci-deploy.yml \
             .github/workflows/development-codex.yml .github/workflows/codex-plan-connection.yml \
             .github/workflows/production-health.yml .github/workflows/avito-readonly-audit.yml .github/workflows/call-recordings-sync.yml \
-            .github/workflows/employee-identity-sync.yml .github/workflows/avito-status-monitor.yml
+            .github/workflows/employee-identity-sync.yml .github/workflows/avito-status-monitor.yml \
+            .github/workflows/avito-outbox-readonly.yml
       - name: Verify Avito monitor scheduling and deployment locks
         if: steps.reuse.outputs.verified != 'true'
         run: python -m unittest discover -s .github/tests -p 'test_avito*py' -v
@@ -285,6 +286,49 @@ jobs:
           [[ "$status" =~ ^2[0-9][0-9]$ ]] || {
             echo "Health check returned HTTP $status, expected 2xx" >&2
             exit 1
+          }
+      - name: Configure scoped Avito outgoing replies without sending the queue
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          printf -v REMOTE_COMMAND \
+            'set -Eeuo pipefail; cd %q; test "$(git rev-parse HEAD)" = %q; exec env SERVICE2_AVITO_OUTBOX_SETUP=1 ../venv/bin/python scripts/avito_outbox_cron.py setup --app-dir %q --expected-sha %q' \
+            "$DEPLOY_APP_PATH" "$GITHUB_SHA" "$DEPLOY_APP_PATH" "$GITHUB_SHA"
+          ssh -i ~/.ssh/service2_deploy \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
+      - name: Reconcile and finish only the explicitly authorised original Avito reply
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[avito-outbox-original-20261025]')
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          recovery_temp="$(mktemp -d "$RUNNER_TEMP/avito-outbox-recovery.XXXXXX")"
+          trap 'rm -rf -- "$recovery_temp"' EXIT
+          PORT="${DEPLOY_PORT:-22}"
+          printf -v REMOTE_COMMAND 'bash -s -- %q %q' "$GITHUB_SHA" "$DEPLOY_APP_PATH"
+          recovery_exit=0
+          ssh -i ~/.ssh/service2_deploy \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
+            -o StrictHostKeyChecking=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND" \
+            < .github/scripts/avito_outbox_recovery_remote.sh \
+            >"$recovery_temp/stdout" 2>"$recovery_temp/stderr" || recovery_exit=$?
+          python3 scripts/avito_outbox_recovery_receipt.py "$recovery_temp/stdout"
+          [[ "$recovery_exit" == 0 ]] || {
+            echo "AVITO_OUTBOX_ORIGINAL_RECOVERY_BLOCKED"; exit 2;
           }
       - name: Set up authorised Avito services connection once
         env:
