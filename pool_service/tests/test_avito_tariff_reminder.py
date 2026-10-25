@@ -330,6 +330,7 @@ class ServicesTariffReminderTests(TestCase):
                 return_value=datetime(2026, 1, 15, 18, tzinfo=dt_timezone.utc)):
             self.assertEqual(calendar._today_for(self.connection), date(2026, 1, 16))
             self.enable(date(2026, 1, 23))
+            self.connection.refresh_from_db()
             shown = calendar.display_state(self.connection, self.owner)
         self.assertEqual(shown["timezone"], "Asia/Barnaul")
         self.assertEqual(shown["confirmed_at_display"], "16.01.2026 01:00:00")
