@@ -1,0 +1,8 @@
+<svg class="communication-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+{% if name == 'contact' %}<circle cx="8" cy="7" r="3"/><path d="M2 21v-3a6 6 0 0 1 12 0v3M17 6h5M17 11h5M18 16h4"/>
+{% elif name == 'internal' %}<path d="M3 7h18m-4-4 4 4-4 4M21 17H3m4-4-4 4 4 4"/>
+{% else %}<path d="M4 3h4l1.5 4-2.3 1.8a15 15 0 0 0 8 8L17 14.5l4 1.5v4a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1Z"/>
+{% if name == 'in' %}<path d="M21 3l-7 7m0-5v5h5"/>
+{% elif name == 'out' %}<path d="m14 10 7-7m-5 0h5v5"/>
+{% elif name == 'missed' %}<path d="m15 3 6 6m0-6-6 6"/>{% endif %}
+{% endif %}</svg>

@@ -1,0 +1,7 @@
+<span class="channel-icon" role="img" aria-label="{{ channel.get_kind_display }}" title="{{ channel.get_kind_display }}">
+{% if channel.kind == 'avito' %}
+<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="9" cy="21" r="8" fill="#00aaff"/><circle cx="22" cy="9" r="8" fill="#965eeb"/><circle cx="25" cy="24" r="6" fill="#04e061"/><circle cx="7" cy="6" r="4" fill="#ff4053"/></svg>
+{% elif channel.kind == 'website' %}<i class="bi bi-globe2" aria-hidden="true"></i>
+{% elif channel.kind == 'megafon' %}<i class="bi bi-telephone-fill text-success" aria-hidden="true"></i>
+{% else %}<i class="bi bi-chat-dots" aria-hidden="true"></i>{% endif %}
+</span>

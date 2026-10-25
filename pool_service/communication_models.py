@@ -250,6 +250,13 @@ class Conversation(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    @property
+    def external_chat_url(self):
+        if self.connection.channel.kind == CommunicationChannel.KIND_AVITO and self.external_id:
+            from urllib.parse import quote
+            return "https://www.avito.ru/profile/messenger/channel/" + quote(self.external_id, safe="")
+        return ""
+
     class Meta:
         unique_together = ("connection", "external_id")
         ordering = ["-last_message_at", "-created_at"]

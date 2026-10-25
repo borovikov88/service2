@@ -14,6 +14,7 @@ from docx import Document
 from pool_service.client_crm_models import ClientContact, ClientCRMProfile
 from pool_service.communication_models import CallAnalysis, CommunicationAccess, PhoneCall, TelephonyConnection
 from pool_service.models import Client, Organization, OrganizationAccess
+from pool_service.phone_utils import normalize_phone
 
 
 class CRMCallPageIntegrationTests(TestCase):
@@ -192,8 +193,8 @@ class CRMCallPageIntegrationTests(TestCase):
     def test_creation_and_lookup_respect_role_and_organization(self):
         call = self.call(employee=self.worker)
         self.client.force_login(self.worker)
-        self.assertNotContains(self.client.get(self.calls_url), "data-call-create-client")
-        self.assertEqual(self.client.get(reverse("communication_call_client_create", args=[call.pk])).status_code, 403)
+        self.assertContains(self.client.get(self.calls_url), "data-call-create-client")
+        self.assertEqual(self.client.get(reverse("communication_call_client_create", args=[call.pk])).status_code, 200)
         self.client.force_login(self.owner)
         foreign_call = self.call(organization=self.foreign)
         self.assertEqual(self.client.get(reverse("communication_call_client_create", args=[foreign_call.pk])).status_code, 403)
@@ -212,6 +213,60 @@ class CRMCallPageIntegrationTests(TestCase):
         with self.assertRaises(PermissionDenied):
             resolve(lookup_url).func(request, source_kind="telephony")
         self.assertFalse(Client.objects.exists())
+
+    def test_staff_can_save_unknown_contact_only_from_accessible_calls(self):
+        from pool_service.call_processing_models import CallPrivateNumber
+        from pool_service.client_crm_views import _can_manage_import
+
+        for index, role in enumerate(("manager", "service", "installer")):
+            with self.subTest(role=role):
+                membership = OrganizationAccess.objects.get(user=self.worker, organization=self.org)
+                membership.role = role
+                membership.save()
+                CommunicationAccess.objects.update_or_create(
+                    user=self.worker, organization=self.org,
+                    defaults={"can_view_own_calls": True, "can_view_all_calls": False},
+                )
+                own = self.call(employee=self.worker, phone=f"+7900000010{index}")
+                unrelated = self.call(employee=self.owner)
+                foreign = self.call(organization=self.foreign, employee=self.worker)
+                internal = self.call(employee=self.worker, direction="internal")
+                uploaded = self.call(employee=self.worker, source_kind="uploaded")
+                private = self.call(employee=self.owner, peer_employee=self.worker, phone=f"+7900000020{index}")
+                CallPrivateNumber.objects.create(
+                    organization=self.org, owner=self.owner, phone_key=normalize_phone(private.phone_number),
+                )
+                self.client.force_login(self.worker)
+                page = self.client.get(self.calls_url)
+                self.assertContains(page, "call-save-contact")
+                self.assertContains(page, "communication-icon")
+                url = reverse("communication_call_client_create", args=[own.pk])
+                self.assertEqual(self.client.get(url).status_code, 200)
+                data = {"name": f"Saved caller {index}", "client_type": "private", "organization": self.foreign.pk}
+                self.assertRedirects(self.client.post(url, data), self.calls_url, fetch_redirect_response=False)
+                customer = Client.objects.get(name=data["name"])
+                self.assertEqual(customer.organization_id, self.org.pk)
+                self.assertEqual(normalize_phone(customer.phone), normalize_phone(own.phone_number))
+                count = Client.objects.count()
+                self.assertEqual(self.client.post(url, data).status_code, 200)
+                self.assertEqual(Client.objects.count(), count)
+                own.refresh_from_db()
+                self.assertIsNone(own.client_id)
+                self.assertFalse(_can_manage_import(self.worker, self.org.pk))
+                for denied in (unrelated, foreign, internal, uploaded, private):
+                    denied_url = reverse("communication_call_client_create", args=[denied.pk])
+                    expected = 404 if denied == private else 403
+                    self.assertEqual(self.client.get(denied_url).status_code, expected)
+                    self.assertEqual(self.client.post(denied_url, data).status_code, expected)
+                self.assertEqual(Client.objects.count(), count)
+
+    def test_calls_show_accessible_direction_icons_and_live_filter(self):
+        self.call(direction="in", result="answered")
+        self.call(direction="out", result="answered")
+        self.call(direction="in", result="missed")
+        page = self.client.get(self.calls_url)
+        for text in ("call-direction--in", "call-direction--out", "call-direction--missed", "data-call-filters", "communication-filters.js"):
+            self.assertContains(page, text)
 
     def test_lazy_fields_do_not_render_the_directory_and_selected_value_survives(self):
         customer = self.customer(name="Directory sentinel 001")
