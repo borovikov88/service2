@@ -349,7 +349,8 @@ def services_coverage(feed, all_items, *, requested, checked, skipped):
         'published_inactive': len(published_ids & inactive) if complete else None,
         'requested_count': requested, 'checked_count': checked, 'skipped_out_of_scope': skipped}
 
-def collect_connection(connection, item_ids, index, stocks=None, stock_error=None, *, release_evidence=False):
+def collect_connection(connection, item_ids, index, stocks=None, stock_error=None, *, release_evidence=False,
+                       release_revision=SERVICES_REVISION):
     identity = {"connection_id": connection.pk}
     try:
         if release_evidence and (connection.pk != SERVICES_CONNECTION_ID
@@ -454,7 +455,7 @@ def collect_connection(connection, item_ids, index, stocks=None, stock_error=Non
             # Independent local storage proof must survive a provider read failure,
             # and a storage diagnostic failure must not erase webhook evidence.
             storage_probe_state = {"source": "passenger_http", "checked": False, "cached": True, "error": "storage_probe_failed"}
-        release_fields = _services_release_evidence(connection) if release_evidence else {}
+        release_fields = _services_release_evidence(connection, revision=release_revision) if release_evidence else {}
         if release_evidence:
             release_fields["raw_content_fields"] = raw_fields
         final_account_id = authorized_account_id(connection)
@@ -507,13 +508,13 @@ def collect(item_ids):
                       "checked_at": checked_at, "source": source, "connections": results})
 
 
-def _services_release_evidence(connection):
+def _services_release_evidence(connection, *, revision=SERVICES_REVISION):
     """Independent read-only checks; no helper failure erases another result."""
     result = {}
     try:
         from .avito_services_publication import publication_release_check
         result["publication_release"] = publication_release_check(
-            connection, revision=SERVICES_REVISION, check_http=True)
+            connection, revision=revision, check_http=True)
     except Exception:
         result["publication_release"] = {"error": "audit_publication_release_unavailable"}
     try:
@@ -540,7 +541,7 @@ def _services_release_evidence(connection):
 
 
 def collect_services(item_ids=None, *, connection_id=SERVICES_CONNECTION_ID,
-                     account_id=SERVICES_ACCOUNT_ID, revision=SERVICES_REVISION):
+                     account_id=SERVICES_ACCOUNT_ID, revision=SERVICES_REVISION, current_publication=False):
     """Current services release only; never discover or read another account."""
     checked_at = datetime.now(ZoneInfo("Asia/Barnaul")).isoformat()
     from django.urls import reverse
@@ -554,7 +555,7 @@ def collect_services(item_ids=None, *, connection_id=SERVICES_CONNECTION_ID,
                    "reason": "services_have_no_physical_stock"}, "connections": []}
     if (type(connection_id) is not int or connection_id != SERVICES_CONNECTION_ID
             or account_id != SERVICES_ACCOUNT_ID or type(revision) is not int
-            or revision != SERVICES_REVISION):
+            or revision != SERVICES_REVISION or type(current_publication) is not bool):
         return normalize(envelope | {"status": "blocked", "reason": "audit_scope_invalid"})
     if item_ids is None:
         item_ids = []
@@ -571,11 +572,33 @@ def collect_services(item_ids=None, *, connection_id=SERVICES_CONNECTION_ID,
     try:
         binding(connection)
         from .avito_input_copy import bound_services_feed
-        if bound_services_feed(connection, SERVICES_ACCOUNT_ID) is None:
+        feed = bound_services_feed(connection, SERVICES_ACCOUNT_ID)
+        if feed is None:
             raise AvitoError("provider_account_mismatch")
+        if current_publication:
+            selected = feed.published_revision
+            if type(selected) is not int or not 0 < selected <= 1000000000 or not feed.enabled or not feed.published:
+                raise AvitoError("provider_account_mismatch")
+            revision = selected
+            envelope["scope"].update(revision=selected, revision_source="current_published")
     except Exception:
         return normalize(envelope | {"status": "blocked", "reason": "audit_services_binding_invalid"})
-    row = collect_connection(connection, item_ids, None, release_evidence=True)
+    options = {"release_evidence": True}
+    if current_publication:
+        options["release_revision"] = revision
+    row = collect_connection(connection, item_ids, None, **options)
+    if current_publication:
+        # A later publication/binding during provider I/O invalidates selection;
+        # never label a historical version as the current result.
+        try:
+            current = ChannelConnection.objects.select_related("channel").get(pk=SERVICES_CONNECTION_ID)
+            fresh = bound_services_feed(current, SERVICES_ACCOUNT_ID)
+            if (binding(current) != binding(connection) or fresh is None
+                    or fresh.pk != feed.pk or fresh.published_revision != revision
+                    or fresh.public_key != feed.public_key or fresh.published != feed.published):
+                raise ValueError
+        except Exception:
+            row = {"connection_id": SERVICES_CONNECTION_ID, "error": "audit_publication_changed"}
     complete = ("error" not in row and all(
         "error" not in row[key] for key in
         ("autoload_report", "listing_scan", "configured_feed_source", "advance_access",
