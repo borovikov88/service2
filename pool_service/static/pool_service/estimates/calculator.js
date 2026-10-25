@@ -1,4 +1,4 @@
-import {availabilityStatus} from './availability.js?v=1';
+import {renderCatalogCard} from './catalog-card.js?v=1';
 import {installDocuments} from './documents.js?v=1';
 import {productDetails,productTitle} from './product-details.js?v=1';
 import {sections as viewSections, groupFor, moveViewRow} from './layout.js?v=6';
@@ -14,10 +14,6 @@ const titles = {economy: 'Эконом', standard: 'Стандарт', premium: 
 installNumbers(root);
 const help = installHelp(root);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
-function availabilityBadge(product) {
-  const status = availabilityStatus(product);
-  return `<span class="pe-availability pe-availability-${status.tone}" title="${esc(status.detail)}" aria-label="${esc(status.detail)}"><span class="pe-availability-dot" aria-hidden="true"></span>${esc(status.label)}</span>`;
-}
 function safeImage(value) {
   try { const u = new URL(value); return u.protocol === 'https:' && u.hostname === 'shop.aqualine22.ru' && !u.username && !u.password && (!u.port || u.port === '443') && u.pathname.startsWith('/image/') ? u.href : ''; }
   catch { return ''; }
@@ -91,7 +87,7 @@ async function searchCatalog() {
     const data = await api({action: 'catalog_search', variant: selected, embedded_profile: snapshot.variants[selected].embedded_profile, q: query, kind: $('#pe-catalog-kind').value, brand: $('#pe-catalog-brand').value, inputs: snapshot.inputs}, catalogAbort.signal);
     if (token !== catalogSequence || !$('#pe-catalog-dialog').open) return;
     showCatalogStatus(data);
-    $('#pe-catalog-results').innerHTML = `<p class="pe-catalog-count">Найдено: ${data.total}${data.total > 40 ? '. Показаны первые 40 — уточните поиск.' : ''}</p>` + data.products.map(p => `<article class="pe-catalog-item"><div class="pe-product-description">${thumbnail(p.image, p.name, true)}<strong>${esc(p.name)}</strong><span class="pe-row-detail">${esc(p.brand)}${p.sku ? ' · арт. ' + esc(p.sku) : ''}</span>${availabilityBadge(p)}<span class="pe-row-detail">${p.kind === 'circulation_pump' ? (p.frequency_control === true ? 'Частотное регулирование указано в названии · ' : p.frequency_control === false ? 'Без частотного регулирования · ' : 'Регулирование не подтверждено · ') : ''}${p.nominal_flow ? money(p.nominal_flow) + ' м³/ч по каталогу · ' : ''}${p.head ? 'при ' + money(p.head) + ' м · ' : ''}${p.heating_power ? money(p.heating_power) + ' кВт · ' : ''}${p.power !== 'unknown' ? esc(p.power) + ' В' : ''}</span><p class="pe-help" ${p.warning ? 'data-help-warning' : ''}>${esc(p.warning || (p.kind === 'other' ? 'Назначение, единицу измерения и количество проверьте в карточке.' : 'Предварительный кандидат. Проверьте рабочий режим, совместимость и комплектацию.'))}</p><a class="pe-link" href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">Карточка товара ↗</a></div><div class="pe-catalog-price"><strong>${money(p.price)} ₽${p.kind==='liner'&&p.liner?.price_unit==='m2'?' / м²':p.roll_area || p.kind==='liner'&&p.liner?.price_unit==='roll'?' / рулон':''}</strong>${p.roll_area ? `<small>${esc(p.roll_area)} м² в рулоне; в смете пересчёт на м²</small>` : ""}<button class="pe-btn" type="button" data-catalog-product="${esc(p.id)}">Выбрать</button></div></article>`).join('') + (!data.total ? '<p>Товары не найдены. Измените бренд или запрос; строка сметы останется без замены.</p>' : '');
+    $('#pe-catalog-results').innerHTML = `<p class="pe-catalog-count">Найдено: ${data.total}${data.total > 40 ? '. Показаны первые 40 — уточните поиск.' : ''}</p>` + data.products.map(p => renderCatalogCard(p, {money, thumbnail})).join('') + (!data.total ? '<p>Товары не найдены. Измените бренд или запрос; строка сметы останется без замены.</p>' : '');
     help.refresh();
   } catch (error) { if (error.name !== 'AbortError' && token === catalogSequence) $('#pe-catalog-results').textContent = error.message; }
 }
