@@ -446,7 +446,9 @@ def runtime_checks(value):
         require(type(row.get("last_worker_verified")) is bool)
         require(row.get("last_worker_outcome") is None or row["last_worker_outcome"] in outcomes)
         def fixed_code(raw):
-            require(raw is None or (isinstance(raw, str) and (raw in allowed_codes or re.fullmatch(r"provider_http_[1-5][0-9]{2}", raw))))
+            require(raw is None or (isinstance(raw, str) and (raw in allowed_codes
+                or row["check"] == "statistics_daily" and raw == "provider_data_invalid"
+                or re.fullmatch(r"provider_http_[1-5][0-9]{2}", raw))))
             return raw
         guard_names = {"queried_rows_changed", "shop_xml_snapshot_changed",
                        "profile_snapshot_changed", "summary_snapshot_changed"}
