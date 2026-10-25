@@ -12,6 +12,7 @@ from django.urls import reverse
 from pool_service import avito_owner_review as review
 from pool_service import crm_source_links as links
 from pool_service.avito_feed_models import AvitoServicesFeedVersion
+from pool_service.avito_services_publication import bind_publication
 from pool_service.communication_models import Conversation, CommunicationAccess, PhoneCall, TelephonyConnection
 from pool_service.crm_source_models import CrmSourceLink
 from pool_service.models import CrmItem, DataAuditLog, ServiceTask
@@ -75,6 +76,23 @@ class OwnerReviewTests(ProposalFixture, TestCase):
         self.feed.save(update_fields=['published'])
         with self.assertRaises(review.projects.ProposalError):
             review.project_receipt(self.connection, self.owner)
+
+    def test_history_only_publication_replacement_discards_stale_receipt(self):
+        original = review.projects._publication_connection
+        calls = []
+        def changing_source(*args, **kwargs):
+            result = original(*args, **kwargs)
+            calls.append(True)
+            if len(calls) == 3:  # Before, existing page context, final authority read.
+                version = AvitoServicesFeedVersion.objects.create(feed=self.feed, revision=18,
+                    published_revision=18, action='publish', snapshot=deepcopy(self.feed.published),
+                    file_digest=self.source.file_digest)
+                bind_publication(self.feed, version)
+            return result
+        with patch.object(review.projects, '_publication_connection', side_effect=changing_source):
+            with self.assertRaises(review.projects.ProposalError):
+                review.project_receipt(self.connection, self.owner)
+        self.provider.assert_not_called()
 
     def test_safe_baseline_projects_only_typed_dates_booleans_and_known_flags(self):
         baseline = review._baseline({'from': 'PRIVATE', 'to': '2026-10-20',

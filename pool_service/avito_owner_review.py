@@ -86,7 +86,8 @@ def project_receipt(connection, actor):
     latest, actor = projects._publication_connection(current.pk, actor)
     feed.refresh_from_db()
     if (not projects._pilot(latest) or binding != projects._digest(projects._binding(latest))
-            or before != (feed.revision, feed.published_revision, feed.published, feed.draft)):
+            or before != (feed.revision, feed.published_revision, feed.published, feed.draft)
+            or projects._source(latest, feed)['version'].pk != context['source_version'].pk):
         raise projects.ProposalError('scope_changed')
     return {'state': 'available', 'connection_id': 4, 'account_id': projects.ACCOUNT,
         'checked_at': timezone.now().isoformat(), 'publication_revision': feed.published_revision,
