@@ -570,7 +570,7 @@ def collect_services(item_ids=None, *, connection_id=SERVICES_CONNECTION_ID,
         return normalize(envelope | {"status": "blocked", "reason": "audit_services_connection_unavailable"})
     # Fail before token/provider access if account/organization/feed/owner changed.
     try:
-        binding(connection)
+        selected_binding = binding(connection)
         from .avito_input_copy import bound_services_feed
         feed = bound_services_feed(connection, SERVICES_ACCOUNT_ID)
         if feed is None:
@@ -593,7 +593,7 @@ def collect_services(item_ids=None, *, connection_id=SERVICES_CONNECTION_ID,
         try:
             current = ChannelConnection.objects.select_related("channel").get(pk=SERVICES_CONNECTION_ID)
             fresh = bound_services_feed(current, SERVICES_ACCOUNT_ID)
-            if (binding(current) != binding(connection) or fresh is None
+            if (binding(current) != selected_binding or fresh is None
                     or fresh.pk != feed.pk or fresh.published_revision != revision
                     or fresh.public_key != feed.public_key or fresh.published != feed.published):
                 raise ValueError

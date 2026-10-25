@@ -751,6 +751,30 @@ class ScopedServicesReleaseAuditTests(TestCase):
         check.assert_called_once_with(self.target, revision=18, check_http=True)
 
 
+    def test_current_selection_discards_result_after_credential_or_channel_change(self):
+        original_channel = self.target.channel_id
+        other_channel = CommunicationChannel.objects.create(
+            organization=self.org, kind="avito", name="Changed during read")
+        for kind in ("credential", "channel"):
+            with self.subTest(kind=kind):
+                def changed(*args, **kwargs):
+                    if kind == "credential":
+                        AvitoCredential.objects.filter(connection=self.target).update(
+                            client_secret_encrypted="changed-synthetic-secret")
+                    else:
+                        ChannelConnection.objects.filter(pk=4).update(channel=other_channel)
+                    return {"connection_id": 4, "error": "provider_http_403"}
+                try:
+                    with patch.object(audit, "collect_connection", side_effect=changed):
+                        result = audit.collect_services(current_publication=True)
+                    self.assertEqual([{"connection_id": 4, "error": "audit_publication_changed"}],
+                                     result["connections"])
+                finally:
+                    AvitoCredential.objects.filter(connection=self.target).update(
+                        client_secret_encrypted="synthetic")
+                    ChannelConnection.objects.filter(pk=4).update(channel_id=original_channel)
+
+
 class ServicesReleaseProjectionTests(SimpleTestCase):
     def test_publication_and_photo_projection_never_exports_urls_hashes_values_or_actors(self):
         for projector, raw in ((receipt.publication_release, release_publication()),
