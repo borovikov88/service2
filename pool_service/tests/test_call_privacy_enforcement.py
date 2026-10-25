@@ -403,6 +403,9 @@ class PrivateCallEnforcementTests(TestCase):
             payload_json={"source_call_id": call.pk})
         note = Notification.objects.create(user=self.owner, organization=self.org, kind="task_assignment",
             title="Task", message=task.title, action_url=reverse("task_edit", args=[task.pk]))
+        Notification.objects.create(user=self.owner, organization=self.org, kind="task_assignment",
+            title="Absolute source task", message=task.title,
+            action_url="https://example.invalid" + reverse("task_edit", args=[task.pk]))
         urls = [reverse("crm_view", args=["service", item.pk]), reverse("archive_list"), reverse("notifications")]
         for url in urls:
             self.assertContains(self.client.get(url), task.title)

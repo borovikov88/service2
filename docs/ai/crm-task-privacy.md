@@ -23,7 +23,7 @@ without M2M membership does **not** acquire direct/edit permission.
 | `client_detail` task preview/count | Owner/admin all; otherwise public, author, primary, M2M; manager does not bypass this filter | Batch source privacy | Preserve public/primary preview, current org/account and source check; same-org FK scope |
 | `readings_all` calendar/search index | Existing role selection; otherwise M2M participant | Batch source privacy | Keep selection, apply current org/account guard with batch source check |
 | `archive_list` task rows/counts | Every task in selected org | Missing | Direct read actor policy and batch source check before counts/template |
-| `notifications_list` and unread badge | Stored recipient only, stale task title/message rendered | Missing historical read recheck | Resolve existing local task URL, batch recheck task authority/source; deleted tasks hidden |
+| `notifications_list` and unread badge | Stored recipient only, stale task title/message rendered | Missing historical read recheck | Resolve existing task paths (relative/absolute), batch recheck task authority/source; deleted tasks and malformed URLs hidden |
 | Notification push-open/token links | Stored recipient only | Missing link recheck | Recheck current task authority/source before redirect |
 
 Existing customer supply tasks also permit their active creator/M2M participant
@@ -68,6 +68,9 @@ new negative regression passed before production-code changes.
   invoke call privacy. `operations_push_queue` and assignment/employee retry
   paths recheck current task/source and locked recipient authority. Call-control
   push obtains the organization lock and current recipients before delivery.
+  Its primary, M2M, owner and admin recipient branches now also recheck Employee
+  lifecycle under batched User -> OrgAccess -> Employee locks; independent
+  review found that this separate scheduler initially lacked the delivery guard.
   Delivery also rechecks locked current Employee inactive/dismissed status in
   `_locked_task_recipient`, retaining user -> org access -> employee ordering.
   Identity binding already uses org access -> employee. Existing payroll
@@ -76,8 +79,10 @@ new negative regression passed before production-code changes.
   deadlock behavior for every HR update; this lock-order detail is explicitly
   supplied to independent review.
 - In-app task notifications have no task FK: the existing local `task_edit` or
-  `task_feedback` action URL is resolved, including the earlier unnamed waiting
-  guard. Rechecks are batched and also apply to stored messages from before
+  `task_feedback` action URL path is resolved, including absolute URLs and the
+  earlier unnamed waiting guard. A hostname grants no authority and is never
+  contacted. Malformed stored URLs suppress the notification safely, including
+  its message and unread badge, without breaking page rendering. Rechecks are batched and also apply to stored messages from before
   participant/role/source-privacy revocation. Previously delivered external
   notifications cannot be recalled; no new channel or cache is introduced.
 - No task-specific export endpoint, persistent task search index or task AI
@@ -98,3 +103,8 @@ Operations MCP/retry/actor and call-privacy suites are run locally. Full standar
 CI and independent exact-head security review are separate gates. No models,
 migrations, lifecycle rewrite, finance/1C/Avito/calculator changes, publication
 whitelist, merge or deployment are included.
+
+Independent review also observed that private-source `archive_restore_task`
+may still redirect after an existing write action without returning content.
+That lifecycle/write inconsistency is outside this read-privacy change; it is
+not claimed fixed, and needs a separately scoped A01/write-policy follow-up.

@@ -59,17 +59,23 @@ def readable_tasks(queryset, user, *, allow_preview=False):
 def visible_task_notifications(notifications, user):
     """Recheck historical task messages using their existing protected URL.
 
-    Notifications predate a task FK. Resolve only local task URLs, including
-    query strings; a deleted task never leaves its old private message visible.
+    Notifications predate a task FK. Resolve task paths, including absolute
+    URL paths and query strings; hostnames never confer task authority.
+    A deleted task never leaves its old private message visible.
     Other notification types keep their existing behavior.
     """
     from pool_service.task_waiting_guards import guarded_task_edit
 
     notifications = list(notifications)
     references = {}
+    rejected_ids = set()
     for note in notifications:
-        url = urlsplit(note.action_url or "")
-        if url.scheme or url.netloc:
+        try:
+            url = urlsplit(note.action_url or "")
+        except ValueError:
+            # Stored malformed URLs must not break the badge on every page.
+            # No reliable task reference exists, so suppress the stored text.
+            rejected_ids.add(note.pk)
             continue
         try:
             match = resolve(url.path)
@@ -77,6 +83,7 @@ def visible_task_notifications(notifications, user):
             continue
         if (match.url_name in {"task_edit", "task_feedback"} or match.func == guarded_task_edit) and "task_id" in match.kwargs:
             references[note.pk] = match.kwargs["task_id"]
+    notifications = [note for note in notifications if note.pk not in rejected_ids]
     if not references:
         return notifications
     tasks = readable_tasks(ServiceTask.objects.filter(pk__in=set(references.values())), user)

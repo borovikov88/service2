@@ -163,6 +163,38 @@ class TaskReadPrivacyTests(TestCase):
             start_date=timezone.localdate())
         self.assertIn(task.pk, [row.pk for row in readable_tasks(ServiceTask.objects.filter(pk=task.pk), self.actor)])
 
+    def test_malformed_stored_notification_url_does_not_crash_global_badge(self, _blocked):
+        from django.test import RequestFactory
+        from pool_service.context_processors import notifications_context
+        note = Notification.objects.create(user=self.actor, organization=self.org, kind="task_assignment",
+            title="MALFORMED_TASK_SENTINEL", message=self.task.title, action_url="http://[")
+        request = RequestFactory().get("/")
+        request.user = self.actor
+        self.assertEqual(notifications_context(request)["notifications_unread_count"], 0)
+        response = self.card()
+        self.assertEqual(response.status_code, 200)
+        response = self.client.get(reverse("notifications"))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "MALFORMED_TASK_SENTINEL")
+        self.assertNotContains(response, self.task.title)
+        self.assertNotIn(note.pk, [row.pk for row in response.context["notifications"]])
+
+    def test_absolute_task_path_rechecks_authority_without_trusting_host(self, _blocked):
+        from pool_service.services.task_read_permissions import visible_task_notifications
+        notes = [Notification.objects.create(user=self.actor, organization=self.org, kind="task_assignment",
+            title="Absolute task", message=self.task.title,
+            action_url=prefix + reverse("task_edit", args=[self.task.pk]) + "?from=stored#task")
+            for prefix in ("https://example.invalid", "//example.invalid")]
+        non_task = Notification.objects.create(user=self.actor, kind="development", title="Ordinary external link",
+            action_url="https://example.invalid/project/")
+        self.assertEqual(visible_task_notifications(notes + [non_task], self.actor), [non_task])
+        self.task.responsibles.add(self.actor)
+        self.assertEqual(visible_task_notifications(notes + [non_task], self.actor), notes + [non_task])
+        self.task.responsibles.remove(self.actor)
+        self.assertEqual(visible_task_notifications(notes + [non_task], self.actor), [non_task])
+        self.task.delete()
+        self.assertEqual(visible_task_notifications(notes + [non_task], self.actor), [non_task])
+
     def test_existing_direct_read_roles_do_not_gain_public_or_primary_only_access(self, _blocked):
         for visibility in (ServiceTask.VISIBILITY_PUBLIC, ServiceTask.VISIBILITY_PRIVATE):
             self.task.visibility = visibility
