@@ -1,0 +1,25 @@
+{% load tz %}
+{% if tariff_subscription_state.allowed %}
+<div class="border-bottom pb-3 mb-3">
+  <h3 class="h6 mb-2">Подписка услуг · отдельная проверка API</h3>
+  <p class="small mb-1">{% if tariff_subscription_state.last_success_at %}Последний подтверждённый ответ: {% endif %}{{ tariff_subscription_state.state_label }}</p>
+  {% if tariff_subscription_state.level %}<p class="small mb-1">Уровень в ответе источника: {{ tariff_subscription_state.level }}.</p>{% endif %}
+  {% if tariff_subscription_state.last_success_at %}
+    <p class="small text-muted mb-1">Успешное получение: {% timezone "Asia/Barnaul" %}{{ tariff_subscription_state.last_success_at|date:"d.m.Y H:i:s" }}{% endtimezone %} · Барнаул. Источник: {{ tariff_subscription_state.source }} · services.</p>
+    {% if tariff_subscription_state.stale %}<p class="small text-warning mb-1">Результат устарел; текущий статус подписки не подтверждён.</p>{% endif %}
+    <p class="small text-muted mb-1">{% if tariff_subscription_state.expiry_state == "date_unconfirmed" %}Поле expiredTo получено, но формат и часовой пояс не подтверждены. Дата не используется для напоминаний.{% else %}Дата окончания не возвращена. Это не означает отсутствие или окончание тарифа.{% endif %}</p>
+  {% endif %}
+  {% if tariff_subscription_state.detail %}<p class="small text-muted mb-1" role="status">{{ tariff_subscription_state.detail }}</p>{% endif %}
+  {% if tariff_subscription_state.manual_date_present %}<p class="small text-muted mb-1">Ручная дата, её источник и время подтверждения сохранены отдельно. Сравнение дат API и кабинета пока невозможно; расхождение не считается устранённым автоматически.</p>{% endif %}
+  <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" class="mt-2" data-avito-submit>
+    {% include 'pool_service/avito/_refresh_fields.html' %}<input type="hidden" name="section" value="tariff_api_refresh">
+    <button type="submit" class="btn btn-sm btn-outline-secondary">Проверить готовность чтения тарифа</button>
+  </form>
+  <details class="avito-help mt-2"><summary>Ограничение метода и черновик вопроса Авито</summary>
+    <p class="small mt-2 mb-1"><code>{{ tariff_subscription_state.method }}</code> — агентский метод Авито Promo. Обычная авторизация client_credentials не подтверждает агентский доступ. Чтение чатов, аванс и автозагрузка не подтверждают тариф или его срок.</p>
+    <p class="small text-muted mb-1">Проверка источника {{ tariff_subscription_state.source_checked_on }}: полный контракт недоступен. Пока контракт не подтверждён, запрос этого метода не выполняется. Создание агентства, приглашения, переводы и платные действия не выполняются.</p>
+    <p class="small mb-1"><a href="{{ tariff_subscription_state.documentation_url }}" target="_blank" rel="noopener noreferrer">Документация Авито Promo</a></p>
+    <p class="small mb-0">{{ tariff_subscription_state.support_draft }}</p>
+  </details>
+</div>
+{% endif %}
