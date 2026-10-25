@@ -1,5 +1,6 @@
 """Safe response fixtures: no production image, provider write or customer message."""
 from copy import deepcopy
+from datetime import timedelta
 from io import BytesIO
 import hashlib
 import tempfile
@@ -24,6 +25,7 @@ from pool_service.tests.test_avito_services_feed import export_bytes
 
 
 REAL_PROFILE_CURRENT = operation._profile_current
+REAL_CAPTURE_REPORT = operation._capture_report
 
 
 @override_settings(ALLOWED_HOSTS=['testserver', 'service2.aqualine22.ru'],
@@ -257,3 +259,46 @@ class ApprovedPhotoPublicationTests(TestCase):
         self.assertEqual(result['state'], 'verified', result)
         self.assertEqual(result['configured_source_format'], 'xlsx')
         self.assertTrue(result['configured_source_public_verified'])
+
+
+    def report_for(self, version, delta):
+        return {'kind': 'last_successful', 'upload_id': '999', 'complete': True,
+            'upload_finished': True, 'upload_status': 'success',
+            'started_at': (version.created_at + delta).isoformat(),
+            'total': 11, 'source_url_sha256': [],
+            'rows': [{'ad_id': row['Id'], 'avito_id': int(row['AvitoId']),
+                'avito_status': 'active', 'messages': [{'type': 'warning', 'code': 1218}]}
+                for row in entries(version.snapshot)]}
+
+    def test_old_provider_report_is_historical_and_not_attached_to_new_publication(self):
+        operation.run_approved_photo_publication('a' * 40)
+        version = self.feed.versions.get(action='publish')
+        self.connection.refresh_from_db()
+        marker = self.connection.settings[operation.KEY]
+        report = self.report_for(version, -timedelta(hours=1))
+        with patch('pool_service.communication_avito.authorized_account_id', return_value=operation.ACCOUNT_ID), \
+             patch('pool_service.communication_avito.access_token', return_value='TEST'), \
+             patch('pool_service.avito_autoload_report.fetch_report', return_value=report), \
+             patch('pool_service.avito_services_publication.correlate_report') as correlate:
+            result = REAL_CAPTURE_REPORT(self.connection, self.feed, version, marker)
+        self.assertEqual(result['state'], 'predates_publication')
+        self.assertEqual(result['target']['messages'], [{'type': 'warning', 'code': 1218}])
+        correlate.assert_not_called()
+        self.assertEqual(version.publication.attempts.count(), 0)
+
+    def test_only_later_complete_report_reaches_existing_correlator_without_source_invention(self):
+        operation.run_approved_photo_publication('a' * 40)
+        version = self.feed.versions.get(action='publish')
+        self.connection.refresh_from_db()
+        marker = self.connection.settings[operation.KEY]
+        report = self.report_for(version, timedelta(seconds=1))
+        with patch('pool_service.communication_avito.authorized_account_id', return_value=operation.ACCOUNT_ID), \
+             patch('pool_service.communication_avito.access_token', return_value='TEST'), \
+             patch('pool_service.avito_autoload_report.fetch_report', return_value=report):
+            result = REAL_CAPTURE_REPORT(self.connection, self.feed, version, marker)
+        self.assertEqual(result['state'], 'later_completed')
+        attempt = version.publication.attempts.get()
+        self.assertEqual(attempt.upload_id, '999')
+        self.assertEqual(len(attempt.rows), 11)
+        self.assertFalse(attempt.source_confirmed)
+        self.assertFalse(attempt.content_verified)
