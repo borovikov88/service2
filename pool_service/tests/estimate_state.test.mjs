@@ -120,6 +120,27 @@ test('filter loading quantity remains server-owned including unknown mass',()=>{
  assert.equal(quantityRequired({...emptyRow('media'),kind:'filter_media',basis:'filter_load',auto_quantity:true}),false);
 });
 
+test('gravel bags remain server-owned and an individual exclusion stays protected', () => {
+ const s=sample(), row={...emptyRow('gravel'),kind:'filter_gravel',basis:'filter_load',quantity:'8.000',auto_quantity:true};
+ s.variants.economy.blocks[0].rows.push(row);
+ assert.equal(automaticQuantity(s,'economy',row),'8.000');
+ assert.equal(automaticQuantity(s,'economy',{...row,quantity:null}),null);
+ assert.equal(quantityRequired(row),false);
+ setExcluded(s,'economy','equipment',row.id,true);
+ assert.equal(row.selection_locked,true);
+});
+
+test('filter media cards distinguish bag prices, per-kg prices and exact bag/fraction facts', () => {
+ for (const kind of ['filter_media','filter_gravel']) {
+  const p={id:'11',name:'Загрузка',kind,price:'150',filter_media:{bag_kg:'25',fraction_min:'1',fraction_max:'2',price_unit:'bag'}};
+  const render=product=>renderCatalogCard(product,{money:String,thumbnail:()=>''});
+  assert.match(render(p),/150 ₽ \/ меш\./);
+  assert.match(render(p),/25 кг\/меш\./);
+  assert.match(render(p),/1–2 мм/);
+  assert.match(render({...p,filter_media:{...p.filter_media,price_unit:'kg'}}),/150 ₽ \/ кг/);
+ }
+});
+
 // Public catalogue availability state; included in the existing CI state suite.
 
 const product = (state, extra = {}) => ({available: ['own_stock', 'supplier_stock'].includes(state), availability: {state, orderable: true, ...extra}});

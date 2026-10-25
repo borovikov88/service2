@@ -19,6 +19,7 @@ from . import estimate_finishing_work as finishing_work
 from . import estimate_consumables as consumables
 from . import estimate_temperature_control as temperature
 from . import estimate_filter_media as filter_media
+from . import estimate_filter_gravel as filter_gravel
 from . import estimate_filter_valve as filter_valve
 from . import estimate_rounding as rounding
 from . import estimate_electrical as electrical
@@ -27,7 +28,7 @@ from pool_service.services.permissions import organization_accesses_for_user
 
 VARIANTS = {"economy": ("Эконом", "Aquaviva"), "standard": ("Стандарт", "Hayward"), "premium": ("Премиум", "IML")}
 BLOCKS = {"construction": "Строительство чаши", "construction_materials": "Материалы для строительства чаши", "embedded": "Закладные элементы", "equipment": "Оборудование", "finish": "Отделка", "options": "Дополнительные работы"}
-KINDS = {*lighting.ROLES, "thermostat", "filter_media", "filter_valve", "liner", "liner_corner", "plaster_component", "other", "work", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "treatment", "control_panel", "geotextile", *embedded.ROLES, *level_control.ROLES}
+KINDS = {*lighting.ROLES, "thermostat", "filter_media", "filter_gravel", "filter_valve", "liner", "liner_corner", "plaster_component", "other", "work", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "treatment", "control_panel", "geotextile", *embedded.ROLES, *level_control.ROLES}
 FINISHES = {
     "film": ("Плёнка ПВХ для бассейна (+15% запас)", "Монтаж и сварка плёнки ПВХ"),
     "tile": ("Плитка для бассейна (без запаса)", "Облицовка бассейна плиткой"),
@@ -448,6 +449,7 @@ def generate(raw):
     consumables.initialize(result)
     temperature.initialize(result)
     filter_media.initialize(result)
+    filter_gravel.initialize(result)
     filter_valve.initialize(result)
     result["level_shared_quantity_version"]=2
     finishing_work.initialize(result)
@@ -564,6 +566,7 @@ def normalize_snapshot(raw):
     if raw.get('pvc_rate_version') == 2: result['pvc_rate_version'] = 2
     if raw.get('temperature_control_version') == 1: result['temperature_control_version'] = 1
     if raw.get('filter_media_version') == 1: result['filter_media_version'] = 1
+    if raw.get('filter_gravel_version') == 1: result['filter_gravel_version'] = 1
     if raw.get('filter_valve_version') == 1: result['filter_valve_version'] = 1
     if result.get("construction_version") and raw.get("construction_quantity_version") in (1, 2):
         result["construction_quantity_version"] = raw["construction_quantity_version"]
@@ -621,7 +624,7 @@ def normalize_snapshot(raw):
                     raise EstimateInputError("Некорректный тип отделки строки.")
                 for field, limit in (("name", 200), ("unit", 20), ("brand", 80), ("model", 120), ("reason", 300), ("rate_source", 300), ("selection_note", 1000), ("catalog_review_note", 1000)):
                     item[field] = string(row.get(field, ""), field, limit, required=field in {"name", "unit"})
-                for field in ("excluded", "existing", "auto_quantity", "selection_locked", "quantity_stale", "heating_unbound", "level_managed", "unit_price_manual", "construction_price_suspended", "pvc_price_suspended", "consumables_price_suspended", "material_price_suspended", "electrical_managed", "electrical_price_suspended"):
+                for field in ("excluded", "existing", "auto_quantity", "selection_locked", "quantity_stale", "heating_unbound", "level_managed", "unit_price_manual", "construction_price_suspended", "pvc_price_suspended", "consumables_price_suspended", "material_price_suspended", "media_sand_mass_fallback", "electrical_managed", "electrical_price_suspended"):
                     item[field] = boolean(row.get(field, False))
                 if item["heating_parent"]:
                     item["heating_unbound"] = False
@@ -634,7 +637,7 @@ def normalize_snapshot(raw):
                 # Package quantities are exact geometry results. Turning off auto
                 # must not round that saved quantity and silently change the charge.
                 quantity_places = None if result.get("construction_version") and item["basis"] in construction.BASES else 3
-                item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", places=quantity_places, optional=item["kind"] in {"work", "filter_media", "filter_valve", *lighting.ROLES} or item["basis"] in {"concrete_total", "exchanger_quantity", "liner_corner", "contact_work", *technology.BASES, *construction.BASES, *plaster_systems.BASES}))
+                item["quantity"] = _optional(number(row.get("quantity"), "Количество", minimum="0", maximum="1000000", places=quantity_places, optional=item["kind"] in {"work", "filter_media", "filter_gravel", "filter_valve", *lighting.ROLES} or item["basis"] in {"concrete_total", "exchanger_quantity", "liner_corner", "contact_work", *technology.BASES, *construction.BASES, *plaster_systems.BASES}))
                 if boolean(row.get("quantity_edited", False)) and not item["auto_quantity"] and re.fullmatch(r"(?:шт\.?|компл\.?|комплект(?:а|ов)?|упак\.?|пара|пар)", item["unit"], re.IGNORECASE):
                     entered = number(row.get("quantity"), "Количество", maximum="1000000", optional=True, places=None)
                     if entered is not None and entered != entered.to_integral_value():
@@ -668,6 +671,21 @@ def normalize_snapshot(raw):
         if not isinstance(media_parents,list) or len(media_parents)>100 or any(not isinstance(x,str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}',x) for x in media_parents):
             raise EstimateInputError('Некорректный состав загрузки фильтров.')
         result['variants'][key]['filter_media_parents']=list(dict.fromkeys(media_parents))
+        gravel_parents=variant.get('filter_gravel_parents',{})
+        if not isinstance(gravel_parents,dict) or len(gravel_parents)>100 or any(
+                not isinstance(pid,str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}',pid)
+                or not isinstance(value,str) or not re.fullmatch(r'\d{0,12}:(?:yes|no|unknown)',value)
+                for pid,value in gravel_parents.items()):
+            raise EstimateInputError('Некорректный состав гравийной загрузки фильтров.')
+        result['variants'][key]['filter_gravel_parents']=dict(gravel_parents)
+        result['variants'][key]['filter_gravel_active']=boolean(variant.get('filter_gravel_active',False))
+        gravel_deleted=variant.get('filter_gravel_deleted',{})
+        if not isinstance(gravel_deleted,dict) or len(gravel_deleted)>100 or any(
+                not isinstance(pid,str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}',pid)
+                or not isinstance(value,str) or not re.fullmatch(r'\d{1,12}',value)
+                for pid,value in gravel_deleted.items()):
+            raise EstimateInputError('Некорректный список удалённых гравийных позиций.')
+        result['variants'][key]['filter_gravel_deleted']=dict(gravel_deleted)
         valve_parents = variant.get('filter_valve_parents', {})
         if not isinstance(valve_parents, dict) or len(valve_parents) > 100 or any(
                 not isinstance(pid, str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', pid)
@@ -706,6 +724,7 @@ def evaluate(raw):
     consumables.apply(result)
     temperature.sync(result)
     filter_media.sync(result)
+    filter_gravel.sync(result)
     filter_valve.sync(result)
     lighting.sync(result)
     result["technology"] = technology.summary(result["inputs"])
@@ -882,6 +901,7 @@ def evaluate(raw):
         lighting.annotate(result, variant)
         temperature.annotate(variant)
         filter_media.annotate(result, variant)
+        filter_gravel.annotate(result, variant)
         filter_valve.annotate(result, variant)
         if result.get('visible_rounding'):
             for block in variant['blocks']:
@@ -911,6 +931,7 @@ def recalculate(raw, inputs):
     consumables.initialize(result)
     temperature.initialize(result)
     filter_media.initialize(result)
+    filter_gravel.initialize(result)
     filter_valve.initialize(result)
     if result.get("level_shared_inlet") and inputs.get("level_inlet_mode")=="automatic": result["level_shared_quantity_version"]=2
     # Upgrade only the editable copy; saved versions are never passed through here on load.

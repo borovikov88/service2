@@ -23,7 +23,7 @@ from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requ
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
-CACHE_KEY = "pool-estimate-shop-v27"
+CACHE_KEY = "pool-estimate-shop-v28"
 CACHE_SECONDS = 900
 MAX_BYTES = 20_000_000
 FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
@@ -340,6 +340,8 @@ def apply_product(row, product, catalog, selection="manual"):
     row['level_status'], row['level_evidence'] = 'unknown', ''
     # A successful product selection explicitly adopts its catalogue price.
     row.update(name=product["name"], brand=product["brand"], model=product["model"], price=product["price"], kind=product["kind"], unit_price_manual=False)
+    if old_kind == 'filter_gravel' and product['kind'] == 'filter_media':
+        row['kind'] = old_kind
     if old_kind == 'level_inlet':
         row['kind'] = old_kind
         row['embedded_role'] = ''
@@ -358,6 +360,7 @@ def apply_product(row, product, catalog, selection="manual"):
     row['catalog']['temperature'] = deepcopy(product.get('temperature',{}))
     row['catalog']['filter_loading'] = deepcopy(product.get('filter_loading',{}))
     row['catalog']['filter_media'] = deepcopy(product.get('filter_media',{}))
+    row['media_sand_mass_fallback'] = bool(selection == 'manual' and row['kind'] == 'filter_media' and product.get('filter_media',{}).get('material') == 'glass')
     row['catalog']['liner'] = deepcopy(product.get('liner',{}))
     row['catalog']['plaster_product'] = deepcopy(product.get('plaster_product',{}))
     row["catalog"]["geotextile"] = deepcopy(product.get("geotextile", {}))
@@ -382,7 +385,7 @@ def apply_product(row, product, catalog, selection="manual"):
 def refresh_auto_facts(row, product, catalog):
     # Automatic selection can refresh technical evidence, never frozen prices.
     frozen = {key: row['catalog'][key] for key in ('price','checked_at','feed_date')}
-    media_origin = deepcopy(row['catalog'].get('filter_media',{})) if row['kind']=='filter_media' else None
+    media_origin = deepcopy(row['catalog'].get('filter_media',{})) if row['kind'] in {'filter_media','filter_gravel'} else None
     media_note = row.get('catalog_review_note','')
     media_unit = row.get('unit')
     apply_product(row, product, catalog, 'auto')
@@ -502,6 +505,8 @@ def auto_select(snapshot, catalog, only_variant=None):
     filled += fill_auxiliary(result, catalog, only_variant)
     filled += temperature.fill(result, catalog, only_variant)
     filled += filter_media.fill(result, catalog, only_variant)
+    from .estimate_filter_gravel import fill as fill_gravel
+    filled += fill_gravel(result, catalog, only_variant)
     filled += fill_geotextile(result, catalog, only_variant)
     from .estimate_plaster_catalog import fill as fill_plaster
     filled += fill_plaster(result,catalog,only_variant)
@@ -584,7 +589,7 @@ def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="
             return search_note(product)
         if product['kind']=='liner_corner':
             return 'Крепёжный уголок: цена за отрезок 2 м. Количество округляется по периметру, без дополнительного запаса.'
-        if product['kind']=='filter_media':
+        if product['kind'] in {'filter_media','filter_gravel'}:
             return filter_media.assess(product) or 'Проверить массу загрузки и фракцию по паспорту выбранного фильтра; фасовка и единица цены — по карточке песка.'
         if product['kind']=='thermostat':
             return 'Проверить схему коммутации, датчик и нагрузку контактов; панель с регулированием температуры может заменить термостат.'
@@ -599,9 +604,13 @@ def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="
     query = search_text(string(query, "Поиск товара", 120)).split()
     kind = string(kind, "Тип товара", 20)
     brand = string(brand, "Бренд", 80)
-    if kind not in {*lighting.ROLES, "thermostat", "filter_media", "filter_valve", "liner", "liner_corner", "plaster_component", "", "other", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "level_regulator", "level_inlet", "treatment", "control_panel", "geotextile", *embedded.ROLES}:
+    if kind not in {*lighting.ROLES, "thermostat", "filter_media", "filter_gravel", "filter_valve", "liner", "liner_corner", "plaster_component", "", "other", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "level_regulator", "level_inlet", "treatment", "control_panel", "geotextile", *embedded.ROLES}:
         raise EstimateInputError("Неизвестный тип товара.")
-    matches = [p for p in catalog["products"].values() if (not kind or (p['kind'] in {'inlet', 'vacuum'} if kind == 'level_inlet' else p['kind'] == kind)) and (kind != 'pump' or p.get('pump_facts', {}).get('in_category')) and (kind != 'filter' or p.get('filter_facts', {}).get('in_category')) and (not brand or p["brand"].casefold() == brand.casefold()) and all(q in search_text(p["name"] + " " + p["sku"] + " " + p["id"]) for q in query)]
+    def matches_kind(product):
+        if kind == 'level_inlet':return product['kind'] in {'inlet','vacuum'}
+        if kind == 'filter_gravel':return product['kind']=='filter_gravel' or filter_media.owner_gravel(product)
+        return not kind or product['kind']==kind
+    matches = [p for p in catalog["products"].values() if matches_kind(p) and (kind != 'pump' or p.get('pump_facts', {}).get('in_category')) and (kind != 'filter' or p.get('filter_facts', {}).get('in_category')) and (not brand or p["brand"].casefold() == brand.casefold()) and all(q in search_text(p["name"] + " " + p["sku"] + " " + p["id"]) for q in query)]
     matches.sort(key=lambda p: (bool(reason(p)), not p["available"], bool(kind == "circulation_pump" and variant != "economy" and p.get("frequency_control") is not True), Decimal(p["price"]), int(p["id"])))
     from .estimate_liner import area
     return {"products": [{**p, "warning": reason(p), "roll_area": area(p)} for p in matches[:40]], "total": len(matches), "status": catalog_status(catalog)}
@@ -671,7 +680,7 @@ def refresh_prices(snapshot, catalog, variant_key):
                 origin.update(available=product['available'], availability=deepcopy(product.get('availability', {})), missing=False, checked_at=catalog['checked_at'], feed_date=catalog['feed_date'])
                 updated += 1
                 continue
-            if row['kind']=='filter_media':
+            if row['kind'] in {'filter_media','filter_gravel'}:
                 old=origin.get('filter_media') or {};new=product.get('filter_media') or {}
                 if not row.get('auto_quantity') and any(old.get(k)!=new.get(k) for k in ('bag_kg','price_unit')):
                     row['catalog_review_note']='Фасовка/единица цены изменились; ручное количество защищено. Перевыберите товар и подтвердите количество.'
