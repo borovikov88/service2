@@ -334,3 +334,144 @@ class DailyHistoryTests(TestCase):
         self.assertEqual(run.dimensions['11']['city_source'], 'published_address_exact_token')
         self.assertEqual(run.dimensions['12']['city_label'], '')
         self.assertEqual(run.dimensions['11']['published_revision'], 18)
+
+    def test_display_separates_backfill_pages_known_ads_calendar_and_bonus_units_without_api(self):
+        with patch.object(avito_workspace, 'fetch_statistics', return_value=self.page((11,), total=1)):
+            self.assertEqual(daily.collect_next(), 'success')
+        with patch.object(avito_workspace, 'fetch_statistics') as fetch:
+            state = daily.display(self.connection, self.owner, self.now)
+        fetch.assert_not_called()
+        self.assertEqual(state['backfill']['completed_days'], 1)
+        self.assertEqual(state['backfill']['remaining_days'], 29)
+        period = state['provider_periods'][0]
+        self.assertTrue(period['pages_complete'])
+        self.assertEqual((period['reported_cells'], period['expected_cells']), (1, 2))
+        self.assertEqual(period['missing_ad_cells'], 1)
+        self.assertFalse(period['provider_calendar_aligned'])
+        self.assertIsNone(period['metric_values']['views'])
+        self.assertIsNone(state['bonus_spending']['value'])
+        self.goods.refresh_from_db()
+        self.assertEqual(self.goods.settings, {'preserve': 'goods sentinel'})
+        from django.template.loader import render_to_string
+        html = render_to_string('pool_service/avito/_daily_statistics.html',
+            {'daily': state, 'connection': self.connection})
+        self.assertIn('Списано бонусов: нет подтверждённой единицы.', html)
+        self.assertIn('Сравнение доступных дат источника', html)
+
+    def test_foreign_run_scope_cannot_supply_daily_metrics_or_completed_days(self):
+        with patch.object(avito_workspace, 'fetch_statistics', return_value=self.page()):
+            self.assertEqual(daily.collect_next(), 'success')
+        run = AvitoStatisticsRun.objects.get()
+        for field, foreign in (('account_id', 'another-account'),
+                ('organization_id_at_collection', self.org.pk+1000),
+                ('connection_id', self.goods.pk)):
+            original = getattr(run, field)
+            with self.subTest(field=field):
+                AvitoStatisticsRun.objects.filter(pk=run.pk).update(**{field: foreign})
+                state = daily.display(self.connection, self.owner, self.now)
+                self.assertEqual(state['rows'], [])
+                self.assertEqual(state['backfill']['completed_days'], 0)
+                self.assertIsNone(state['provider_periods'][0]['metric_values']['views'])
+            AvitoStatisticsRun.objects.filter(pk=run.pk).update(**{field: original})
+
+    def test_fact_day_must_match_its_completed_source_run(self):
+        with patch.object(avito_workspace, 'fetch_statistics', return_value=self.page()):
+            self.assertEqual(daily.collect_next(), 'success')
+        run = AvitoStatisticsRun.objects.get()
+        run.day -= timedelta(days=1)
+        run.save(update_fields=['day'])
+        state = daily.display(self.connection, self.owner, self.now)
+        self.assertEqual(state['rows'], [])
+        self.assertIsNone(state['provider_periods'][0]['metric_values']['views'])
+
+
+class DailySourceComparisonTests(SimpleTestCase):
+    now = datetime(2026, 10, 25, 7, tzinfo=dt_timezone.utc)
+
+    def facts(self, days=14):
+        from types import SimpleNamespace
+        cutoff, rows, runs = daily.collection_cutoff(self.now), [], {}
+        for offset in range(days):
+            day = cutoff-timedelta(days=offset)
+            run = SimpleNamespace(pk=offset+1, dimensions={'11': {}},
+                staged_rows=[{'id': '11'}], finished_at=self.now)
+            runs[day] = run
+            rows.append(SimpleNamespace(day=day, avito_id='11', source_run_id=run.pk,
+                provider_row_present=True, metrics=dict.fromkeys(daily.COUNTERS+daily.MONEY, '0')))
+        return rows, runs
+
+    def periods(self, rows, runs):
+        return daily.source_periods(rows, set(runs), self.now, day_runs=runs)
+
+    def test_source_bounds_and_comparable_deltas_do_not_claim_barnaul_days(self):
+        rows, runs = self.facts()
+        rows[0].metrics.update(impressions='100', views='20', contacts='2', spending='200')
+        rows[1].metrics.update(impressions='100', views='10', contacts='1', spending='100')
+        periods = self.periods(rows, runs)
+        self.assertEqual((periods[0]['from'].isoformat(), periods[1]['to'].isoformat()),
+                         ('2026-10-23', '2026-10-22'))
+        self.assertEqual((periods[2]['from'].isoformat(), periods[2]['to'].isoformat()),
+                         ('2026-10-17', '2026-10-23'))
+        self.assertEqual((periods[3]['from'].isoformat(), periods[3]['to'].isoformat()),
+                         ('2026-10-10', '2026-10-16'))
+        self.assertEqual(periods[4]['from'].isoformat(), '2026-09-24')
+        self.assertEqual(periods[4]['missing_days'], 16)
+        result = daily.source_comparisons(periods)[0]
+        metrics = {item['key']: item for item in result['metrics']}
+        self.assertEqual(metrics['views']['delta'], '10')
+        self.assertEqual(metrics['views']['relative_change'], '100.00')
+        self.assertEqual(metrics['ctr']['delta'], '10.00')
+        self.assertEqual(metrics['ctr']['delta_unit'], 'п.п.')
+        self.assertEqual(metrics['cpl_cash']['delta'], '0.00')
+        self.assertFalse(result['provider_calendar_aligned'])
+        self.assertEqual(periods[0]['source'], 'avito_stats_v2_items')
+
+    def test_unknown_metric_and_zero_baseline_never_become_a_percentage(self):
+        rows, runs = self.facts()
+        rows[0].metrics.update(views='10', contacts=None)
+        rows[1].metrics.update(views='0', contacts='0')
+        result = daily.source_comparisons(self.periods(rows, runs))[0]
+        metrics = {item['key']: item for item in result['metrics']}
+        self.assertTrue(metrics['views']['comparable'])
+        self.assertEqual(metrics['views']['delta'], '10')
+        self.assertIsNone(metrics['views']['relative_change'])
+        self.assertIsNone(metrics['contacts']['delta'])
+        self.assertIsNone(metrics['conversion']['delta'])
+        self.assertIsNone(metrics['cpl_cash']['relative_change'])
+
+    def test_pages_complete_is_not_ad_coverage_even_if_missing_fact_still_contains_values(self):
+        rows, runs = self.facts()
+        rows[0].provider_row_present = False
+        rows[0].metrics['views'] = '99'
+        period = self.periods(rows, runs)[0]
+        self.assertTrue(period['pages_complete'])
+        self.assertEqual(period['missing_ad_cells'], 1)
+        self.assertEqual(period['metric_coverage']['views'], 0)
+        self.assertIsNone(period['metric_values']['views'])
+        deleted = self.periods(rows[1:], runs)[0]
+        self.assertEqual(deleted['expected_cells'], 1)
+        self.assertEqual(deleted['stored_cells'], 0)
+        self.assertIsNone(deleted['metric_values']['views'])
+
+    def test_changed_ad_cohort_and_missing_date_block_deltas_without_filling_zeros(self):
+        rows, runs = self.facts()
+        rows[0].avito_id = '12'
+        runs[rows[0].day].dimensions = {'12': {}}
+        runs[rows[0].day].staged_rows = [{'id': '12'}]
+        current = daily.source_comparisons(self.periods(rows, runs))[0]
+        self.assertEqual(current['reason'], 'cohort_changed')
+        self.assertTrue(all(item['delta'] is None for item in current['metrics']))
+        runs.pop(rows[1].day)
+        current = daily.source_comparisons(self.periods(rows, runs))[0]
+        self.assertEqual(current['reason'], 'missing_days')
+        self.assertTrue(all(item['delta'] is None for item in current['metrics']))
+
+    def test_one_missing_metric_does_not_hide_other_known_metrics(self):
+        rows, runs = self.facts()
+        rows[0].metrics['contacts'] = None
+        period = self.periods(rows, runs)[0]
+        self.assertEqual(period['metric_values']['views'], '0')
+        self.assertEqual(period['metric_coverage']['views'], 1)
+        self.assertEqual(period['metric_coverage']['contacts'], 0)
+        self.assertIsNone(period['metric_values']['contacts'])
+        self.assertIsNone(period['metric_values']['conversion'])

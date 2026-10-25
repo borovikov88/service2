@@ -1,6 +1,6 @@
 # Services daily-statistics foundation
 
-Scope is connection4/account446312402. This continues the existing stats-v2 reader and existing native monitor. It performs official read calls only. No promotion purchase, source setting, listing content, customer message, finance calculation or 1C data is changed.
+Scope is connection 4/account 446312402. This continues the existing stats-v2 reader and existing native monitor. It performs official read calls only. No promotion purchase, source setting, listing content, customer message, finance calculation or 1C data is changed.
 
 Two additive tables retain collection provenance and daily item facts. Each invocation reads at most one API page, with the existing account/method throttle and a scoped DB lease. Partial pages are resumed without sleeping. The complete page count must be confirmed by dataTotalCount; missing total, changing totals, duplicate item IDs or bounds do not become a complete day. Only a completed binding-verified run replaces current daily facts. Missing provider rows/metrics are unknown, including when the provider returns an empty report.
 
@@ -15,3 +15,13 @@ The existing CRM remains authoritative. A bounded read-only coverage projection 
 The existing protected deploy workplace setup enables collection once when the configuration key is absent, reads at most one page, and preserves explicit owner opt-out on every subsequent deployment. This first read is labelled protected_deploy_first_read, separately from natural monitor evidence. The existing native monitor resumes/backfills one due page per tick; no additional cron or workflow is created. Authenticated channel-admin controls and a protected exact-main command are also available:
 python manage.py collect_avito_daily_statistics --connection-id 4 --account-id 446312402 --action enable --expected-sha <reviewed current main>
 with SERVICE2_AVITO_DAILY_STATISTICS_SETUP=1. Status/enable/collection are separate facts. Actual API access, provider-day alignment and natural background execution require production evidence; a schema or passing CI alone does not prove them.
+
+## Source-period comparisons and independent coverage
+
+The authenticated read model separates completed API pages, known ad-row coverage, per-metric coverage, and calendar alignment. Its manifest is the published snapshot plus the provider's returned item identities at collection time; it is not a historical active-inventory reconstruction. A page-complete day can still lack known ads or metrics. Deleted/mismatched daily facts do not create zero values or a complete comparison. A fact must match its completed run's connection, account, organization and exact source date.
+
+Source-date windows are anchored visibly at D-2: one date and its predecessor, 7 dates and their previous 7, and 30 dates. Current/prior deltas require complete dates and ad rows, a stable identical known cohort throughout both periods, and known values for the metric. Changes in rates use percentage points; relative changes require a positive prior denominator. A missing metric blocks its own delta. None is never turned into zero. Source, exact inclusive boundaries, run references, fetch time and per-metric coverage stay attached. These comparisons are not full Barnaul-day comparisons and do not count unique people or orders.
+
+The UI shows progress across the 30 requested dates and the next allowed attempt. The collector, existing leases, cursor resume, one-page-per-tick limit and method/account throttle are unchanged. Cash and documented RUB spending categories stay separate. Bonus spending is displayed explicitly as unavailable because spendingBonus units are unconfirmed; subtracting cash from allSpending is not a supported substitute.
+
+On25 October 2026 the first-party documentation entry https://developers.avito.ru/api-catalog/stats/documentation could not be opened by the available web reader (non-retryable transport/access error). A bounded official-domain search did not produce a timezone contract. This does not prove that documentation lacks such a contract; provider_timezone remains unknown until a verifiable source establishes it. No timezone was inferred from the server, account address or timestamp, and stored daily buckets were not shifted.
