@@ -158,8 +158,11 @@ class ImprovementProjectTests(ProposalFixture, TestCase):
 
     def test_equal_source_times_with_conflicting_status_are_not_active_evidence(self):
         identifier = next(iter(projects.TARGETS))
+        rows = deepcopy(self.attempt.rows)
+        rows[0].update(status='removed', has_error=True)
+        AvitoServicesPublicationAttempt.objects.filter(pk=self.attempt.pk).update(rows=rows, upload_status='success_warning')
         self.feed.latest_observations = [{'avito_id': identifier, 'id': identifier,
-            'status': 'removed', 'source': 'avito_item_detail',
+            'status': 'active', 'source': 'avito_item_detail',
             'checked_at': self.attempt.report_started_at.isoformat()}]
         self.feed.save(update_fields=['latest_observations'])
         result = self.prepare()
