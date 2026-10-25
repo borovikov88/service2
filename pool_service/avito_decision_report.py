@@ -154,9 +154,12 @@ def build(rows, day_runs, now=None):
             'core_metrics_known': all(current['metric_values'].get(key) is not None for key in CORE)})
     current = periods[2]
     actions = _actions(ads, now)
+    from .avito_comparable_subsets import build as build_subsets
+    subsets = build_subsets(ads, periods, truncated=len(identifiers) > len(ads))
     return {'schema_version': 1, 'source': 'avito_stats_v2_items', 'provider_timezone': 'unknown',
         'barnaul_calendar_confirmed': False, 'from': end-timedelta(days=29), 'to': end,
         'periods': periods, 'account_current': current, 'ads': ads,
+        'comparable_subsets': subsets,
         'ad_count': len(identifiers), 'displayed_ad_count': len(ads), 'truncated': len(identifiers) > len(ads),
         'completed_dates': len(day_runs), 'expected_dates': daily.BACKFILL_DAYS,
         'fully_reported_ads_7': sum(ad['current']['pages_complete'] and not ad['current']['missing_ad_cells']
