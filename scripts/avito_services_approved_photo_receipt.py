@@ -111,7 +111,7 @@ def normalize(value):
         'not_checked', 'unavailable', 'predates_publication', 'later_unfinished', 'later_completed'})
     upload = report.get('upload_id')
     require(upload is None or isinstance(upload, str) and re.fullmatch('[1-9][0-9]{0,31}', upload))
-    require(report.get('upload_status') in {'', 'success', 'success_warning', 'error', 'processing', 'in_progress', 'created', 'pending'})
+    require(report.get('upload_status') in {None, '', 'success', 'success_warning', 'error', 'processing', 'in_progress', 'created', 'pending'})
     projected_report = {'state': report['state'], 'upload_id': upload,
         'started_at': timestamp(report.get('started_at'), nullable=True),
         'complete': flag(report.get('complete'), nullable=True), 'upload_status': report['upload_status'],

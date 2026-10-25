@@ -424,3 +424,20 @@ class ApprovedPhotoPublicationTests(TestCase):
         self.assertEqual(result['state'], 'unavailable')
         self.assertEqual(result['error_code'], 'provider_report_unavailable')
         self.assertNotIn('PRIVATE', str(result))
+
+
+    def test_current_unknown_upload_status_stays_null_and_does_not_confirm_application(self):
+        operation.run_approved_photo_publication('a' * 40)
+        version = self.feed.versions.get(action='publish')
+        self.connection.refresh_from_db()
+        marker = self.connection.settings[operation.KEY]
+        report = self.report_for(version, timedelta(seconds=1))
+        report.update(upload_status=None, upload_finished=False)
+        with patch('pool_service.communication_avito.authorized_account_id', return_value=operation.ACCOUNT_ID), \
+             patch('pool_service.communication_avito.access_token', return_value='TEST'), \
+             patch('pool_service.avito_autoload_report.fetch_report', return_value=report), \
+             patch('pool_service.avito_services_publication.correlate_report') as correlate:
+            result = REAL_CAPTURE_REPORT(self.connection, self.feed, version, marker)
+        self.assertEqual(result['state'], 'later_unfinished')
+        self.assertIsNone(result['upload_status'])
+        correlate.assert_not_called()
