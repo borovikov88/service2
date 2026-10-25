@@ -5,7 +5,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 from pool_service.avito_status_monitor import SCAN_SECONDS, scan_monitor
 from pool_service.communication_models import AvitoStatusMonitor, ChannelConnection
-from pool_service import avito_autoload_auto, avito_advance, avito_tariff_reminder, avito_runtime, avito_deferred_messages
+from pool_service import avito_autoload_auto, avito_advance, avito_tariff_reminder, avito_runtime, avito_deferred_messages, avito_daily_statistics
 from pool_service.avito_scheduler import scheduler_state
 
 
@@ -64,6 +64,7 @@ class Command(BaseCommand):
         tariffs = avito_tariff_reminder.scan_due(deadline=report_deadline, limit=4, observer=observed)
         advances = avito_advance.scan_due(deadline=report_deadline, limit=2, observer=observed)
         reports = avito_autoload_auto.scan_due(deadline=report_deadline, limit=2, observer=observed)
+        statistics = avito_daily_statistics.scan_due(deadline=report_deadline, observer=observed)
         for monitor_id in ids:
             if deadline - time.monotonic() < SCAN_SECONDS + 20:
                 break
@@ -89,7 +90,9 @@ class Command(BaseCommand):
             f"{key}={advances[key]}" for key in ("success", "failed", "skipped")))
         self.stdout.write("AVITO_TARIFF_REMINDER " + " ".join(
             f"{key}={tariffs[key]}" for key in ("success", "failed", "skipped")))
-        if counts["failed"] or counts["correlation_failed"] or counts["diagnostic_failed"] or deferred["failed"] or reports["failed"] or advances["failed"] or tariffs["failed"]:
+        self.stdout.write("AVITO_DAILY_STATISTICS " + " ".join(
+            f"{key}={statistics[key]}" for key in ("success", "failed", "skipped")))
+        if counts["failed"] or counts["correlation_failed"] or counts["diagnostic_failed"] or deferred["failed"] or reports["failed"] or advances["failed"] or tariffs["failed"] or statistics["failed"]:
             # Distinguish a completed tick with scoped failures from a crash, timeout
             # or skipped/locked tick. Only the supervisor records the actual code.
             raise CommandError("Avito checks incomplete; inspect scoped state in Service2.", returncode=2)

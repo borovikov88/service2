@@ -108,7 +108,8 @@ def _publication(connection, feed, version_id, *, require_current):
 
 def _events(feed, version):
     # Read only bounded metadata, not repeated full snapshots.
-    return list(feed.versions.filter(action='verify', source_version=version).annotate(
+    return list(feed.versions.filter(action='verify', source_version=version,
+        changes__0__kind=KEY).annotate(
         evidence_bytes=Length(Cast('changes', output_field=TextField()))).filter(
             evidence_bytes__lte=8192).order_by('-pk').values(
                 'pk', 'source_version_id', 'actor_id', 'created_at', 'changes')[:MAX_EVENTS + 1])

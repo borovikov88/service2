@@ -333,3 +333,20 @@ class AvitoCompactDashboardTests(TestCase):
         self.assertIn("SYNTHETIC_WARNING", html)
         self.assertLess(html.index('id="avito-advance"'), html.index('id="avito-items-heading"'))
         self.assertLess(html.index('id="avito-items-heading"'), html.index('id="avito-technical-details"'))
+
+
+class AvitoPromotionFieldPresenceTests(SimpleTestCase):
+    def test_absent_null_and_empty_vas_have_distinct_evidence(self):
+        for payload, available in (({'status': 'active'}, False),
+                ({'status': 'active', 'vas': None}, False),
+                ({'status': 'active', 'vas': []}, True)):
+            with self.subTest(payload=payload), patch.object(avito_workspace, '_get', return_value=payload):
+                data = avito_workspace.fetch_item_detail('opaque', '446312402', '11')
+            self.assertEqual(data['vas'], [])
+            self.assertIs(data['vas_available'], available)
+
+    def test_falsey_non_list_vas_is_rejected(self):
+        for value in (False, 0, '', {}):
+            with self.subTest(value=value), patch.object(avito_workspace, '_get',
+                    return_value={'status': 'active', 'vas': value}), self.assertRaises(AvitoError):
+                avito_workspace.fetch_item_detail('opaque', '446312402', '11')

@@ -1,0 +1,99 @@
+{% load tz %}
+{% if daily %}
+<section class="avito-panel mb-4" aria-label="Сохранённая ежедневная статистика">
+  <div class="avito-panel__header">
+    <div><h2 class="avito-panel__title">История эффективности</h2>
+    <div class="small text-muted">Ежедневные факты официального API Авито · подключение «Услуги» №4</div></div>
+    <span class="avito-state">{% if daily.enabled %}Фоновый сбор включён{% else %}Фоновый сбор выключен{% endif %}</span>
+  </div>
+  <div class="avito-panel__body">
+    <p class="small">Часовой пояс суточных групп Авито пока не подтверждён. Ниже сохранены даты источника; они не пересчитываются и не выдаются за полные сутки Барнаула. Сбор идёт с явной задержкой {{ daily.lag_days }} дня, до {{ daily.cutoff }}.</p>
+    <p class="small text-muted">Полнота страниц и календарная точность — разные признаки. Контакты, просмотры и сообщения не являются количеством уникальных клиентов. Телефон, чат и их пересечение не складываются. Категории расходов показаны отдельно и могут пересекаться.</p>
+    {% if daily.can_configure %}<form class="d-flex flex-wrap gap-2 mb-3" method="post" action="{% url 'avito_daily_statistics_control' connection.pk %}">
+      {% csrf_token %}
+      {% if daily.enabled %}
+        <button class="btn btn-sm btn-primary" name="action" value="collect">Собрать следующую страницу</button>
+        <button class="btn btn-sm btn-outline-secondary" name="action" value="disable">Отключить фоновый сбор</button>
+      {% else %}
+        <button class="btn btn-sm btn-primary" name="action" value="enable">Включить ежедневный сбор</button>
+      {% endif %}
+    </form>{% endif %}
+    {% timezone "Asia/Barnaul" %}
+      <div class="small text-muted">Последний успешный сбор: {{ daily.last_success_at|date:"d.m.Y H:i:s"|default:"не подтверждён" }} · Барнаул.</div>
+      {% if daily.latest_run %}<div class="small text-muted">Последняя выгрузка: {{ daily.latest_run.day }}; получено {{ daily.latest_run.received_rows }} строк; {% if daily.latest_run.pagination_complete %}все страницы подтверждены{% else %}полнота не подтверждена{% endif %}. Начало: {{ daily.latest_run.started_at|date:"d.m.Y H:i:s" }}; завершение: {{ daily.latest_run.finished_at|date:"d.m.Y H:i:s"|default:"не подтверждено" }}.</div>{% endif %}
+    {% endtimezone %}
+    {% if daily.error %}<p class="text-warning-emphasis small mt-2">{{ daily.error }}</p>{% endif %}
+
+    <details class="mt-3">
+      <summary>Запрошенные сравнения по полным дням Барнаула</summary>
+      <p class="small mt-2">Недоступны до подтверждения часового пояса источника либо появления почасовых данных. Текущий день исключён; отсутствующие значения не заменяются нулями.</p>
+      <ul class="small">{% for period in daily.windows %}<li>{{ period.label }}: {{ period.from }}–{{ period.to }} — календарная сопоставимость не подтверждена.</li>{% endfor %}</ul>
+    </details>
+
+    <details class="mt-3">
+      <summary>Суммы по доступным датам источника</summary>
+      <p class="small text-muted mt-2">Это суммы дневных счётчиков, не уникальные люди за период и не сравнение точных суток Барнаула. Неизвестный показатель или пропущенный день делает соответствующий итог неизвестным.</p>
+      {% for period in daily.provider_periods %}
+        <div class="border-top py-2">
+          <strong>{{ period.label }}</strong> · {{ period.from }}–{{ period.to }}
+          <div class="small">Пропущено дат: {{ period.missing_days }}; строк источника: {{ period.reported_cells }}/{{ period.expected_cells }}.</div>
+          <div class="table-responsive"><table class="table table-sm"><tbody>
+          {% for metric in period.metrics %}<tr><th scope="row">{{ metric.label }}</th><td>{% if metric.value != None %}{{ metric.value }} {{ metric.unit }}{% else %}Нет данных{% endif %}</td></tr>{% endfor %}
+          </tbody></table></div>
+        </div>
+      {% endfor %}
+    </details>
+
+    <details class="mt-3" open>
+      <summary>Объявления и суточные показатели</summary>
+      {% if daily.rows %}
+      <p class="small text-muted mt-2">Показано {{ daily.rows|length }} из {{ daily.total_cells }} сохранённых строк. Услуга — точное значение ServiceType либо название объявления из опубликованного снимка во время сбора; это не восстановление прежней категории задним числом. Город показывается только при явном поле City.</p>
+      <div class="table-responsive"><table class="table table-sm">
+        <thead><tr><th>Дата источника</th><th>Объявление</th><th>Услуга / название</th><th>Город</th><th>Показатели</th></tr></thead>
+        <tbody>{% for row in daily.rows %}<tr>
+          <td>{{ row.day }}</td><td>{{ row.avito_id }}<div class="small text-muted">{{ row.title }}</div></td>
+          <td>{{ row.service|default:"Не определена" }}<div class="small text-muted">{{ row.service_source }}</div></td>
+          <td>{{ row.city|default:"Не определён" }}</td>
+          <td>{% if not row.provider_row_present %}<div class="small text-warning-emphasis">Авито не вернул строку; показатели неизвестны.</div>{% endif %}<details><summary>Показы, контакты, расходы и отношения</summary>
+            <dl class="small">{% for metric in row.metrics %}<dt>{{ metric.label }}</dt><dd>{% if metric.value != None %}{{ metric.value }} {{ metric.unit }}{% else %}Нет данных{% endif %}</dd>{% endfor %}</dl>
+            <div class="small text-muted">Источник {{ row.run.source }}; timezone: {{ row.run.provider_timezone }}; период {{ row.run.day }}–{{ row.run.day }}; {% timezone "Asia/Barnaul" %}получено {{ row.fetched_at|date:"d.m.Y H:i:s" }} · Барнаул{% endtimezone %}.</div>
+          </details></td>
+        </tr>{% endfor %}</tbody>
+      </table></div>
+      {% else %}<p class="small mt-2">Сохранённых суточных строк пока нет. Это не нулевые показатели.</p>{% endif %}
+    </details>
+
+    <details class="mt-3"><summary>По услугам и городам: даты источника</summary>
+      <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Дата</th><th>Услуга / название</th><th>Город</th><th>Охват объявлений</th><th>Показатели</th></tr></thead>
+      <tbody>{% for row in daily.groups %}<tr><td>{{ row.day }}</td><td>{{ row.service|default:"Не определена" }}</td><td>{{ row.city|default:"Не определён" }}</td><td>{{ row.reported_ads }}/{{ row.ads }}</td><td><details><summary>Счётчики и расходы</summary><dl class="small">{% for metric in row.metrics %}<dt>{{ metric.label }}</dt><dd>{% if metric.value != None %}{{ metric.value }} {{ metric.unit }}{% else %}Нет данных{% endif %}</dd>{% endfor %}</dl></details></td></tr>{% empty %}<tr><td colspan="5">Нет сохранённых групп.</td></tr>{% endfor %}</tbody></table></div>
+      <div class="small text-muted">Показано {{ daily.groups|length }} из {{ daily.groups_total }} групп. Неизвестный город остаётся отдельной группой.</div>
+    </details>
+
+    {% if daily.crm %}
+    <details class="mt-3"><summary>Покрытие связи с существующей CRM</summary>
+      <p class="small mt-2">Все существующие диалоги Service2, отдельно от периода статистики Авито. Проверено {{ daily.crm.inspected_dialogs }}/{{ daily.crm.total_dialogs }}{% if not daily.crm.complete %}; охват неполный{% endif %}.</p>
+      <dl class="small">
+        <dt>Диалоги с подтверждённым ID объявления</dt><dd>{{ daily.crm.ad_source_confirmed_dialogs }}</dd>
+        <dt>Источник объявления неизвестен или не подтверждён</dt><dd>{{ daily.crm.ad_source_unknown_dialogs }}</dd>
+        <dt>Диалоги с явной привязкой к карточке клиента</dt><dd>{{ daily.crm.dialogs_with_explicit_client }}</dd>
+        <dt>Различных карточек клиентов</dt><dd>{{ daily.crm.distinct_client_cards }}</dd>
+        <dt>Подтверждённые цепочки объявление → диалог → клиент</dt><dd>{{ daily.crm.ad_dialog_client_chains }}</dd>
+        <dt>Объявление → звонок</dt><dd>Нет подтверждённого идентификатора для связи.</dd>
+        <dt>Диалог/звонок → лид → заказ → оплата</dt><dd>Прямые связи не подтверждены; количество и выручка неизвестны.</dd>
+      </dl>
+      <p class="small text-muted">Источник — сохранённый provider_context.item.id и проверка принадлежности объявления за последние 24 часа. Client FK используется только при доступе к карточке той же организации. Совпадение телефона или названия не создаёт связь с лидом, заказом или оплатой. Карточки клиентов не равны уникальным людям из счётчиков Авито.</p>
+    </details>
+    {% endif %}
+    <details class="mt-3"><summary>Журнал изменений объявлений</summary>
+      {% timezone "Asia/Barnaul" %}<ul class="small mt-2">{% for event in daily.changes %}<li>{{ event.created_at|date:"d.m.Y H:i:s" }} · {{ event.get_action_display }} · версия {{ event.revision }}: {{ event.reason }}. Изменено полей: {{ event.changes|length }}.</li>{% empty %}<li>Истории правок пока нет.</li>{% endfor %}</ul>{% endtimezone %}
+      <p class="small text-muted">Даты правок дают контекст, но не доказывают причинность. Ручное подтверждение фото не считается правкой объявления. promoSpending не подменяет журнал покупок.</p>
+    </details>
+    <details class="mt-3"><summary>Наблюдения продвижения через API</summary>
+      <p class="small mt-2">Фиксируются при обычном ручном обновлении состояния конкретного объявления. Первое наблюдение — исходное состояние; дата покупки, начало услуги и причинный эффект не подтверждаются. Дополнительные запросы к Авито не выполняются.</p>
+      {% timezone "Asia/Barnaul" %}<ul class="small">{% for event in daily.promotion_observations %}<li>{{ event.observed_at|date:"d.m.Y H:i:s" }} · объявление {{ event.avito_id }} · {% if event.baseline %}первое наблюдение{% else %}изменение наблюдаемого состояния{% endif %} · история №{{ event.event_id }}.
+        {% for service in event.services %}{{ service.id }}{% if service.finish_time_known %} до {{ service.finish_time }}{% endif %}{% if not forloop.last %}; {% endif %}{% empty %}Авито явно вернул пустой список услуг.{% endfor %}</li>{% empty %}<li>Подтверждённых наблюдений пока нет. Отсутствующее поле VAS не означает отсутствие продвижения.</li>{% endfor %}</ul>{% endtimezone %}
+      <p class="small text-muted">Источник: официальный Item API, время — получение состояния Service2. Это не подтверждение покупки или списания.</p>
+    </details>
+  </div>
+</section>
+{% endif %}
