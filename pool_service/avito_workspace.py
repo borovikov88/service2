@@ -399,7 +399,9 @@ def fetch_item_detail(token, account_id, item_id):
         raise AvitoError("provider_item_unavailable")
     if status not in ITEM_STATUSES:
         raise AvitoError("provider_data_invalid")
-    services = response.get("vas") or []
+    raw_services = response.get("vas")
+    vas_available = isinstance(raw_services, list)
+    services = [] if raw_services is None else raw_services
     if not isinstance(services, list) or len(services) > 100:
         raise AvitoError("provider_data_invalid")
     vas = []
@@ -411,7 +413,7 @@ def fetch_item_detail(token, account_id, item_id):
                     "schedule": [_text(x, 50) for x in schedule[:50]] if isinstance(schedule, list) else []})
     return {"item_id": item_id, "status": status, "start_time": _text(response.get("start_time"), 50),
             "finish_time": _text(response.get("finish_time"), 50), "autoload_item_id": _text(response.get("autoload_item_id"), 100),
-            "url": _avito_url(response.get("url")), "vas": vas}
+            "url": _avito_url(response.get("url")), "vas": vas, "vas_available": vas_available}
 
 
 def fetch_prices(token, account_id, item_id):

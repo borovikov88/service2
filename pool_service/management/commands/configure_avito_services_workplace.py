@@ -30,4 +30,10 @@ class Command(BaseCommand):
         if result.get("setup") != "blocked":
             from pool_service.avito_services_content_evidence import record_owner_photo_report_once
             result["manual_photo_evidence"] = record_owner_photo_report_once()
+            from pool_service.avito_daily_statistics import setup_once
+            try:
+                result["daily_statistics"] = setup_once()
+            except Exception:
+                result["daily_statistics"] = {"state": "blocked", "code": "statistics_setup_unavailable",
+                    "connection_id": 4, "account_id": "446312402"}
         self.stdout.write("AVITO_SERVICES_SETUP " + json.dumps(result, sort_keys=True))

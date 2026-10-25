@@ -37,6 +37,7 @@ from pool_service.communication_models import (
     AvitoCredential, ChannelConnection, CommunicationChannel, Conversation, ConversationMessage,
 )
 from pool_service import avito_workspace, avito_status_monitor, avito_audit, avito_source_audit, avito_autoload_report, avito_autoload_auto, avito_advance, avito_tariff_reminder
+from pool_service import avito_promotion_observations
 from pool_service.communication_services import conversation_capability, organization_access
 from pool_service.communication_views import _avito_subscription_token
 
@@ -52,6 +53,7 @@ CHECKS = (
 )
 
 SAFE_ERRORS = {
+    "promotion_observation_scope_changed": "Привязка ключей, права или принадлежность объявления изменились во время чтения. Предыдущий снимок сохранён.",
     "advance_data_invalid": "Авито не вернул корректный остаток аванса. Неизвестная сумма не считается нулём.",
     "advance_provider_invalid": "Чтение аванса доступно только через официальный API Авито.",
     "advance_binding_changed": "Права, подключение или ключи изменились. Требуется повторное включение уведомлений.",
@@ -518,6 +520,12 @@ def avito_refresh_data(request, connection_id):
         locked.save(update_fields=["settings"])
 
     updates = {}
+    promotion_binding = None
+    if section == "item_detail" and connection.pk == 4 and str(connection.external_id) == "446312402":
+        try:
+            promotion_binding = avito_promotion_observations.capture_binding(connection)
+        except avito_promotion_observations.PromotionObservationError:
+            pass
     advance_stamp = ""
     persisted = False
     actual_id = ""
@@ -555,6 +563,7 @@ def avito_refresh_data(request, connection_id):
                         grouping=form.cleaned_data["grouping"] or "totals", offset=form.cleaned_data["offset"] or 0)
                 elif key == "item_detail":
                     data = avito_workspace.fetch_item_detail(token, actual_id, form.cleaned_data["item_id"])
+                    checked_at = timezone.now().isoformat()
                 elif key == "prices":
                     data = avito_workspace.fetch_prices(token, actual_id, form.cleaned_data["item_id"])
                 elif key == "calls":
@@ -586,6 +595,24 @@ def avito_refresh_data(request, connection_id):
                     sections = saved.get("sections")
                     sections = dict(sections) if isinstance(sections, dict) else {}
                     for key, update in updates.items():
+                        if key == "item_detail" and update.get("status") == "ok" and locked.pk == 4:
+                            try:
+                                observation = avito_promotion_observations.observe(
+                                    locked, request.user, update["data"], update["checked_at"], promotion_binding,
+                                    expected_item_id=form.cleaned_data["item_id"])
+                                update["promotion_journal_state"] = observation["state"] if observation else "source_unavailable"
+                            except PermissionDenied:
+                                update = {**_workspace_failure("item_detail", AvitoError("promotion_observation_scope_changed")),
+                                    "checked_at": update["checked_at"], "stale": True, "promotion_journal_state": "unavailable"}
+                            except avito_promotion_observations.PromotionObservationError as exc:
+                                if str(exc) in {"promotion_observation_binding_changed", "promotion_observation_scope_invalid",
+                                                "promotion_observation_item_unverified", "promotion_observation_data_invalid"}:
+                                    update = {**_workspace_failure("item_detail", AvitoError("promotion_observation_scope_changed")),
+                                        "checked_at": update["checked_at"], "stale": True, "promotion_journal_state": "unavailable"}
+                                else:
+                                    # Missing journal support does not falsify a valid provider read.
+                                    update["promotion_journal_state"] = "unavailable"
+                            updates[key] = update
                         if key == "advance" and update.get("status") == "ok" and (
                                 avito_advance._credential_stamp(locked) != advance_stamp
                                 or not conversation_capability(request.user, "can_manage_channels", organization)):
