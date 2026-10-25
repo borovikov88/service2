@@ -28,7 +28,7 @@ SECTIONS = (*BASIC_SECTIONS, "statistics", "item_detail", "prices", "calls", "au
 DIAGNOSTIC_KEYS = {"token", "account", "messenger", "webhook", "items", "balance", "autoload"}
 
 
-def diagnostic_account(connection, *, has_credentials=False):
+def diagnostic_account(connection, *, has_credentials=False, user=None):
     """Saved, non-secret diagnostics for a caller that already checked scope."""
     data = connection.settings if isinstance(connection.settings, dict) else {}
     rows = data.get("avito_api_results", [])
@@ -36,9 +36,11 @@ def diagnostic_account(connection, *, has_credentials=False):
         rows = []
     from .avito_runtime import checks
     from .avito_webhook_chain import display
+    from .avito_outbox_display import for_connection
     chain = display(connection) if connection.pk == 4 and str(connection.external_id) == "446312402" else {}
     return {
         "runtime_checks": checks(connection), "webhook_chain": chain,
+        "outbox": for_connection(connection, user=user),
         "connection": connection, "has_credentials": has_credentials,
         "checked_at": data.get("avito_api_checked_at") or "",
         "results": [row for row in rows if isinstance(row, dict) and isinstance(row.get("key"), str) and row.get("key") in DIAGNOSTIC_KEYS][:7],

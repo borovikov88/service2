@@ -237,7 +237,7 @@ def avito_dashboard(request):
         AvitoCredential.objects.filter(connection_id__in=[item.pk for item in connections])
         .values_list("connection_id", flat=True)
     )
-    accounts = [avito_workspace.diagnostic_account(connection, has_credentials=connection.pk in configured_ids)
+    accounts = [avito_workspace.diagnostic_account(connection, has_credentials=connection.pk in configured_ids, user=request.user)
                 for connection in connections]
     checked_count = sum(bool(account["checked_at"]) for account in accounts)
     requested_id = request.GET.get("account", "")
