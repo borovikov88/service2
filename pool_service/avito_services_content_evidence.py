@@ -97,7 +97,10 @@ def _publication(connection, feed, version_id, *, require_current):
         valid = False
     if not valid:
         raise ValueError('Опубликованная версия и её привязка не подтверждены.')
-    if require_current and (feed.published_revision != publication.version.revision
+    latest_id = AvitoServicesPublication.objects.filter(version__feed=feed).order_by(
+        '-version__created_at', '-pk').values_list('version_id', flat=True).first() if require_current else None
+    if require_current and (latest_id != publication.version_id
+            or feed.published_revision != publication.version.revision
             or feed.published != publication.version.snapshot):
         raise ValueError('Опубликованная версия изменилась. Обновите страницу.')
     return publication

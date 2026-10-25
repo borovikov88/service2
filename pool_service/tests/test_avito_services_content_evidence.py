@@ -260,3 +260,38 @@ class PartialPhotoEvidenceTests(TestCase):
         self.assertEqual(result['state'], 'ineligible')
         fetch.assert_not_called()
         self.assertFalse(self.feed.versions.filter(action='verify').exists())
+
+
+    def same_content_publication(self):
+        version = AvitoServicesFeedVersion.objects.create(feed=self.feed, action='publish', revision=18,
+            published_revision=18, actor=self.owner, snapshot=deepcopy(self.feed.published),
+            file_digest=self.version.file_digest)
+        bind_publication(self.feed, version)
+        return version
+
+    def test_same_revision_republication_changes_exact_current_event_not_historical_proof(self):
+        event_id, unused = evidence.record_photo_evidence(self.connection, self.owner, **self.args)
+        newer = self.same_content_publication()
+        with self.assertRaises(ValueError):
+            evidence.record_photo_evidence(self.connection, self.owner, **self.args)
+        self.assertFalse(evidence.manual_photo_context(self.connection, self.feed, self.version)['available'])
+        self.assertEqual(evidence.manual_photo_context(self.connection, self.feed, newer)['records'], [])
+        # The fixed owner's historical statement remains tied to7, not the newer event.
+        fetch = self.provider()
+        result = evidence.record_owner_photo_report_once()
+        self.assertEqual(result['manual_photo']['history_event_id'], event_id)
+        fetch.assert_not_called()
+        self.assertFalse(result['facts']['live_content_verified'])
+
+    def test_same_content_republication_during_report_read_withholds_old_current_proof(self):
+        fetch = self.provider()
+        report = self.report()
+        def republished(*args, **kwargs):
+            self.same_content_publication()
+            return report
+        fetch.side_effect = republished
+        result = evidence.record_owner_photo_report_once()
+        self.assertEqual(result['state'], 'recorded')
+        self.assertEqual(result['provider_report']['state'], 'unavailable')
+        self.assertFalse(any(result['facts'].values()))
+        self.assertEqual(self.publication.attempts.count(), 0)
