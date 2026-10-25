@@ -26,7 +26,18 @@ class OwnerReviewTests(ProposalFixture, TestCase):
         # Fixed production event identities are tested with synthetic titles.
         AvitoServicesFeedVersion.objects.create(pk=8, feed=self.feed, revision=18,
             action='verify', snapshot=deepcopy(self.feed.draft), changes=[])
-        self.prepare()
+        create_version = AvitoServicesFeedVersion.objects.create
+        def create_fixture_project(**values):
+            changes = values.get('changes')
+            if (values.get('action') == 'verify' and isinstance(changes, list) and len(changes) == 1
+                    and changes[0].get('kind') == review.projects.KIND
+                    and changes[0].get('avito_id') in review.PROJECTS):
+                # MySQL rollback does not rewind AUTO_INCREMENT; reserve only
+                # the two exact synthetic events required by the runtime contract.
+                values['pk'] = review.PROJECTS[changes[0]['avito_id']]
+            return create_version(**values)
+        with patch.object(AvitoServicesFeedVersion.objects, 'create', side_effect=create_fixture_project):
+            self.prepare()
         self.company = patch('pool_service.crm_source_links.company_has_access', return_value=True)
         self.company.start(); self.addCleanup(self.company.stop)
         self.feed.latest_observations = [{'id': row['Id'], 'avito_id': row['AvitoId'],
