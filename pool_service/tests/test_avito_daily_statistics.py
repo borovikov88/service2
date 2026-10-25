@@ -385,6 +385,82 @@ class DailyHistoryTests(TestCase):
         self.assertIsNone(state['provider_periods'][0]['metric_values']['views'])
 
 
+    def test_setup_period_evidence_is_closed_db_only_and_not_a_claim_of_complete_ads(self):
+        with patch.object(avito_workspace, 'fetch_statistics', return_value=self.page((11,), total=1)):
+            self.assertEqual(daily.collect_next(), 'success')
+        run = AvitoStatisticsRun.objects.get()
+        run.dimensions['11'].update(title='PRIVATE source title', client_secret='PRIVATE')
+        run.page_provenance.append({'raw_url': 'https://private.invalid/PRIVATE'})
+        run.save(update_fields=['dimensions', 'page_provenance'])
+        self.connection.refresh_from_db()
+        settings_before = deepcopy(self.connection.settings)
+        with patch('pool_service.avito_services_workplace_setup._actor', return_value=self.owner), \
+                patch.object(daily, 'collect_next') as collect, \
+                patch.object(avito_workspace, 'fetch_statistics') as fetch, \
+                patch.object(daily, 'display', side_effect=AssertionError('full display is not receipt metadata')), \
+                patch('pool_service.avito_crm_coverage.coverage', side_effect=AssertionError('CRM is not receipt metadata')):
+            first, second = daily.setup_once(), daily.setup_once()
+        collect.assert_not_called()
+        fetch.assert_not_called()
+        self.connection.refresh_from_db()
+        self.assertEqual(self.connection.settings, settings_before)
+        self.assertEqual(first['first_read_result'], 'not_requested')
+        evidence = first['source_period_evidence']
+        self.assertEqual(evidence, second['source_period_evidence'])
+        self.assertEqual(set(evidence), {'schema_version', 'state', 'source', 'cutoff',
+            'provider_timezone', 'barnaul_calendar_confirmed', 'completed_dates',
+            'expected_dates', 'comparison_rule', 'periods'})
+        self.assertEqual((evidence['completed_dates'], evidence['expected_dates']), (1, 30))
+        self.assertEqual(evidence['cutoff'], '2026-10-23')
+        self.assertEqual(evidence['provider_timezone'], 'unknown')
+        self.assertFalse(evidence['barnaul_calendar_confirmed'])
+        self.assertEqual(len(evidence['periods']), 5)
+        expected_keys = {'key', 'from', 'to', 'missing_dates', 'expected_ad_cells',
+            'reported_ad_cells', 'pages_complete', 'ad_rows_complete', 'comparison_applicable',
+            'same_cohort', 'comparison_available'}
+        for period in evidence['periods']:
+            self.assertEqual(set(period), expected_keys)
+        period = evidence['periods'][0]
+        self.assertTrue(period['pages_complete'])
+        self.assertEqual((period['reported_ad_cells'], period['expected_ad_cells']), (1, 2))
+        self.assertFalse(period['ad_rows_complete'])
+        self.assertFalse(period['comparison_available'])
+        import json
+        serialized = json.dumps(evidence)
+        for private in ('PRIVATE', 'private.invalid', 'metrics', 'spending', 'contacts', 'title'):
+            self.assertNotIn(private, serialized.replace('all_requested_metrics_known', ''))
+        self.assertFalse(evidence['periods'][4]['comparison_applicable'])
+
+    def test_period_evidence_requires_current_binding_and_never_reads_other_scope(self):
+        with patch.object(daily, '_source_history') as history:
+            self.assertEqual(daily.source_period_evidence(self.goods)['code'], 'statistics_binding_changed')
+            self.connection.refresh_from_db()
+            self.connection.settings[daily.KEY]['account_id'] = 'foreign-account'
+            self.connection.save(update_fields=['settings'])
+            self.assertEqual(daily.source_period_evidence(self.connection)['code'], 'statistics_binding_changed')
+        history.assert_not_called()
+
+    def test_period_evidence_requires_all_requested_values_for_its_comparison_boolean(self):
+        raw = dict.fromkeys(daily.COUNTERS, 1)
+        raw.update(dict.fromkeys(daily.MONEY, 1234567))
+        with patch.object(avito_workspace, 'fetch_statistics', return_value=self.page(metrics=raw)):
+            self.assertEqual(daily.collect_next(), 'success')
+            self.retry()
+            self.assertEqual(daily.collect_next(), 'success')
+        evidence = daily.source_period_evidence(self.connection, self.now)
+        self.assertTrue(evidence['periods'][0]['same_cohort'])
+        self.assertTrue(evidence['periods'][0]['comparison_available'])
+        self.assertTrue(evidence['periods'][0]['ad_rows_complete'])
+        self.assertNotIn('12345.67', str(evidence))
+        row = AvitoDailyStatistic.objects.filter(day=daily.collection_cutoff(self.now)).first()
+        row.metrics['contacts'] = None
+        row.save(update_fields=['metrics'])
+        after = daily.source_period_evidence(self.connection, self.now)['periods'][0]
+        self.assertTrue(after['pages_complete'])
+        self.assertTrue(after['ad_rows_complete'])
+        self.assertFalse(after['comparison_available'])
+
+
 class DailySourceComparisonTests(SimpleTestCase):
     now = datetime(2026, 10, 25, 7, tzinfo=dt_timezone.utc)
 

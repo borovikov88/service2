@@ -490,12 +490,8 @@ def source_comparisons(periods):
     return output
 
 
-def display(connection, actor, now=None):
-    from .communication_services import organization_access, conversation_capability
-    if (not _scope(connection) or organization_access(actor, connection.channel.organization) is None
-            or not conversation_capability(actor, 'can_manage_channels', connection.channel.organization)):
-        return None
-    state = _state(connection)
+def _source_history(connection, now=None):
+    """Shared bounded DB read; callers establish the current connection scope."""
     cutoff = collection_cutoff(now)
     rows = list(AvitoDailyStatistic.objects.filter(connection=connection, account_id=ACCOUNT,
         organization_id_at_collection=connection.channel.organization_id,
@@ -512,6 +508,48 @@ def display(connection, actor, now=None):
     day_runs = {}
     for run in complete_runs:
         day_runs.setdefault(run.day, run)
+    return cutoff, rows, day_runs
+
+
+def source_period_evidence(connection, now=None):
+    """Closed metadata for the protected setup receipt; never metric values."""
+    with transaction.atomic():
+        current = ChannelConnection.objects.select_for_update().select_related('channel').filter(pk=connection.pk).first()
+        if current is None or not _scope(current) or not _allowed(current, _state(current)):
+            return {'schema_version': 1, 'state': 'blocked', 'code': 'statistics_binding_changed'}
+        cutoff, rows, day_runs = _source_history(current, now)
+        periods = source_periods(rows, set(day_runs), now, day_runs=day_runs)
+        comparisons = source_comparisons(periods)
+        names = ('day', 'previous_day', 'seven_days', 'previous_seven_days', 'thirty_days')
+        windows = []
+        for index, period in enumerate(periods):
+            comparison = comparisons[index // 2] if index < 4 else None
+            windows.append({'key': names[index], 'from': period['from'].isoformat(),
+                'to': period['to'].isoformat(), 'missing_dates': period['missing_days'],
+                'expected_ad_cells': period['expected_cells'],
+                'reported_ad_cells': period['reported_cells'],
+                'pages_complete': period['pages_complete'],
+                'ad_rows_complete': bool(period['expected_cells']) and period['pages_complete']
+                    and not period['missing_ad_cells']
+                    and period['stored_cells'] == period['expected_cells'],
+                'comparison_applicable': comparison is not None,
+                'same_cohort': comparison['same_cohort'] if comparison is not None else False,
+                'comparison_available': bool(comparison is not None and not comparison['reason']
+                    and comparison['metrics'] and all(item['comparable'] for item in comparison['metrics']))})
+        return {'schema_version': 1, 'state': 'observed', 'source': 'avito_stats_v2_items',
+            'cutoff': cutoff.isoformat(), 'provider_timezone': 'unknown',
+            'barnaul_calendar_confirmed': False, 'completed_dates': len(day_runs),
+            'expected_dates': BACKFILL_DAYS,
+            'comparison_rule': 'all_requested_metrics_known', 'periods': windows}
+
+
+def display(connection, actor, now=None):
+    from .communication_services import organization_access, conversation_capability
+    if (not _scope(connection) or organization_access(actor, connection.channel.organization) is None
+            or not conversation_capability(actor, 'can_manage_channels', connection.channel.organization)):
+        return None
+    state = _state(connection)
+    cutoff, rows, day_runs = _source_history(connection, now)
     completed_days = set(day_runs)
     latest = AvitoStatisticsRun.objects.filter(connection=connection, account_id=ACCOUNT,
         organization_id_at_collection=connection.channel.organization_id).order_by('-pk').first()
@@ -643,6 +681,7 @@ def setup_once():
         'pagination_complete': latest.pagination_complete if latest else False,
         'provider_timezone': 'unknown', 'barnaul_calendar_confirmed': False,
         'error_code': code,
+        'source_period_evidence': source_period_evidence(connection),
         'natural_background_verified': background.get('last_worker_verified') is True
             and background.get('last_worker_outcome') == 'success',
         'natural_background_checked_at': background.get('last_worker_checked_at')}
