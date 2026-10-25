@@ -17,6 +17,7 @@ FIELDS = {
     'compatible_valves': 'совместимые клапаны (артикулы)',
     'compatible_filters': 'совместимые фильтры (артикулы)',
 }
+VALVE_INCLUDED_LABELS = (FIELDS['valve_included'], 'вентиль в комплекте')
 
 
 def skus(value):
@@ -53,12 +54,12 @@ def classify(specs, name, category, offer):
     if specs['kind'] not in {'filter', 'filter_valve'}:
         return
     is_filter = specs['kind'] == 'filter'
-    card_labels = set(FIELDS.values()) | {'загрузка песка, кг', 'материал',
+    card_labels = set(FIELDS.values()) | set(VALVE_INCLUDED_LABELS) | {'загрузка песка, кг', 'материал',
                                        'максимальное рабочее давление, бар', 'конструкция корпуса'}
     structured = any(params.get(v) for v in card_labels)
     facts = {'in_category': in_category if is_filter else in_parts,
              'structured': structured, 'issue': '', 'source': '',
-             'valve_included': None, 'valve_note': '', 'position': '',
+             'valve_included': None, 'valve_note': '', 'valve_independent': is_filter, 'position': '',
              'connection': '', 'model': '', 'flow': None, 'diameter_mm': None,
              'area_m2': None, 'velocity_m_h': None,
              'compatible_filters': [], 'compatible_valves': []}
@@ -79,13 +80,14 @@ def classify(specs, name, category, offer):
     }
     parsed = {}
     for key, parser in parsers.items():
-        values = params.get(FIELDS[key], [])
+        labels = VALVE_INCLUDED_LABELS if key == 'valve_included' else (FIELDS[key],)
+        values = [value for label in labels for value in params.get(label, [])]
         if not values:
             continue
-        notes.append(FIELDS[key] + ': ' + '; '.join(values))
+        notes.extend(label + ': ' + '; '.join(params[label]) for label in labels if params.get(label))
         results = [parser(v) for v in values]
         if None in results or len(set(results)) != 1:
-            message = 'Неоднозначная характеристика «' + FIELDS[key] + '»: ' + '; '.join(values) + '.'
+            message = 'Неоднозначная характеристика «' + ' / '.join(labels) + '»: ' + '; '.join(values) + '.'
             if key == 'valve_included':
                 facts['valve_note'] = message
             else:
@@ -111,6 +113,7 @@ def normalize(raw):
         return {}
     out = {'in_category': boolean(raw.get('in_category', False)),
            'structured': boolean(raw.get('structured', False)),
+           'valve_independent': boolean(raw.get('valve_independent', False)),
            'valve_included': None if raw.get('valve_included') is None else boolean(raw['valve_included'])}
     for key, limit in [('issue', 1000), ('source', 2000), ('valve_note', 500),
                        ('position', 10), ('connection', 300), ('model', 120)]:
