@@ -53,6 +53,7 @@ CHECKS = (
 )
 
 SAFE_ERRORS = {
+    "promotion_observation_scope_changed": "Привязка ключей, права или принадлежность объявления изменились во время чтения. Предыдущий снимок сохранён.",
     "advance_data_invalid": "Авито не вернул корректный остаток аванса. Неизвестная сумма не считается нулём.",
     "advance_provider_invalid": "Чтение аванса доступно только через официальный API Авито.",
     "advance_binding_changed": "Права, подключение или ключи изменились. Требуется повторное включение уведомлений.",
@@ -562,6 +563,7 @@ def avito_refresh_data(request, connection_id):
                         grouping=form.cleaned_data["grouping"] or "totals", offset=form.cleaned_data["offset"] or 0)
                 elif key == "item_detail":
                     data = avito_workspace.fetch_item_detail(token, actual_id, form.cleaned_data["item_id"])
+                    checked_at = timezone.now().isoformat()
                 elif key == "prices":
                     data = avito_workspace.fetch_prices(token, actual_id, form.cleaned_data["item_id"])
                 elif key == "calls":
@@ -599,9 +601,17 @@ def avito_refresh_data(request, connection_id):
                                     locked, request.user, update["data"], update["checked_at"], promotion_binding,
                                     expected_item_id=form.cleaned_data["item_id"])
                                 update["promotion_journal_state"] = observation["state"] if observation else "source_unavailable"
-                            except (avito_promotion_observations.PromotionObservationError, PermissionDenied):
-                                # Journalling failure does not misreport the successful provider read.
-                                update["promotion_journal_state"] = "unavailable"
+                            except PermissionDenied:
+                                update = {**_workspace_failure("item_detail", AvitoError("promotion_observation_scope_changed")),
+                                    "checked_at": update["checked_at"], "stale": True, "promotion_journal_state": "unavailable"}
+                            except avito_promotion_observations.PromotionObservationError as exc:
+                                if str(exc) in {"promotion_observation_binding_changed", "promotion_observation_scope_invalid",
+                                                "promotion_observation_item_unverified", "promotion_observation_data_invalid"}:
+                                    update = {**_workspace_failure("item_detail", AvitoError("promotion_observation_scope_changed")),
+                                        "checked_at": update["checked_at"], "stale": True, "promotion_journal_state": "unavailable"}
+                                else:
+                                    # Missing journal support does not falsify a valid provider read.
+                                    update["promotion_journal_state"] = "unavailable"
                             updates[key] = update
                         if key == "advance" and update.get("status") == "ok" and (
                                 avito_advance._credential_stamp(locked) != advance_stamp

@@ -212,3 +212,29 @@ class PromotionObservationTests(TestCase):
         section = self.connection.settings['avito_workspace']['sections']['item_detail']
         self.assertEqual(section['promotion_journal_state'], 'recorded')
         self.assertEqual(section['status'], 'ok')
+
+
+    def test_mid_read_credentials_rotation_preserves_prior_payload_as_stale(self):
+        from django.urls import reverse
+        previous = {**self.data, 'finish_time': 'prior source value'}
+        self.connection.settings = {'avito_workspace': {'account_id': '446312402',
+            'sections': {'items': {'data': {'rows': [{'id': '111'}]}},
+                'item_detail': {'status': 'ok', 'data': previous, 'success_at': 'old-success'}}}}
+        self.connection.save(update_fields=['settings'])
+        self.client.force_login(self.owner)
+        def changed(*args, **kwargs):
+            AvitoCredential.objects.filter(pk=self.credential.pk).update(client_secret_encrypted='rotated')
+            return self.data
+        with patch('pool_service.avito_management.access_token', return_value='opaque'), \
+                patch('pool_service.avito_workspace._get', return_value={'id': 446312402}), \
+                patch('pool_service.avito_workspace.fetch_item_detail', side_effect=changed):
+            response = self.client.post(reverse('avito_refresh_data', args=[4]),
+                {'section': 'item_detail', 'item_id': '111'})
+        self.assertEqual(response.status_code, 302)
+        self.connection.refresh_from_db()
+        section = self.connection.settings['avito_workspace']['sections']['item_detail']
+        self.assertEqual(section['data'], previous)
+        self.assertTrue(section['stale'])
+        self.assertEqual(section['code'], 'promotion_observation_scope_changed')
+        self.assertEqual(section['success_at'], 'old-success')
+        self.assertEqual(self.feed.versions.filter(action='verify').count(), 0)
