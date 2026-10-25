@@ -6,6 +6,9 @@ on:
     paths:
       - "pool_service/models.py"
       - "pool_service/avito_*.py"
+      - "pool_service/crm_source_*.py"
+      - "pool_service/services/crm_permissions.py"
+      - "pool_service/tests/test_crm_source_orders.py"
       - "pool_service/tests/test_avito*.py"
       - "pool_service/management/commands/monitor_avito_statuses.py"
       - "pool_service/management/commands/configure_avito_services_workplace.py"
@@ -103,6 +106,8 @@ jobs:
             pool_service.tests.test_avito_daily_statistics \
             pool_service.tests.test_avito_decision_report \
             pool_service.tests.test_avito_crm_coverage \
+            pool_service.tests.test_avito_crm_attribution \
+            pool_service.tests.test_crm_source_orders \
             pool_service.tests.test_avito_promotion_observations \
             pool_service.tests.test_avito_workspace \
             pool_service.tests.test_avito_outbox \
