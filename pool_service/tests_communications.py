@@ -5848,7 +5848,7 @@ class CommunicationsTests(TestCase):
         self.client.login(username="worker", password="test")
         response = self.client.get(reverse("communications_conversations"), {"conversation": conversation.uuid})
         self.assertContains(response, "Ошибка")
-        self.assertContains(response, "Для Авито сейчас доступна отправка только текста")
+        self.assertContains(response, "Avito · только текст")
         self.assertNotContains(response, 'type="file"')
 
     def test_avito_attachment_is_rejected_on_server(self):
