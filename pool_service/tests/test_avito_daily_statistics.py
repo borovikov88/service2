@@ -46,6 +46,26 @@ class DailyCalendarTests(SimpleTestCase):
         self.assertNotIn('spendingBonus', item['metrics'])
 
 
+class DailyCityTests(SimpleTestCase):
+    def test_explicit_city_is_preferred_and_exact_address_token_retains_provenance(self):
+        self.assertEqual(daily._city({'City': 'Барнаул', 'Address': 'г. Бийск'}),
+                         ('Барнаул', 'published_city_field'))
+        for text, expected in (('Алтайский край, г. Барнаул, ул. Ленина, 1', 'Барнаул'),
+                ('Республика Алтай, город Горно-Алтайск, проспект 1', 'Горно-Алтайск'),
+                ('Алтайский край, Бийск', 'Бийск')):
+            with self.subTest(text=text):
+                self.assertEqual(daily._city({'Address': text}),
+                                 (expected, 'published_address_exact_token'))
+
+    def test_streets_titles_ambiguous_and_other_cities_never_become_a_known_city(self):
+        for row in ({'Title': 'Строительство Барнаул'}, {'Address': 'ул. Барнаула, 1'},
+                {'Address': 'улица Барнаул, 1'}, {'Address': 'Барнаул, Бийск'},
+                {'Address': 'г. Барнаул, г. Новосибирск'}, {'Address': 'Новосибирск'},
+                {'Address': 'Барнаульский район'}, {'Address': 123}):
+            with self.subTest(row=row):
+                self.assertEqual(daily._city(row), ('', 'unknown'))
+
+
 class DailyHistoryTests(TestCase):
     def setUp(self):
         self.now = datetime(2026, 10, 25, 7, tzinfo=dt_timezone.utc)
@@ -298,3 +318,18 @@ class DailyHistoryTests(TestCase):
         self.assertEqual(repeated['state'], 'preserved')
         self.assertFalse(first['pagination_complete'])
         self.assertEqual(AvitoDailyStatistic.objects.count(), 0)
+
+
+    def test_address_city_dimensions_are_current_scoped_source_metadata(self):
+        self.feed.published[0]['rows'][0].pop('City', None)
+        self.feed.published[0]['rows'][0]['Address'] = 'Алтайский край, Барнаул, ул. Ленина, 1'
+        self.feed.save(update_fields=['published'])
+        self.goods.settings = {'preserve': 'goods sentinel', 'Address': 'г. Бийск'}
+        self.goods.save(update_fields=['settings'])
+        with patch.object(avito_workspace, 'fetch_statistics', return_value=self.page()):
+            self.assertEqual(daily.collect_next(), 'success')
+        run = AvitoStatisticsRun.objects.get()
+        self.assertEqual(run.dimensions['11']['city_label'], 'Барнаул')
+        self.assertEqual(run.dimensions['11']['city_source'], 'published_address_exact_token')
+        self.assertEqual(run.dimensions['12']['city_label'], '')
+        self.assertEqual(run.dimensions['11']['published_revision'], 18)

@@ -47,13 +47,13 @@
     <details class="mt-3" open>
       <summary>Объявления и суточные показатели</summary>
       {% if daily.rows %}
-      <p class="small text-muted mt-2">Показано {{ daily.rows|length }} из {{ daily.total_cells }} сохранённых строк. Услуга — точное значение ServiceType либо название объявления из опубликованного снимка во время сбора; это не восстановление прежней категории задним числом. Город показывается только при явном поле City.</p>
+      <p class="small text-muted mt-2">Показано {{ daily.rows|length }} из {{ daily.total_cells }} сохранённых строк. Услуга — точное значение ServiceType либо название объявления из опубликованного снимка во время сбора; это не восстановление прежней категории задним числом. Город берётся из явного City либо отдельного однозначного токена адреса: Барнаул, Бийск, Горно-Алтайск. Подстроки улиц и названий не используются.</p>
       <div class="table-responsive"><table class="table table-sm">
         <thead><tr><th>Дата источника</th><th>Объявление</th><th>Услуга / название</th><th>Город</th><th>Показатели</th></tr></thead>
         <tbody>{% for row in daily.rows %}<tr>
           <td>{{ row.day }}</td><td>{{ row.avito_id }}<div class="small text-muted">{{ row.title }}</div></td>
           <td>{{ row.service|default:"Не определена" }}<div class="small text-muted">{{ row.service_source }}</div></td>
-          <td>{{ row.city|default:"Не определён" }}</td>
+          <td>{{ row.city|default:"Не определён" }}<div class="small text-muted">{{ row.city_source }}</div></td>
           <td>{% if not row.provider_row_present %}<div class="small text-warning-emphasis">Авито не вернул строку; показатели неизвестны.</div>{% endif %}<details><summary>Показы, контакты, расходы и отношения</summary>
             <dl class="small">{% for metric in row.metrics %}<dt>{{ metric.label }}</dt><dd>{% if metric.value != None %}{{ metric.value }} {{ metric.unit }}{% else %}Нет данных{% endif %}</dd>{% endfor %}</dl>
             <div class="small text-muted">Источник {{ row.run.source }}; timezone: {{ row.run.provider_timezone }}; период {{ row.run.day }}–{{ row.run.day }}; {% timezone "Asia/Barnaul" %}получено {{ row.fetched_at|date:"d.m.Y H:i:s" }} · Барнаул{% endtimezone %}.</div>

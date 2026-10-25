@@ -129,6 +129,28 @@ def _label(row, key, maximum):
     return value[:maximum] if isinstance(value, str) else ''
 
 
+
+KNOWN_CITIES = ('Барнаул', 'Бийск', 'Горно-Алтайск')
+
+
+def _city(row):
+    explicit = _label(row, 'City', 200).strip()
+    if explicit:
+        return explicit, 'published_city_field'
+    address = row.get('Address')
+    if not isinstance(address, str) or len(address) > 2000:
+        return '', 'unknown'
+    found = set()
+    for token in address.split(','):
+        token = token.strip()
+        match = re.fullmatch(r'(?:г\.?\s*|город\s+)?(Барнаул|Бийск|Горно-Алтайск)', token, re.IGNORECASE)
+        if match:
+            found.add(next(city for city in KNOWN_CITIES if city.casefold() == match[1].casefold()))
+        elif re.fullmatch(r'(?:г\.?\s*|город\s+)[А-Яа-яЁё-]+', token):
+            return '', 'unknown'  # An explicit different city makes the address ambiguous.
+    return (next(iter(found)), 'published_address_exact_token') if len(found) == 1 else ('', 'unknown')
+
+
 def _dimensions(connection):
     from .avito_feed_models import AvitoServicesFeed
     from .avito_services_feed import bound, entries
@@ -138,12 +160,13 @@ def _dimensions(connection):
     output = {}
     for row in entries(feed.published):
         service_field = 'ServiceType' if row.get('ServiceType') else 'Title'
+        city, city_source = _city(row)
         output[row['AvitoId']] = {
             'title': _label(row, 'Title', 300),
             'service_label': _label(row, service_field, 300),
             'service_source': service_field,
-            # Never infer city from a title, phone, address substring or client.
-            'city_label': _label(row, 'City', 200),
+            # Explicit city or an unambiguous full comma-delimited known-city token.
+            'city_label': city, 'city_source': city_source,
             'published_revision': feed.published_revision,
             'dimension_observed_at': timezone.now().isoformat(),
         }
@@ -427,6 +450,7 @@ def display(connection, actor, now=None):
     for row in rows[:100]:
         output['rows'].append({'day': row.day, 'avito_id': row.avito_id, 'title': row.title,
             'service': row.service_label, 'service_source': row.service_source, 'city': row.city_label,
+            'city_source': row.source_run.dimensions.get(row.avito_id, {}).get('city_source', 'unknown'),
             'fetched_at': row.fetched_at, 'metrics': metric_display(row.metrics),
             'provider_row_present': row.provider_row_present, 'run': row.source_run})
     # These are provider date labels, not converted Barnaul calendar days.
