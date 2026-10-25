@@ -385,8 +385,8 @@ def cached_configuration(value):
 
 
 def runtime_checks(value):
-    require(isinstance(value, list) and len(value) <= 6)
-    names = {"statuses", "advance", "autoload_report", "tariff", "publication_correlation", "messages_digest"}
+    require(isinstance(value, list) and len(value) <= 7)
+    names = {"statuses", "advance", "autoload_report", "tariff", "publication_correlation", "messages_digest", "statistics_daily"}
     outcomes = {"baseline", "success", "failed", "skipped", "not_run"}
     allowed_codes = {
     "", "not_configured", "disabled", "not_checked", "check_due", "schedule_invalid",
@@ -402,7 +402,8 @@ def runtime_checks(value):
     "monitor_scan_limit", "monitor_pagination_invalid", "monitor_status_invalid",
     "monitor_owner_unavailable", "monitor_connection_changed", "monitor_interrupted", "monitor_error",
     "tariff_reminder_failed", "tariff_notification_preferences_disabled", "notification_preferences_disabled",
-    "publication_correlation_failed", "dependency_failed", "deferred_queue_invalid", "conversation_access_denied",
+    "statistics_binding_changed", "statistics_data_invalid", "statistics_total_unavailable", "statistics_limit",
+    "statistics_unavailable", "statistics_incomplete", "publication_correlation_failed", "dependency_failed", "deferred_queue_invalid", "conversation_access_denied",
 }
     result = []
     def timestamp(raw):

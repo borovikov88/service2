@@ -157,7 +157,7 @@ class PromotionObservationTests(TestCase):
             self.feed.save(update_fields=["organization_id_at_import"])
         with self.assertRaises(observations.PromotionObservationError):
             self.observe(connection=self.goods)
-        ChannelConnection.objects.filter(pk=4).update(external_id="other-account")
+        ChannelConnection.objects.filter(pk=4).update(external_id="distinct-unbound-account")
         with self.assertRaises(observations.PromotionObservationError):
             self.observe()
         self.assertEqual(self.feed.versions.filter(action="verify").count(), 0)

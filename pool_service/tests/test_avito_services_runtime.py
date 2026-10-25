@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 from django.contrib.auth.models import User
 from django.core.management import call_command
-from django.test import TestCase, override_settings
+from django.test import TestCase, SimpleTestCase, override_settings
 from django.utils import timezone
 
 from pool_service import avito_runtime as runtime, avito_advance, avito_autoload_auto as auto
@@ -709,3 +709,46 @@ class ProviderMessageMeaningTests(TestCase):
         self.assertEqual({"existing_listing_link", "information"}, {row["category"] for row in result})
         self.assertNotIn("private.invalid", str(result))
         self.assertNotIn("79991234567", str(result))
+
+
+class RuntimeReceiptStatisticsSchemaTests(SimpleTestCase):
+    names = ('statuses', 'advance', 'autoload_report', 'tariff',
+             'publication_correlation', 'messages_digest', 'statistics_daily')
+
+    def row(self, name='statistics_daily', code=''):
+        return {'check': name, 'state': 'pending', 'configured': True, 'enabled': True,
+            'scope_valid': True, 'code': code, 'checked_at': None, 'success_at': None,
+            'next_due_at': None, 'last_worker_verified': False, 'last_worker_outcome': None,
+            'last_worker_code': None, 'last_worker_checked_at': None}
+
+    def test_seven_named_checks_and_old_six_check_receipts_are_supported(self):
+        current = [self.row(name) for name in self.names]
+        self.assertEqual([row['check'] for row in receipt.runtime_checks(current)], list(self.names))
+        old = current[:-1]
+        self.assertEqual([row['check'] for row in receipt.runtime_checks(old)], list(self.names[:-1]))
+        self.assertEqual(receipt.runtime_checks([]), [])
+
+    def test_statistics_failure_codes_are_closed_and_secrets_are_not_projected(self):
+        codes = ('statistics_binding_changed', 'statistics_data_invalid',
+            'statistics_total_unavailable', 'statistics_limit',
+            'statistics_unavailable', 'statistics_incomplete', 'provider_http_403')
+        for code in codes:
+            raw = self.row(code=code)
+            raw.update(client_secret='PRIVATE', raw_provider_body='PRIVATE', metrics={'spending': 'PRIVATE'})
+            projected = receipt.runtime_checks([raw])
+            self.assertEqual(projected[0]['code'], code)
+            self.assertNotIn('PRIVATE', str(projected))
+            self.assertNotIn('metrics', projected[0])
+        for code in ('statistics_anything', 'client_secret=PRIVATE', 'https://private.invalid/key'):
+            with self.subTest(code=code), self.assertRaises(ValueError):
+                receipt.runtime_checks([self.row(code=code)])
+
+    def test_unknown_duplicate_eighth_and_malformed_checks_remain_rejected(self):
+        cases = ([self.row('unexpected_check')], [self.row(), self.row()],
+            [self.row(name) for name in self.names] + [self.row('unexpected_check')],
+            [{'check': 'statistics_daily'}], [dict(self.row(), enabled=1)],
+            [dict(self.row(), last_worker_verified='true')],
+            [dict(self.row(), checked_at='2026-10-25T08:00:00')])
+        for rows in cases:
+            with self.subTest(rows=rows), self.assertRaises(ValueError):
+                receipt.runtime_checks(rows)
