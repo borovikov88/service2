@@ -23,7 +23,7 @@ from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requ
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
-CACHE_KEY = "pool-estimate-shop-v26"
+CACHE_KEY = "pool-estimate-shop-v27"
 CACHE_SECONDS = 900
 MAX_BYTES = 20_000_000
 FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
@@ -177,6 +177,8 @@ def parse_catalog(payload, checked_at=None):
         lighting.classify(specs, name, description, category_path(offer.findtext("categoryId")), offer)
         classify_auxiliary(specs, name, description, offer)
         temperature.classify(specs,name,brand,description,offer,url)
+        from .estimate_filter_facts import classify as classify_filter
+        classify_filter(specs, name, category_path(offer.findtext('categoryId')), offer)
         filter_media.classify(specs,name,description,category_path(offer.findtext("categoryId")),offer,url)
         from .estimate_liner_facts import classify as classify_liner
         from .estimate_liner_corner import classify as classify_corner
@@ -292,6 +294,13 @@ def candidate_reason(product, inputs, required_flow, *, for_auto=False):
             return "Питание не соответствует выбранному или не указано в карточке."
         if inputs.get("required_head") and (not product["head"] or Decimal(product["head"]) != Decimal(inputs["required_head"])):
             return "В каталоге нет рабочей точки при указанном расчётном напоре."
+    if product['kind'] == 'filter':
+        from .estimate_candidates import assess
+        blocked, missing = assess(product, inputs, required_flow)
+        if blocked or missing:
+            return blocked or 'Проверить: ' + ', '.join(missing) + '.'
+    if product['kind'] == 'filter_valve':
+        return 'Проверьте совместимость шестипозиционного клапана с артикулом и исполнением выбранного фильтра; один бренд или диаметр не подтверждает совместимость.'
     if product['kind'] == 'level_regulator':
         from .estimate_level_control import regulator_reason
         return regulator_reason(product)
@@ -340,6 +349,8 @@ def apply_product(row, product, catalog, selection="manual"):
     row["catalog"] = {k: product[k] for k in ("id", "url", "sku", "price", "available", "nominal_flow", "power", "power_options", "heating_power", "heater_type", "titanium", "embedded_role", "material", "lining")}
     row["catalog"]["filtration"] = product.get("filtration")
     row['catalog']['pump_facts'] = deepcopy(product.get('pump_facts', {}))
+    row['catalog']['filter_facts'] = deepcopy(product.get('filter_facts', {}))
+    row['catalog']['filter_valve'] = deepcopy(product.get('filter_valve', {}))
     row['catalog']['availability'] = deepcopy(product.get('availability', {}))
     row["catalog"]["heater_purpose_note"] = product.get("heater_purpose_note", "")
     row["catalog"]["lighting"] = deepcopy(product.get("lighting", {}))
@@ -497,6 +508,8 @@ def auto_select(snapshot, catalog, only_variant=None):
     filled += lighting.fill(result, catalog, only_variant)
     from .estimate_level_control import fill as fill_level
     filled += fill_level(result, catalog, only_variant)
+    from .estimate_filter_valve import fill as fill_filter_valve
+    filled += fill_filter_valve(result, catalog, only_variant)
     # Explicit refresh also warns about newly known conflicts on protected rows;
     # it does not replace their frozen product, price, quantity or user facts.
     from .estimate_compatibility import duty
@@ -586,9 +599,9 @@ def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="
     query = search_text(string(query, "Поиск товара", 120)).split()
     kind = string(kind, "Тип товара", 20)
     brand = string(brand, "Бренд", 80)
-    if kind not in {*lighting.ROLES, "thermostat", "filter_media", "liner", "liner_corner", "plaster_component", "", "other", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "level_regulator", "level_inlet", "treatment", "control_panel", "geotextile", *embedded.ROLES}:
+    if kind not in {*lighting.ROLES, "thermostat", "filter_media", "filter_valve", "liner", "liner_corner", "plaster_component", "", "other", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "level_regulator", "level_inlet", "treatment", "control_panel", "geotextile", *embedded.ROLES}:
         raise EstimateInputError("Неизвестный тип товара.")
-    matches = [p for p in catalog["products"].values() if (not kind or (p['kind'] in {'inlet', 'vacuum'} if kind == 'level_inlet' else p['kind'] == kind)) and (kind != 'pump' or p.get('pump_facts', {}).get('in_category')) and (not brand or p["brand"].casefold() == brand.casefold()) and all(q in search_text(p["name"] + " " + p["sku"] + " " + p["id"]) for q in query)]
+    matches = [p for p in catalog["products"].values() if (not kind or (p['kind'] in {'inlet', 'vacuum'} if kind == 'level_inlet' else p['kind'] == kind)) and (kind != 'pump' or p.get('pump_facts', {}).get('in_category')) and (kind != 'filter' or p.get('filter_facts', {}).get('in_category')) and (not brand or p["brand"].casefold() == brand.casefold()) and all(q in search_text(p["name"] + " " + p["sku"] + " " + p["id"]) for q in query)]
     matches.sort(key=lambda p: (bool(reason(p)), not p["available"], bool(kind == "circulation_pump" and variant != "economy" and p.get("frequency_control") is not True), Decimal(p["price"]), int(p["id"])))
     from .estimate_liner import area
     return {"products": [{**p, "warning": reason(p), "roll_area": area(p)} for p in matches[:40]], "total": len(matches), "status": catalog_status(catalog)}
@@ -610,6 +623,8 @@ def refresh_prices(snapshot, catalog, variant_key):
             if not product:
                 origin["missing"] = True
                 continue
+            from .estimate_filter_valve import review_price
+            review_price(row, product)
             if row['kind']=='geotextile':
                 from .estimate_geotextile import assess
                 issue=assess(product)

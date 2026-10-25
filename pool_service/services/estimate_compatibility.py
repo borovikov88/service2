@@ -74,7 +74,7 @@ def annotate(snapshot, variant):
 
 def repair(raw, variant_key, block_id, row_id, catalog=None):
     from .pool_estimates import evaluate, EstimateInputError, VARIANTS
-    from .estimate_catalog import apply_product, candidate_reason, choose_filtration_product
+    from .estimate_catalog import apply_product, choose_filtration_product
     result = evaluate(raw)
     if not isinstance(variant_key, str) or variant_key not in VARIANTS:
         raise EstimateInputError('Выберите смету.')
@@ -85,12 +85,15 @@ def repair(raw, variant_key, block_id, row_id, catalog=None):
     role = row['compatibility']['kind']
     flow, _ = duty(result, variant)
     if role == 'filter':
+        from .estimate_candidates import assess
         choices = [p for p in (catalog or {}).get('products', {}).values() if p['kind'] == 'filter'
-                   and not candidate_reason(p, result['inputs'], flow, for_auto=True)]
+                   and p.get('filter_flow') and not assess(p, result['inputs'], flow)[0]]
         if not choices:
             raise EstimateInputError('Подходящий фильтр в выбранном сегменте не найден. Откройте каталог и проверьте другие бренды. Текущая позиция сохранена.')
         apply_product(row, choose_filtration_product(choices, variant_key), catalog)
         row['selection_locked'] = True  # explicit single-row replacement, keep it on broad recalculation
+        from .estimate_filter_valve import initialize
+        initialize(result, variant_key)
     else:
         required = max(1 if role == 'skimmer' else 2, int(embedded.ceil_quantity(flow / Decimal(result['inputs']['skimmer_flow' if role == 'skimmer' else 'inlet_flow']))))
         if role == 'skimmer':

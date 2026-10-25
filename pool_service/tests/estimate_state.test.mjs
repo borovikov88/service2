@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {setExcluded, emptyRow, automaticQuantity, quantityRequired} from '../static/pool_service/estimates/state.js';
+import {availabilityStatus} from '../static/pool_service/estimates/availability.js';
 
 function sample() {
   return {variants: Object.fromEntries(['economy', 'standard', 'premium'].map(key => [key, {blocks: [{id: 'equipment', excluded: false, reason: '', rows: [emptyRow('pump'), {...emptyRow('filter'), excluded: true, price: '120'}]}]}]))};
@@ -116,4 +117,47 @@ test('filter loading quantity remains server-owned including unknown mass',()=>{
  assert.equal(automaticQuantity(s,'economy',{basis:'filter_load',quantity:'3.000'}),'3.000');
  assert.equal(automaticQuantity(s,'economy',{basis:'filter_load',quantity:null}),null);
  assert.equal(quantityRequired({...emptyRow('media'),kind:'filter_media',basis:'filter_load',auto_quantity:true}),false);
+});
+
+// Public catalogue availability state; included in the existing CI state suite.
+
+const product = (state, extra = {}) => ({available: ['own_stock', 'supplier_stock'].includes(state), availability: {state, orderable: true, ...extra}});
+test('stock badges distinguish warehouse, supplier, backorder and unknown', () => {
+  assert.deepEqual(availabilityStatus(product('own_stock')), {tone: 'confirmed', label: 'У нас', detail: 'У нас'});
+  assert.equal(availabilityStatus(product('supplier_stock')).label, 'У поставщика');
+  assert.equal(availabilityStatus(product('preorder')).label, 'Под заказ');
+  assert.equal(availabilityStatus(product('unknown')).label, 'Уточнить наличие');
+  assert.equal(availabilityStatus({available: true}).tone, 'pending');
+});
+test('conflicts and unconfirmed facts cannot receive a green badge', () => {
+  for (const state of ['own_stock', 'supplier_stock', 'unavailable']) {
+    const badge = availabilityStatus(product(state, {issue: 'Конфликт', label: 'Публичный статус'}));
+    assert.equal(badge.tone, 'pending');
+    assert.equal(badge.label, 'Уточнить наличие');
+    assert.match(badge.detail, /Публичный статус · Конфликт/);
+  }
+  assert.equal(availabilityStatus({...product('own_stock'), available: false}).tone, 'pending');
+});
+test('explicit absence and non-orderable products are red without mutating selection facts', () => {
+  for (const p of [product('unavailable'), product('own_stock', {orderable: false}), product('preorder', {orderable: false})]) {
+    const original = structuredClone(p);
+    assert.equal(availabilityStatus(p).tone, 'unavailable');
+    assert.deepEqual(p, original);
+  }
+});
+
+
+test('filter valve quantity stays server-owned and individual exclusion locks manual choice', () => {
+ const s=sample();
+ const row={...emptyRow('valve'),kind:'filter_valve',basis:'filter_valve',quantity:'2.000',auto_quantity:true};
+ s.variants.economy.blocks[0].rows.push(row);
+ assert.equal(automaticQuantity(s,'economy',row),'2.000');
+ assert.equal(automaticQuantity(s,'economy',{...row,quantity:null}),null);
+ assert.equal(quantityRequired(row),false);
+ setExcluded(s,'economy',s.variants.economy.blocks[0].id,row.id,true);
+ assert.equal(row.excluded,true);
+ assert.equal(row.selection_locked,true);
+ setExcluded(s,'economy',s.variants.economy.blocks[0].id,row.id,false);
+ assert.equal(row.excluded,false);
+ assert.equal(row.selection_locked,true);
 });

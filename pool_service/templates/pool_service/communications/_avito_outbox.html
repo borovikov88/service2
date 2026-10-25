@@ -10,12 +10,24 @@
     · Результат неизвестен: {{ outbox.unknown_count|default_if_none:"неизвестно" }}
     · Ошибки: {{ outbox.failed_count|default_if_none:"неизвестно" }}
   </div>
-  <div class="small text-muted mt-1">Последний успешный запуск: {{ outbox.last_success_at|default:"не подтверждён" }}{% if outbox.last_success_at %} · Барнаул{% endif %}</div>
+  <div class="small text-muted mt-1">Последний успешный запуск любого механизма (исторические данные): {{ outbox.last_success_at|default:"не подтверждён" }}{% if outbox.last_success_at %} · Барнаул{% endif %}</div>
   <div class="small mt-1">Отправка после сохранения: {% if outbox.post_commit_enabled %}включена{% else %}включение не подтверждено{% endif %}. Периодический запуск: {% if outbox.last_periodic_success_at %}последний успешный {{ outbox.last_periodic_success_at }} · Барнаул{% else %}ещё не подтверждён{% endif %}.</div>
+  <div class="small mt-1">Отправка после сохранения — {{ outbox.immediate_label }}. Последний успешный запуск: {{ outbox.last_immediate_success_at|default:"отдельное подтверждение ещё не записано" }}{% if outbox.last_immediate_success_at %} · Барнаул{% endif %}.</div>
+  {% if outbox.last_immediate_error_label %}<div class="small text-danger">{{ outbox.last_immediate_error_label }}</div>{% endif %}
+  {% if outbox.last_periodic_error_label %}<div class="small text-danger">Резервная обработка: {{ outbox.last_periodic_error_label }}</div>{% endif %}
   {% if outbox.last_error_label %}<div class="small text-danger mt-1">{{ outbox.last_error_label }}</div>{% endif %}
   <details class="small mt-2">
     <summary>Работа обработчика и подтверждения доступа</summary>
-    <div class="mt-2">Последний старт: {{ outbox.last_started_at|default:"не подтверждён" }}{% if outbox.last_started_at %} · Барнаул{% endif %}</div>
+    <div class="mt-2">Отправка после сохранения: старт {{ outbox.last_immediate_started_at|default:"не подтверждён" }}, завершение {{ outbox.last_immediate_completed_at|default:"не подтверждено" }}.</div>
+    <div>Периодическая обработка: старт {{ outbox.last_periodic_started_at|default:"не подтверждён" }}, завершение {{ outbox.last_periodic_completed_at|default:"не подтверждено" }}.</div>
+    {% if outbox.periodic_runs %}
+    <div class="mt-2">Последние запуски с признаком периодической обработки · Барнаул:</div>
+    <ul class="mb-1">
+      {% for run in outbox.periodic_runs %}<li>{{ run.started_at }} → {{ run.completed_at|default:"завершение не подтверждено" }}: {{ run.label }}{% if run.empty_queue %}; очередь пуста до и после{% endif %}{% if run.accepted != None %}; принято Авито: {{ run.accepted }}{% endif %}</li>{% endfor %}
+    </ul>
+    {% endif %}
+    <div class="text-muted">Эти записи подтверждают выполнение обработчика. Наличие задания и его расписание проверяются отдельно в панели хостинга.</div>
+    <div class="mt-2">Последний старт любого механизма: {{ outbox.last_started_at|default:"не подтверждён" }}{% if outbox.last_started_at %} · Барнаул{% endif %}</div>
     {% if outbox.oldest_pending_at %}<div>Старейшая запись: {{ outbox.oldest_pending_at }} · Барнаул</div>{% endif %}
     {% if outbox.legacy_held_count %}<div>Старых сообщений удерживается до отдельной проверки: {{ outbox.legacy_held_count }}</div>{% endif %}
     <div class="mt-2">Webhook: {{ outbox.webhook_label }}</div>

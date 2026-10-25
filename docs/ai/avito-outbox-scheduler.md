@@ -46,3 +46,22 @@ Provider IDs prove provider acceptance only. Public deployment output uses
 fixed codes; actual hosting paths, full cron tables and message content remain
 private. Panel registration and actual periodic execution require separate
 evidence.
+
+## Separate execution evidence
+
+The UI and read-only receipt expose immediate and periodic execution separately.
+A general historical last_success_at is never attributed to either mechanism.
+Immediate sending is event-driven: a long idle period alone is not a stale-worker
+warning. The three-minute freshness threshold applies to minute periodic ticks.
+
+Each periodic invocation records a bounded last-four history: start, completion,
+safe error code, result counters, and scoped pending/unknown/failed counts before
+and after. Run tokens stay private. Late completion of an older invocation
+cannot erase the newer invocation's error or running state. Empty before/after
+queues plus zero accepted count demonstrate that a run needed no customer POST.
+
+The --periodic flag labels execution intent; these records prove the process
+ran, not how it was launched. Inspect the hosting scheduler separately, then
+observe at least two successive natural minute ticks. Do not manually call a
+sender to manufacture schedule proof, send a test reply, or release held rows.
+An unavailable hosting CLI leaves Beget panel registration unknown.

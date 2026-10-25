@@ -44,7 +44,10 @@ class CompatibilityTests(SimpleTestCase):
             self.assertTrue(row['compatibility']['can_auto'])
         result = repair(s, 'economy', 'equipment', 'filter', stock())
         self.assertEqual(block(result)['rows'][1]['catalog']['id'], '3')
-        self.assertIsNone(block(result)['rows'][1]['compatibility'])
+        # The physical undersizing is repaired; legacy title-only catalogue
+        # evidence still requires card/completeness verification.
+        self.assertFalse(block(result)['rows'][1]['compatibility']['can_auto'])
+        self.assertIn('характеристики фильтра', block(result)['rows'][1]['selection_note'])
         self.assertEqual(block(result)['rows'][0], block(s)['rows'][0])
         self.assertEqual(fitting(result, 'inlet'), fitting(s, 'inlet'))
         for key in ('standard', 'premium'):
