@@ -30,10 +30,12 @@ def normalize(value):
         "connection_id": 4, "account_id": "446312402", "outcome": value["outcome"], "error_code": code,
         "candidate_count": integer(value.get("candidate_count"), 2), "local_id": value.get("local_id"),
         "send_function_invocations": integer(value.get("send_function_invocations"), 1),
-        "provider_before_state": value["provider_before_state"], "duplicate_created": False, "client_read_confirmed": False}
+        "provider_before_state": value["provider_before_state"], "duplicate_created": False, "client_read_confirmed": False,
+        "initial_error_code": safe_code(value.get("initial_error_code"))}
     if result["local_id"] is not None:
         require(integer(result["local_id"]) > 0 and result["candidate_count"] == 1)
-    for key in ("tuple_matches", "provider_before_complete", "provider_message_id_present", "ledger_reused"):
+    for key in ("tuple_matches", "provider_before_complete", "provider_message_id_present", "ledger_reused",
+                "initial_has_saved_error", "initial_external_id_present"):
         require(type(value.get(key)) is bool)
         result[key] = value[key]
     for prefix in ("initial", "final"):
@@ -41,6 +43,7 @@ def normalize(value):
         require(state is None or state in STATUSES)
         require(attempts is None or type(attempts) is int and 0 <= attempts <= 65535)
         result[prefix + "_status"], result[prefix + "_attempts"] = state, attempts
+    require(result["initial_has_saved_error"] == bool(result["initial_error_code"]))
     if result["send_function_invocations"]:
         require(result["tuple_matches"] and result["provider_before_state"] == "absent" and result["provider_before_complete"])
         require(result["initial_status"] == "pending" and result["initial_attempts"] == 0)

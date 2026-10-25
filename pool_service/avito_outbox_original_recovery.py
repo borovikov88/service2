@@ -61,7 +61,8 @@ def _base():
     return {"schema_version": 1, "source": "services_original_reply_recovery_v1",
         "checked_at": timezone.now().isoformat(), "connection_id": CONNECTION_ID, "account_id": ACCOUNT_ID,
         "candidate_count": 0, "local_id": None, "tuple_matches": False, "outcome": "held",
-        "error_code": "", "initial_status": None, "initial_attempts": None, "final_status": None,
+        "error_code": "", "initial_status": None, "initial_attempts": None,
+        "initial_error_code": "", "initial_has_saved_error": False, "initial_external_id_present": False, "final_status": None,
         "final_attempts": None, "provider_before_state": "not_checked", "provider_before_complete": False,
         "provider_message_id_present": False, "send_function_invocations": 0, "ledger_reused": False,
         "duplicate_created": False, "client_read_confirmed": False}
@@ -93,7 +94,9 @@ def recover(*, expected_sha):
         return normalize(result | {"error_code": "original_target_not_unique"})
     original = candidates[0]
     result.update(local_id=original.pk, initial_status=original.delivery_status,
-                  initial_attempts=original.delivery_attempts, tuple_matches=_fixed_tuple(original))
+                  initial_attempts=original.delivery_attempts, initial_error_code=safe_error(original.delivery_error),
+                  initial_has_saved_error=bool(original.delivery_error),
+                  initial_external_id_present=bool(original.external_id), tuple_matches=_fixed_tuple(original))
     if not result["tuple_matches"]:
         return normalize(_current(result | {"error_code": "original_target_mismatch"}, original))
     original_chat = original.conversation.external_id

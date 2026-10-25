@@ -61,6 +61,18 @@ class OriginalRecoveryTests(TransactionTestCase):
         self.message.refresh_from_db()
         self.assertEqual((self.message.delivery_status, self.message.delivery_attempts), ("delivered", 1))
 
+    def test_initial_safe_error_and_id_presence_survive_successful_send(self):
+        ConversationMessage.objects.filter(pk=self.message.pk).update(delivery_error="provider_http_403")
+        result, _, sends = self.recover()
+        self.assertEqual((result["outcome"], sends), ("accepted", 1))
+        self.assertTrue(result["initial_has_saved_error"])
+        self.assertEqual(result["initial_error_code"], "provider_http_403")
+        self.assertFalse(result["initial_external_id_present"])
+        self.assertTrue(result["provider_message_id_present"])
+        self.message.refresh_from_db()
+        self.assertEqual(self.message.delivery_error, "")
+        self.assertTrue(self.message.external_id)
+
     def test_already_in_provider_history_updates_original_without_any_send(self):
         result, reads, sends = self.recover(proof=ACCEPTED, provider_proof=ABSENT)
         self.assertEqual(result["outcome"], "accepted")
