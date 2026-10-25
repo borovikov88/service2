@@ -15,6 +15,10 @@ The 17:12:29read-only audit verified public XML against revision 18, 11 listing 
 
 Exact input bytes remain unverified: the provider's report-copy request returned input_copy_http_401. This is an access failure for that copy, not evidence of a wrong configured source URL. Full card contents remain unverified except for the single manual photo attestation. No republish, immutable-source switch or forced mass upload is required to record these facts.
 
+## Legacy one-time operation preflight
+
+The same audit may report media_readiness=blocked with media_published_revision_mismatch, approved_photo=audit_approved_photo_unavailable or operation_ledger=scope_invalid/binding_check. These describe the original one-time operation's expected base revision and binding. They do not overturn the current revision18 HTTP/snapshot evidence or manual photo10 event8, and do not reopen a missing-original-image blocker. Their safeguards remain in place; no operation is retried to make a diagnostic green.
+
 ## Remaining limits
 
 - Exact input-file version/hash correlation is unconfirmed.
