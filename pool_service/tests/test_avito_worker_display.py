@@ -202,3 +202,26 @@ class ScopedWorkerDisplayTests(TestCase):
             html = render_to_string("pool_service/avito/_diagnostics.html", {"accounts": [account]})
             self.assertIn(label, html)
             self.assertNotIn("Ошибка проверки", html)
+
+    def test_stale_worker_keeps_enabled_subscription_visible_and_safe_controls_available(self):
+        from pool_service import avito_status_monitor
+        from pool_service.communication_models import AvitoStatusMonitor
+        with patch.object(avito_status_monitor, "scheduler_state", return_value={
+                "ready": True, "code": "ready", "detail": "Synthetic completed worker"}):
+            avito_status_monitor.configure(self.connection, self.owner, "enable")
+        self.heartbeat.started_at = timezone.now() - timedelta(hours=2)
+        self.heartbeat.finished_at = timezone.now() - timedelta(hours=1)
+        self.heartbeat.save(update_fields=["started_at", "finished_at"])
+        state = avito_status_monitor.display_state(self.connection, self.owner)
+        html = render_to_string("pool_service/avito/_status_monitor.html", {
+            "status_monitor_state": state, "connection": self.connection})
+        self.assertFalse(state["scheduler"]["ready"])
+        self.assertFalse(state["scheduler"]["display_failed"])
+        self.assertTrue(AvitoStatusMonitor.objects.get(connection=self.connection).enabled)
+        self.assertIn("Подписка сохранена", html)
+        self.assertIn("Готовность проверок показана отдельно", html)
+        self.assertIn("Нет свежего подтверждённого результата этой проверки", html)
+        self.assertIn('name="action" value="retry"', html)
+        self.assertIn('name="action" value="disable"', html)
+        self.assertNotIn('name="action" value="enable"', html)
+        self.assertNotIn("Последний запуск обработчика завершился ошибкой", html)
