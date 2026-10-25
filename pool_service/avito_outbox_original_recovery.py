@@ -11,7 +11,8 @@ from django.utils import timezone
 from . import communication_avito
 from .avito_outbox_audit import ACCOUNT_ID, CONNECTION_ID, INCIDENT_START, INCIDENT_END, safe_error
 from .avito_readonly_audit import binding
-from .communication_models import ChannelConnection, CommunicationAccess, ConversationMessage
+from .communication_models import ChannelConnection, ConversationMessage
+from .communication_services import conversation_capability
 from .models import OrganizationAccess
 from scripts.avito_outbox_recovery_receipt import normalize
 
@@ -35,11 +36,12 @@ def _permission(message):
     organization_id = message.conversation.organization_id
     return bool(actor and actor.is_active
         and OrganizationAccess.objects.filter(user_id=actor.pk, organization_id=organization_id).exists()
-        and CommunicationAccess.objects.filter(user_id=actor.pk, organization_id=organization_id,
-                                               can_reply_conversations=True).exists())
+        and conversation_capability(actor, "can_reply_conversations", message.conversation.organization))
 
 
 def _fixed_tuple(message):
+    if message is None:
+        return False
     conversation = message.conversation
     connection = conversation.connection
     return bool(message.direction == "out" and connection.pk == CONNECTION_ID and connection.external_id == ACCOUNT_ID

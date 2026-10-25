@@ -4,6 +4,7 @@ import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from django.contrib.auth.models import User
 from django.db import connection
 from django.test import SimpleTestCase, TransactionTestCase
 from django.utils import timezone
@@ -22,7 +23,8 @@ ACCEPTED = {**ABSENT, "state": "accepted", "provider_id": "provider-test-message
 class OriginalRecoveryTests(TransactionTestCase):
     def setUp(self):
         incident_tests.OutboxIncidentTests.setUp(self)
-        service.configure_outbox(4, "446312402")
+        with patch.object(service, "_provider_context", return_value="test-token"):
+            service.configure_outbox(4, "446312402")
         authorized = patch.object(recovery, "_authorized_release", return_value=None)
         authorized.start()
         self.addCleanup(authorized.stop)
@@ -81,6 +83,37 @@ class OriginalRecoveryTests(TransactionTestCase):
         result, _, sends = self.recover()
         self.assertEqual(result["outcome"], "unknown")
         self.assertEqual(sends, 0)
+
+    def test_same_org_superuser_uses_canonical_reply_capability_without_explicit_row(self):
+        actor = User.objects.create_user(username="superuser-recovery-actor", is_superuser=True)
+        recovery.OrganizationAccess.objects.create(user=actor, organization=self.org, role="manager")
+        CommunicationAccess.objects.filter(user=actor, organization=self.org).delete()
+        ConversationMessage.objects.filter(pk=self.message.pk).update(sent_by=actor)
+        result, reads, sends = self.recover(proof=ACCEPTED)
+        self.assertEqual(result["outcome"], "accepted")
+        self.assertEqual((reads, sends), (1, 0))
+
+    def test_accountant_stale_explicit_reply_flag_cannot_authorize_recovery(self):
+        actor = User.objects.create_user(username="accountant-recovery-actor")
+        recovery.OrganizationAccess.objects.create(user=actor, organization=self.org, role="accountant")
+        CommunicationAccess.objects.filter(user=actor, organization=self.org).update(can_reply_conversations=True)
+        ConversationMessage.objects.filter(pk=self.message.pk).update(sent_by=actor)
+        result, reads, sends = self.recover()
+        self.assertEqual(result["error_code"], "original_target_mismatch")
+        self.assertEqual((reads, sends), (0, 0))
+
+    def test_inactive_or_foreign_superuser_does_not_bypass_explicit_membership(self):
+        actor = User.objects.create_user(username="foreign-recovery-actor", is_superuser=True)
+        ConversationMessage.objects.filter(pk=self.message.pk).update(sent_by=actor)
+        result, reads, sends = self.recover()
+        self.assertEqual(result["error_code"], "original_target_mismatch")
+        self.assertEqual((reads, sends), (0, 0))
+        recovery.OrganizationAccess.objects.create(user=actor, organization=self.org, role="manager")
+        actor.is_active = False
+        actor.save(update_fields=["is_active"])
+        result, reads, sends = self.recover()
+        self.assertEqual(result["error_code"], "original_target_mismatch")
+        self.assertEqual((reads, sends), (0, 0))
 
     def test_exact_original_body_uuid_and_current_actor_are_required(self):
         ConversationMessage.objects.filter(pk=self.message.pk).update(body="Changed generic reply")

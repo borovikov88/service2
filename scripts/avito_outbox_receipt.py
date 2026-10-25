@@ -56,7 +56,7 @@ def safe_code(value):
 def worker(value):
     require(isinstance(value, dict) and value.get("worker_state") in WORKER_STATES)
     result = {"worker_state": value["worker_state"]}
-    for key in ("last_started_at", "last_success_at", "oldest_pending_at"):
+    for key in ("last_started_at", "last_success_at", "last_periodic_started_at", "last_periodic_success_at", "oldest_pending_at"):
         result[key] = timestamp(value.get(key), nullable=True)
     result["last_error_code"] = safe_code(value.get("last_error_code", ""))
     for key in ("pending_count", "unknown_count", "failed_count", "legacy_held_count"):

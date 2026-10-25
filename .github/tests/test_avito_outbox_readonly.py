@@ -49,6 +49,18 @@ class ProjectionTests(unittest.TestCase):
         value["scheduler"]["raw_table"] = "PRIVATE"
         self.assertNotIn("PRIVATE", json.dumps(receipt.normalize(value)))
 
+    def test_manual_worker_success_does_not_infer_a_periodic_run(self):
+        value = sample()
+        value["worker"].update(last_success_at="2026-10-25T01:40:00+00:00",
+            last_periodic_started_at=None, last_periodic_success_at=None)
+        result = receipt.normalize(value)
+        self.assertIsNotNone(result["worker"]["last_success_at"])
+        self.assertIsNone(result["worker"]["last_periodic_success_at"])
+        value["worker"].update(last_periodic_started_at="2026-10-25T01:39:00+00:00",
+            last_periodic_success_at="2026-10-25T01:39:01+00:00")
+        result = receipt.normalize(value)
+        self.assertEqual(result["worker"]["last_periodic_success_at"], "2026-10-25T01:39:01+00:00")
+
     def test_scope_unknown_absence_and_local_claim_consistency_fail_closed(self):
         for mutate in (
             lambda v: v.update(connection_id=1),
