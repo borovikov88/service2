@@ -156,6 +156,16 @@ class ImprovementProjectTests(ProposalFixture, TestCase):
                          ['inactive_or_unknown', 'owner_withdrawn', 'analytics_unknown'])
         self.assertFalse(self.events().exists())
 
+    def test_equal_source_times_with_conflicting_status_are_not_active_evidence(self):
+        identifier = next(iter(projects.TARGETS))
+        self.feed.latest_observations = [{'avito_id': identifier, 'id': identifier,
+            'status': 'removed', 'source': 'avito_item_detail',
+            'checked_at': self.attempt.report_started_at.isoformat()}]
+        self.feed.save(update_fields=['latest_observations'])
+        result = self.prepare()
+        self.assertEqual(result['results'][0]['code'], 'inactive_or_unknown')
+        self.assertEqual(self.events().count(), 2)
+
     def test_rereading_an_old_report_does_not_make_old_active_status_fresh(self):
         AvitoServicesFeedVersion.objects.filter(pk=7).update(created_at=self.now-timedelta(hours=12))
         AvitoServicesPublicationAttempt.objects.filter(pk=self.attempt.pk).update(

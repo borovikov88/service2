@@ -173,8 +173,11 @@ def _status(connection, feed, context, row, now):
                 {'source': 'completed_autoload_report_status', 'observed_at': observed.isoformat(), 'checked_at': checked.isoformat(),
                  'upload_id': attempt.upload_id,
                  'exact_input_version_confirmed': attempt.source_confirmed is True}))
-    return max(candidates, key=lambda candidate: candidate[0])[2] if candidates and max(
-        candidates, key=lambda candidate: candidate[0])[1] else None
+    if not candidates:
+        return None
+    latest = max(item[0] for item in candidates)
+    matching = [item for item in candidates if item[0] == latest]
+    return matching[0][2] if all(item[1] for item in matching) else None
 
 
 def _text(value):
