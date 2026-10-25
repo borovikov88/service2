@@ -10,7 +10,12 @@
 необязательное expiredTo. Метод относится к Авито Promo. Само использование
 client_credentials не подтверждает агентские права подключения.
 
-Документация: https://developers.avito.ru/api-catalog/avito-promo/documentation
+Официальный каталог: https://developers.avito.ru/api-catalog
+
+Конкретный URL операции и полный контракт пока не подтверждены. Попытки
+открыть /api-catalog/avito-promo/documentation,
+/api-catalog/accounts-hierarchy/documentation и публичные /web/1/openapi
+bootstrap URL не дали доступного официального документа.
 
 Проверка источника 25.10.2026: официальная документация и публичные OpenAPI
 bootstrap URL оказались недоступны через доступный web-инструмент. Сторонние

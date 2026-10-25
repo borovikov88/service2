@@ -19,7 +19,7 @@ from .communication_services import organization_access, conversation_capability
 KEY = "avito_tariff_subscription"
 SOURCE = "avito_promo_agency_clients_subscription"
 METHOD = "POST /api/1/agency/clients"
-DOCUMENTATION_URL = "https://developers.avito.ru/api-catalog/avito-promo/documentation"
+DOCUMENTATION_URL = "https://developers.avito.ru/api-catalog"
 CONTRACT_STATUS = "method_contract_unavailable"
 SOURCE_CHECKED_ON = "2026-10-25"
 STALE_AFTER = timedelta(hours=48)
@@ -52,7 +52,7 @@ class SubscriptionObservation:
     is_active: bool | None
     level: str | None
     expiry_state: str
-    fetched_at: object
+    fetched_at: datetime
 
 
 def _time(value):
