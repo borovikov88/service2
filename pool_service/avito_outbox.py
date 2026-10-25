@@ -634,13 +634,13 @@ def outbox_diagnostics(connection, now=None):
         "last_success_at": success.isoformat() if success else None,
         "immediate_state": _mechanism_state(metadata, "immediate", enabled, now),
         "periodic_state": _mechanism_state(metadata, "periodic", enabled, now),
-        **{key: value.isoformat() if value else None for key in (
+        **{key: value.isoformat() if bound and value else None for key in (
             "last_immediate_started_at", "last_immediate_completed_at", "last_immediate_success_at",
             "last_periodic_started_at", "last_periodic_completed_at", "last_periodic_success_at",
         ) for value in [_date(metadata.get(key))]},
-        "last_immediate_error_code": safe_error(metadata.get("last_immediate_error_code")),
-        "last_periodic_error_code": safe_error(metadata.get("last_periodic_error_code")),
-        "periodic_runs": _periodic_history(metadata, now),
+        "last_immediate_error_code": safe_error(metadata.get("last_immediate_error_code")) if bound else "",
+        "last_periodic_error_code": safe_error(metadata.get("last_periodic_error_code")) if bound else "",
+        "periodic_runs": _periodic_history(metadata, now) if bound else [],
         "last_error_code": safe_error(metadata.get("last_error_code")),
         "pending_count": pending.count(), "oldest_pending_at": oldest.isoformat() if oldest else None,
         "oldest_pending_age_seconds": max(0, int((now - oldest).total_seconds())) if oldest else None,

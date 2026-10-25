@@ -448,3 +448,31 @@ class ScopedOutboxTests(TransactionTestCase):
                 state = outbox.outbox_diagnostics(self.connection, now=base + timedelta(seconds=181))
                 self.assertEqual(state[mode + "_state"], "unknown")
                 self.assertEqual(state["last_" + mode + "_error_code"], "")
+
+    def test_changed_account_or_organization_cannot_inherit_mechanism_proof(self):
+        outbox.run_outbox(4, periodic=True)
+        outbox.run_outbox(4, immediate=True)
+        self.connection.refresh_from_db()
+        bound_settings = self.connection.settings
+        for field, value in (("account_id", "foreign-account"), ("organization_id", self.org.pk + 1000)):
+            with self.subTest(field=field):
+                self.connection.settings = {
+                    **bound_settings, outbox.KEY: {**bound_settings[outbox.KEY], field: value},
+                }
+                state = outbox.outbox_diagnostics(self.connection)
+                self.assertFalse(state["binding_valid"])
+                self.assertEqual(state["periodic_state"], "disabled")
+                self.assertEqual(state["immediate_state"], "disabled")
+                self.assertEqual(state["periodic_runs"], [])
+                for mode in ("immediate", "periodic"):
+                    for suffix in ("started_at", "completed_at", "success_at"):
+                        self.assertIsNone(state["last_" + mode + "_" + suffix])
+                    self.assertEqual(state["last_" + mode + "_error_code"], "")
+        self.connection.settings = {
+            **bound_settings, outbox.KEY: {**bound_settings[outbox.KEY], "enabled": False},
+        }
+        state = outbox.outbox_diagnostics(self.connection)
+        self.assertTrue(state["binding_valid"])
+        self.assertFalse(state["enabled"])
+        self.assertEqual(len(state["periodic_runs"]), 1)
+        self.assertIsNotNone(state["last_immediate_success_at"])
