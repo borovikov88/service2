@@ -8,6 +8,9 @@ on:
       - "pool_service/avito_*.py"
       - "pool_service/crm_source_*.py"
       - "pool_service/crm_commercial_*.py"
+      - "pool_service/client_merge.py"
+      - "pool_service/tests/test_client_merge.py"
+      - "pool_service/tests/test_conversation_clients.py"
       - "pool_service/services/crm_commercial_access.py"
       - "pool_service/management/commands/bootstrap_crm_commercial.py"
       - "pool_service/tests/test_crm_commercial_*.py"
@@ -113,6 +116,8 @@ jobs:
             pool_service.tests.test_avito_crm_coverage \
             pool_service.tests.test_avito_crm_attribution \
             pool_service.tests.test_crm_source_orders \
+            pool_service.tests.test_client_merge \
+            pool_service.tests.test_conversation_clients \
             pool_service.tests.test_crm_commercial_foundation \
             pool_service.tests.test_crm_commercial_migrations \
             pool_service.tests.test_crm_org_scope \

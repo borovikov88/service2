@@ -1,5 +1,9 @@
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.test import TestCase
+
+from pool_service.crm_commercial_models import CrmDeal, CrmLead, CrmPipeline, CrmStage
+from pool_service.communication_models import ChannelConnection, CommunicationChannel, Conversation
 
 from pool_service.client_crm_models import (
     ClientCRMProfile,
@@ -251,3 +255,86 @@ class ClientMergeTests(TestCase):
         self.assertIsNone(candidate.matched_client)
         self.assertEqual(candidate.status, ClientImportCandidate.STATUS_REVIEW)
         self.assertIn("повторное сопоставление", candidate.reason)
+
+
+    def _commercial_fixture(self):
+        pipeline = CrmPipeline.objects.create(organization=self.organization, code="merge", name="Merge")
+        stage = CrmStage.objects.create(pipeline=pipeline, code="new", name="New")
+        return {"pipeline": pipeline, "stage": stage}
+
+    def _legacy_graph_fixture(self):
+        pool = Pool.objects.create(client=self.legacy, organization=self.organization, address="Synthetic merge graph")
+        ClientCRMProfile.objects.create(client=self.legacy, notes="Synthetic profile sentinel")
+        contact = ClientContact.objects.create(client=self.legacy, kind=ClientContact.KIND_EMAIL,
+            value="synthetic@example.invalid", match_value="synthetic@example.invalid", sources=["manual"])
+        user = get_user_model().objects.create_user("commercial-merge-staff")
+        ClientAccess.objects.create(user=user, client=self.legacy, role="editor")
+        person = Client.objects.create(organization=self.organization, name="Synthetic contact")
+        ClientCompanyLink.objects.create(company=self.legacy, person=person, roles=["accountant"])
+        ClientImportCandidate.objects.create(organization=self.organization,
+            source_ref="eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", source_code="MERGE-GUARD",
+            source_kind=ClientImportCandidate.KIND_LEGAL, name="Synthetic candidate",
+            status=ClientImportCandidate.STATUS_READY, matched_client=self.legacy)
+        channel = CommunicationChannel.objects.create(organization=self.organization, kind="avito", name="Synthetic")
+        connection = ChannelConnection.objects.create(channel=channel, name="Synthetic", external_id="synthetic-merge")
+        conversation = Conversation.objects.create(organization=self.organization, connection=connection,
+            external_id="synthetic-merge", participant_name="Synthetic", client=self.legacy)
+        return pool, contact, conversation
+
+    def _merge_graph_snapshot(self):
+        models = (Client, Pool, ClientCRMProfile, ClientContact, ClientCompanyLink,
+                  ClientAccess, ClientImportCandidate, Conversation, CrmLead, CrmDeal)
+        return {model.__name__: list(model.objects.order_by("pk").values()) for model in models}
+
+    def test_commercial_empty_source_and_target_keep_legacy_merge_working(self):
+        pool, contact, conversation = self._legacy_graph_fixture()
+        self.assertFalse(CrmLead.objects.exists())
+        self.assertFalse(CrmDeal.objects.exists())
+        result = self.merge()
+        for relation in (pool, contact, conversation):
+            relation.refresh_from_db()
+            self.assertEqual(relation.client_id, self.target.pk)
+        self.assertEqual(result["moved"]["Pool"], 1)
+        self.assertEqual(ClientCRMProfile.objects.get(client=self.legacy).merged_into_id, self.target.pk)
+
+    def test_source_commercial_links_block_merge_before_legacy_writes(self):
+        self._legacy_graph_fixture()
+        deal_fields = self._commercial_fixture()
+        foreign = Organization.objects.create(name="Foreign inconsistent source link")
+        self.assertFalse(self.organization.crm_v2_read)
+        self.assertFalse(self.organization.crm_v2_write)
+        for model in (CrmLead, CrmDeal):
+            for state in ("active", "archived", "foreign_inconsistent"):
+                with self.subTest(model=model.__name__, state=state):
+                    values = deal_fields if model is CrmDeal else {}
+                    record = model.objects.create(organization=self.organization, client=self.legacy,
+                        title="Synthetic protected link", is_archived=state == "archived", **values)
+                    if state == "foreign_inconsistent":
+                        # Deliberately inject an invalid historical link through
+                        # trusted SQL; the guard must not hide it behind org filters.
+                        with connection.cursor() as cursor:
+                            table = connection.ops.quote_name(model._meta.db_table)
+                            cursor.execute(f"UPDATE {table} SET organization_id = %s WHERE id = %s", [foreign.pk, record.pk])
+                    before = self._merge_graph_snapshot()
+                    with self.assertRaisesMessage(ValueError, "коммерческими лидами или сделками CRM"):
+                        self.merge()
+                    self.assertEqual(before, self._merge_graph_snapshot())
+                    self.assertEqual(Client.objects.filter(pk__in=[self.legacy.pk, self.target.pk]).count(), 2)
+                    self.assertIsNone(ClientCRMProfile.objects.get(client=self.legacy).merged_into_id)
+                    record.delete()
+
+    def test_target_only_commercial_links_are_retained_and_do_not_block_merge(self):
+        pool, contact, conversation = self._legacy_graph_fixture()
+        deal_fields = self._commercial_fixture()
+        lead = CrmLead.objects.create(organization=self.organization, client=self.target, title="Existing target lead")
+        deal = CrmDeal.objects.create(organization=self.organization, client=self.target, title="Existing target deal", **deal_fields)
+        before_leads = list(CrmLead.objects.values())
+        before_deals = list(CrmDeal.objects.values())
+        self.merge()
+        self.assertEqual(before_leads, list(CrmLead.objects.values()))
+        self.assertEqual(before_deals, list(CrmDeal.objects.values()))
+        for relation in (pool, contact, conversation):
+            relation.refresh_from_db()
+            self.assertEqual(relation.client_id, self.target.pk)
+        self.assertEqual(lead.client_id, self.target.pk)
+        self.assertEqual(deal.client_id, self.target.pk)
