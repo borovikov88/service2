@@ -97,19 +97,21 @@ class FilterMediaTests(SimpleTestCase):
         s=selected();row(s)['catalog']['selection']='manual'
         self.assertEqual(row(catalog.auto_select(s,data)[0])['catalog']['id'],'2')
 
-    def test_unknown_mass_and_pack_are_not_guessed_and_glass_no_ratio(self):
+    def test_unknown_glass_mass_uses_quartz_and_owner_package_without_ratio(self):
         data=catalog.parse_catalog(feed(param_offer(1,'Фильтр Synthetic 12 м3/ч',description='Загрузка песка: 75 кг.'),param_offer(2,'Песок кварцевый 25 кг',description='Для фильтров бассейна.'),param_offer(3,'Песок стеклянный 0.5–1.5 мм',description='Для фильтров бассейна. На 20% меньше песка.')))
         s=selected(data);self.assertEqual(row(s)['quantity'],'3.000')
-        self.assertEqual(row(s,tier='premium')['catalog']['id'],'3');self.assertIsNone(row(s,tier='premium')['quantity'])
-        self.assertIn('Коэффициент',row(s,tier='premium')['selection_note'])
-        self.assertEqual(data['products']['3']['filter_media']['price_unit'],'unknown')
+        self.assertEqual(row(s,tier='premium')['catalog']['id'],'2')
+        self.assertEqual(data['products']['3']['filter_media']['bag_kg'],'20')
+        self.assertIn('владельца',data['products']['3']['filter_media']['packing_source'])
         data['products']['1']['filter_loading']['glass_kg']='60'
-        s=selected(data);self.assertIn('фасовка',row(s,tier='premium')['selection_note'])
-        self.assertIsNone(row(s,tier='premium')['amount'])
+        s=selected(data);self.assertEqual(row(s,tier='premium')['quantity'],'3.000')
+        self.assertEqual(row(s,tier='premium')['catalog']['id'],'3')
 
     def test_structured_loading_and_price_per_kg_no_bag_conversion(self):
         data=catalog.parse_catalog(feed(param_offer(1,'Фильтр Synthetic 12 м3/ч',params='<param name="Загрузка песка, кг">76</param>'),param_offer(2,'Песок кварцевый','10',params='<param name="Единица цены">кг</param>')))
-        r=row(selected(data));self.assertEqual((r['unit'],r['quantity'],r['amount']),('кг','76.000','760.00'))
+        s=selected(data);self.assertIsNone(row(s)['catalog'])
+        catalog.apply_product(row(s),data['products']['2'],data,'manual')
+        r=row(engine.evaluate(s));self.assertEqual((r['unit'],r['quantity'],r['amount']),('кг','76.000','760.00'))
         data=catalog.parse_catalog(feed(param_offer(1,'Фильтр Synthetic 12 м3/ч',description='Загрузка песка: 75 кг.',params='<param name="Загрузка песка, кг">76</param>'),param_offer(2,'Песок кварцевый 25 кг')))
         self.assertIsNone(row(selected(data))['catalog'])
 
@@ -189,7 +191,7 @@ class FilterMediaReviewRegressions(SimpleTestCase):
     def test_known_filter_ban_blocks_glass_but_not_quartz(self):
         data=fixture()
         data=catalog.parse_catalog(feed(param_offer(1,'Фильтр Synthetic 12 м3/ч',description='Загрузка песка: 75 кг. Не использовать стеклянный песок.'),param_offer(2,'Песок кварцевый 25 кг'),param_offer(3,'Песок стеклянный 20 кг')))
-        s=selected(data);self.assertEqual(row(s)['catalog']['id'],'2');self.assertIsNone(row(s,tier='premium')['catalog'])
+        s=selected(data);self.assertEqual(row(s)['catalog']['id'],'2');self.assertEqual(row(s,tier='premium')['catalog']['id'],'2')
 
     def test_sale_pack_and_frozen_price_are_one_lifecycle(self):
         for selection in ('manual','auto'):

@@ -94,6 +94,8 @@ def repair(raw, variant_key, block_id, row_id, catalog=None):
         row['selection_locked'] = True  # explicit single-row replacement, keep it on broad recalculation
         from .estimate_filter_valve import initialize
         initialize(result, variant_key)
+        from .estimate_filter_gravel import initialize as initialize_gravel
+        initialize_gravel(result, variant_key)
     else:
         required = max(1 if role == 'skimmer' else 2, int(embedded.ceil_quantity(flow / Decimal(result['inputs']['skimmer_flow' if role == 'skimmer' else 'inlet_flow']))))
         if role == 'skimmer':

@@ -197,6 +197,8 @@ def estimate_api(request):
             if product['kind'] == 'filter':
                 from .services.estimate_filter_valve import initialize
                 initialize(snapshot, variant)
+                from .services.estimate_filter_gravel import initialize as initialize_gravel
+                initialize_gravel(snapshot, variant)
             return JsonResponse({"snapshot": evaluate(snapshot), "catalog_status": catalog_status(catalog)})
         if action == "recalculate":
             previous_rows = {(k, r["id"]) for k, v in evaluate(data.get("snapshot"))["variants"].items() for b in v["blocks"] for r in b["rows"] if r["price"] is not None or r["existing"] or r.get("selection_locked") or r.get("rate_source") == "Ручная цена текущей сметы"}
