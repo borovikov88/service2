@@ -194,6 +194,9 @@ def estimate_api(request):
             if row is None:
                 raise EstimateInputError("Сначала добавьте строку в смету.")
             apply_product(row, product, catalog)
+            if product['kind'] == 'filter':
+                from .services.estimate_filter_valve import initialize
+                initialize(snapshot, variant)
             return JsonResponse({"snapshot": evaluate(snapshot), "catalog_status": catalog_status(catalog)})
         if action == "recalculate":
             previous_rows = {(k, r["id"]) for k, v in evaluate(data.get("snapshot"))["variants"].items() for b in v["blocks"] for r in b["rows"] if r["price"] is not None or r["existing"] or r.get("selection_locked") or r.get("rate_source") == "Ручная цена текущей сметы"}
