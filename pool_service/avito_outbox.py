@@ -355,6 +355,7 @@ def _start(connection_id, periodic=False, immediate=False):
         metadata["worker_modes"][token] = mode
         if mode in {"periodic", "immediate"}:
             metadata["last_" + mode + "_run_token"] = token
+            metadata["last_" + mode + "_error_code"] = ""
         if periodic:
             metadata["last_periodic_started_at"] = now.isoformat()
             history = metadata.get("periodic_runs") if isinstance(metadata.get("periodic_runs"), list) else []

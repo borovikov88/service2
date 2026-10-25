@@ -164,7 +164,8 @@ def for_connection(connection, user=None):
     history = history if isinstance(history, list) else []
     periodic_runs = []
     for row in history[-4:]:
-        if not isinstance(row, dict) or row.get("state") not in {"success", "error", "running", "unknown"}:
+        if (not isinstance(row, dict) or not isinstance(row.get("state"), str)
+                or row["state"] not in {"success", "error", "running", "unknown"}):
             continue
         result = row.get("result")
         before, after = row.get("queue_before"), row.get("queue_after")

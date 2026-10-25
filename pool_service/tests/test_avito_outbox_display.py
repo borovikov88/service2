@@ -108,7 +108,7 @@ class AvitoOutboxDisplayTests(TestCase):
         diagnostics.return_value = {
             **self.queue, "worker_state": {"invalid": "state"}, "last_error_code": "<script>SECRET</script>",
             "pending_count": None, "oldest_pending_at": "2026-99-99", "oldest_pending_age_seconds": None,
-            "unknown_count": False,
+            "unknown_count": False, "periodic_runs": [{"state": {"invalid": "state"}}],
         }
         state = for_connection(self.connection)
         content = render_to_string("pool_service/communications/_avito_outbox.html", {"outbox": state})

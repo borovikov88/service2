@@ -433,3 +433,18 @@ class ScopedOutboxTests(TransactionTestCase):
         state = outbox.outbox_diagnostics(self.connection, now=base + timedelta(seconds=181))
         self.assertEqual(state["periodic_state"], "unknown")
         self.assertEqual(state["periodic_runs"][-1]["state"], "unknown")
+
+    def test_prior_error_is_not_the_result_of_a_new_interrupted_run(self):
+        for mode in ("periodic", "immediate"):
+            with self.subTest(mode=mode):
+                options = {mode: True}
+                first = outbox._start(4, **options)
+                result = dict(accepted=0, pending=0, failed=0, unknown=0, held=0)
+                outbox._finish(4, first, "provider_http_403", result=result, **options)
+                base = timezone.now() + timedelta(seconds=1)
+                with patch.object(outbox.timezone, "now", return_value=base):
+                    outbox._start(4, **options)
+                self.connection.refresh_from_db()
+                state = outbox.outbox_diagnostics(self.connection, now=base + timedelta(seconds=181))
+                self.assertEqual(state[mode + "_state"], "unknown")
+                self.assertEqual(state["last_" + mode + "_error_code"], "")
