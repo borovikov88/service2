@@ -1,4 +1,5 @@
 import json
+import io
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
@@ -474,3 +475,391 @@ class AdvanceAccessPrivacyTests(SimpleTestCase):
                       {"available": True, "source": "cpa_v3", "amount_logged": True}):
             with self.assertRaises(ValueError):
                 receipt.advance_access(value)
+
+
+def release_publication():
+    return {"configured": True, "binding_present": False, "snapshot_valid": True,
+        "current_publication": False, "draft_matches_published": True,
+        "snapshot_source": "current_published_without_history",
+        "identity_sets_match": True, "photo_limit_ok": True, "http_checked": False,
+        "revision": 15, "draft_revision": 17, "published_revision": 15, "history_version_id": None, "created_at": None,
+        "checked_at": "2026-10-24T12:00:00+00:00", "draft_count": 2,
+        "published_count": 2, "snapshot_count": 2, "max_photos": 1,
+        "http_matches": None, "http_code": "publication_missing",
+        "facts": {"file_published": False, "upload_found": False,
+                  "source_confirmed": False, "rows_processed": False, "live_content_verified": False}}
+
+
+def release_readiness():
+    return {"state": "ready", "stage": "complete", "reason": "media_ready", "exception_class": None,
+            "checks": {key: True for key in receipt.MEDIA_READINESS_CHECKS},
+            "transport": {key: None for key in receipt.MEDIA_TRANSPORT_FIELDS}}
+
+
+def release_ledger():
+    return {"state": "failed", "has_operation_id": False, "pending_http": False,
+            "has_exact_receipt": False, "phase": "unknown", "exception_class": None}
+
+
+def release_chain():
+    return {"source": "avito_webhook_chain_v1", "state": "awaiting_first",
+        "generation_bound": False, "authenticated_event": False, "conversation_bound": False,
+        "message_persisted": False, "event_result": None, "received_at": None,
+        "owner_notification_state": "awaiting_first", "owner_notification_recorded": False,
+        "owner_notification_error": None, "push_delivery_confirmed": False}
+
+
+def release_raw_fields():
+    return {"source": "avito_item_detail_raw_fields", "endpoint_kind": "core_v1_account_item",
+        "checked_at": "2026-10-24T12:00:00+00:00", "owned_status_verified": True,
+        "sample_count": 1, "live_content_verified": False,
+        "fields": {key: {spelling: {"present": False, "type": "missing", "count": None}
+                         for spelling in ("lowercase", "capitalized")}
+                   for key in ("title", "description", "images", "photos")}}
+
+
+def release_photo():
+    return {"source": "existing_services_draft_image", "scope_valid": True,
+        "source_in_published": True, "photo_count": 1, "readable": True, "format": "JPEG",
+        "width": 20, "height": 10, "bytes": 100, "checked_at": "2026-10-24T12:00:00+00:00"}
+
+
+class ScopedServicesReleaseAuditTests(TestCase):
+    def setUp(self):
+        from pool_service.avito_feed_models import AvitoServicesFeed
+        self.org = Organization.objects.create(name="Synthetic scoped services")
+        self.owner = User.objects.create_user("scoped-audit-owner")
+        OrganizationAccess.objects.create(organization=self.org, user=self.owner, role="owner")
+        CommunicationAccess.objects.update_or_create(
+            organization=self.org, user=self.owner, defaults={"can_manage_channels": True})
+        channel = CommunicationChannel.objects.create(organization=self.org, kind="avito", name="Services")
+        self.target = ChannelConnection.objects.create(
+            pk=4, channel=channel, external_id="446312402", name="Services",
+            settings={"private_setting": "PRIVATE"})
+        AvitoCredential.objects.create(connection=self.target,
+            client_id_encrypted="synthetic", client_secret_encrypted="synthetic")
+        for pk in (1, 2, 3):
+            other = ChannelConnection.objects.create(pk=pk, channel=channel, external_id=str(1000 + pk),
+                name="Other", settings={"preserve": pk})
+            AvitoCredential.objects.create(connection=other,
+                client_id_encrypted="synthetic", client_secret_encrypted="synthetic")
+        sheets = [{"headers": ["Id", "AvitoId", "ImageUrls"], "rows": [
+            {"Id": "1_2_3", "AvitoId": "101", "Category": "Предложение услуг", "ImageUrls": "https://photos.invalid/approved.jpg"},
+            {"Id": "1_9_3", "AvitoId": "102", "Category": "Предложение услуг", "ImageUrls": "https://photos.invalid/approved.jpg"}]}]
+        self.feed = AvitoServicesFeed.objects.create(connection=self.target, account_id="446312402",
+            organization_id_at_import=self.org.pk, draft=sheets, published=sheets,
+            revision=15, published_revision=15, enabled=True, published_photo_limit=10)
+
+    def test_other_connections_never_enter_scoped_reader_and_shop_sources_are_not_requested(self):
+        before = list(ChannelConnection.objects.order_by("pk").values_list("pk", "settings"))
+        with patch.object(audit, "collect_connection", return_value={"connection_id": 4, "error": "provider_http_403"}) as read, \
+             patch.object(audit.avito_source_audit, "_read_xml") as shop, \
+             patch.object(audit, "authorized_account_id") as provider:
+            result = audit.collect_services()
+        self.assertEqual([{"connection_id": 4, "error": "provider_http_403"}], result["connections"])
+        self.assertEqual("services_readonly", result["scope"]["kind"])
+        self.assertEqual(4, read.call_args.args[0].pk)
+        self.assertEqual(([], None), read.call_args.args[1:])
+        self.assertEqual({"release_evidence": True}, read.call_args.kwargs)
+        read.assert_called_once()
+        shop.assert_not_called()
+        provider.assert_not_called()
+        self.assertEqual(before, list(ChannelConnection.objects.order_by("pk").values_list("pk", "settings")))
+        self.assertFalse(Notification.objects.exists())
+
+    def test_scope_account_revision_and_missing_binding_fail_before_provider_access(self):
+        with patch.object(audit, "collect_connection") as read, \
+             patch.object(audit, "authorized_account_id") as provider, \
+             patch.object(audit.avito_source_audit, "_read_xml") as shop:
+            for args in ({"connection_id": 1}, {"account_id": "1001"}, {"revision": 16}, {"connection_id": True}):
+                self.assertEqual("audit_scope_invalid", audit.collect_services(**args)["reason"])
+            self.target.external_id = "999999"
+            self.target.save(update_fields=["external_id"])
+            self.assertEqual("audit_services_connection_unavailable", audit.collect_services()["reason"])
+            self.target.external_id = "446312402"
+            self.target.save(update_fields=["external_id"])
+            self.feed.organization_id_at_import += 1
+            self.feed.save(update_fields=["organization_id_at_import"])
+            self.assertEqual("audit_services_binding_invalid", audit.collect_services()["reason"])
+        read.assert_not_called()
+        provider.assert_not_called()
+        shop.assert_not_called()
+
+    def test_feed_binding_drift_during_account_read_never_falls_back_to_goods_item_requests(self):
+        from pool_service import avito_input_copy
+        with patch.object(avito_input_copy, "bound_services_feed", side_effect=[self.feed, None]), \
+             patch.object(audit, "_provider_root", return_value="https://api.avito.ru"), \
+             patch.object(audit, "authorized_account_id", return_value="446312402"), \
+             patch.object(audit, "access_token", return_value="synthetic-token"), \
+             patch.object(audit, "fetch_profile_source", return_value=({"error": "provider_http_403"}, None)), \
+             patch.object(audit.avito_advance, "fetch", return_value={}), \
+             patch.object(audit, "fetch_detail") as detail, \
+             patch.object(audit, "raw_content_probe") as probe:
+            result = audit.collect_services(["7234733937"])
+        self.assertEqual([{"connection_id": 4, "error": "provider_account_mismatch"}], result["connections"])
+        detail.assert_not_called()
+        probe.assert_not_called()
+
+    def test_scoped_command_rejects_other_accounts_before_collector(self):
+        from pool_service.management.commands import audit_avito_readonly as command
+        from django.core.management.base import CommandError
+        with patch.object(command, "collect_services", return_value={"status": "blocked"}) as collect:
+            output = io.StringIO()
+            call_command("audit_avito_readonly", stdout=output)
+            collect.assert_called_once_with([], connection_id=4, account_id="446312402", revision=15)
+            for args in ({"connection_id": 1}, {"account_id": "1001"}, {"revision": 16}):
+                with self.assertRaises(CommandError):
+                    call_command("audit_avito_readonly", stdout=io.StringIO(), **args)
+            self.assertEqual(1, collect.call_count)
+
+    def test_fresh_scoped_snapshot_preserves_settings_and_discards_every_proof_on_account_drift(self):
+        from pool_service import avito_services_workplace_setup as setup
+        helpers = {"publication_release": release_publication(),
+                   "webhook_chain": release_chain(), "approved_photo": release_photo(),
+                   "media_readiness": release_readiness(), "operation_ledger": release_ledger()}
+        before = list(ChannelConnection.objects.order_by("pk").values_list("pk", "settings"))
+        for final_account in ("446312402", "1001"):
+            with self.subTest(final_account=final_account), \
+                 patch.object(audit, "_provider_root", return_value="https://api.avito.ru"), \
+                 patch.object(audit, "authorized_account_id", side_effect=["446312402", final_account]), \
+                 patch.object(audit, "access_token", return_value="synthetic-token"), \
+                 patch.object(audit, "fetch_profile_source", return_value=(
+                     {"complete": True, "autoload_enabled": True, "shop_feed_source": "other_or_unknown",
+                      "shop_feed_diagnostics": []}, "synthetic-private-fingerprint")), \
+                 patch.object(audit.avito_advance, "fetch", return_value={}), \
+                 patch.object(audit.avito_autoload_report, "fetch_report", return_value=report()), \
+                 patch.object(audit.avito_status_monitor, "full_scan", return_value=(
+                     {"101": {"status": "active"}, "102": {"status": "active"}}, 1)), \
+                 patch.object(audit, "fetch_detail") as detail, \
+                 patch.object(audit, "raw_content_probe", return_value=(
+                     "101", {"status": "active", "autoload_item_id": "1_2_3"}, release_raw_fields())), \
+                 patch.object(audit, "_services_release_evidence", return_value=helpers), \
+                 patch.object(setup, "webhook_evidence", return_value={
+                     "binding_valid": False, "registration_confirmed": False, "delivery_observed": False,
+                     "live_provider_checked": False, "live_registered": None}), \
+                 patch.object(setup, "storage_probe_evidence", return_value={
+                     "source": "passenger_http", "checked": False, "cached": True,
+                     "error": "storage_probe_not_run"}):
+                value = audit.collect_services(["7234733937"])
+            detail.assert_not_called()  # Foreign goods ID is never queried.
+            row = value["connections"][0]
+            if final_account == "446312402":
+                self.assertEqual("awaiting_first", row["webhook_chain"]["state"])
+                self.assertEqual(2, row["publication_release"]["snapshot_count"])
+                self.assertTrue(row["approved_photo"]["source_in_published"])
+                self.assertEqual(1, row["services_coverage"]["skipped_out_of_scope"])
+                self.assertNotIn("private-fingerprint", str(value))
+            else:
+                self.assertEqual({"connection_id": 4, "error": "provider_account_mismatch"}, row)
+            self.assertEqual(before, list(ChannelConnection.objects.order_by("pk").values_list("pk", "settings")))
+            self.assertFalse(Notification.objects.exists())
+
+    def test_release_helpers_survive_independent_failure_and_never_enter_legacy_collection(self):
+        from pool_service import avito_services_publication as publication
+        from pool_service import avito_webhook_chain as chain
+        from pool_service import avito_services_media_livecheck as media
+        from pool_service import avito_services_media_readiness as readiness
+        from pool_service import avito_services_release_operation as operation
+        with patch.object(readiness, "media_release_readiness", side_effect=RuntimeError("PRIVATE")), \
+             patch.object(operation, "release_operation_diagnostics", return_value=release_ledger()), \
+             patch.object(publication, "publication_release_check", side_effect=RuntimeError("PRIVATE")), \
+             patch.object(chain, "summary", return_value=release_chain()), \
+             patch.object(media, "media_release_source", return_value=release_photo()):
+            value = audit._services_release_evidence(self.target)
+        self.assertEqual({"error": "audit_publication_release_unavailable"}, value["publication_release"])
+        self.assertEqual("awaiting_first", value["webhook_chain"]["state"])
+        self.assertTrue(value["approved_photo"]["source_in_published"])
+        self.assertEqual({"error": "audit_media_readiness_unavailable"}, value["media_readiness"])
+        self.assertFalse(value["operation_ledger"]["has_operation_id"])
+        self.assertNotIn("PRIVATE", str(value))
+        with patch.object(audit, "binding") as binding, \
+             patch.object(audit, "access_token") as token, \
+             patch.object(audit, "_services_release_evidence") as helpers:
+            value = audit.collect_connection(ChannelConnection.objects.get(pk=1), [], None, release_evidence=True)
+        self.assertEqual({"connection_id": 1, "error": "provider_account_mismatch"}, value)
+        binding.assert_not_called()
+        token.assert_not_called()
+        helpers.assert_not_called()
+
+
+class ServicesReleaseProjectionTests(SimpleTestCase):
+    def test_publication_and_photo_projection_never_exports_urls_hashes_values_or_actors(self):
+        for projector, raw in ((receipt.publication_release, release_publication()),
+                               (receipt.approved_photo, release_photo()),
+                               (receipt.webhook_chain, release_chain())):
+            raw.update(private_url="https://private.invalid/PRIVATE", sha256="PRIVATE", actor_id=9876)
+            result = projector(raw)
+            self.assertNotIn("PRIVATE", str(result))
+            self.assertNotIn("actor_id", result)
+        bad = release_publication()
+        bad["facts"]["live_content_verified"] = True
+        with self.assertRaises(ValueError):
+            receipt.publication_release(bad)
+        for key, value in (("width", 0), ("height", 20000001), ("bytes", 8 * 1024 * 1024 + 1),
+                           ("format", "SVG"), ("source_in_published", False), ("photo_count", 11)):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                receipt.approved_photo(release_photo() | {key: value})
+
+    def test_message_or_owner_notification_cannot_be_inferred_from_registration_or_push_flag(self):
+        self.assertFalse(receipt.webhook_chain(release_chain())["message_persisted"])
+        for change in ({"push_delivery_confirmed": True}, {"state": "accepted_persisted"},
+                       {"message_persisted": True}, {"owner_notification_recorded": True},
+                       {"received_at": "2026-10-24T12:00:00"}, {"owner_notification_error": "PRIVATE"}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                receipt.webhook_chain(release_chain() | change)
+
+    def test_scoped_receipt_rejects_foreign_or_multiple_accounts_and_ignores_shop_values(self):
+        scoped = {"schema_version": 1, "status": "partial", "checked_at": "2026-10-24T12:00:00+07:00",
+            "scope": {"kind": "services_readonly", "connection_id": 4, "account_id": "446312402", "revision": 15},
+            "prepared_owner_page": "/avito/4/services-feed/",
+            "source": {"scope": "services", "state": "not_applicable",
+                       "reason": "services_have_no_physical_stock", "private_url": "PRIVATE"},
+            "connections": [{"connection_id": 4, "error": "provider_http_403"}]}
+        result = receipt.normalize(scoped)
+        self.assertNotIn("PRIVATE", str(result))
+        for change in (
+            {"connections": [{"connection_id": 1, "error": "provider_http_403"}]},
+            {"connections": scoped["connections"] * 2},
+            {"scope": scoped["scope"] | {"account_id": "1001"}},
+        ):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                receipt.normalize(scoped | change)
+
+
+class RawItemContentBoundaryTests(SimpleTestCase):
+    def test_raw_provider_presence_is_projected_before_normalizer_and_values_never_escape(self):
+        from types import SimpleNamespace
+        feed_value = SimpleNamespace(published=[{"rows": [{"AvitoId": "101"}]}])
+        raw = {"status": "active", "autoload_item_id": "1_2_3", "title": "PRIVATE TITLE",
+               "Description": "PRIVATE DESCRIPTION", "photos": ["https://private.invalid/PRIVATE"],
+               "images": {"PRIVATE": "PRIVATE"}, "client_secret": "PRIVATE"}
+        with patch.object(audit, "_item_detail_slot"), \
+             patch.object(audit.avito_workspace, "_get", return_value=raw) as get:
+            item_id, detail, value = audit.raw_content_probe("synthetic-token", "446312402", feed_value)
+        get.assert_called_once_with("synthetic-token", "/core/v1/accounts/446312402/items/101/")
+        projected = receipt.raw_content_fields(value)
+        self.assertTrue(projected["fields"]["title"]["lowercase"]["present"])
+        self.assertEqual("string", projected["fields"]["description"]["capitalized"]["type"])
+        self.assertEqual(1, projected["fields"]["photos"]["lowercase"]["count"])
+        self.assertEqual(1, projected["fields"]["images"]["lowercase"]["count"])
+        self.assertFalse(projected["live_content_verified"])
+        self.assertNotIn("PRIVATE", json.dumps(projected))
+        self.assertNotIn("https://", json.dumps(projected))
+        self.assertEqual({"status": "active", "autoload_item_id": "1_2_3"}, detail)
+
+    def test_foreign_item_or_unbounded_structure_cannot_confirm_field_boundary(self):
+        from types import SimpleNamespace
+        feed_value = SimpleNamespace(published=[{"rows": [{"AvitoId": "101"}]}])
+        for raw in ({"status": "another_user"}, {"status": "not_found"}, {"status": "unknown"},
+                    {"status": "active", "photos": ["PRIVATE"] * 1001}):
+            with self.subTest(status=raw["status"]), patch.object(audit, "_item_detail_slot"), \
+                 patch.object(audit.avito_workspace, "_get", return_value=raw) as get:
+                with self.assertRaises(AvitoError):
+                    audit.raw_content_probe("synthetic-token", "446312402", feed_value)
+                self.assertEqual(1, get.call_count)
+        value = release_raw_fields()
+        value["fields"]["title"]["lowercase"] = {"present": True, "type": "missing", "count": None}
+        with self.assertRaises(ValueError):
+            receipt.raw_content_fields(value)
+
+
+class ServicesReadinessDiagnosticProjectionTests(SimpleTestCase):
+    def test_readiness_preserves_unchecked_vs_false_without_exporting_exception_text(self):
+        raw = release_readiness()
+        raw.update(state="blocked", stage="description_roundtrip",
+                   reason="media_description_roundtrip_changed", exception_class=None,
+                   private_url="PRIVATE", exception_message="PRIVATE")
+        raw["checks"]["description_roundtrip"] = False
+        for key in ("image_urls_roundtrip", "source_read", "image_decode"):
+            raw["checks"][key] = None
+        value = receipt.media_readiness(raw)
+        self.assertIs(value["checks"]["description_roundtrip"], False)
+        self.assertIsNone(value["checks"]["source_read"])
+        self.assertNotIn("PRIVATE", str(value))
+        for changed in (raw | {"exception_class": "PRIVATE"},
+                        release_readiness() | {"checks": raw["checks"]}):
+            with self.assertRaises(ValueError):
+                receipt.media_readiness(changed)
+
+    def test_ledger_projects_legacy_uncertainty_without_guessing_http_sent(self):
+        raw = release_ledger() | {"operation_id": "PRIVATE", "binding": "PRIVATE"}
+        self.assertEqual(release_ledger(), receipt.operation_ledger(raw))
+        unverifiable = raw | {"state": "scope_invalid", "has_operation_id": None,
+                              "pending_http": None, "has_exact_receipt": None}
+        projected = receipt.operation_ledger(unverifiable)
+        self.assertIsNone(projected["has_operation_id"])
+        self.assertIsNone(projected["pending_http"])
+        pending = raw | {"state": "unknown", "has_operation_id": True, "pending_http": True}
+        self.assertTrue(receipt.operation_ledger(pending)["pending_http"])
+        self.assertNotIn("PRIVATE", str(receipt.operation_ledger(pending)))
+        for changed in (raw | {"state": "completed"},
+                        pending | {"has_exact_receipt": True},
+                        raw | {"exception_class": "PrivateError"}):
+            with self.assertRaises(ValueError):
+                receipt.operation_ledger(changed)
+
+    def test_missing_history_snapshot_can_be_unknown_without_fabricated_zero_or_failure(self):
+        raw = release_publication()
+        raw.update(snapshot_source="unavailable", snapshot_valid=None, current_publication=None,
+                   identity_sets_match=None, photo_limit_ok=None, snapshot_count=None, max_photos=None)
+        value = receipt.publication_release(raw)
+        self.assertIsNone(value["snapshot_valid"])
+        self.assertIsNone(value["snapshot_count"])
+        self.assertIsNone(value["photo_limit_ok"])
+        self.assertEqual("unavailable", value["snapshot_source"])
+        with self.assertRaises(ValueError):
+            receipt.publication_release(raw | {"snapshot_source": "PRIVATE"})
+
+
+class MediaTransportDiagnosticProjectionTests(SimpleTestCase):
+    def test_transport_preserves_early_unknown_and_projects_only_fixed_metadata(self):
+        empty = {key: None for key in receipt.MEDIA_TRANSPORT_FIELDS}
+        self.assertEqual(empty, receipt.media_transport(empty))
+        raw = empty | {"reason": "http_status", "phase": "headers", "http_status": 403,
+            "source_scheme": "https", "path_ascii": True, "dns_family": "mixed",
+            "dns_answer_count": 3, "selected_ip_family": "ipv4", "response_format": "html",
+            "declared_bytes": 100, "received_bytes": 0, "io_errno": None,
+            "url": "PRIVATE", "selected_ip": "PRIVATE", "raw_error": "PRIVATE"}
+        value = receipt.media_transport(raw)
+        self.assertEqual(403, value["http_status"])
+        self.assertEqual(0, value["received_bytes"])
+        self.assertIsNone(value["io_errno"])
+        self.assertNotIn("PRIVATE", str(value))
+        readiness = release_readiness()
+        readiness.update(state="blocked", stage="source_read", reason="media_source_read_failed",
+                         exception_class="ValueError", transport=raw)
+        readiness["checks"].update(source_read=False, image_decode=None)
+        projected = receipt.media_readiness(readiness)
+        self.assertEqual("http_status", projected["transport"]["reason"])
+        self.assertIsNone(projected["checks"]["image_decode"])
+
+    def test_unbounded_or_free_text_transport_fields_are_rejected(self):
+        empty = {key: None for key in receipt.MEDIA_TRANSPORT_FIELDS}
+        changes = (
+            {"reason": "PRIVATE"}, {"phase": "PRIVATE"}, {"source_scheme": "file"},
+            {"http_status": 99}, {"http_status": 600}, {"http_status": True},
+            {"dns_family": "private"}, {"dns_answer_count": 0}, {"dns_answer_count": 33},
+            {"selected_ip_family": "localhost"}, {"response_format": "image/private"},
+            {"declared_bytes": 8 * 1024 * 1024 + 2}, {"received_bytes": -1},
+            {"io_errno": 4096}, {"path_ascii": "true"}, {"https_upgrade_followed": "true"},
+            {"host_relation": "PRIVATE"},
+        )
+        for change in changes:
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                receipt.media_transport(empty | change)
+
+
+class MediaHttpsUpgradeProofProjectionTests(SimpleTestCase):
+    def test_source_upgrade_flag_is_preserved_and_absent_historical_flag_stays_unknown(self):
+        source = release_photo()
+        source.pop("https_upgrade_followed", None)
+        self.assertIsNone(receipt.approved_photo(source)["https_upgrade_followed"])
+        self.assertTrue(receipt.approved_photo(source | {"https_upgrade_followed": True})["https_upgrade_followed"])
+        self.assertFalse(receipt.approved_photo(source | {"https_upgrade_followed": False})["https_upgrade_followed"])
+        with self.assertRaises(ValueError):
+            receipt.approved_photo(source | {"https_upgrade_followed": "true"})
+        transport = {key: None for key in receipt.MEDIA_TRANSPORT_FIELDS}
+        transport.update(source_scheme="http", http_status=200, https_upgrade_followed=True)
+        self.assertTrue(receipt.media_transport(transport)["https_upgrade_followed"])
+        transport.update(reason="upgrade_target_host", phase="headers", host_relation="www_alias")
+        self.assertEqual("www_alias", receipt.media_transport(transport)["host_relation"])

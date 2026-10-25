@@ -383,9 +383,10 @@ def _query_shop_rows(get, base, snapshot, probe_rows, total, deadline):
     return rows
 
 
-def fetch_report(token, account_id, *, kind="last_successful", include_input_proof=False, input_proof_connection=None):
+def fetch_report(token, account_id, *, kind="last_successful", include_input_proof=False, input_proof_connection=None,
+                 allow_shop_recovery=True):
     from pool_service import avito_workspace
-    if kind not in KINDS:
+    if kind not in KINDS or type(allow_shop_recovery) is not bool:
         _invalid()
     if type(include_input_proof) is not bool:
         raise ValueError("include_input_proof must be boolean")
@@ -411,7 +412,7 @@ def fetch_report(token, account_id, *, kind="last_successful", include_input_pro
     read_strategy = "provider_pages"
     while True:
         batch, expected = _page(get(f"{base}/items?perPage={PAGE_SIZE}&page={page}"), page, expected)
-        if (page == 1 and kind == "last_successful"
+        if (allow_shop_recovery and page == 1 and kind == "last_successful"
                 and before["status"] in {"success", "success_warning", "error"}
                 and before["shop_feed_diagnostics"]
                 and all(row["host_kind"] in {"shop", "avito", "unknown"}

@@ -492,6 +492,287 @@ def services_coverage(value):
     return result
 
 
+
+def release_timestamp(value):
+    if value is None:
+        return None
+    require(isinstance(value, str) and len(value) <= 40)
+    parsed = datetime.fromisoformat(value)
+    require(parsed.utcoffset() is not None)
+    return value
+
+
+
+def raw_content_fields(value):
+    require(isinstance(value, dict))
+    if "error" in value:
+        return {"error": code(value["error"])}
+    require(value.get("source") == "avito_item_detail_raw_fields"
+            and value.get("endpoint_kind") == "core_v1_account_item"
+            and value.get("owned_status_verified") is True and value.get("sample_count") == 1
+            and type(value.get("sample_count")) is int and value.get("live_content_verified") is False)
+    fields = value.get("fields")
+    require(isinstance(fields, dict))
+    projected = {}
+    for key in ("title", "description", "images", "photos"):
+        raw = fields.get(key)
+        require(isinstance(raw, dict))
+        projected[key] = {}
+        for spelling in ("lowercase", "capitalized"):
+            field = raw.get(spelling)
+            require(isinstance(field, dict) and type(field.get("present")) is bool)
+            kind, count = field.get("type"), field.get("count")
+            require(kind in {"missing", "null", "boolean", "string", "array", "object", "number"})
+            require(field["present"] is (kind != "missing"))
+            if kind in {"array", "object"}:
+                count = integer(count, 1000)
+            else:
+                require(count is None)
+            projected[key][spelling] = {"present": field["present"], "type": kind, "count": count}
+    checked_at = release_timestamp(value.get("checked_at"))
+    require(checked_at is not None)
+    return {"source": value["source"], "endpoint_kind": value["endpoint_kind"],
+        "owned_status_verified": True, "sample_count": 1, "live_content_verified": False,
+        "checked_at": checked_at, "fields": projected}
+
+
+def publication_release(value):
+    require(isinstance(value, dict))
+    if "error" in value:
+        require(value["error"] == "audit_publication_release_unavailable")
+        return {"error": value["error"]}
+    flags = ("configured", "binding_present", "http_checked")
+    result = {}
+    for key in flags:
+        require(type(value.get(key)) is bool)
+        result[key] = value[key]
+    for key in ("snapshot_valid", "current_publication", "draft_matches_published",
+                "identity_sets_match", "photo_limit_ok"):
+        item = value.get(key)
+        require(item is None or type(item) is bool)
+        result[key] = item
+    require(value.get("snapshot_source") in {
+        "unavailable", "current_published_without_history", "published_history", "legacy_history"})
+    result["snapshot_source"] = value["snapshot_source"]
+    result["revision"] = integer(value.get("revision"), 1000000000)
+    for key in ("draft_revision", "published_revision"):
+        revision = value.get(key)
+        require(revision is None or type(revision) is int and 0 <= revision <= 1000000000)
+        result[key] = revision
+    history_id = value.get("history_version_id")
+    require(history_id is None or type(history_id) is int and history_id > 0)
+    result["history_version_id"] = history_id
+    for key in ("created_at", "checked_at"):
+        result[key] = release_timestamp(value.get(key))
+    for key in ("draft_count", "published_count", "snapshot_count"):
+        item = value.get(key)
+        require(item is None or type(item) is int and 0 <= item <= 200)
+        result[key] = item
+    max_photos = value.get("max_photos")
+    require(max_photos is None or type(max_photos) is int and 0 <= max_photos <= 30)
+    result["max_photos"] = max_photos
+    matched = value.get("http_matches")
+    require(matched is None or type(matched) is bool)
+    result["http_matches"] = matched
+    require(value.get("http_code") in {
+        "not_checked", "verified", "publication_missing", "scope_invalid",
+        "snapshot_invalid", "http_unavailable", "http_mismatch", "scope_changed"})
+    result["http_code"] = value["http_code"]
+    facts = value.get("facts")
+    require(isinstance(facts, dict))
+    fact_names = ("file_published", "upload_found", "source_confirmed",
+                  "rows_processed", "live_content_verified")
+    require(all(type(facts.get(key)) is bool for key in fact_names))
+    require(facts["live_content_verified"] is False)
+    result["facts"] = {key: facts[key] for key in fact_names}
+    return result
+
+
+def webhook_chain(value):
+    require(isinstance(value, dict))
+    if "error" in value:
+        require(value["error"] == "audit_webhook_chain_unavailable")
+        return {"error": value["error"]}
+    require(value.get("source") == "avito_webhook_chain_v1")
+    require(value.get("state") in {
+        "awaiting_first", "binding_unverified", "proof_invalid", "accepted_persisted", "persisted_row_missing"})
+    result = {"source": value["source"], "state": value["state"]}
+    for key in ("generation_bound", "authenticated_event", "conversation_bound",
+                "message_persisted", "owner_notification_recorded"):
+        require(type(value.get(key)) is bool)
+        result[key] = value[key]
+    require(value.get("push_delivery_confirmed") is False)
+    result["push_delivery_confirmed"] = False
+    require(value.get("event_result") in (None, "created", "duplicate"))
+    result["event_result"] = value.get("event_result")
+    require(value.get("owner_notification_state") in {
+        "awaiting_first", "not_checked", "direct_recorded", "quiet_digest_recorded",
+        "queued", "not_recorded", "not_eligible"})
+    result["owner_notification_state"] = value["owner_notification_state"]
+    require(result["owner_notification_recorded"] ==
+            (result["owner_notification_state"] in {"direct_recorded", "quiet_digest_recorded"}))
+    require(value.get("owner_notification_error") in {
+        None, "notification_preferences_disabled", "conversation_access_denied",
+        "binding_changed", "deferred_queue_invalid", "queue_error_unknown"})
+    result["owner_notification_error"] = value.get("owner_notification_error")
+    result["received_at"] = release_timestamp(value.get("received_at"))
+    accepted = result["state"] == "accepted_persisted"
+    require(result["conversation_bound"] is accepted and result["message_persisted"] is accepted)
+    require(not result["authenticated_event"] or result["generation_bound"])
+    require(not result["owner_notification_recorded"] or accepted)
+    return result
+
+
+def approved_photo(value):
+    require(isinstance(value, dict))
+    if "error" in value:
+        require(value["error"] == "audit_approved_photo_unavailable")
+        return {"error": value["error"]}
+    require(value.get("source") == "existing_services_draft_image")
+    require(value.get("scope_valid") is True and value.get("readable") is True
+            and value.get("source_in_published") is True)
+    require(value.get("format") in {"JPEG", "PNG", "WEBP"})
+    result = {"source": value["source"], "scope_valid": True, "readable": True,
+              "source_in_published": True, "format": value["format"]}
+    result["photo_count"] = integer(value.get("photo_count"), 10)
+    require(result["photo_count"] > 0)
+    for key in ("width", "height"):
+        result[key] = integer(value.get(key), 20000000)
+        require(result[key] > 0)
+    require(result["width"] * result["height"] <= 20000000)
+    result["bytes"] = integer(value.get("bytes"), 8 * 1024 * 1024)
+    require(result["bytes"] > 0)
+    result["checked_at"] = release_timestamp(value.get("checked_at"))
+    require(result["checked_at"] is not None)
+    upgraded = value.get("https_upgrade_followed")
+    require(upgraded is None or type(upgraded) is bool)
+    result["https_upgrade_followed"] = upgraded
+    return result
+
+
+
+MEDIA_READINESS_CHECKS = (
+    "connection_scope", "actor_active", "editor_organization", "manage_channels",
+    "setup_binding", "feed_binding", "published_revision", "shared_identity", "shared_photo",
+    "photo_scope", "form_valid", "title_roundtrip", "description_roundtrip",
+    "image_urls_roundtrip", "source_read", "image_decode",
+)
+MEDIA_READINESS_REASONS = {
+    "media_ready", "media_connection_invalid", "media_actor_invalid",
+    "media_editor_organization_mismatch", "media_capability_denied", "media_setup_binding_invalid",
+    "media_feed_invalid", "media_published_revision_mismatch", "media_shared_identity_missing",
+    "media_shared_photo_missing", "media_photo_scope_invalid", "media_form_invalid",
+    "media_title_roundtrip_changed", "media_description_roundtrip_changed",
+    "media_image_urls_roundtrip_changed", "media_source_read_failed", "media_image_decode_failed",
+}
+
+
+
+MEDIA_TRANSPORT_FIELDS = (
+    "reason", "phase", "http_status", "source_scheme", "path_ascii", "https_upgrade_followed", "host_relation", "dns_family",
+    "dns_answer_count", "selected_ip_family", "response_format", "declared_bytes",
+    "received_bytes", "io_errno",
+)
+MEDIA_TRANSPORT_REASONS = {
+    "url_invalid", "url_policy", "private_address", "dns_busy", "dns_timeout", "dns_failed",
+    "dns_private_address", "dns_unavailable", "deadline", "http_status", "content_type",
+    "content_length_invalid", "content_length_limit", "body_limit", "incomplete_body",
+    "tls_certificate", "tls_error", "io_timeout", "io_error", "http_protocol", "request_encoding",
+    "upgrade_source_scheme", "upgrade_location_missing", "upgrade_location_multiple",
+    "upgrade_location_invalid", "upgrade_location_controls", "upgrade_location_fragment",
+    "upgrade_location_userinfo", "upgrade_target_scheme", "upgrade_target_port",
+    "upgrade_target_host", "upgrade_target_path", "upgrade_target_query", "upgrade_second_hop",
+}
+
+
+def media_transport(value):
+    require(isinstance(value, dict) and all(key in value for key in MEDIA_TRANSPORT_FIELDS))
+    result = {}
+    allowed = {
+        "reason": MEDIA_TRANSPORT_REASONS,
+        "phase": {"url", "dns", "connect", "request", "headers", "body"},
+        "source_scheme": {"http", "https"},
+        "host_relation": {"same", "www_alias", "other", "unknown"},
+        "dns_family": {"ipv4", "ipv6", "mixed"},
+        "selected_ip_family": {"ipv4", "ipv6"},
+        "response_format": {"jpeg", "png", "webp", "avif", "html", "json", "octet_stream", "other"},
+    }
+    for key, options in allowed.items():
+        item = value[key]
+        require(item is None or isinstance(item, str) and item in options)
+        result[key] = item
+    for key in ("path_ascii", "https_upgrade_followed"):
+        item = value[key]
+        require(item is None or type(item) is bool)
+        result[key] = item
+    for key, minimum, maximum in (
+        ("http_status", 100, 599), ("dns_answer_count", 1, 32),
+        ("declared_bytes", 0, 8 * 1024 * 1024 + 1),
+        ("received_bytes", 0, 8 * 1024 * 1024 + 1), ("io_errno", 0, 4095),
+    ):
+        item = value[key]
+        require(item is None or type(item) is int and minimum <= item <= maximum)
+        result[key] = item
+    return result
+
+
+def media_readiness(value):
+    require(isinstance(value, dict))
+    if "error" in value:
+        require(value["error"] == "audit_media_readiness_unavailable")
+        return {"error": value["error"]}
+    require(value.get("state") in {"ready", "blocked"}
+            and value.get("stage") in {*MEDIA_READINESS_CHECKS, "complete"}
+            and value.get("reason") in MEDIA_READINESS_REASONS)
+    require(value.get("exception_class") in {
+        None, "PermissionDenied", "Http404", "LiveMediaCheckError", "AvitoError", "ValueError",
+        "OSError", "DatabaseError", "TypeError", "KeyError", "AttributeError", "OtherError"})
+    checks = value.get("checks")
+    require(isinstance(checks, dict))
+    result = {key: value[key] for key in ("state", "stage", "reason", "exception_class")}
+    result["checks"] = {}
+    result["transport"] = media_transport(value.get("transport"))
+    for key in MEDIA_READINESS_CHECKS:
+        item = checks.get(key)
+        require(key in checks and (item is None or type(item) is bool))
+        result["checks"][key] = item
+    if result["state"] == "ready":
+        require(result["stage"] == "complete" and result["reason"] == "media_ready"
+                and result["exception_class"] is None and all(item is True for item in result["checks"].values()))
+    else:
+        require(result["stage"] != "complete" and result["reason"] != "media_ready")
+    return result
+
+
+def operation_ledger(value):
+    require(isinstance(value, dict))
+    if "error" in value:
+        require(value["error"] == "audit_operation_ledger_unavailable")
+        return {"error": value["error"]}
+    require(value.get("state") in {
+        "not_started", "scope_invalid", "pending", "completed", "unknown", "failed", "blocked", "busy"})
+    require(value.get("phase") in {
+        "reserve", "publication_preflight", "account_read", "photo_source", "binding_check",
+        "token_prepare", "http_pending", "http_post", "receipt_read", "receipt_validate", "finalize", "unknown"})
+    require(value.get("exception_class") in {
+        None, "Blocked", "AvitoError", "LiveMediaCheckError", "ValueError", "PermissionDenied", "Http404",
+        "OSError", "TimeoutError", "HTTPError", "URLError", "JSONDecodeError", "OperationalError",
+        "IntegrityError", "FieldError", "Other"})
+    result = {key: value[key] for key in ("state", "phase", "exception_class")}
+    flags = ("has_operation_id", "pending_http", "has_exact_receipt")
+    for key in flags:
+        item = value.get(key)
+        require(item is None or type(item) is bool)
+        result[key] = item
+    if any(result[key] is None for key in flags):
+        require(all(result[key] is None for key in flags) and result["state"] != "completed")
+    else:
+        require(not result["has_exact_receipt"] or result["has_operation_id"])
+        require(result["pending_http"] == (result["has_operation_id"] and not result["has_exact_receipt"]))
+        require(result["state"] != "completed" or result["has_exact_receipt"])
+    return result
+
+
 def connection(value):
     require(isinstance(value, dict))
     result = {"connection_id": integer(value.get("connection_id"))}
@@ -505,6 +786,12 @@ def connection(value):
                   advance_access=advance_access(value.get("advance_access", {"error": "audit_advance_not_requested"})),
                   monitoring=monitoring(value.get("monitoring", {"error": "audit_monitoring_not_requested"})),
                   cached_configuration=cached_configuration(value.get("cached_configuration", {"error": "audit_cached_configuration_not_requested"})))
+    for key, project in (("publication_release", publication_release),
+                         ("webhook_chain", webhook_chain), ("approved_photo", approved_photo),
+                         ("raw_content_fields", raw_content_fields),
+                         ("media_readiness", media_readiness), ("operation_ledger", operation_ledger)):
+        if key in value:
+            result[key] = project(value[key])
     if "services_coverage" in value:
         result["services_coverage"] = services_coverage(value["services_coverage"])
     if "runtime_checks" in value:
@@ -522,18 +809,44 @@ def normalize(value):
     require(isinstance(timestamp, str) and len(timestamp) <= 40)
     require(datetime.fromisoformat(timestamp).utcoffset() == timedelta(hours=7))
     result = {"schema_version": 1, "status": value["status"], "checked_at": timestamp}
+    scoped = "scope" in value
+    if scoped:
+        scope = value["scope"]
+        require(isinstance(scope, dict) and scope.get("kind") == "services_readonly"
+                and type(scope.get("connection_id")) is int and scope["connection_id"] == 4
+                and scope.get("account_id") == "446312402"
+                and type(scope.get("revision")) is int and scope["revision"] == 15)
+        result["scope"] = {"kind": "services_readonly", "connection_id": 4,
+                           "account_id": "446312402", "revision": 15}
+        require(value.get("prepared_owner_page") == "/avito/4/services-feed/")
+        result["prepared_owner_page"] = "/avito/4/services-feed/"
     if "reason" in value:
         result["reason"] = code(value["reason"])
     source = value.get("source")
     require(isinstance(source, dict))
-    if "error" in source:
+    if scoped:
+        require(source.get("scope") == "services" and source.get("state") == "not_applicable"
+                and source.get("reason") == "services_have_no_physical_stock")
+        result["source"] = {"scope": "services", "state": "not_applicable",
+                            "reason": "services_have_no_physical_stock"}
+    elif "error" in source:
         result["source"] = {"error": code(source["error"])}
     else:
         digest = source.get("sha256")
         require(isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest))
         result["source"] = {"sha256": digest, "xml_rows": integer(source.get("xml_rows"), 5000),
                             "laguna_candidates": sequence(source.get("laguna_candidates"), feed_item, 25)}
-    result["connections"] = sequence(value.get("connections"), connection, 2)
+    result["connections"] = sequence(value.get("connections"), connection, 1 if scoped else 2)
+    if scoped:
+        require(result["status"] == "blocked" or len(result["connections"]) == 1)
+        for row in result["connections"]:
+            require(row["connection_id"] == 4)
+            if "error" not in row:
+                require(row["account_id"] == "446312402")
+                require(all(key in row for key in
+                            ("publication_release", "webhook_chain", "approved_photo", "raw_content_fields")) )
+                if "error" not in row["publication_release"]:
+                    require(row["publication_release"]["revision"] == 15)
     result["full_account_listing_scan_verified"] = bool(result["connections"]) and all(
         "error" not in row and row["listing_scan"].get("complete") is True for row in result["connections"])
     result["listing_stock_reconciliation_verified"] = False

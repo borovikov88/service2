@@ -273,6 +273,8 @@ def _chat_participant_name(chat, account_id):
 def sync_recent_messages(connection, *, chat_limit=20, messages_per_chat=50, max_age_hours=48):
     """Pull recent inbound messages as a recovery path when webhook delivery is absent."""
     account_id = authorized_account_id(connection)
+    if connection.pk == 4 and (str(connection.external_id) != "446312402" or account_id != str(connection.external_id)):
+        raise AvitoError("provider_account_mismatch")
     token = access_token(connection)
     encoded_account_id = quote(str(account_id), safe="")
     chats_response = _json_request(

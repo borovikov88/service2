@@ -13,6 +13,8 @@ from django.utils import timezone
 from pool_service import avito_input_copy as copy_api
 from pool_service import avito_autoload_auto as auto, avito_autoload_report, avito_workspace
 from pool_service.avito_services_publication import correlate_report, publication_context
+from pool_service.avito_feed_models import AvitoServicesFeedVersion
+from pool_service.avito_services_xml import xml_bytes
 from pool_service.communication_models import AvitoCredential
 from pool_service.tests import test_avito_services_publication as publication_tests
 from pool_service.tests.test_avito_autoload_report import upload, page
@@ -286,3 +288,120 @@ class InputCopyIntegrationTests(TestCase):
         self.assertFalse(unknown['complete'])
         self.assertIsNone(unknown['active_count'])
         self.assertIsNone(unknown['active_missing'])
+
+
+    def legacy_history(self, *, when=None, digest=None, snapshot=None, action='legacy_published', feed=None):
+        event = AvitoServicesFeedVersion.objects.create(feed=feed or self.feed, action=action,
+            revision=1, published_revision=1,
+            snapshot=deepcopy(self.version.snapshot if snapshot is None else snapshot),
+            file_digest=self.publication.file_sha256 if digest is None else digest)
+        if when is not None:
+            AvitoServicesFeedVersion.objects.filter(pk=event.pk).update(created_at=when)
+        return event
+
+    def test_same_bytes_unbound_legacy_before_or_captured_after_report_prevents_unique_copy_proof(self):
+        for when in (self.version.created_at - timedelta(hours=1), timezone.now()):
+            with self.subTest(when=when):
+                legacy = self.legacy_history(when=when)
+                report = self.proof_report()
+                attempt = correlate_report(self.connection, report)
+                self.assertEqual(attempt.state, 'source_copy_ambiguous')
+                self.assertFalse(attempt.source_confirmed)
+                self.assertFalse(attempt.content_verified)
+                self.assertEqual(correlate_report(self.connection, report).pk, attempt.pk)
+                legacy.delete()
+
+    def test_same_upload_records_new_legacy_evidence_without_reusing_old_confirmation(self):
+        report = self.proof_report()
+        first = correlate_report(self.connection, report)
+        self.assertEqual(first.state, 'source_copy_confirmed')
+        self.legacy_history(when=timezone.now())
+        second = correlate_report(self.connection, report)
+        self.assertNotEqual(first.pk, second.pk)
+        self.assertEqual(second.state, 'source_copy_ambiguous')
+        self.assertFalse(second.source_confirmed)
+        self.assertEqual(correlate_report(self.connection, report).pk, second.pk)
+
+    def test_unbound_publish_event_before_upload_competes_but_later_event_does_not(self):
+        event = self.legacy_history(action='publish', when=self.version.created_at - timedelta(minutes=1))
+        report = self.proof_report()
+        self.assertEqual(correlate_report(self.connection, report).state, 'source_copy_ambiguous')
+        AvitoServicesFeedVersion.objects.filter(pk=event.pk).update(created_at=timezone.now())
+        newer_evidence = correlate_report(self.connection, report)
+        self.assertEqual(newer_evidence.state, 'source_copy_confirmed')
+        self.assertTrue(newer_evidence.source_confirmed)
+
+    def test_missing_malformed_or_unreproducible_legacy_hash_is_unknown_not_zero(self):
+        changed = deepcopy(self.version.snapshot)
+        changed[0]['rows'][0]['Title'] = 'Different historical snapshot'
+        cases = [
+            {'digest': ''}, {'digest': 'not-a-digest'},
+            {'snapshot': []}, {'snapshot': changed},
+        ]
+        for options in cases:
+            with self.subTest(options=options):
+                event = self.legacy_history(**options)
+                attempt = correlate_report(self.connection, self.proof_report())
+                self.assertEqual(attempt.state, 'source_copy_history_unknown')
+                self.assertFalse(attempt.source_confirmed)
+                event.delete()
+
+    def test_reproduced_different_legacy_bytes_are_not_a_competing_copy(self):
+        changed = deepcopy(self.version.snapshot)
+        changed[0]['rows'][0]['Title'] = 'A different historical title'
+        self.legacy_history(snapshot=changed, digest=hashlib.sha256(xml_bytes(changed)).hexdigest())
+        attempt = correlate_report(self.connection, self.proof_report())
+        self.assertEqual(attempt.state, 'source_copy_confirmed')
+        self.assertTrue(attempt.source_confirmed)
+
+    def test_exact_immutable_source_escapes_legacy_ambiguity_and_unknown_history(self):
+        self.legacy_history()
+        self.legacy_history(digest='')
+        report = self.proof_report(source_url_sha256=[self.publication.immutable_source_sha256])
+        # proof_report normally substitutes the provider-copy URL after download.
+        report['source_url_sha256'] = [self.publication.immutable_source_sha256]
+        attempt = correlate_report(self.connection, report)
+        self.assertEqual(attempt.state, 'source_version_confirmed')
+        self.assertTrue(attempt.source_confirmed)
+        self.assertFalse(attempt.content_verified)
+        report['input_copy_proof']['file_sha256'] = 'f' * 64
+        conflict = correlate_report(self.connection, report)
+        self.assertEqual(conflict.state, 'report_source_conflict')
+        self.assertFalse(conflict.source_confirmed)
+
+    def test_history_scan_and_snapshot_budget_are_bounded_and_fail_closed(self):
+        event = self.legacy_history()
+        from pool_service import avito_services_publication as publication
+        with patch.object(publication, 'PROVENANCE_HISTORY_LIMIT', 1):
+            capped = correlate_report(self.connection, self.proof_report())
+        self.assertEqual(capped.state, 'source_copy_history_unknown')
+        self.assertFalse(capped.source_confirmed)
+        with patch.object(publication, 'PROVENANCE_CHARACTER_BUDGET', 1):
+            oversized = correlate_report(self.connection, self.proof_report())
+        self.assertEqual(oversized.state, 'source_copy_history_unknown')
+        self.assertFalse(oversized.source_confirmed)
+
+    def test_legacy_photo_contract_thirty_is_preserved_without_truncation(self):
+        legacy = deepcopy(self.version.snapshot)
+        legacy[0]['rows'][0]['ImageUrls'] = ' | '.join(
+            f'https://photos.example.invalid/{i}.jpg' for i in range(11))
+        digest = hashlib.sha256(xml_bytes(legacy, max_images=30)).hexdigest()
+        self.legacy_history(snapshot=legacy, digest=digest)
+        attempt = correlate_report(self.connection, self.proof_report())
+        self.assertEqual(attempt.state, 'source_copy_confirmed')
+        self.assertTrue(attempt.source_confirmed)
+
+    def test_other_feed_legacy_history_is_not_read_or_counted(self):
+        from pool_service.communication_models import CommunicationChannel, ChannelConnection
+        from pool_service.avito_feed_models import AvitoServicesFeed
+        from pool_service.models import Organization
+        org = Organization.objects.create(name='Other provenance tenant')
+        channel = CommunicationChannel.objects.create(organization=org, kind='avito', name='Other feed')
+        connection = ChannelConnection.objects.create(channel=channel, external_id='987')
+        foreign = AvitoServicesFeed.objects.create(connection=connection, account_id='987',
+            organization_id_at_import=org.pk, draft=self.feed.draft, published=self.feed.published, enabled=True)
+        self.legacy_history(feed=foreign)
+        self.legacy_history(feed=foreign, digest='')
+        attempt = correlate_report(self.connection, self.proof_report())
+        self.assertEqual(attempt.state, 'source_copy_confirmed')
+        self.assertTrue(attempt.source_confirmed)

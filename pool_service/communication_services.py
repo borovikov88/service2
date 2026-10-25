@@ -93,6 +93,9 @@ def receive_message(*, connection, external_conversation_id, participant_name, b
             "participant_phone": participant_phone,
         },
     )
+    if (connection.pk == 4 and connection.channel.kind == "avito"
+            and conversation.organization_id != connection.channel.organization_id):
+        raise ValueError("avito_conversation_binding_changed")
     if external_message_id is not None:
         existing = ConversationMessage.objects.filter(
             conversation=conversation, external_id=external_message_id

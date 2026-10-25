@@ -15,7 +15,7 @@ from pool_service.avito_publication_models import (
     AvitoServicesPublication, AvitoServicesPublicationAttempt, AvitoServicesListingIntent)
 from pool_service.avito_services_history import record_version
 from pool_service.avito_services_publication import (
-    public_origin, version_url, bind_publication, correlate_report, publication_context, archive_context, annotate_reactivation)
+    public_origin, version_url, bind_publication, correlate_report, publication_context, archive_context, annotate_reactivation, publication_release_check)
 from pool_service.avito_services_feed import parse_export
 from pool_service.avito_services_xml import xml_bytes
 from pool_service.avito_autoload_report import summary_data
@@ -231,7 +231,8 @@ class PublicationResultTests(TestCase):
         self.assertFalse(unknown['can_reactivate'])
         old = archive_context(row, {'status': 'old'}, None,
             {'status': 'old', 'finish_time': (timezone.now() - timedelta(days=1)).isoformat()})
-        self.assertEqual(old['code'], 'provider_expired')
+        self.assertEqual(old['code'], 'provider_term_passed')
+        self.assertIn('причина архива не подтверждена', old['label'])
         removed = archive_context(row, {'status': 'removed'}, None)
         self.assertEqual(removed['code'], 'removed')
         self.assertIn('инициатор', removed['label'])
@@ -327,3 +328,270 @@ class PublicationResultTests(TestCase):
         self.assertTrue(url.startswith('/api/communications/avito/services-feed/'))
         self.assertEqual(Client().get(url).status_code, 200)
         self.assertNotIn('/accounts/login/', Client().get(url).get('Location', ''))
+
+
+    def copy_proof(self, report, digest=None):
+        from pool_service.avito_input_copy import identity_sha256
+        report['input_copy_proof'] = {
+            'source': 'provider_report_input_copy', 'state': 'verified_xml',
+            'code': 'input_copy_xml_verified', 'content_kind': 'xml',
+            'connection_id': self.connection.pk, 'account_id': self.connection.external_id,
+            'organization_id': self.org.pk, 'upload_id': report['upload_id'],
+            'report_started_at': report['started_at'], 'identity_count': 2, 'byte_count': 100,
+            'file_sha256': digest or self.publication.file_sha256,
+            'identity_sha256': identity_sha256({(row['ad_id'], str(row['avito_id'])) for row in report['rows']})}
+        return report
+
+    def test_publication_facts_separate_local_file_report_source_rows_and_live_card(self):
+        waiting = publication_context(self.feed)['facts']
+        self.assertEqual(waiting, {'file_published': True, 'upload_found': False,
+            'source_confirmed': False, 'rows_processed': False, 'live_content_verified': False})
+        correlate_report(self.connection, self.report(source='stable'))
+        candidate = publication_context(self.feed)['facts']
+        self.assertTrue(candidate['file_published'])
+        self.assertTrue(candidate['upload_found'])
+        self.assertTrue(candidate['rows_processed'])
+        self.assertFalse(candidate['source_confirmed'])
+        self.assertFalse(candidate['live_content_verified'])
+        response = self.client.get(self.url)
+        self.assertContains(response, 'Строки обработаны в найденной загрузке')
+        self.assertContains(response, 'Текст и порядок фотографий в живой карточке')
+        self.assertContains(response, 'фиксируется весь снимок объявлений этой версии')
+        self.assertContains(response, 'Запись истории №')
+        self.assertContains(response, 'HTTP 401')
+        self.assertNotContains(response, 'должен быть подключён именно feed.xml')
+
+    def test_unfinished_and_old_report_do_not_claim_processed_current_version(self):
+        correlate_report(self.connection, self.report(upload_finished=False, upload_status='processing'))
+        facts = publication_context(self.feed)['facts']
+        self.assertTrue(facts['upload_found'])
+        self.assertFalse(facts['rows_processed'])
+        AvitoServicesPublicationAttempt.objects.all().delete()
+        correlate_report(self.connection, self.report(when=self.version.created_at))
+        self.assertFalse(publication_context(self.feed)['facts']['upload_found'])
+        self.assertFalse(publication_context(self.feed)['facts']['rows_processed'])
+
+    def test_exact_immutable_url_disambiguates_same_bytes_without_weakening_copy_proof(self):
+        newer, binding = self.publish_version(timezone.now() - timedelta(minutes=20))
+        report = self.copy_proof(self.report(when=timezone.now() - timedelta(minutes=5),
+            source_url_sha256=[binding.immutable_source_sha256]))
+        attempt = correlate_report(self.connection, report)
+        self.assertEqual(attempt.publication.version_id, newer.pk)
+        self.assertEqual(attempt.state, 'source_version_confirmed')
+        self.assertTrue(attempt.source_confirmed)
+        self.assertFalse(attempt.content_verified)
+
+    def test_contradictory_verified_copy_and_immutable_source_fail_closed(self):
+        self.feed.published[0]['rows'][0]['Title'] = 'Changed synthetic content'
+        self.feed.save()
+        newer, binding = self.publish_version(timezone.now() - timedelta(minutes=20))
+        report = self.copy_proof(self.report(when=timezone.now() - timedelta(minutes=5)),
+                                 digest=binding.file_sha256)
+        attempt = correlate_report(self.connection, report)
+        self.assertEqual(attempt.publication_id, self.publication.pk)
+        self.assertEqual(attempt.state, 'report_source_conflict')
+        self.assertFalse(attempt.source_confirmed)
+        self.assertFalse(attempt.content_verified)
+
+    def test_release_check_http_proves_only_our_persisted_bytes_and_exposes_no_private_data(self):
+        from urllib.parse import urlsplit
+        original_versions = self.feed.versions.count()
+        original_attempts = AvitoServicesPublicationAttempt.objects.count()
+        with patch('pool_service.avito_input_copy._download_url',
+                   return_value=xml_bytes(self.version.snapshot)) as download:
+            result = publication_release_check(self.connection, revision=2, check_http=True)
+        self.assertTrue(result['configured'])
+        self.assertTrue(result['snapshot_valid'])
+        self.assertTrue(result['current_publication'])
+        self.assertTrue(result['identity_sets_match'])
+        self.assertTrue(result['draft_matches_published'])
+        self.assertTrue(result['http_checked'])
+        self.assertTrue(result['http_matches'])
+        self.assertEqual(result['http_code'], 'verified')
+        self.assertEqual(result['snapshot_count'], 2)
+        self.assertEqual(result['history_version_id'], self.version.pk)
+        self.assertEqual(download.call_args.args[0], urlsplit(version_url(self.version)))
+        self.assertEqual(download.call_args.args[1], 'service2.aqualine22.ru')
+        self.assertFalse(result['facts']['source_confirmed'])
+        self.assertFalse(result['facts']['live_content_verified'])
+        encoded = json.dumps(result)
+        self.assertNotIn(str(self.feed.public_key), encoded)
+        self.assertNotIn('https://', encoded)
+        self.assertNotIn(self.publication.file_sha256, encoded)
+        self.assertNotIn(self.owner.username, encoded)
+        self.assertEqual(self.feed.versions.count(), original_versions)
+        self.assertEqual(AvitoServicesPublicationAttempt.objects.count(), original_attempts)
+
+    def test_release_check_bad_http_bytes_do_not_confirm_avito_or_modify_publication(self):
+        with patch('pool_service.avito_input_copy._download_url', return_value=b'not XML'):
+            result = publication_release_check(self.connection, revision=2, check_http=True)
+        self.assertEqual(result['http_code'], 'http_mismatch')
+        self.assertFalse(result['http_matches'])
+        self.assertTrue(result['facts']['file_published'])
+        self.assertFalse(result['facts']['source_confirmed'])
+        self.assertEqual(AvitoServicesPublicationAttempt.objects.count(), 0)
+        with patch('pool_service.avito_input_copy._download_url', side_effect=OSError('private URL')):
+            unavailable = publication_release_check(self.connection, revision=2, check_http=True)
+        self.assertEqual(unavailable['http_code'], 'http_unavailable')
+        self.assertNotIn('private URL', json.dumps(unavailable))
+
+    def test_release_check_rechecks_scope_and_current_draft_after_network(self):
+        def move_account(*args):
+            ChannelConnection.objects.filter(pk=self.connection.pk).update(external_id='999')
+            return xml_bytes(self.version.snapshot)
+        with patch('pool_service.avito_input_copy._download_url', side_effect=move_account):
+            result = publication_release_check(self.connection, revision=2, check_http=True)
+        self.assertEqual(result['http_code'], 'scope_changed')
+        self.assertFalse(result['http_matches'])
+        self.assertFalse(any(result['facts'].values()))
+        ChannelConnection.objects.filter(pk=self.connection.pk).update(external_id='123')
+        def move_draft(*args):
+            changed = deepcopy(self.feed.draft)
+            changed[0]['rows'][0]['Title'] = 'Changed while checking'
+            AvitoServicesFeed.objects.filter(pk=self.feed.pk).update(draft=changed)
+            return xml_bytes(self.version.snapshot)
+        with patch('pool_service.avito_input_copy._download_url', side_effect=move_draft):
+            result = publication_release_check(self.connection, revision=2, check_http=True)
+        self.assertEqual(result['http_code'], 'scope_changed')
+        self.assertFalse(result['http_matches'])
+
+    def test_release_check_legacy_or_corrupted_binding_does_not_make_network_request(self):
+        with patch('pool_service.avito_input_copy._download_url') as download:
+            missing = publication_release_check(self.connection, revision=15, check_http=True)
+            self.assertEqual(missing['http_code'], 'publication_missing')
+            self.assertFalse(missing['binding_present'])
+            self.assertFalse(missing['http_checked'])
+            altered = deepcopy(self.version.snapshot)
+            altered[0]['rows'][0]['Title'] = 'Corrupted snapshot'
+            AvitoServicesFeedVersion.objects.filter(pk=self.version.pk).update(snapshot=altered)
+            corrupt = publication_release_check(self.connection, revision=2, check_http=True)
+            self.assertEqual(corrupt['http_code'], 'snapshot_invalid')
+            self.assertFalse(corrupt['snapshot_valid'])
+            self.assertFalse(corrupt['http_checked'])
+        download.assert_not_called()
+
+    def test_release_check_rejects_changed_origin_and_scope_without_leaking_url(self):
+        with override_settings(AVITO_SERVICES_PUBLIC_ORIGIN='https://different.invalid'):
+            with patch('pool_service.avito_input_copy._download_url') as download:
+                result = publication_release_check(self.connection, revision=2, check_http=True)
+            download.assert_not_called()
+            self.assertEqual(result['http_code'], 'scope_invalid')
+            self.assertFalse(result['http_checked'])
+        with override_settings(AVITO_SERVICES_PUBLIC_ORIGIN='http://localhost/private?token=value'):
+            with patch('pool_service.avito_input_copy._download_url') as download:
+                malformed = publication_release_check(self.connection, revision=2, check_http=True)
+            download.assert_not_called()
+            self.assertEqual(malformed['http_code'], 'scope_invalid')
+            self.assertFalse(malformed['http_checked'])
+        self.connection.external_id = 'different'
+        with patch('pool_service.avito_input_copy._download_url') as download:
+            scoped = publication_release_check(self.connection, revision=2, check_http=True)
+        download.assert_not_called()
+        self.assertEqual(scoped['http_code'], 'scope_invalid')
+        self.assertFalse(scoped['configured'])
+
+
+    def test_release_check_preserves_legacy_history_without_backdating_a_binding(self):
+        self.publication.delete()
+        with patch('pool_service.avito_input_copy._download_url') as download:
+            result = publication_release_check(self.connection, revision=2, check_http=True)
+        self.assertEqual(result['history_version_id'], self.version.pk)
+        self.assertEqual(result['snapshot_count'], 2)
+        self.assertTrue(result['snapshot_valid'])
+        self.assertTrue(result['facts']['file_published'])
+        self.assertFalse(result['binding_present'])
+        self.assertFalse(result['facts']['source_confirmed'])
+        self.assertEqual(result['http_code'], 'publication_missing')
+        self.assertFalse(result['http_checked'])
+        self.assertEqual(AvitoServicesPublication.objects.count(), 0)
+        download.assert_not_called()
+
+
+    def test_same_upload_can_gain_exact_source_evidence_after_ambiguous_copy(self):
+        newer, binding = self.publish_version(timezone.now() - timedelta(minutes=20))
+        report = self.copy_proof(self.report(source='stable', when=timezone.now() - timedelta(minutes=5)))
+        ambiguous = correlate_report(self.connection, report)
+        self.assertEqual(ambiguous.publication.version_id, newer.pk)
+        self.assertEqual(ambiguous.state, 'source_copy_ambiguous')
+        self.assertFalse(ambiguous.source_confirmed)
+        exact = deepcopy(report)
+        exact['source_url_sha256'] = [binding.immutable_source_sha256]
+        confirmed = correlate_report(self.connection, exact)
+        self.assertEqual(confirmed.publication_id, ambiguous.publication_id)
+        self.assertNotEqual(confirmed.pk, ambiguous.pk)
+        self.assertEqual(confirmed.state, 'source_version_confirmed')
+        self.assertTrue(confirmed.source_confirmed)
+        self.assertEqual(correlate_report(self.connection, exact).pk, confirmed.pk)
+
+
+    def test_release_check_invalidates_http_proof_if_public_capability_rotates(self):
+        import uuid
+        def rotate(*args):
+            AvitoServicesFeed.objects.filter(pk=self.feed.pk).update(public_key=uuid.uuid4())
+            return xml_bytes(self.version.snapshot)
+        with patch('pool_service.avito_input_copy._download_url', side_effect=rotate):
+            result = publication_release_check(self.connection, revision=2, check_http=True)
+        self.assertEqual(result['http_code'], 'scope_changed')
+        self.assertFalse(result['http_matches'])
+        self.assertFalse(any(result['facts'].values()))
+
+
+    def test_release_check_targets_published_revision_without_using_pending_draft(self):
+        pending = deepcopy(self.feed.draft)
+        pending[0]['rows'][0]['Title'] = 'Pending owner edit'
+        AvitoServicesFeed.objects.filter(pk=self.feed.pk).update(draft=pending, revision=3)
+        with patch('pool_service.avito_input_copy._download_url',
+                   return_value=xml_bytes(self.version.snapshot)):
+            result = publication_release_check(self.connection, revision=2, check_http=True)
+        self.assertEqual(result['revision'], 2)
+        self.assertEqual(result['published_revision'], 2)
+        self.assertEqual(result['draft_revision'], 3)
+        self.assertTrue(result['current_publication'])
+        self.assertTrue(result['http_matches'])
+        self.assertFalse(result['draft_matches_published'])
+        self.feed.refresh_from_db()
+        self.assertEqual(self.feed.draft, pending)
+        self.assertEqual(self.feed.revision, 3)
+
+
+    def test_actual_current_published_snapshot_is_valid_even_without_any_history(self):
+        self.feed.versions.all().delete()
+        with patch('pool_service.avito_input_copy._download_url') as download:
+            result = publication_release_check(self.connection, revision=2, check_http=True)
+        self.assertEqual(result['snapshot_source'], 'current_published_without_history')
+        self.assertTrue(result['facts']['file_published'])
+        self.assertTrue(result['snapshot_valid'])
+        self.assertTrue(result['photo_limit_ok'])
+        self.assertTrue(result['identity_sets_match'])
+        self.assertTrue(result['current_publication'])
+        self.assertTrue(result['draft_matches_published'])
+        self.assertEqual(result['snapshot_count'], 2)
+        self.assertEqual(result['published_count'], 2)
+        self.assertIsNone(result['history_version_id'])
+        self.assertIsNone(result['created_at'])
+        self.assertFalse(result['binding_present'])
+        self.assertFalse(result['facts']['source_confirmed'])
+        self.assertFalse(result['http_checked'])
+        self.assertEqual(result['http_code'], 'publication_missing')
+        download.assert_not_called()
+
+    def test_unperformed_scope_checks_are_null_instead_of_false_data_validation(self):
+        self.connection.external_id = 'unknown-account'
+        result = publication_release_check(self.connection, revision=2, check_http=True)
+        self.assertEqual(result['snapshot_source'], 'unavailable')
+        for name in ('snapshot_valid', 'photo_limit_ok', 'identity_sets_match',
+                     'current_publication', 'draft_matches_published',
+                     'draft_count', 'published_count', 'snapshot_count'):
+            self.assertIsNone(result[name])
+        self.assertEqual(result['http_code'], 'scope_invalid')
+
+    def test_invalid_draft_does_not_make_valid_published_snapshot_invalid(self):
+        self.feed.versions.all().delete()
+        malformed = deepcopy(self.feed.draft)
+        malformed[0]['rows'][0]['UnexpectedField'] = 'unsupported'
+        AvitoServicesFeed.objects.filter(pk=self.feed.pk).update(draft=malformed)
+        result = publication_release_check(self.connection, revision=2)
+        self.assertTrue(result['facts']['file_published'])
+        self.assertTrue(result['snapshot_valid'])
+        self.assertIsNone(result['draft_matches_published'])
+        self.assertEqual(result['snapshot_count'], 2)

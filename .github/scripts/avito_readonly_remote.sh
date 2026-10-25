@@ -45,4 +45,4 @@ raise SystemExit(0 if ok else 2)
 avito_remote="$(git ls-remote --exit-code origin refs/heads/main)" || fail
 read -r avito_remote_sha avito_remote_ref <<< "$avito_remote"
 [[ "$avito_remote_sha" == "$avito_sha" && "$avito_remote_ref" == refs/heads/main ]] || fail
-exec timeout 360 ../venv/bin/python manage.py audit_avito_readonly --item-ids "7234733937,3842842492"
+exec timeout 360 ../venv/bin/python manage.py audit_avito_readonly --connection-id 4 --account-id 446312402 --revision 15

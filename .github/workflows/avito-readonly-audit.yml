@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       confirm_main_sha:
-        description: "Exact current main SHA; audit only, no deployment"
+        description: "Exact current main SHA; read-only services connection4/account446312402"
         required: true
         type: string
 permissions:
@@ -41,7 +41,7 @@ jobs:
           AVITO_EXPECTED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           AVITO_MANUAL_SHA: ${{ inputs.confirm_main_sha }}
         run: python3 .github/scripts/avito_readonly_gate.py
-      - name: Read Avito through the deployed operator with pinned SSH and shared lock
+      - name: Read only services connection4/account446312402 through the deployed operator
         env:
           AVITO_EXPECTED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}

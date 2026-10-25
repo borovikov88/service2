@@ -449,6 +449,21 @@ class ShopXmlIdReportTests(SimpleTestCase):
             result = report_api.fetch_report("token", "123", kind=kind)
         return result, get, source
 
+    def test_scoped_services_opt_out_prevents_nested_shop_reads_even_for_shop_looking_summary(self):
+        from pool_service import avito_source_audit, avito_profile_source
+        rows = self.rows()
+        with patch.object(avito_workspace, "_get", side_effect=[
+                self.shop_upload(), page(rows[:50], total=55), page(rows[50:], 2, 55), self.shop_upload()
+             ]) as get, patch.object(avito_workspace, "enforce_rate"), \
+             patch.object(avito_profile_source, "fetch_profile_source") as profile, \
+             patch.object(avito_source_audit, "_read_xml") as source:
+            result = report_api.fetch_report("token", "446312402", allow_shop_recovery=False)
+        self.assertTrue(result["complete"])
+        self.assertEqual("provider_pages", result["read_strategy"])
+        self.assertEqual(4, get.call_count)
+        profile.assert_not_called()
+        source.assert_not_called()
+
     def test_complete_id_queries_cover_every_row_without_provider_page_overlap(self):
         from urllib.parse import parse_qs, urlsplit
         rows = self.rows()
