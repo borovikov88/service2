@@ -12,7 +12,9 @@ from django.utils import timezone
 
 from pool_service import avito_tariff_subscription as tariff
 from pool_service import avito_tariff_reminder as calendar
-from pool_service.communication_models import AvitoCredential, ChannelConnection, CommunicationChannel
+from pool_service.communication_models import (
+    AvitoCredential, ChannelConnection, CommunicationAccess, CommunicationChannel)
+from pool_service.communication_services import conversation_capability
 from pool_service.models import Organization, OrganizationAccess
 
 
@@ -119,7 +121,7 @@ class TariffSubscriptionTests(TestCase):
         tariff.refresh(self.connection, self.owner)
         self.assertEqual(self.saved()[tariff.KEY], first)
 
-    def test_manager_foreign_owner_goods_inactive_actor_and_revoked_role_cannot_write(self):
+    def test_manager_foreign_owner_goods_inactive_actor_and_revoked_channel_capability_cannot_write(self):
         for connection, actor in ((self.connection, self.manager),
                                    (self.connection, self.foreign), (self.goods, self.owner)):
             with self.subTest(actor=actor.pk, connection=connection.pk):
@@ -130,9 +132,36 @@ class TariffSubscriptionTests(TestCase):
             tariff.refresh(self.connection, self.owner)
         User.objects.filter(pk=self.owner.pk).update(is_active=True)
         OrganizationAccess.objects.filter(user=self.owner, organization=self.org).update(role="manager")
+        # A role change does not revoke an explicitly delegated communication ACL.
+        CommunicationAccess.objects.filter(user=self.owner, organization=self.org).update(
+            can_manage_channels=False)
         with self.assertRaises(PermissionDenied):
             tariff.refresh(self.connection, self.owner)
         self.assertNotIn(tariff.KEY, self.saved())
+
+    def test_delegated_manager_capability_is_allowed_until_revoked_in_the_selected_org(self):
+        self.assertFalse(conversation_capability(self.manager, "can_manage_channels", self.org))
+        CommunicationAccess.objects.filter(user=self.manager, organization=self.org).update(
+            can_manage_channels=True)
+        self.assertTrue(conversation_capability(self.manager, "can_manage_channels", self.org))
+        current, _binding = tariff._scope(4, self.manager)
+        self.assertEqual(current.channel.organization_id, self.org.pk)
+        result = tariff.refresh(self.connection, self.manager)
+        self.assertEqual(result["code"], "method_contract_unavailable")
+        self.assertFalse(result["request_performed"])
+        before = copy.deepcopy(self.saved())
+        # A capability in another organization cannot rescue the revoked local ACL.
+        OrganizationAccess.objects.create(user=self.manager, organization=self.other_org, role="owner")
+        CommunicationAccess.objects.filter(user=self.manager, organization=self.other_org).update(
+            can_manage_channels=True)
+        CommunicationAccess.objects.filter(user=self.manager, organization=self.org).update(
+            can_manage_channels=False)
+        self.assertTrue(conversation_capability(self.manager, "can_manage_channels", self.other_org))
+        self.assertFalse(conversation_capability(self.manager, "can_manage_channels", self.org))
+        with self.assertRaises(PermissionDenied):
+            tariff.refresh(self.connection, self.manager)
+        self.assertEqual(tariff.display_state(self.connection, self.manager), {})
+        self.assertEqual(self.saved(), before)
 
     def test_pending_contract_cannot_record_a_success_even_with_normalized_data(self):
         _current, binding = tariff._scope(4, self.owner)
