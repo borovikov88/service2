@@ -373,7 +373,7 @@ from .services.permissions import (
 )
 
 from django import forms
-from .services.crm_permissions import crm_directions, crm_items_for_user, crm_staff_users
+from .services.crm_permissions import crm_directions, crm_items_for_user, crm_staff_users, require_crm_graph_scope
 
 
 
@@ -1206,14 +1206,13 @@ def _reading_edit_allowed(reading, user):
 
 
 def _can_restore_pool_data(user, pool):
-    if user.is_superuser:
+    if not user or not user.is_authenticated or not user.is_active or user.is_superuser:
         return False
     if not pool.organization_id:
         return False
-    return any(
-        access.organization_id == pool.organization_id and access.role in {"owner", "admin"}
-        for access in organization_accesses_for_user(user)
-    )
+    return OrganizationAccess.objects.filter(
+        user=user, organization_id=pool.organization_id, role__in={"owner", "admin"},
+    ).exists()
 
 
 def _reading_delete_allowed(reading, user):
@@ -4696,6 +4695,7 @@ def crm_bulk_update(request, direction):
         messages.warning(request, "Подходящие записи CRM не найдены.")
         return redirect(_crm_bulk_redirect_url(request, direction))
 
+    require_crm_graph_scope(selected_ids)
     action = (request.POST.get("bulk_action") or "").strip()
     changed = 0
 
@@ -4794,7 +4794,7 @@ def crm_view(request, direction, item_id):
     item_photo_urls = _crm_item_photo_urls(item)
 
     related_tasks = list(
-        item.service_tasks.select_related("pool", "client", "primary_responsible").order_by("-updated_at")
+        item.service_tasks.filter(organization=item.organization).select_related("pool", "client", "primary_responsible").order_by("-updated_at")
     )
 
     archive_state = None
@@ -4983,6 +4983,7 @@ def crm_edit(request, direction, item_id):
             return HttpResponseNotFound("CRM item changed while editing.")
 
         _crm_require_item_access(request, item)
+        require_crm_graph_scope([item.pk])
         form = CrmItemForm(request.POST, instance=item, direction=direction, organization=org)
 
         if form.is_valid():
@@ -5166,6 +5167,7 @@ def archive_restore_crm_item(request, item_id):
     if not item or not item.is_archived:
         return HttpResponseNotFound("CRM archive state changed.")
     _crm_require_item_access(request, item)
+    require_crm_graph_scope([item.pk])
     blocked = _crm_redirect_if_access_blocked(request, item.organization)
     if blocked:
         return blocked
@@ -5199,7 +5201,7 @@ def archive_bulk_update(request):
         try:
             task_ids.append(int(raw_id))
         except (TypeError, ValueError):
-            continue
+            raise PermissionDenied
     for raw_id in request.POST.getlist("item_ids"):
         try:
             item_ids.append(int(raw_id))
@@ -5209,12 +5211,12 @@ def archive_bulk_update(request):
         try:
             pool_uuids.append(uuid.UUID(str(raw_uuid)))
         except (TypeError, ValueError):
-            continue
+            raise PermissionDenied
     for raw_uuid in request.POST.getlist("reading_uuids"):
         try:
             reading_uuids.append(uuid.UUID(str(raw_uuid)))
         except (TypeError, ValueError):
-            continue
+            raise PermissionDenied
 
     tasks_qs = ServiceTask.objects.filter(id__in=task_ids, is_archived=True)
     items_qs = crm_items_for_user(request.user, org).filter(id__in=item_ids, is_archived=True)
@@ -5223,8 +5225,8 @@ def archive_bulk_update(request):
     if org:
         tasks_qs = tasks_qs.filter(organization=org)
         items_qs = items_qs.filter(organization=org)
-        pools = pools.filter(Q(organization=org) | Q(client__organization=org)).distinct()
-        readings = readings.filter(Q(pool__organization=org) | Q(pool__client__organization=org)).distinct()
+        pools = pools.filter(organization=org)
+        readings = readings.filter(pool__organization=org)
 
     task_candidates = list(
         tasks_qs.order_by("id").values("id", "crm_item_id")
@@ -5263,8 +5265,24 @@ def archive_bulk_update(request):
         _crm_require_item_access(request, item)
     if {item.id for item in items} != set(item_ids):
         return HttpResponseForbidden()
+    require_crm_graph_scope(item_ids)
     pools = list(pools)
     readings = list(readings)
+    if {pool.uuid for pool in pools} != set(pool_uuids) or {reading.uuid for reading in readings} != set(reading_uuids):
+        return HttpResponseForbidden()
+    if pools or readings:
+        # These record types only support restore; validate every permission before any CRM/task write.
+        if action != "restore":
+            return HttpResponseForbidden()
+        if any(not _can_restore_pool_data(request.user, pool) for pool in pools):
+            return HttpResponseForbidden()
+        restored_pool_ids = {pool.pk for pool in pools}
+        if any(
+            not _can_restore_pool_data(request.user, reading.pool)
+            or (reading.pool.is_deleted and reading.pool_id not in restored_pool_ids)
+            for reading in readings
+        ):
+            return HttpResponseForbidden()
     if not tasks and not items and not pools and not readings:
         messages.warning(request, "Не выбраны архивные записи.")
         return redirect(_crm_context_url(request, reverse("archive_list"), org))
@@ -5288,8 +5306,6 @@ def archive_bulk_update(request):
             restore_crm_item(item, request.user)
             changed += 1
         for pool in pools:
-            if not _can_restore_pool_data(request.user, pool):
-                continue
             before = _snapshot_instance(pool, POOL_AUDIT_FIELDS)
             pool.is_deleted = False
             pool.deleted_at = None
@@ -5305,8 +5321,6 @@ def archive_bulk_update(request):
             )
             changed += 1
         for reading in readings:
-            if reading.pool.is_deleted or not _can_restore_pool_data(request.user, reading.pool):
-                continue
             before = _snapshot_instance(reading, WATER_READING_AUDIT_FIELDS)
             reading.is_deleted = False
             reading.deleted_at = None
@@ -5381,6 +5395,7 @@ def archive_delete_crm_item_forever(request, item_id):
         archived_reason=CrmItem.ARCHIVE_REASON_DELETED,
     )
     _crm_require_item_access(request, item)
+    require_crm_graph_scope([item.pk])
     blocked = _crm_redirect_if_access_blocked(request, item.organization)
     if blocked:
         return blocked
@@ -6970,14 +6985,8 @@ def pool_detail(request, pool_uuid):
 
     if pool.organization_id:
 
-        org_staff_access = any(
-            access.organization_id == pool.organization_id
-            for access in organization_accesses_for_user(request.user)
-        )
-
-        show_service_issues = org_staff_access or request.user.is_superuser
-
-        can_manage_service_issues = org_staff_access and role in {"admin", "service", "manager"}
+        show_service_issues = CrmItem.DIRECTION_SERVICE in crm_directions(request.user, pool.organization)
+        can_manage_service_issues = show_service_issues and not request.user.is_superuser and role in {"admin", "service", "manager"}
 
         if show_service_issues:
 
@@ -7296,33 +7305,9 @@ def pool_issue_update(request, pool_uuid, item_id):
 
         return readonly
 
-    blocked = _redirect_if_access_blocked(request)
-
-    if blocked:
-
-        return blocked
-
-
-
     pool = get_object_or_404(Pool, uuid=pool_uuid, is_deleted=False)
 
     if not pool.organization_id:
-
-        return HttpResponseForbidden()
-
-
-
-    is_org_staff = OrganizationAccess.objects.filter(
-
-        user=request.user,
-
-        organization=pool.organization,
-
-        role__in=ORG_STAFF_ROLES,
-
-    ).exists()
-
-    if not is_org_staff:
 
         return HttpResponseForbidden()
 
@@ -7341,6 +7326,12 @@ def pool_issue_update(request, pool_uuid, item_id):
         organization=pool.organization,
 
     )
+
+    _crm_require_item_access(request, issue)
+    require_crm_graph_scope([issue.pk])
+    blocked = _crm_redirect_if_access_blocked(request, issue.organization)
+    if blocked:
+        return blocked
 
     stage = (request.POST.get("stage") or "").strip()
 

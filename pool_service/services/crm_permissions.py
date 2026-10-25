@@ -1,8 +1,9 @@
 """Organization-bound policy for the existing CRM (no user-instance cache)."""
 from django.contrib.auth.models import User
-from django.db.models import Q
+from django.core.exceptions import PermissionDenied
+from django.db.models import F, Q
 
-from pool_service.models import CrmItem, Employee, OrganizationAccess
+from pool_service.models import CrmItem, Employee, OrganizationAccess, ServiceTask
 
 
 CRM_STAFF_ROLES = {"owner", "admin", "manager", "service", "installer"}
@@ -36,6 +37,14 @@ def crm_items_for_user(user, organization):
     return CrmItem.objects.filter(
         organization=organization, direction__in=crm_directions(user, organization),
     )
+
+
+def require_crm_graph_scope(item_ids):
+    """Refuse reverse writes/cascades for any inconsistent legacy tenant link."""
+    if ServiceTask.objects.filter(crm_item_id__in=item_ids).exclude(
+        organization_id=F("crm_item__organization_id"),
+    ).exists():
+        raise PermissionDenied
 
 
 def can_sync_task_crm(task, user=None):

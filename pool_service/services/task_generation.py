@@ -185,6 +185,8 @@ def sync_task_with_crm_item(task):
     if not task or not task.crm_item_id:
         return task
     crm_item = task.crm_item
+    if crm_item.organization_id != task.organization_id:
+        return task
     if crm_item.direction == CrmItem.DIRECTION_SERVICE:
         if crm_item.stage == CrmItem.STAGE_SERVICE_DONE:
             archive_task(task, ServiceTask.ARCHIVE_REASON_COMPLETED, crm_item.responsible or task.completed_by)
