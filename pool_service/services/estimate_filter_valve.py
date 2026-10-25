@@ -25,7 +25,11 @@ def protected(row):
 
 def included(parent):
     facts = ((parent or {}).get('catalog') or {}).get('filter_facts') or {}
-    return facts.get('valve_included') if not facts.get('issue') and not facts.get('valve_note') else None
+    # New card evidence separates completeness from hydraulic conflicts. Keep
+    # the old interpretation for frozen snapshots until explicit card refresh.
+    if facts.get('valve_note') or facts.get('issue') and not facts.get('valve_independent'):
+        return None
+    return facts.get('valve_included')
 
 
 def token(parent):
@@ -123,6 +127,8 @@ def assess(product, parent=None):
         return 'Для существующего фильтра необходимость новой покупки клапана требует ручного подтверждения.'
     origin = parent['catalog']
     filter_facts = origin.get('filter_facts') or {}
+    if filter_facts.get('issue'):
+        return filter_facts['issue']
     if included(parent) is not False:
         return 'Не подтверждено отсутствие шестипозиционного клапана в комплекте фильтра.'
     filter_sku, valve_sku = origin.get('sku', '').casefold(), product.get('sku', '').casefold()

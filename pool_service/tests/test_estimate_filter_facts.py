@@ -114,6 +114,91 @@ class FilterFactsTests(SimpleTestCase):
         self.assertIsNone(valve_rows(s)[0]['quantity'])
         self.assertIn('целое количество', valve_rows(s)[0]['selection_note'])
 
+    def test_new_public_valve_alias_accepts_yes_no_but_position_count_is_not_evidence(self):
+        for value in ('Нет', 'Да', None):
+            with self.subTest(valve_included=value):
+                params = [(k, v) for k, v in PARAMS if k != 'Шестипозиционный клапан в комплекте']
+                params.append(('Число позиций вентиля', '6'))
+                if value is not None:
+                    params.append(('Вентиль в комплекте', value))
+                s, c = selected(params)
+                self.assertEqual(c['products']['1']['filter_facts']['valve_included'], {'Нет': False, 'Да': True, None: None}[value])
+                self.assertEqual(len(valve_rows(s)), 1 if value == 'Нет' else 0)
+                if value == 'Нет':
+                    r = valve_rows(s)[0]
+                    self.assertIsNone(r.get('catalog'))
+                    self.assertIsNone(r['price'])
+                    filter_row(s)['quantity'] = '2'
+                    self.assertEqual(valve_rows(evaluate(s))[0]['quantity'], '2.000')
+
+    def test_conflicting_old_and_new_completeness_labels_remain_unknown(self):
+        for old, new in (('Нет', 'Да'), ('Да', 'Нет'), ('Нет', 'Нет')):
+            with self.subTest(old=old, new=new):
+                params = [(k, v) for k, v in PARAMS if k != 'Шестипозиционный клапан в комплекте']
+                params.extend([('Шестипозиционный клапан в комплекте', old), ('Вентиль в комплекте', new)])
+                s, c = selected(params)
+                facts = c['products']['1']['filter_facts']
+                if old != new:
+                    self.assertIsNone(facts['valve_included'])
+                    self.assertIn('вентиль в комплекте', facts['valve_note'])
+                    self.assertFalse(valve_rows(s))
+                else:
+                    self.assertIs(facts['valve_included'], False)
+                    self.assertEqual(facts['valve_note'], '')
+                    self.assertEqual(len(valve_rows(s)), 1)
+
+    def test_independent_hydraulic_issue_does_not_hide_explicit_valve_completeness(self):
+        for value in ('Нет', 'Да', None):
+            with self.subTest(valve_included=value):
+                params = [(k, v) for k, v in PARAMS if k != 'Шестипозиционный клапан в комплекте']
+                params.append(('Расход воды, м³/ч', '12'))  # Conflicts with the existing 8.
+                if value is not None:
+                    params.append(('Шестипозиционный клапан в комплекте', value))
+                c = catalog.parse_catalog(feed(filtr(params=params), valve()))
+                s = generate(INPUTS)
+                catalog.apply_product(filter_row(s), c['products']['1'], c)
+                filter_row(s)['quantity'] = '2'
+                updated = evaluate(s)
+                self.assertIn('расход воды', filter_row(updated)['catalog']['filter_facts']['issue'])
+                self.assertIn('расход воды', assess(c['products']['1'], INPUTS, Decimal('8'))[0])
+                if value == 'Нет':
+                    self.assertEqual(len(valve_rows(updated)), 1)
+                    valve_row = valve_rows(updated)[0]
+                    self.assertEqual(valve_row['filter_parent'], filter_row(updated)['id'])
+                    self.assertEqual(valve_row['quantity'], '2.000')
+                    self.assertIsNone(valve_row.get('catalog'))
+                    self.assertIsNone(valve_row['price'])
+                    self.assertIsNone(valve_row['amount'])
+                    self.assertIn('совместимость', valve_row['selection_note'])
+                else:
+                    self.assertFalse(valve_rows(updated))
+                    unknown_warning = any('входит ли' in w for w in updated['variants']['economy']['warnings'])
+                    self.assertEqual(unknown_warning, value is None)
+                refreshed, _ = catalog.auto_select(updated, c, only_variant='economy')
+                self.assertEqual(len(valve_rows(refreshed)), 1 if value == 'Нет' else 0)
+                self.assertTrue(all(r.get('catalog') is None and r['price'] is None for r in valve_rows(refreshed)))
+
+    def test_old_completeness_interpretation_stays_frozen_until_explicit_card_refresh(self):
+        c = catalog.parse_catalog(feed(filtr(params=without_valve() + [('Расход воды, м³/ч', '12')])))
+        old = generate(INPUTS)
+        for tier in old['variants']:
+            catalog.apply_product(filter_row(old, tier), c['products']['1'], c)
+            filter_row(old, tier)['catalog']['filter_facts'].pop('valve_independent')
+        old = evaluate(old)
+        before = deepcopy(old)
+        self.assertEqual(evaluate(old), before)
+        recalculated = recalculate(old, old['inputs'])
+        for tier in old['variants']:
+            self.assertFalse(valve_rows(recalculated, tier))
+            self.assertEqual(filter_row(recalculated, tier)['catalog'], filter_row(before, tier)['catalog'])
+            self.assertEqual(recalculated['variants'][tier]['total'], before['variants'][tier]['total'])
+        catalog.apply_product(filter_row(old), c['products']['1'], c)
+        accepted = evaluate(old)
+        self.assertEqual(len(valve_rows(accepted)), 1)
+        self.assertIsNone(valve_rows(accepted)[0].get('catalog'))
+        for tier in ('standard', 'premium'):
+            self.assertEqual(accepted['variants'][tier], before['variants'][tier])
+
     def test_only_explicit_compatibility_can_select_a_valve_and_price_stays_frozen(self):
         s, c = selected(extra=(valve(),))
         self.assertEqual(valve_rows(s)[0]['catalog']['id'], '3')
@@ -294,9 +379,11 @@ class FilterCardApiTests(TestCase):
 
     @patch('pool_service.estimate_views.get_catalog')
     def test_explicit_filter_apply_upgrades_only_one_quote_and_keeps_history_unchanged(self, get_catalog):
-        c = catalog.parse_catalog(feed(filtr(params=without_valve())))
+        params = [(('Вентиль в комплекте' if k == 'Шестипозиционный клапан в комплекте' else k), v) for k, v in without_valve()]
+        c = catalog.parse_catalog(feed(filtr(params=params)))
         get_catalog.return_value = c
         old = generate(INPUTS)
+        filter_row(old)['quantity'] = '2'
         old.pop('filter_valve_version')
         for variant in old['variants'].values():
             variant.pop('filter_valve_active', None)
@@ -308,6 +395,9 @@ class FilterCardApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         chosen = response.json()['snapshot']
         self.assertTrue(valve_rows(chosen))
+        self.assertEqual(valve_rows(chosen)[0]['quantity'], '2.000')
+        self.assertIsNone(valve_rows(chosen)[0].get('catalog'))
+        self.assertIsNone(valve_rows(chosen)[0]['price'])
         for tier in ('standard', 'premium'):
             self.assertEqual(chosen['variants'][tier], before['variants'][tier])
         get_catalog.reset_mock()
