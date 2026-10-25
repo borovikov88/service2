@@ -295,3 +295,18 @@ class PartialPhotoEvidenceTests(TestCase):
         self.assertEqual(result['provider_report']['state'], 'unavailable')
         self.assertFalse(any(result['facts'].values()))
         self.assertEqual(self.publication.attempts.count(), 0)
+
+    def test_other_typed_verify_events_never_hide_or_duplicate_manual_photo_proof(self):
+        event_id, created = evidence.record_photo_evidence(self.connection, self.owner, **self.args)
+        self.assertTrue(created)
+        AvitoServicesFeedVersion.objects.bulk_create([
+            AvitoServicesFeedVersion(feed=self.feed, action='verify', revision=18,
+                published_revision=18, source_version=self.version, snapshot=self.feed.draft,
+                changes=[{'kind': 'provider_promotion_observation', 'field': 'AvitoPromotionState'}])
+            for unused in range(evidence.MAX_EVENTS + 5)
+        ])
+        context = evidence.manual_photo_context(self.connection, self.feed, self.version)
+        self.assertEqual(len(context['records']), 1)
+        repeated, created = evidence.record_photo_evidence(self.connection, self.owner, **self.args)
+        self.assertEqual(repeated, event_id)
+        self.assertFalse(created)

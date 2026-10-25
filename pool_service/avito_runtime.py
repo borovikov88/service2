@@ -10,10 +10,10 @@ from .communication_models import AvitoSchedulerHeartbeat, AvitoStatusMonitor, C
 
 CHECKS = {"statuses": "Статусы объявлений", "advance": "Аванс",
           "autoload_report": "Подробный отчёт автозагрузки", "tariff": "Срок тарифа", "publication_correlation": "Связь версии с загрузкой",
-          "messages_digest": "Отложенные сообщения владельцу"}
+          "messages_digest": "Отложенные сообщения владельцу", "statistics_daily": "Суточная история эффективности"}
 KEYS = {"advance": "avito_advance_monitor", "autoload_report": "avito_autoload_auto",
         "tariff": "avito_tariff_reminder", "publication_correlation": "avito_autoload_auto",
-        "messages_digest": "avito_deferred_owner_messages"}
+        "messages_digest": "avito_deferred_owner_messages", "statistics_daily": "avito_daily_statistics_v1"}
 CODES = {
     "", "not_configured", "disabled", "not_checked", "check_due", "schedule_invalid",
     "binding_changed", "check_error_unclassified", "worker_check_exception",
@@ -28,7 +28,8 @@ CODES = {
     "monitor_scan_limit", "monitor_pagination_invalid", "monitor_status_invalid",
     "monitor_owner_unavailable", "monitor_connection_changed", "monitor_interrupted", "monitor_error",
     "tariff_reminder_failed", "tariff_notification_preferences_disabled", "notification_preferences_disabled",
-    "publication_correlation_failed", "dependency_failed", "deferred_queue_invalid", "conversation_access_denied",
+    "statistics_binding_changed", "statistics_data_invalid", "statistics_total_unavailable", "statistics_limit",
+    "statistics_unavailable", "statistics_incomplete", "publication_correlation_failed", "dependency_failed", "deferred_queue_invalid", "conversation_access_denied",
 }
 CONSISTENCY_GUARDS = {
     "queried_rows_changed": "Строки выборки по XML ID отличаются от проверочной страницы.",
@@ -90,8 +91,8 @@ def record(connection_id, check, outcome, *, run_id, exception=False, deferred=F
         entries = heartbeat.checks if isinstance(heartbeat.checks, list) else []
         entries = [entry for entry in entries if isinstance(entry, dict) and
                    (entry.get("connection_id"), entry.get("check")) != (connection_id, check)]
-        # At most ten configured accounts × six checks; fail closed on corruption.
-        if len(entries) >= 60:
+        # Bounded worker evidence; fail closed on corruption.
+        if len(entries) >= 80:
             return
         entries.append({"connection_id": connection.pk, "account_id": str(connection.external_id),
             "organization_id": connection.channel.organization_id, "channel_id": connection.channel_id,
@@ -130,6 +131,8 @@ def _saved(connection, check):
     state = value if isinstance(value, dict) else {}
     if check == "advance":
         from .avito_advance import _allowed
+    elif check == "statistics_daily":
+        from .avito_daily_statistics import _allowed
     elif check in {"autoload_report", "publication_correlation"}:
         from .avito_autoload_auto import _allowed
     else:
