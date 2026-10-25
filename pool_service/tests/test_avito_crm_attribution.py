@@ -434,6 +434,23 @@ class CrmAttributionTests(TestCase):
             self.save(task_id=task.pk)
 
 
+    def test_foreign_conversation_binding_is_hidden_from_get_sidebar_and_coverage(self):
+        CrmSourceLink.objects.create(organization=self.foreign, avito_connection=self.goods,
+            conversation=self.dialog)
+        with self.assertRaises(PermissionDenied):
+            links.source_for(self.manager, self.connection, "conversation", self.dialog.uuid)
+        page = self.client.get(reverse("avito_crm_attribution", args=[4]))
+        self.assertEqual(page.status_code, 200)
+        self.assertEqual(page.context["dialogs"], [])
+        self.assertEqual(page.context["coverage"]["dialogs"], 0)
+        self.assertEqual(page.context["coverage"]["unknown_requests"], 0)
+        self.assertEqual(self.client.get(self.target()).status_code, 403)
+        with self.assertRaises(PermissionDenied):
+            self.save()
+        self.assertEqual(CrmSourceLink.objects.count(), 1)
+        self.assertFalse(DataAuditLog.objects.filter(entity_type="crm_source_link").exists())
+
+
 @skipUnless(connection.vendor == "mysql", "Requires MySQL row-lock concurrency, not SQLite.")
 class CrmSourceConcurrentOperationTests(TransactionTestCase):
     reset_sequences = True

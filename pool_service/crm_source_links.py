@@ -395,7 +395,12 @@ def coverage(actor, connection):
         mapping = {row.conversation_id: row for row in CrmSourceLink.objects.filter(
             organization_id=connection.channel.organization_id, avito_connection=connection,
             conversation_id__in=[source.pk for source in dialogs[:500]]).select_related("crm_item")}
-        sources.extend(("conversation", source, mapping.get(source.pk)) for source in dialogs[:500])
+        for candidate in dialogs[:500]:
+            try:
+                source = source_for(actor, connection, "conversation", candidate.uuid)
+            except PermissionDenied:
+                continue
+            sources.append(("conversation", source, mapping.get(source.pk)))
     call_links = list(CrmSourceLink.objects.filter(organization_id=connection.channel.organization_id,
         avito_connection=connection, phone_call__isnull=False).select_related("phone_call", "crm_item").order_by("pk")[:501])
     result["complete"] = result["complete"] and len(call_links) <= 500
