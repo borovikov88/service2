@@ -23,7 +23,7 @@ from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requ
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
-CACHE_KEY = "pool-estimate-shop-v25"
+CACHE_KEY = "pool-estimate-shop-v26"
 CACHE_SECONDS = 900
 MAX_BYTES = 20_000_000
 FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
@@ -205,11 +205,13 @@ def parse_catalog(payload, checked_at=None):
         if specs['embedded_role']:
             specs['kind'] = specs['embedded_role']
         model = re.sub(r"^(?:песочный )?(?:фильтр|насос)(?: для бассейна)?\s+", "", name, flags=re.I).split("(")[0].strip()[:120]
+        from .estimate_availability import parse as parse_availability, confirmed
+        availability = parse_availability(offer)
         products[pid] = {"id": pid, "url": url, "name": name, "brand": brand, "model": model,
                          "sku": offer.findtext("vendorCode", "")[:80],
                          "image": next((url for p in offer.findall("picture") if (url := safe_image_url(p.text))), ""),
                          "price": str(Decimal(price).quantize(Decimal(".01"))),
-                         "available": offer.get("available") == "true",
+                         "available": confirmed(availability), "availability": availability,
                          "category": category, **specs}
     if not products:
         raise CatalogUnavailable("В каталоге не найдены товары с рублёвой ценой и ссылкой на магазин.")
@@ -271,7 +273,8 @@ def catalog_status(catalog):
 def candidate_reason(product, inputs, required_flow, *, for_auto=False):
     """None means eligible for a preliminary proposal, never engineering signoff."""
     if not product["available"]:
-        return "Выгрузка магазина не подтверждает доступность к заказу."
+        from .estimate_availability import reason
+        return reason(product)
     if product.get("specification_conflict"):
         return product.get("specification_note") or "Конфликт характеристик товара."
     if product["kind"] in {"circulation_pump", "solenoid_valve"}:
@@ -337,6 +340,7 @@ def apply_product(row, product, catalog, selection="manual"):
     row["catalog"] = {k: product[k] for k in ("id", "url", "sku", "price", "available", "nominal_flow", "power", "power_options", "heating_power", "heater_type", "titanium", "embedded_role", "material", "lining")}
     row["catalog"]["filtration"] = product.get("filtration")
     row['catalog']['pump_facts'] = deepcopy(product.get('pump_facts', {}))
+    row['catalog']['availability'] = deepcopy(product.get('availability', {}))
     row["catalog"]["heater_purpose_note"] = product.get("heater_purpose_note", "")
     row["catalog"]["lighting"] = deepcopy(product.get("lighting", {}))
     row["catalog"]["auxiliary"] = deepcopy(product.get("auxiliary", {}))
@@ -504,7 +508,14 @@ def auto_select(snapshot, catalog, only_variant=None):
             for row in block['rows']:
                 if row['excluded'] or not row.get('catalog'): continue
                 current = catalog['products'].get(row['catalog']['id'])
-                if not current or row['kind'] not in candidates.CORE and not row.get('embedded_role'): continue
+                if not current: continue
+                if row['kind'] not in candidates.CORE and not row.get('embedded_role'):
+                    # Frozen material/accessory selections retain their model,
+                    # technical facts and price date. Explicit catalogue refresh
+                    # still adopts current stock evidence for generic warnings.
+                    row['catalog'].update(available=current['available'],
+                                          availability=deepcopy(current.get('availability', {})))
+                    continue
                 issue, _ = candidates.assess(current, result['inputs'], max(required, pump_duty or required) if row['kind'] == 'filter' else required, variant['embedded_profile'])
                 row['catalog_review_note'] = ('Текущая выгрузка ' + catalog['checked_at'] + ': ' + issue)[:1000] if issue else ''
     embedded.update_quantities(result, only_variant)
@@ -532,12 +543,16 @@ def profile_reason(product, inputs, required_flow, profile):
 
 
 def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="economy", profile=None):
+    from . import estimate_candidates as candidates
     if variant not in VARIANTS:
         raise EstimateInputError("Выберите смету.")
     profile = profile or embedded.DEFAULTS[variant]
     if not isinstance(profile, str) or profile not in embedded.PROFILES:
         raise EstimateInputError('Выберите комплектацию закладных.')
     def reason(product):
+        if not product.get('available') and product['kind'] not in candidates.CORE and not product.get('embedded_role'):
+            from .estimate_availability import reason as availability_reason
+            return availability_reason(product)
         if product['kind'] in lighting.ROLES:
             issue,notes=lighting.assess(product,profile or embedded.DEFAULTS[variant],finish=inputs['finish'],color=inputs.get('light_color'))
             return issue or 'Проверить: '+' '.join(notes)
@@ -609,7 +624,7 @@ def refresh_prices(snapshot, catalog, variant_key):
                     skipped+=1;continue
                 origin['plaster_product']=deepcopy(product.get('plaster_product',{}))
                 conversion(row,product)
-                origin.update(checked_at=catalog['checked_at'],feed_date=catalog['feed_date'],available=product['available'],missing=False)
+                origin.update(checked_at=catalog['checked_at'],feed_date=catalog['feed_date'],available=product['available'],availability=deepcopy(product.get('availability', {})),missing=False)
                 row['catalog_review_note']='';updated+=1;continue
             if product['kind']=='liner' and row['unit'] in {'рулон','рул.'} and (product.get('liner',{}).get('price_unit')=='m2' or product.get('liner',{}).get('unit_explicit') and product.get('liner',{}).get('price_unit')=='unknown'):
                 row['catalog_review_note']='Единица цены каталога больше не подтверждает цену за рулон; прежняя цена сохранена.'
@@ -638,7 +653,7 @@ def refresh_prices(snapshot, catalog, variant_key):
                 row['catalog_review_note']=''
                 origin['liner']=deepcopy(product.get('liner',{}))
                 set_conversion(row, product)
-                origin.update(available=product['available'], missing=False, checked_at=catalog['checked_at'], feed_date=catalog['feed_date'])
+                origin.update(available=product['available'], availability=deepcopy(product.get('availability', {})), missing=False, checked_at=catalog['checked_at'], feed_date=catalog['feed_date'])
                 updated += 1
                 continue
             if row['kind']=='filter_media':
@@ -651,7 +666,7 @@ def refresh_prices(snapshot, catalog, variant_key):
                 filter_media.selected(row,product)
                 row['catalog_review_note']=''
             row["price"] = product["price"]
-            origin.update(price=product["price"], available=product["available"], missing=False, checked_at=catalog["checked_at"], feed_date=catalog["feed_date"])
+            origin.update(price=product["price"], available=product["available"], availability=deepcopy(product.get('availability', {})), missing=False, checked_at=catalog["checked_at"], feed_date=catalog["feed_date"])
             updated += 1
     return evaluate(result), updated, skipped
 

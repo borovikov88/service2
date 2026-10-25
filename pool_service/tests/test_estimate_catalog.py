@@ -18,7 +18,9 @@ from pool_service.tests.test_pool_estimates import INPUTS, block
 
 
 def offer(pid, name, price="100.10", brand="Aquaviva", available="true", description="Насос с префильтром для систем фильтрации", currency="RUB", url=None):
-    category = '<param name="Категория подбора">Насосы для бассейнов</param>' if name.startswith('Насос ') and not name.startswith('Насос циркуляцион') else ''
+    category = '<param name="Наличие для подбора">own_stock</param>'
+    if name.startswith('Насос ') and not name.startswith('Насос циркуляцион'):
+        category += '<param name="Категория подбора">Насосы для бассейнов</param>'
     return f'<offer id="{pid}" available="{available}"><url>{escape(url or f"https://shop.aqualine22.ru/product-{pid}.html")}</url><price>{price}</price><currencyId>{currency}</currencyId><name>{escape(name)}</name><vendor>{brand}</vendor><description>{escape(description)}</description>{category}</offer>'
 
 

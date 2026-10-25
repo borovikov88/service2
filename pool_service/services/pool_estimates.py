@@ -493,6 +493,8 @@ def normalize_catalog(raw):
     result['inlet_taxonomy'] = normalize_inlet_taxonomy(raw.get('inlet_taxonomy'))
     from .estimate_pump_facts import normalize as normalize_pump_facts
     result['pump_facts'] = normalize_pump_facts(raw.get('pump_facts'))
+    from .estimate_availability import normalize as normalize_availability
+    result['availability'] = normalize_availability(raw.get('availability'))
     result["filtration"] = None if raw.get("filtration") is None else boolean(raw["filtration"])
     result["heater_purpose_note"] = string(raw.get("heater_purpose_note", ""), "Назначение нагревателя", 300)
     from .estimate_auxiliary import normalize_facts
@@ -781,7 +783,8 @@ def evaluate(raw):
             if origin["missing"]:
                 warnings.append(f"{label}: товар исчез из выгрузки магазина; сохранённая цена требует подтверждения.")
             elif not origin["available"]:
-                warnings.append(f"{label}: магазин не подтверждает доступность к заказу.")
+                from .estimate_availability import reason as availability_reason
+                warnings.append(f"{label}: {availability_reason(origin)}")
             if row["kind"] in {"pump", "heater"} and origin["heater_type"] != "exchanger":
                 options = origin["power_options"] if row["kind"] == "heater" else ([origin["power"]] if origin["power"] != "unknown" else [])
                 if result["inputs"]["power"] == "unknown" or not options:
