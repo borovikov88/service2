@@ -396,3 +396,77 @@ class ComparableSubsetTests(SimpleTestCase):
             account_id=daily.ACCOUNT)['state'], 'blocked')
         self.assertEqual(evidence(result['comparable_subsets'], connection_id=4,
             account_id='other-account')['state'], 'blocked')
+
+
+
+class ComparableSubsetSetupTests(TestCase):
+    def setUp(self):
+        DecisionEvidencePermissionsTests.setUp(self)
+
+    def test_setup_receipt_is_scoped_db_only_and_exports_no_values(self):
+        from pool_service.avito_comparable_subsets import safe_setup_evidence
+        with patch('pool_service.avito_services_workplace_setup._actor', return_value=self.owner), \
+                patch.object(daily, '_allowed', return_value=True), \
+                patch.object(daily, '_source_history',
+                    return_value=(daily.collection_cutoff(NOW), self.rows, self.runs)), \
+                patch('pool_service.avito_workspace.fetch_statistics') as fetch:
+            result = safe_setup_evidence(NOW)
+        self.assertEqual(result['state'], 'observed')
+        self.assertEqual(result['connection_id'], 4)
+        self.assertEqual(result['account_id'], daily.ACCOUNT)
+        self.assertEqual(len(result['pairs']), 2)
+        for private in ('Synthetic service', '100.00', '700.00', 'current_received_at',
+                        'delta', 'title', 'city'):
+            self.assertNotIn(private, str(result))
+        fetch.assert_not_called()
+
+    def test_setup_denies_other_org_manager_or_missing_actor_before_history(self):
+        from pool_service.avito_comparable_subsets import safe_setup_evidence
+        with patch.object(daily, '_allowed', return_value=True), \
+                patch.object(daily, '_source_history') as history:
+            for actor in (self.foreign, self.manager, None):
+                with patch('pool_service.avito_services_workplace_setup._actor', return_value=actor):
+                    result = safe_setup_evidence(NOW)
+                    self.assertEqual(result, {'schema_version': 1, 'state': 'unavailable',
+                                              'code': 'statistics_subset_unavailable'})
+        history.assert_not_called()
+        ChannelConnection.objects.filter(pk=4).update(external_id='foreign-account')
+        with patch.object(daily, '_source_history') as history:
+            self.assertEqual(safe_setup_evidence(NOW)['state'], 'unavailable')
+        history.assert_not_called()
+
+    def test_setup_discards_result_after_credential_stamp_or_actor_rights_change(self):
+        from pool_service.avito_comparable_subsets import safe_setup_evidence
+        with patch('pool_service.avito_services_workplace_setup._actor', return_value=self.owner), \
+                patch.object(daily, '_allowed', return_value=True), \
+                patch.object(daily, '_stamp', side_effect=['initial-binding', 'changed-binding']), \
+                patch.object(daily, '_source_history',
+                    return_value=(daily.collection_cutoff(NOW), self.rows, self.runs)):
+            self.assertEqual(safe_setup_evidence(NOW)['state'], 'unavailable')
+        def revoked(*args, **kwargs):
+            User.objects.filter(pk=self.owner.pk).update(is_active=False)
+            return daily.collection_cutoff(NOW), self.rows, self.runs
+        with patch('pool_service.avito_services_workplace_setup._actor', return_value=self.owner), \
+                patch.object(daily, '_allowed', return_value=True), \
+                patch.object(daily, '_source_history', side_effect=revoked):
+            result = safe_setup_evidence(NOW)
+        self.assertEqual(result['state'], 'unavailable')
+        self.assertNotIn('pairs', result)
+
+    def test_setup_discards_result_after_organization_move_and_sanitizes_failure(self):
+        from pool_service.avito_comparable_subsets import safe_setup_evidence
+        def moved(*args, **kwargs):
+            CommunicationChannel.objects.filter(pk=self.connection.channel_id).update(
+                organization=self.foreign_org)
+            return daily.collection_cutoff(NOW), self.rows, self.runs
+        with patch('pool_service.avito_services_workplace_setup._actor', return_value=self.owner), \
+                patch.object(daily, '_allowed', return_value=True), \
+                patch.object(daily, '_source_history', side_effect=moved):
+            self.assertEqual(safe_setup_evidence(NOW)['state'], 'unavailable')
+        CommunicationChannel.objects.filter(pk=self.connection.channel_id).update(organization=self.org)
+        with patch('pool_service.avito_services_workplace_setup._actor',
+                side_effect=RuntimeError('PRIVATE authorization payload')):
+            result = safe_setup_evidence(NOW)
+        self.assertEqual(result, {'schema_version': 1, 'state': 'unavailable',
+                                 'code': 'statistics_subset_unavailable'})
+        self.assertNotIn('PRIVATE', str(result))

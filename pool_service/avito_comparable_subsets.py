@@ -120,3 +120,45 @@ def evidence(comparisons, *, connection_id, account_id):
     return {'schema_version': 1, 'state': 'observed', 'connection_id': 4, 'account_id': '446312402',
         'source': 'saved_avito_stats_v2_items_comparable_subset',
         'provider_timezone': 'unknown', 'barnaul_calendar_confirmed': False, 'pairs': pairs}
+
+
+def safe_setup_evidence(now=None):
+    """DB-only scoped receipt for the existing protected exact-main setup."""
+    from . import avito_decision_report
+    from .communication_models import ChannelConnection
+    from .communication_services import organization_access, conversation_capability
+    from .avito_services_workplace_setup import _actor
+
+    unavailable = {'schema_version': 1, 'state': 'unavailable',
+                   'code': 'statistics_subset_unavailable'}
+
+    def authorized(connection, actor):
+        return bool(connection is not None and getattr(actor, 'is_authenticated', False)
+            and getattr(actor, 'is_active', False) and daily._scope(connection)
+            and organization_access(actor, connection.channel.organization) is not None
+            and conversation_capability(actor, 'can_manage_channels', connection.channel.organization)
+            and daily._allowed(connection, daily._state(connection)))
+
+    try:
+        current = ChannelConnection.objects.select_related('channel').filter(pk=4).first()
+        if current is None or not daily._scope(current):
+            return unavailable
+        actor = _actor(current)
+        if not authorized(current, actor):
+            return unavailable
+        before = (daily._stamp(current), current.channel.organization_id,
+                  current.channel_id, str(current.external_id))
+        _, rows, day_runs = daily._source_history(current, now)
+        report = avito_decision_report.build(rows, day_runs, now)
+        output = evidence(report['comparable_subsets'], connection_id=current.pk,
+                          account_id=str(current.external_id))
+        current.refresh_from_db()
+        actor.refresh_from_db()
+        if (not authorized(current, actor)
+                or before != (daily._stamp(current), current.channel.organization_id,
+                              current.channel_id, str(current.external_id))):
+            return unavailable
+        return output
+    except Exception:
+        # Neither exception text/causes nor partial private report data is exposed.
+        return unavailable
