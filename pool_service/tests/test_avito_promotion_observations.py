@@ -98,7 +98,7 @@ class PromotionObservationTests(TestCase):
         unavailable = dict(self.data)
         unavailable.pop("vas_available")
         unavailable["vas"] = []
-        self.assertEqual(self.observe(unavailable)["state"], "unavailable")
+        self.assertIsNone(self.observe(unavailable))
         self.assertEqual(self.feed.versions.filter(action="verify").count(), 0)
         data = {**self.data, "vas": [{"id": "xl", "finish_time": "unknown",
                                    "schedule": ["not a date", "2026-11-01"]}]}

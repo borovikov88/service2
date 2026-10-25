@@ -152,6 +152,8 @@ def observe(connection, actor, data, checked_at, source_binding, *, expected_ite
 
     A baseline/changed observed state is not proof of purchase or its start time.
     Repeated identical state is deduplicated under the connection/feed locks.
+    Return None when the provider did not explicitly supply its VAS field;
+    fixed ValueError codes/PermissionDenied refuse invalid evidence or access.
     """
     identifier = str(expected_item_id) if type(expected_item_id) in (str, int) else ""
     if (not re.fullmatch(r"[1-9][0-9]{0,31}", identifier)
@@ -192,8 +194,7 @@ def observe(connection, actor, data, checked_at, source_binding, *, expected_ite
                 or data.get("autoload_item_id") not in (None, "", item_id)):
             raise PromotionObservationError("promotion_observation_item_unverified")
         if state is None:
-            return {"state": "unavailable", "code": "promotion_observation_field_missing",
-                    "version_id": None, "purchase_confirmed": False}
+            return None
         scope = {"connection_id": current.pk, "account_id": ACCOUNT_ID,
                  "organization_id": current.channel.organization_id}
         binding_hash = _digest(binding)
