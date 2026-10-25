@@ -105,6 +105,7 @@ jobs:
             pool_service.tests_communications.CommunicationsTests.test_megafon_accounts_repairs_legacy_api_endpoint_without_redirect \
             pool_service.tests.test_avito_daily_statistics \
             pool_service.tests.test_avito_decision_report \
+            pool_service.tests.test_avito_improvement_proposals \
             pool_service.tests.test_avito_crm_coverage \
             pool_service.tests.test_avito_crm_attribution \
             pool_service.tests.test_crm_source_orders \
