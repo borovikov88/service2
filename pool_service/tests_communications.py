@@ -99,6 +99,11 @@ class CommunicationsTests(TestCase):
             conversation=conversation, direction="in", body="Test message",
             sender_name="Test caller",
         )
+        ConversationMessage.objects.create(
+            conversation=conversation, direction="out", body="Test outgoing",
+            sender_name="Test employee", delivery_status="delivered",
+            external_id="accepted-test-reply", delivery_attempts=1,
+        )
         self.client.force_login(self.owner)
         page = self.client.get(reverse("communications_conversations"))
         self.assertContains(page, "channel-icon")
@@ -106,6 +111,8 @@ class CommunicationsTests(TestCase):
         self.assertContains(page, 'rel="noopener noreferrer"')
         self.assertContains(page, 'class="message-meta"')
         self.assertContains(page, "Test message")
+        outgoing = page.content.decode().split("Test outgoing", 1)[1]
+        self.assertLess(outgoing.index("Попыток:"), outgoing.index('class="message-meta"'))
         conversation.external_id = "../chat?x=1#fragment"
         self.assertTrue(conversation.external_chat_url.endswith("..%2Fchat%3Fx%3D1%23fragment"))
         self.channel.kind = "website"
