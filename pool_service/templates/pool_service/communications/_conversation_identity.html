@@ -5,3 +5,7 @@
   {% if conversation.external_chat_url %}<a class="conversation-source-link" href="{{ conversation.external_chat_url }}" target="_blank" rel="noopener noreferrer">Avito <span aria-hidden="true">↗</span></a>{% endif %}
 </div>
 {% if conversation.client_card_url and conversation.client.phone %}<div class="small text-muted">{{ conversation.client.phone }}</div>{% elif conversation.participant_phone %}<div class="small text-muted">{{ conversation.participant_phone }}</div>{% endif %}
+
+{% if conversation.connection.pk == 4 and conversation.connection.external_id == "446312402" %}
+<a class="small d-inline-block mt-1" href="{% url 'avito_crm_attribution' conversation.connection.pk %}?conversation={{ conversation.uuid }}">Оценка обращения и связь с CRM</a>
+{% endif %}

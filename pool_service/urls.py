@@ -243,6 +243,7 @@ from .communication_views import (
     communication_telephony_set_active,
 )
 from .avito_daily_statistics_views import control as avito_daily_statistics_control
+from .avito_crm_attribution_views import attribution as avito_crm_attribution, request_lookup as avito_crm_request_lookup
 from .avito_management import avito_dashboard, avito_check_api, avito_refresh_data, avito_configure_monitor, avito_download_report, avito_configure_autoload_auto
 from .communication_api import (
     avito_webhook,
@@ -254,6 +255,7 @@ from .communication_api import (
     website_request_create,
 )
 
+from .avito_improvement_views import service_improvement_proposals
 from .avito_services_feed import services_feed, services_feed_edit, services_feed_download, services_feed_publish, services_feed_public, services_feed_version_public
 from .avito_services_media import services_image_upload, services_image_preview, services_image_public, services_media_probe
 from .avito_services_media_livecheck import services_media_livecheck, services_media_filecheck
@@ -268,6 +270,7 @@ urlpatterns = [
     path("api/communications/avito/services-feed/<uuid:public_key>/versions/<int:version_id>.xml", services_feed_version_public, name="avito_services_feed_version_public"),
     path("api/communications/avito/services-feed/<uuid:public_key>/feed.xml", services_feed_public, name="avito_services_feed_public"),
     path("api/communications/avito/services-feed/<uuid:public_key>/feed.xlsx", services_feed_public, {"output_format": "xlsx"}, name="avito_services_feed_public_xlsx"),
+    path("avito/<int:connection_id>/services-feed/improvements/", service_improvement_proposals, name="avito_service_improvement_proposals"),
     path("avito/<int:connection_id>/services-feed/publish/", services_feed_publish, name="avito_services_feed_publish"),
     path("estimates/", estimate_page, name="pool_estimate_page"),
     path("estimates/api/", estimate_api, name="pool_estimate_api"),
@@ -278,6 +281,8 @@ urlpatterns = [
     path("avito/<int:connection_id>/services-feed/draft.xlsx", services_feed_download, name="avito_services_feed_download"),
     path("avito/", avito_dashboard, name="avito_dashboard"),
     path("avito/<int:connection_id>/statistics-daily/", avito_daily_statistics_control, name="avito_daily_statistics_control"),
+    path("avito/<int:connection_id>/attribution/", avito_crm_attribution, name="avito_crm_attribution"),
+    path("avito/<int:connection_id>/attribution/requests/", avito_crm_request_lookup, name="avito_crm_request_lookup"),
     path("avito/<int:connection_id>/autoload-auto/", avito_configure_autoload_auto, name="avito_configure_autoload_auto"),
     path("avito/<int:connection_id>/autoload-report.csv", avito_download_report, name="avito_download_report"),
     path("avito/<int:connection_id>/monitor/", avito_configure_monitor, name="avito_configure_monitor"),

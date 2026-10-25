@@ -1,6 +1,8 @@
+{% load avito_autoload %}
+{% avito_service_report selected.connection workspace.autoload_report.data as service_report %}
 <section class="avito-panel mb-3" aria-labelledby="avito-autoload-report-heading">
   <div class="avito-panel__header">
-    <h2 class="avito-panel__title" id="avito-autoload-report-heading">Ошибки автозагрузки по объявлениям</h2>
+    <h2 class="avito-panel__title" id="avito-autoload-report-heading">{% if service_report.applicable %}Результат автозагрузки{% else %}Ошибки автозагрузки по объявлениям{% endif %}</h2>
     <div class="d-flex flex-wrap gap-2">
       <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" data-avito-submit>
         {% include 'pool_service/avito/_refresh_fields.html' %}
@@ -56,13 +58,39 @@
     {% if workspace.autoload_report.data.complete %}
       {% with report=workspace.autoload_report.data %}
         <div class="avito-counters mt-0 mb-2">
+          {% if service_report.applicable %}
+            <span class="avito-counter {% if service_report.counts.error %}text-danger{% endif %}" data-avito-report-counter="error">Критические: <strong>{{ service_report.counts.error }}</strong></span>
+            <span class="avito-counter {% if service_report.counts.warning %}text-warning{% endif %}" data-avito-report-counter="warning">Предупреждения для проверки: <strong>{{ service_report.counts.warning }}</strong></span>
+            <span class="avito-counter {% if service_report.counts.alarm %}text-danger{% endif %}" data-avito-report-counter="alarm">Сигналы: <strong>{{ service_report.counts.alarm }}</strong></span>
+            <span class="avito-counter" data-avito-report-counter="service">Служебные уведомления: <strong>{{ service_report.counts.service_notice }}</strong></span>
+            <span class="avito-counter" data-avito-report-counter="info">Информация: <strong>{{ service_report.counts.info }}</strong></span>
+          {% else %}
           <span class="avito-counter {% if report.counts.error %}text-danger{% endif %}">Критические: <strong>{{ report.counts.error|default:0 }}</strong></span>
           <span class="avito-counter {% if report.counts.warning %}text-warning{% endif %}">Предупреждения: <strong>{{ report.counts.warning|default:0 }}</strong></span>
           <span class="avito-counter">Сигналы: <strong>{{ report.counts.alarm|default:0 }}</strong></span>
+          {% endif %}
         </div>
-        <p class="small mb-2">Загрузка {{ report.upload_id }} · {% if report.upload_status == 'success_warning' %}Завершена с предупреждениями{% elif report.upload_status == 'success' %}Завершена{% elif report.upload_status == 'processing' %}В процессе{% elif report.upload_status == 'error' %}Ошибка загрузки{% else %}Статус не передан{% endif %}</p>
+        <p class="small mb-2">Загрузка {{ report.upload_id }} · {% if service_report.applicable and not service_report.has_attention and report.upload_finished %}Завершена; служебные уведомления и информация не требуют исправления объявлений{% elif report.upload_status == 'success_warning' %}Завершена с предупреждениями{% elif report.upload_status == 'success' %}Завершена{% elif report.upload_status == 'processing' %}В процессе{% elif report.upload_status == 'error' %}Ошибка загрузки{% else %}Статус не передан{% endif %}</p>
         {% if not report.upload_finished %}<p class="small text-warning">Загрузка ещё не подтверждена завершённой. Это предварительный снимок; её результаты могут измениться.</p>{% endif %}
         {% for event in report.events %}{% if event.type == 'error' or event.type == 'alarm' %}<p class="small text-danger" role="status">{{ event.code }}: {{ event.description }}</p>{% endif %}{% endfor %}
+        {% if service_report.applicable %}
+          {% for event in report.events %}{% if event.type == 'warning' %}<p class="small text-warning" role="status">Событие загрузки требует проверки · {{ event.code }}: {{ event.description }}</p>{% endif %}{% endfor %}
+          {% if service_report.priority_rows %}
+            <h3 class="h6">Требуют внимания</h3>
+            {% include 'pool_service/avito/_autoload_rows.html' with rows=service_report.priority_rows group="priority" %}
+          {% elif not service_report.has_attention %}<p class="small text-muted mb-2">В полученных строках нет сообщений, требующих исправления. Служебные уведомления показаны отдельно.</p>{% endif %}
+          {% if service_report.service_rows %}
+            <details class="avito-help mt-2 mb-2" data-avito-service-notices><summary>Служебные уведомления о привязке · {{ service_report.service_rows|length }} объявлений</summary>
+              <p class="small text-muted mt-2">Авито сообщил о состоявшейся привязке существующих объявлений (1218). Эти сообщения сами по себе не требуют исправления. Исходный уровень warning сохранён в подробностях и CSV.</p>
+              {% include 'pool_service/avito/_autoload_rows.html' with rows=service_report.service_rows group="service" %}
+            </details>
+          {% endif %}
+          {% if service_report.other_rows %}
+            <details class="avito-help mt-2 mb-2"><summary>Информация и остальные объявления · {{ service_report.other_rows|length }}</summary>
+              <div class="mt-2">{% include 'pool_service/avito/_autoload_rows.html' with rows=service_report.other_rows group="other" %}</div>
+            </details>
+          {% endif %}
+        {% else %}
         {% if autoload_priority_rows %}
           <h3 class="h6">Требуют внимания</h3>
           {% include 'pool_service/avito/_autoload_rows.html' with rows=autoload_priority_rows group="priority" %}
@@ -70,10 +98,12 @@
         <details class="avito-help mt-2 mb-2"><summary>Предупреждения и остальные объявления · {{ autoload_other_rows|length }}</summary>
           <div class="mt-2">{% include 'pool_service/avito/_autoload_rows.html' with rows=autoload_other_rows group="other" %}</div>
         </details>
+        {% endif %}
         <a class="btn btn-sm btn-outline-secondary" href="{% url 'avito_download_report' selected.connection.pk %}">Скачать отчёт CSV</a>
         <details class="avito-help mt-2"><summary>Сведения об отчёте и пояснения</summary>
           <p class="small text-muted mt-2">Отчёт читается через API Авито с сохранёнными ключами. Исправления товаров, категорий и публикации не запускаются.</p>
           <p class="small text-muted">{{ report.total }} строк, {{ report.pages }} страниц. Одно объявление может входить в несколько счётчиков. Статус API: {{ report.upload_status|default:"Не передан" }} · {% if report.kind == 'current' %}Текущая загрузка{% else %}Последняя обработанная{% endif %}.</p>
+          {% if service_report.applicable %}<p class="small text-muted">Исходные уровни Авито: error {{ report.counts.error|default:0 }}, warning {{ report.counts.warning|default:0 }}, alarm {{ report.counts.alarm|default:0 }}, info {{ report.counts.info|default:0 }}. Служебная классификация Service2 не меняет эти уровни, коды или текст. Счётчики объявлений могут пересекаться; служебные уведомления считаются по сообщениям.</p>{% endif %}
           <p class="small text-muted">CSV содержит все строки сохранённого снимка. В каждом списке на экране показаны первые 200 строк. Длинные сообщения усечены с отметкой; контакты и ссылки скрыты.</p>
           {% for event in report.events %}<p class="small">{{ event.type }} · {{ event.code }}: {{ event.description }}</p>{% endfor %}
           <p class="small text-muted mb-0">«В архиве» и «Удалено навсегда» — разные статусы API автозагрузки. Причина удаления определяется сообщением Авито; один статус не указывает, кто и почему удалил объявление.</p>

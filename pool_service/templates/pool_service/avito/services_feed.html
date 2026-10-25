@@ -1,9 +1,11 @@
 {% extends 'pool_service/base.html' %}
+{% load avito_improvements %}
 {% block title %}Объявления услуг{% endblock %}
 {% block content %}
 <h1>Объявления услуг · {{ connection.name }}</h1>
 <p>Аккаунт {{ connection.external_id }}. Сохранение черновика и публикация файла — отдельные действия.</p>
 <a href="{% url 'avito_dashboard' %}?account={{ connection.pk }}">К Авито</a>
+{% if connection.pk == 4 and connection.external_id == "446312402" %}<a class="ms-3" href="{% url 'avito_service_improvement_proposals' connection.pk %}">Проекты улучшений</a>{% endif %}
 {% if error %}<div class="alert alert-danger" role="alert">{{ error }}</div>{% endif %}
 {% if feed %}
 <div class="card card-body my-3">
@@ -97,16 +99,17 @@
 <p class="small mt-2">Сохранение черновика, публикация файла и чтение статусов записываются раздельно. История прежних действий до запуска этого журнала неизвестна.</p>
 {% if selected_version %}
 <div class="border rounded p-2 my-2">
-<p><strong>{% if selected_version.manual_photo_evidence %}Ручная сверка фото №{{ selected_version.changes.0.evidence.photo_number }}{% else %}{{ selected_version.get_action_display }}{% endif %}</strong> · версия {{ selected_version.revision }} · {{ selected_version.created_at }}<br>
+<p><strong>{% if selected_version|improvement_project %}Проект, не применён{% elif selected_version.manual_photo_evidence %}Ручная сверка фото №{{ selected_version.changes.0.evidence.photo_number }}{% else %}{{ selected_version.get_action_display }}{% endif %}</strong> · версия {{ selected_version.revision }} · {{ selected_version.created_at }}<br>
 Автор: {% if selected_version.actor %}{{ selected_version.actor }}{% else %}не установлен{% endif %}<br>{{ selected_version.reason }}</p>
 {% if selected_version.source_version_id %}<p class="small">Связанная запись: {{ selected_version.source_version_id }}.</p>{% endif %}
 {% if selected_version.file_digest %}<p class="small text-break">SHA-256 файла: {{ selected_version.file_digest }}</p>{% endif %}
+{% if selected_version|improvement_project %}<p class="small">Это предложение: поля черновика, XML и Авито не менялись. <a href="{% url 'avito_service_improvement_proposals' connection.pk %}">Открыть проект и условия оценки</a>.</p>{% else %}
 <details><summary>Изменения полей: {{ selected_version.changes|length }}</summary>
 {% for change in selected_version.changes %}<div class="border-top py-2">
 <strong>AvitoId {{ change.avito_id }} · {{ change.field }}</strong>
 <div class="small">До</div><pre class="text-break" style="white-space:pre-wrap">{{ change.before|default_if_none:"—" }}</pre>
 <div class="small">После</div><pre class="text-break" style="white-space:pre-wrap">{{ change.after|default_if_none:"—" }}</pre>
-</div>{% empty %}<p>Содержание не изменялось.</p>{% endfor %}</details>
+</div>{% empty %}<p>Содержание не изменялось.</p>{% endfor %}</details>{% endif %}
 {% if selected_version.action != 'verify' and selected_version.action != 'disable' and selected_version.action != 'policy' %}
 <form method="post" class="mt-3">{% csrf_token %}<input type="hidden" name="action" value="restore"><input type="hidden" name="revision" value="{{ feed.revision }}"><input type="hidden" name="version_id" value="{{ selected_version.pk }}">
 <label for="restore-reason">Причина восстановления</label><input id="restore-reason" class="form-control" name="reason" maxlength="500">
@@ -116,7 +119,7 @@
 </div>
 {% endif %}
 <ul class="list-unstyled">
-{% for version in history %}<li class="border-top py-2"><a href="?history_version={{ version.pk }}&amp;history_page={{ history.number }}">{% if version.manual_photo_evidence %}Ручная сверка фото №{{ version.changes.0.evidence.photo_number }} · опубликованная версия {{ version.source_version.revision }}{% else %}{{ version.get_action_display }} · версия {{ version.revision }}{% endif %}</a>
+{% for version in history %}<li class="border-top py-2"><a href="?history_version={{ version.pk }}&amp;history_page={{ history.number }}">{% if version|improvement_project %}Проект, не применён · версия источника {{ version.source_version.revision }}{% elif version.manual_photo_evidence %}Ручная сверка фото №{{ version.changes.0.evidence.photo_number }} · опубликованная версия {{ version.source_version.revision }}{% else %}{{ version.get_action_display }} · версия {{ version.revision }}{% endif %}</a>
 <div class="small">{{ version.created_at }} · {% if version.actor %}{{ version.actor }}{% else %}автор не установлен{% endif %} · {{ version.reason }}</div></li>
 {% empty %}<li>Журнал начнётся при следующем изменении или явной проверке.</li>{% endfor %}
 </ul>

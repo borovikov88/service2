@@ -8,7 +8,7 @@
   </div>
   <div class="avito-panel__body">
     <p class="small">Часовой пояс суточных групп Авито пока не подтверждён. Ниже сохранены даты источника; они не пересчитываются и не выдаются за полные сутки Барнаула. Сбор идёт с явной задержкой {{ daily.lag_days }} дня, до {{ daily.cutoff }}.</p>
-    <p class="small text-muted">Полнота страниц и календарная точность — разные признаки. Контакты, просмотры и сообщения не являются количеством уникальных клиентов. Телефон, чат и их пересечение не складываются. Категории расходов показаны отдельно и могут пересекаться.</p>
+    <p class="small text-muted">Полнота страниц, покрытие объявлений и календарная точность — разные признаки. Контакты, просмотры и сообщения не являются количеством уникальных клиентов. Телефон, чат и их пересечение не складываются. Категории расходов показаны отдельно и могут пересекаться.</p>
     {% if daily.can_configure %}<form class="d-flex flex-wrap gap-2 mb-3" method="post" action="{% url 'avito_daily_statistics_control' connection.pk %}">
       {% csrf_token %}
       {% if daily.enabled %}
@@ -19,10 +19,14 @@
       {% endif %}
     </form>{% endif %}
     {% timezone "Asia/Barnaul" %}
+      <div class="small mt-2">История источника: {{ daily.backfill.from }}–{{ daily.backfill.to }}. Полностью получены страницы для {{ daily.backfill.completed_days }}/{{ daily.backfill.total_days }} дат; осталось {{ daily.backfill.remaining_days }}. Это не означает наличие показателей по всем объявлениям. Следующая разрешённая попытка: {{ daily.next_due_at|date:"d.m.Y H:i:s"|default:"не задана" }} · Барнаул.</div>
+      <div class="small text-muted">Сбор продолжает существующий фоновый обработчик: одна страница за запуск, с сохранением прогресса и общими лимитами Авито.</div>
       <div class="small text-muted">Последний успешный сбор: {{ daily.last_success_at|date:"d.m.Y H:i:s"|default:"не подтверждён" }} · Барнаул.</div>
       {% if daily.latest_run %}<div class="small text-muted">Последняя выгрузка: {{ daily.latest_run.day }}; получено {{ daily.latest_run.received_rows }} строк; {% if daily.latest_run.pagination_complete %}все страницы подтверждены{% else %}полнота не подтверждена{% endif %}. Начало: {{ daily.latest_run.started_at|date:"d.m.Y H:i:s" }}; завершение: {{ daily.latest_run.finished_at|date:"d.m.Y H:i:s"|default:"не подтверждено" }}.</div>{% endif %}
     {% endtimezone %}
     {% if daily.error %}<p class="text-warning-emphasis small mt-2">{{ daily.error }}</p>{% endif %}
+
+    {% include 'pool_service/avito/_decision_report.html' with report=daily.decision_report only %}
 
     <details class="mt-3">
       <summary>Запрошенные сравнения по полным дням Барнаула</summary>
@@ -31,17 +35,38 @@
     </details>
 
     <details class="mt-3">
+      <summary>Сравнение доступных дат источника: день и 7 дней</summary>
+      <p class="small mt-2">Общий источник — avito_stats_v2_items, timezone неизвестен. Это сравнение дат Авито, а не полных суток Барнаула. Разница рассчитывается только для одного и того же известного набора объявлений при полном покрытии дат и строк. Неизвестный показатель блокирует только соответствующую метрику. Изменения процентов показаны в процентных пунктах.</p>
+      {% for comparison in daily.provider_comparisons %}
+      <div class="border-top py-2">
+        <strong>{{ comparison.label }}</strong>
+        <div class="small">Текущий: {{ comparison.current.from }}–{{ comparison.current.to }}. Предыдущий: {{ comparison.previous.from }}–{{ comparison.previous.to }}.</div>
+        {% if comparison.reason == "missing_days" %}<div class="small text-muted">Ещё не получены все даты; сравнение ожидает продолжения сбора.</div>
+        {% elif comparison.reason == "cohort_changed" %}<div class="small text-muted">Набор объявлений различается либо его стабильность не подтверждена. Дельты не рассчитаны.</div>
+        {% elif comparison.reason == "missing_ad_rows" %}<div class="small text-muted">Авито не вернул все известные строки объявлений. Дельты не рассчитаны.</div>{% endif %}
+        <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Показатель</th><th>Текущий</th><th>Предыдущий</th><th>Разница</th><th>Изменение к предыдущему, %</th></tr></thead>
+        <tbody>{% for metric in comparison.metrics %}<tr><th scope="row">{{ metric.label }}</th>
+          <td>{% if metric.current != None %}{{ metric.current }} {{ metric.unit }}{% else %}Нет данных{% endif %}</td>
+          <td>{% if metric.previous != None %}{{ metric.previous }} {{ metric.unit }}{% else %}Нет данных{% endif %}</td>
+          <td>{% if metric.delta != None %}{{ metric.delta }} {{ metric.delta_unit }}{% else %}Не рассчитано{% endif %}</td>
+          <td>{% if metric.relative_change != None %}{{ metric.relative_change }} %{% else %}Не рассчитано{% endif %}</td></tr>{% endfor %}</tbody></table></div>
+      </div>{% endfor %}
+    </details>
+
+    <details class="mt-3">
       <summary>Суммы по доступным датам источника</summary>
       <p class="small text-muted mt-2">Это суммы дневных счётчиков, не уникальные люди за период и не сравнение точных суток Барнаула. Неизвестный показатель или пропущенный день делает соответствующий итог неизвестным.</p>
       {% for period in daily.provider_periods %}
         <div class="border-top py-2">
           <strong>{{ period.label }}</strong> · {{ period.from }}–{{ period.to }}
-          <div class="small">Пропущено дат: {{ period.missing_days }}; строк источника: {{ period.reported_cells }}/{{ period.expected_cells }}.</div>
+          <div class="small">Страницы: {{ period.completed_days }}/{{ period.total_days }} дат. Пропущено дат: {{ period.missing_days }}. Строки объявлений: {{ period.reported_cells }}/{{ period.expected_cells }} известного набора на обработанных датах; отсутствует {{ period.missing_ad_cells }}. {% if not period.expected_cells_known %}Ожидаемый набор на пропущенных датах неизвестен.{% endif %}</div>
+          <div class="small text-muted">Известный набор взят из опубликованного снимка и строк Авито во время сбора; это не восстановленный перечень активных объявлений прошлых лет. Источник {{ period.source }}, timezone {{ period.provider_timezone }}. {% timezone "Asia/Barnaul" %}Последнее получение: {{ period.received_at|date:"d.m.Y H:i:s"|default:"не подтверждено" }} · Барнаул.{% endtimezone %}</div>
           <div class="table-responsive"><table class="table table-sm"><tbody>
-          {% for metric in period.metrics %}<tr><th scope="row">{{ metric.label }}</th><td>{% if metric.value != None %}{{ metric.value }} {{ metric.unit }}{% else %}Нет данных{% endif %}</td></tr>{% endfor %}
+          {% for metric in period.metrics %}<tr><th scope="row">{{ metric.label }}</th><td>{% if metric.value != None %}{{ metric.value }} {{ metric.unit }}{% else %}Нет данных{% endif %}{% if metric.known_cells != None %}<div class="small text-muted">Известно значений: {{ metric.known_cells }}/{{ period.expected_cells }}</div>{% endif %}</td></tr>{% endfor %}
           </tbody></table></div>
         </div>
       {% endfor %}
+      <p class="small mt-2">Списано бонусов: нет подтверждённой единицы. {{ daily.bonus_spending.reason }}</p>
     </details>
 
     <details class="mt-3" open>
@@ -71,6 +96,7 @@
 
     {% if daily.crm %}
     <details class="mt-3"><summary>Покрытие связи с существующей CRM</summary>
+      <a class="btn btn-sm btn-outline-primary my-2" href="{% url 'avito_crm_attribution' connection.pk %}">Оценить обращения и подтвердить заявки</a>
       <p class="small mt-2">Все существующие диалоги Service2, отдельно от периода статистики Авито. Проверено {{ daily.crm.inspected_dialogs }}/{{ daily.crm.total_dialogs }}{% if not daily.crm.complete %}; охват неполный{% endif %}.</p>
       <dl class="small">
         <dt>Диалоги с подтверждённым ID объявления</dt><dd>{{ daily.crm.ad_source_confirmed_dialogs }}</dd>
@@ -79,7 +105,12 @@
         <dt>Различных карточек клиентов</dt><dd>{{ daily.crm.distinct_client_cards }}</dd>
         <dt>Подтверждённые цепочки объявление → диалог → клиент</dt><dd>{{ daily.crm.ad_dialog_client_chains }}</dd>
         <dt>Объявление → звонок</dt><dd>Нет подтверждённого идентификатора для связи.</dd>
-        <dt>Диалог/звонок → лид → заказ → оплата</dt><dd>Прямые связи не подтверждены; количество и выручка неизвестны.</dd>
+        {% if daily.crm.association %}
+        <dt>Подтверждённые источники → существующие заявки</dt><dd>{{ daily.crm.association.linked_dialogs }} диалогов; {{ daily.crm.association.linked_calls }} звонков с ручным подтверждением Авито; {{ daily.crm.association.distinct_requests }} различных заявок.</dd>
+        <dt>Источник звонка не подтверждён</dt><dd>{{ daily.crm.association.candidate_calls_unknown }} вручную разобранных кандидатов. Они не включены в обращения Авито.</dd>
+        <dt>Без подтверждённой заявки</dt><dd>{{ daily.crm.association.unknown_requests }}</dd>
+        {% else %}<dt>Диалог/звонок → заявка</dt><dd>Связи не подтверждены.</dd>{% endif %}
+        <dt>Заказ → оплата → выручка</dt><dd>Неизвестны. Ручная ссылка на наблюдаемый плановый документ 1С не является оплатой или причинной атрибуцией рекламы.</dd>
       </dl>
       <p class="small text-muted">Источник — сохранённый provider_context.item.id и проверка принадлежности объявления за последние 24 часа. Client FK используется только при доступе к карточке той же организации. Совпадение телефона или названия не создаёт связь с лидом, заказом или оплатой. Карточки клиентов не равны уникальным людям из счётчиков Авито.</p>
     </details>

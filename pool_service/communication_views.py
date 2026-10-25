@@ -169,11 +169,13 @@ def conversations(request):
             is_resolved=False,
         ).update(is_read=True, is_resolved=True, resolved_at=timezone.now())
     from .communication_enrichment import start_client_enrichment_worker
+    from .crm_source_links import navigation as crm_source_navigation
     requested = ([selected.pk] if selected else []) + [item.pk for item in items if not item.client_id][:19]
     transaction.on_commit(lambda: start_client_enrichment_worker(requested))
     return render(request, "pool_service/communications/conversations.html", {
         "active_tab": "communications", "conversations": items, "selected": selected,
         **conversation_context(selected, organization, request.user, include_outbox=False),
+        "avito_crm_url": crm_source_navigation(request.user, organization),
         "can_reply": conversation_capability(request.user, "can_reply_conversations", organization),
         "can_take": conversation_capability(request.user, "can_take_conversation", organization),
         "can_assign": conversation_capability(request.user, "can_assign_conversation", organization),
@@ -1617,7 +1619,10 @@ def communication_connection_edit(request, connection_id):
     avito_diagnostic_accounts = []
     if kind == CommunicationChannel.KIND_AVITO:
         from pool_service.avito_workspace import diagnostic_account
-        avito_diagnostic_accounts = [diagnostic_account(connection, has_credentials=avito_credentials_configured)]
+        avito_diagnostic_accounts = [diagnostic_account(
+            connection, has_credentials=avito_credentials_configured,
+            user=request.user if connection.pk == 4 and str(connection.external_id) == "446312402" else None,
+        )]
 
     return render(
         request,

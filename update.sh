@@ -27,17 +27,120 @@ if [[ ! -d ../venv || ! -x ../venv/bin/python || ! -d ../tmp || ! -w ../tmp ]]; 
     echo "Hosting layout is incompatible: ../venv and writable ../tmp are required" >&2
     exit 67
 fi
+# Keep contention diagnostics inline: the reviewed script runs via SSH stdin.
+# This only reads the exact failed lock and bounded /proc metadata; it never
+# removes a lock, retries acquisition or reads process arguments/environment.
+lock_diagnostic() {
+    ../venv/bin/python - "$1" "$2" 2>/dev/null <<'PYTHON_LOCK_DIAGNOSTIC' || true
+import json
+import math
+import os
+from pathlib import Path
+import re
+import sys
+
+PREFIX = "SERVICE2_DEPLOY_LOCK_V1 "
+MAX_LOCK_BYTES = 262144
+
+
+def parse_holders(text, identity):
+    holders = set()
+    for line in text.splitlines():
+        parts = line.split()
+        # "->" records are waiting requests, not holders. Ignore other lock types.
+        if len(parts) != 8 or parts[1:3] != ["FLOCK", "ADVISORY"] or parts[3] not in {"READ", "WRITE"}:
+            continue
+        try:
+            major, minor, inode = parts[5].split(":")
+            key = (int(major, 16), int(minor, 16), int(inode, 10))
+            pid = int(parts[4], 10)
+        except ValueError:
+            continue
+        if key == identity and pid > 0:
+            holders.add((pid, "shared" if parts[3] == "READ" else "exclusive"))
+    return sorted(holders)
+
+
+def bounded_text(path, size):
+    with path.open("r", encoding="ascii") as stream:
+        value = stream.read(size + 1)
+    if len(value) > size:
+        raise ValueError("bounded read exceeded")
+    return value
+
+
+def start_ticks(path):
+    value = bounded_text(path, 4096)
+    tail = value[value.rindex(")") + 1:].split()
+    return int(tail[19], 10)
+
+
+def process_metadata(pid, uptime, ticks, proc=Path("/proc")):
+    try:
+        path = proc / str(pid)
+        start = start_ticks(path / "stat")
+        executable = Path(os.readlink(path / "exe")).name
+        # Arbitrary comm/argv names can contain personal data. Only known runtime
+        # executable basenames are eligible; unknown executable paths stay hidden.
+        if not re.fullmatch(r"(?:python(?:[23](?:\.[0-9]{1,2})?)?|bash|dash|sh|timeout|flock|sleep)", executable):
+            executable = None
+        age = uptime - start / ticks
+        if start != start_ticks(path / "stat") or start < 0 or not math.isfinite(age) or age < 0:
+            return None, None
+        return executable, int(age)
+    except (OSError, ValueError, IndexError, OverflowError):
+        return None, None
+
+
+def diagnose(role, fd, proc=Path("/proc")):
+    receipt = {"role": role, "state": "unavailable"}
+    try:
+        opened = os.fstat(fd)
+        identity = (os.major(opened.st_dev), os.minor(opened.st_dev), opened.st_ino)
+        holders = parse_holders(bounded_text(proc / "locks", MAX_LOCK_BYTES), identity)
+        if not holders or len(holders) > 16:
+            return receipt
+        uptime = float(bounded_text(proc / "uptime", 256).split()[0])
+        ticks = os.sysconf("SC_CLK_TCK")
+        if not math.isfinite(uptime) or uptime < 0 or ticks <= 0:
+            return receipt
+        observed = []
+        for pid, mode in holders:
+            basename, age = process_metadata(pid, uptime, ticks, proc)
+            observed.append({"mode": mode, "pid": pid,
+                "process_basename": basename, "process_age_seconds": age})
+        # A disappearing lock is not evidence about the current blocker.
+        current = parse_holders(bounded_text(proc / "locks", MAX_LOCK_BYTES), identity)
+        if current != holders:
+            return receipt
+        return {"role": role, "state": "observed", "holders": observed}
+    except (OSError, ValueError, IndexError, OverflowError):
+        return receipt
+
+
+if __name__ == "__main__":
+    role = sys.argv[1] if len(sys.argv) == 3 and sys.argv[1] in {"deployment", "call_analysis"} else "unknown"
+    try:
+        receipt = diagnose(role, int(sys.argv[2]))
+    except (ValueError, IndexError):
+        receipt = {"role": role, "state": "unavailable"}
+    print(PREFIX + json.dumps(receipt, sort_keys=True, separators=(",", ":")))
+PYTHON_LOCK_DIAGNOSTIC
+}
+
 if [[ "$MODE" == "deploy" ]]; then
     # Keep deployment mutually exclusive with the call-AI worker.
     # Deployment owns both locks for the full mutating phase.
     exec 8>../tmp/service2-call-ai.lock
     if ! flock -n 8; then
         echo "Active call analysis is running; retry deployment after it finishes" >&2
+        lock_diagnostic call_analysis 8 >&2
         exit 75
     fi
     exec 9>../tmp/service2-deploy.lock
     if ! flock -n 9; then
         echo "Another service2 deployment is already running" >&2
+        lock_diagnostic deployment 9 >&2
         exit 75
     fi
 fi

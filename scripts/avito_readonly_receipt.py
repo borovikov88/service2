@@ -182,6 +182,31 @@ def input_copy_proof(value):
             "content_kind": value["content_kind"], "identity_count": count, "byte_count": size}
 
 
+def service_message_presentation(value, parent):
+    require(isinstance(value, dict) and value.get("schema_version") == 1)
+    require(type(value.get("schema_version")) is int and type(value.get("connection_id")) is int)
+    require(value.get("connection_id") == 4 and value.get("account_id") == "446312402")
+    require(value.get("upload_id") == parent["upload_id"])
+    result = {"schema_version": 1, "connection_id": 4, "account_id": "446312402",
+              "upload_id": identifier(value.get("upload_id"))}
+    for name in ("row_count", "actionable_warning_rows", "error_rows", "alarm_rows",
+                 "raw_warning_rows", "raw_info_rows"):
+        result[name] = integer(value.get(name), 5000)
+    require(result["row_count"] == parent["total"])
+    require(result["actionable_warning_rows"] <= result["raw_warning_rows"])
+    require(result["raw_warning_rows"] == parent["counts"]["warning"])
+    require(result["raw_info_rows"] == parent["counts"]["info"])
+    require(result["error_rows"] == parent["counts"]["error"])
+    require(result["alarm_rows"] == parent["counts"]["alarm"])
+    for name, rows in (("service_notice_messages", result["raw_warning_rows"]),
+                       ("info_3002_messages", result["raw_info_rows"])):
+        result[name] = integer(value.get(name), 250000)
+        require(result[name] <= rows * 50)
+    require(value.get("raw_snapshot_unchanged") is True)
+    result["raw_snapshot_unchanged"] = True
+    return result
+
+
 def report(value):
     require(isinstance(value, dict))
     if "error" in value:
@@ -210,6 +235,8 @@ def report(value):
     require(source_kind in ("shop_aggregate_file", "shop_profile_43_file", "other_or_unknown"))
     result["shop_feed_source"] = source_kind
     result["shop_feed_diagnostics"] = sequence(value.get("shop_feed_diagnostics", []), feed_source_diagnostic, 50)
+    if "service_message_presentation" in value:
+        result["service_message_presentation"] = service_message_presentation(value["service_message_presentation"], result)
     if "message_code_counts" in value:
         def message_count(row):
             require(isinstance(row, dict) and row.get("type") in ("error", "warning", "alarm", "info"))
@@ -787,6 +814,10 @@ def connection(value):
                   advance_access=advance_access(value.get("advance_access", {"error": "audit_advance_not_requested"})),
                   monitoring=monitoring(value.get("monitoring", {"error": "audit_monitoring_not_requested"})),
                   cached_configuration=cached_configuration(value.get("cached_configuration", {"error": "audit_cached_configuration_not_requested"})))
+    presentation = result["autoload_report"].get("service_message_presentation")
+    if presentation is not None:
+        require(result["connection_id"] == presentation["connection_id"]
+                and result["account_id"] == presentation["account_id"])
     for key, project in (("publication_release", publication_release),
                          ("webhook_chain", webhook_chain), ("approved_photo", approved_photo),
                          ("raw_content_fields", raw_content_fields),

@@ -23,9 +23,15 @@ No unrelated account-monitor job, environment setting or connection is changed.
 Beget may expose CronTab only in its panel. A missing CLI returns
 panel_setup_required and does not fail an otherwise healthy deployment.
 It is not evidence that a panel job is absent or present. An authorized channel
-administrator sees the exact shell-quoted runtime command in Service2.
-Create one Beget CronTab job with that command and the five fields
-* * * * * (every minute). Do not replace the existing account-monitor entry.
+administrator sees the exact shell-quoted runtime command at
+`/communications/connections/4/edit/#avito-outbox-admin` (connection settings,
+not a customer conversation). The view and command builder both enforce current
+organization/channel-management access and the Services account binding. The
+response is private and non-cacheable. Other accounts do not receive the panel.
+Inspect existing Beget jobs first. Only if the Services fallback job is absent,
+create one with that command and the five fields `* * * * *` (every minute).
+Preserve existing jobs. Healthy periodic telemetry does not ask the owner to
+create another job; it shows the command for inspection of the existing one.
 
 The fixed tick launches only send_avito_outbox --connection-id 4 --limit 10 --periodic.
 The sender enforces current account/organization binding, explicit manager

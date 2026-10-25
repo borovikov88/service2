@@ -225,3 +225,74 @@ class AvitoOutboxDisplayTests(TestCase):
         self.assertIn("25.10.2026 10:23:11", content)
         self.assertNotIn("Нет свежего подтверждения работы обработчика", content)
         self.assertNotIn("очередь пуста до и после", content)
+
+
+    @patch("pool_service.communication_avito._json_request")
+    @patch("scripts.avito_outbox_cron.panel_command", return_value="SCOPED-SERVICES-COMMAND")
+    @patch("pool_service.avito_webhook_chain.display")
+    @patch("pool_service.avito_outbox.outbox_diagnostics")
+    def test_settings_admin_has_scoped_command_without_provider_io_or_settings_writes(
+            self, diagnostics, chain, panel, provider):
+        self.connection.external_id = "446312402"
+        self.connection.save(update_fields=["external_id"])
+        original_settings = dict(self.connection.settings or {})
+        diagnostics.return_value = {
+            **self.queue, "enabled": True, "binding_valid": True,
+            "periodic_state": "healthy", "last_periodic_success_at": "2026-10-25T10:02:03+00:00",
+            "last_success_at": "2026-10-25T03:23:11+00:00",
+        }
+        chain.return_value = {"state": "accepted_persisted", "state_label": "Событие сохранено.",
+            "owner_notification_label": "Уведомление сохранено."}
+        self.client.force_login(self.owner)
+        response = self.client.get(reverse("communication_connection_edit", args=[4]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="avito-outbox-admin"', count=1)
+        self.assertContains(response, "SCOPED-SERVICES-COMMAND")
+        self.assertContains(response, "Дополнительное задание создавать не нужно")
+        self.assertContains(response, "первый отдельный запуск ещё не зафиксирован")
+        self.assertContains(response, "отдельное подтверждение ещё не записано")
+        self.assertContains(response, "25.10.2026 17:02:03")
+        state = response.context["avito_diagnostic_accounts"][0]["outbox"]
+        self.assertEqual(state["last_immediate_success_at"], "")
+        self.assertIn("no-store", response.headers["Cache-Control"])
+        self.connection.refresh_from_db()
+        self.assertEqual(self.connection.settings, original_settings)
+        panel.assert_called_once()
+        provider.assert_not_called()
+
+    @patch("scripts.avito_outbox_cron.panel_command", return_value="SCOPED-SERVICES-COMMAND")
+    @patch("pool_service.avito_outbox.outbox_diagnostics")
+    def test_settings_command_is_not_generated_for_denied_or_foreign_access(self, diagnostics, panel):
+        self.connection.external_id = "446312402"
+        self.connection.save(update_fields=["external_id"])
+        manager = User.objects.create_user("settings-outbox-manager")
+        OrganizationAccess.objects.create(organization=self.organization, user=manager, role="manager")
+        foreign = User.objects.create_user("settings-outbox-foreign")
+        OrganizationAccess.objects.create(organization=self.other_organization, user=foreign, role="owner")
+        target = reverse("communication_connection_edit", args=[4])
+        for actor, status in ((manager, 403), (foreign, 404)):
+            self.client.force_login(actor)
+            response = self.client.get(target)
+            self.assertEqual(response.status_code, status)
+            self.assertNotIn("SCOPED-SERVICES-COMMAND", response.content.decode())
+        self.client.logout()
+        self.assertEqual(self.client.get(target).status_code, 302)
+        diagnostics.assert_not_called()
+        panel.assert_not_called()
+
+    @patch("scripts.avito_outbox_cron.panel_command", return_value="SCOPED-SERVICES-COMMAND")
+    @patch("pool_service.avito_outbox.outbox_diagnostics")
+    def test_other_connection_or_changed_services_account_has_no_outbox_panel(self, diagnostics, panel):
+        goods = ChannelConnection.objects.create(
+            pk=1, channel=self.channel, name="Goods", external_id="goods-account",
+            settings={"preserved": "goods-settings"})
+        self.client.force_login(self.owner)
+        for connection in (goods, self.connection):
+            response = self.client.get(reverse("communication_connection_edit", args=[connection.pk]))
+            self.assertEqual(response.status_code, 200)
+            self.assertNotContains(response, 'id="avito-outbox-admin"')
+            self.assertNotContains(response, "SCOPED-SERVICES-COMMAND")
+            self.assertIsNone(response.context["avito_diagnostic_accounts"][0]["outbox"]["configuration"])
+        goods.refresh_from_db()
+        self.assertEqual(goods.settings, {"preserved": "goods-settings"})
+        panel.assert_not_called()
