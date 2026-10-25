@@ -58,8 +58,8 @@ class ProposalFixture:
         self.source.refresh_from_db()
         self.publication = bind_publication(self.feed, self.source)
         self.attempt = AvitoServicesPublicationAttempt.objects.create(publication=self.publication,
-            upload_id='project-report', report_sha256='d'*64, report_started_at=self.now-timedelta(hours=1),
-            state='input_copy_unavailable', upload_status='success', source_confirmed=False,
+            upload_id='900', report_sha256='d'*64, report_started_at=self.now-timedelta(hours=1),
+            state='candidate_finished', upload_status='success', source_confirmed=False,
             rows=[{'xml_id': row['Id'], 'avito_id': row['AvitoId'], 'status': 'active',
                    'has_error': False, 'messages': [], 'finish_time': None}
                   for row in data[0]['rows']])
@@ -168,6 +168,52 @@ class ImprovementProjectTests(ProposalFixture, TestCase):
         result = self.prepare()
         self.assertEqual(result['results'][0]['code'], 'inactive_or_unknown')
         self.assertEqual(self.events().count(), 2)
+
+    def test_newer_completed_error_report_vetoes_each_affected_ad_but_not_other_ads(self):
+        # Re-fetching the old success gives it a newer receipt time, not source time.
+        AvitoServicesPublicationAttempt.objects.filter(pk=self.attempt.pk).update(checked_at=self.now)
+        for offset, identifier in enumerate(projects.TARGETS):
+            with self.subTest(identifier=identifier):
+                rows = deepcopy(self.attempt.rows)
+                target = next(item for item in rows if item['avito_id'] == identifier)
+                target.update(status='blocked', has_error=True)
+                negative = AvitoServicesPublicationAttempt.objects.create(publication=self.publication,
+                    upload_id=str(901+offset), report_sha256=str(offset+1)*64,
+                    report_started_at=self.now-timedelta(minutes=30), state='upload_failed',
+                    upload_status='error', rows=rows)
+                AvitoServicesPublicationAttempt.objects.filter(pk=negative.pk).update(
+                    checked_at=self.now-timedelta(minutes=5))
+                result = self.prepare()
+                states = {item['avito_id']: item for item in result['results']}
+                self.assertEqual(states[identifier]['code'], 'inactive_or_unknown')
+                self.assertTrue(all(item['state'] in {'created', 'existing'}
+                    for key, item in states.items() if key != identifier))
+                self.events().delete()
+                negative.delete()
+        self.assertFalse(self.events().exists())
+        self.provider.assert_not_called()
+
+    def test_incomplete_or_unknown_new_report_never_overrides_a_known_negative(self):
+        identifier = next(iter(projects.TARGETS))
+        self.feed.latest_observations = [{'avito_id': identifier, 'id': identifier,
+            'status': 'rejected', 'source': 'avito_item_detail',
+            'checked_at': (self.now-timedelta(minutes=20)).isoformat()}]
+        self.feed.save(update_fields=['latest_observations'])
+        for offset, (state, rows) in enumerate((
+                ('candidate_finished', deepcopy(self.attempt.rows[:-1])),
+                ('report_unfinished', deepcopy(self.attempt.rows)),
+                ('candidate_finished', deepcopy(self.attempt.rows)))):
+            if offset == 2:
+                next(item for item in rows if item['avito_id'] == identifier).update(status='unknown')
+            attempt = AvitoServicesPublicationAttempt.objects.create(publication=self.publication,
+                upload_id=str(1001+offset), report_sha256='f'*64,
+                report_started_at=self.now-timedelta(minutes=10), state=state,
+                upload_status='success', rows=rows)
+            result = self.prepare()
+            self.assertEqual(result['results'][0]['code'], 'inactive_or_unknown')
+            self.events().delete()
+            attempt.delete()
+        self.provider.assert_not_called()
 
     def test_rereading_an_old_report_does_not_make_old_active_status_fresh(self):
         AvitoServicesFeedVersion.objects.filter(pk=7).update(created_at=self.now-timedelta(hours=12))

@@ -158,21 +158,53 @@ def _status(connection, feed, context, row, now):
             candidates.append((checked, observation.get('status') == 'active' and not (end and end <= now),
                 {'source': 'avito_item_detail', 'observed_at': checked.isoformat(), 'checked_at': checked.isoformat()}))
     publication = context['version'].publication
-    for attempt in publication.attempts.filter(upload_status__in=('success', 'success_warning')
-            ).order_by('-checked_at', '-pk')[:10]:
+    expected = {(item['Id'], item['AvitoId']) for item in entries(context['version'].snapshot)}
+    finished_states = {'candidate_finished', 'source_version_confirmed', 'item_errors',
+        'source_copy_confirmed', 'source_copy_item_errors', 'upload_failed',
+        'report_source_unknown', 'report_source_mismatch', 'report_source_conflict',
+        'source_copy_ambiguous', 'source_copy_history_unknown', 'source_copy_mismatch'}
+    # A bounded source-time window includes negative reports as well as successes.
+    # A freshly re-fetched old success must not hide a newer rejection.
+    attempts = list(publication.attempts.filter(
+        upload_status__in=('success', 'success_warning', 'error'),
+        report_started_at__gt=context['version'].created_at,
+        report_started_at__gte=now-MAX_STATUS_AGE, report_started_at__lte=now,
+        checked_at__gte=now-MAX_STATUS_AGE, checked_at__lte=now,
+    ).order_by('-report_started_at', '-checked_at', '-pk')[:201])
+    if len(attempts) > 200:
+        return None  # Incomplete inspection never becomes active-status proof.
+    for attempt in attempts:
+        if attempt.state not in finished_states:
+            continue
         checked = _fresh(attempt.checked_at, now, MAX_STATUS_AGE)
         observed = _fresh(attempt.report_started_at, now, MAX_STATUS_AGE)
-        if not checked or not observed or publication_facts(publication, attempt).get('rows_processed') is not True:
+        rows = attempt.rows
+        if (not checked or not observed or not isinstance(rows, list) or len(rows) > 200
+                or any(not isinstance(item, dict) or not isinstance(item.get('xml_id'), str)
+                       or not isinstance(item.get('avito_id'), str) for item in rows)):
             continue
-        matches = [item for item in attempt.rows if isinstance(item, dict)
-            and item.get('avito_id') == row['AvitoId'] and item.get('xml_id') == row['Id']]
-        if len(matches) == 1:
-            item = matches[0]
-            end = _time(item.get('finish_time'))
-            candidates.append((observed, item.get('status') == 'active' and item.get('has_error') is False and not (end and end <= now),
-                {'source': 'completed_autoload_report_status', 'observed_at': observed.isoformat(), 'checked_at': checked.isoformat(),
-                 'upload_id': attempt.upload_id,
-                 'exact_input_version_confirmed': attempt.source_confirmed is True}))
+        received = {(item['xml_id'], item['avito_id']) for item in rows}
+        if received != expected or len(rows) != len(expected):
+            continue
+        matches = [item for item in rows
+            if item['avito_id'] == row['AvitoId'] and item['xml_id'] == row['Id']]
+        if len(matches) != 1:
+            continue
+        item = matches[0]
+        end = _time(item.get('finish_time'))
+        negative = (item.get('status') in {'old', 'archived', 'removed', 'blocked', 'rejected'}
+            or item.get('has_error') is True or bool(end and end <= now))
+        positive = (attempt.upload_status in {'success', 'success_warning'}
+            and publication_facts(publication, attempt).get('rows_processed') is True
+            and item.get('status') == 'active' and item.get('has_error') is False and not negative)
+        ambiguous = (item.get('status') not in {'active', 'old', 'archived', 'removed', 'blocked', 'rejected'}
+            or type(item.get('has_error')) is not bool)
+        if not (negative or positive or ambiguous):
+            continue  # A failed upload's unaffected active row is not positive proof.
+        candidates.append((observed, positive and not ambiguous,
+            {'source': 'completed_autoload_report_status', 'observed_at': observed.isoformat(),
+             'checked_at': checked.isoformat(), 'upload_id': attempt.upload_id,
+             'exact_input_version_confirmed': attempt.source_confirmed is True}))
     if not candidates:
         return None
     latest = max(item[0] for item in candidates)
