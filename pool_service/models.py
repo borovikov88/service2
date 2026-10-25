@@ -45,6 +45,15 @@ class Organization(models.Model):
     notify_pool_staff_daily = models.BooleanField(default=True)
     notify_pool_staff_daily_push = models.BooleanField(default=True)
 
+    crm_v2_read = models.BooleanField(default=False, editable=False)
+    crm_v2_write = models.BooleanField(default=False, editable=False)
+    crm_intake_process = models.BooleanField(default=False, editable=False)
+    crm_materials = models.BooleanField(default=False, editable=False)
+    crm_accounting = models.BooleanField(default=False, editable=False)
+    crm_close = models.BooleanField(default=False, editable=False)
+    tender_mail = models.BooleanField(default=False, editable=False)
+    tender_autoselect = models.BooleanField(default=False, editable=False)
+
     class Meta:
         permissions = [
             ("view_cashflow", "Can view cash flow"),
@@ -3250,3 +3259,5 @@ from . import avito_publication_models  # noqa: E402,F401
 from . import avito_statistics_models  # noqa: E402,F401
 
 from . import crm_source_models  # noqa: E402,F401
+
+from . import crm_commercial_models  # noqa: E402,F401
