@@ -1,7 +1,7 @@
 {% if feed.enabled %}
 <details class="card card-body my-3">
 <summary>Ручная сверка содержимого карточек · опубликованная версия {{ feed.published_revision }}</summary>
-<p class="mt-2 mb-2"><strong>Содержимое карточек Авито не сверено.</strong> Этот лист показывает ожидаемые значения из опубликованного снимка Service2. Активный статус и отчёт автозагрузки не подтверждают совпадение заголовка, описания или фотографий.</p>
+<p class="mt-2 mb-2"><strong>Полная сверка карточек Авито не выполнена.</strong>{% if manual_photo.records %} Ручные подтверждения относятся только к перечисленным ниже фотографиям.{% endif %} Этот лист показывает ожидаемые значения из опубликованного снимка Service2. Активный статус и отчёт автозагрузки не подтверждают совпадение заголовка, описания или фотографий.</p>
 <p class="small">Источник ожидаемых значений: опубликованный XML Service2, версия {{ feed.published_revision }}.
 {% if publication and publication.version.revision == feed.published_revision %}Запись публикации: {{ publication.version.pk }} · {{ publication.version.created_at }}.{% else %}Время исходной публикации не установлено.{% endif %}
 Лист сформирован: {% now "c" %}.</p>
@@ -10,7 +10,21 @@
 <li>После завершения загрузки откройте то же объявление. Сравните заголовок, описание и каждую фотографию, включая обложку и порядок, со значениями ниже.</li>
 <li>В сохранённом листе или снимках отметьте фактические отличия, дату и время, источник и имя проверившего. Если поле нельзя увидеть, оставьте его несверенным.</li>
 </ol>
-<p class="small">Это рабочий лист для ручной проверки. Он не сохраняет заключение о совпадении и не меняет статус проверки в Service2.</p>
+<p class="small">Форма ниже сохраняет только частичную ручную сверку одной фотографии. Она не подтверждает получение XML Авито, тексты, остальные фотографии или другие объявления. Рабочий лист остальных полей сам по себе не сохраняет заключение.</p>
+{% if manual_photo.available %}
+<div class="table-responsive"><table class="table table-sm"><thead><tr><th>Подтверждённое поле</th><th>Источник доказательства</th><th>Время · Барнаул</th></tr></thead><tbody>
+{% for evidence in manual_photo.records %}
+<tr><td>AvitoId {{ evidence.avito_id }} · фото №{{ evidence.photo_number }}<br><a href="?history_version={{ evidence.history_id }}">Запись истории №{{ evidence.history_id }}</a></td><td>{{ evidence.source_label }}: {{ evidence.source_filename }}<br><span class="small">Файл доказательства здесь не хранится; это зафиксированное ручное свидетельство.</span></td><td>Наблюдение: {{ evidence.observed_at }}<br>Записано: {{ evidence.recorded_at }}</td></tr>
+{% empty %}<tr><td colspan="3">Частичные ручные подтверждения этой версии ещё не записаны.</td></tr>{% endfor %}
+</tbody></table></div>
+{% if manual_photo.incomplete %}<p class="small text-warning">История подтверждений показана не полностью.</p>{% endif %}
+<details class="border rounded p-2 my-2"><summary>Подтвердить одну фотографию</summary>
+<form method="post" class="mt-2">{% csrf_token %}<input type="hidden" name="action" value="confirm_photo">
+{{ manual_photo.form.as_p }}
+<p class="small">Укажите только наблюдаемую фотографию. «Сообщение владельца о скриншоте» не означает, что Service2 получил или исследовал файл изображения. Время вводится с точностью до минуты по Барнаулу.</p>
+<button type="submit" class="btn btn-outline-primary">Сохранить частичное подтверждение</button>
+</form></details>
+{% endif %}
 {% for sheet in feed.published %}{% for item in sheet.rows %}
 <details class="border rounded p-2 mb-2">
 <summary>AvitoId {{ item.AvitoId }} · Id {{ item.Id }} · {{ item.Title }}</summary>

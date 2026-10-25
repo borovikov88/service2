@@ -27,4 +27,7 @@ class Command(BaseCommand):
             result = setup(4, "446312402", options["base_url"])
         except Exception as exc:
             result = {"setup": "blocked", "connection_id": 4, "code": safe_setup_error(exc)}
+        if result.get("setup") != "blocked":
+            from pool_service.avito_services_content_evidence import record_owner_photo_report_once
+            result["manual_photo_evidence"] = record_owner_photo_report_once()
         self.stdout.write("AVITO_SERVICES_SETUP " + json.dumps(result, sort_keys=True))
