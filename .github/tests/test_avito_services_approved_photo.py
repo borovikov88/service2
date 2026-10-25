@@ -72,6 +72,21 @@ class ReceiptTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 RECEIPT.normalize(invalid)
 
+    def test_current_unknown_upload_status_preserves_the_committed_publication_receipt(self):
+        value = sample()
+        value.update(state='published', code='approved_photo_published', version_id=7,
+            published_revision=18, published_at='2026-10-25T05:00:00+00:00', active_count=11,
+            local_publication_committed=True)
+        value['facts']['file_published'] = True
+        value['provider_report'] = {
+            'state': 'later_unfinished', 'upload_id': '999',
+            'started_at': '2026-10-25T05:01:00+00:00', 'complete': True,
+            'upload_status': None, 'target': None, 'error_code': ''}
+        result = RECEIPT.normalize(value)
+        self.assertTrue(result['local_publication_committed'])
+        self.assertIsNone(result['provider_report']['upload_status'])
+        self.assertFalse(result['facts']['source_confirmed'])
+
     def test_framing_never_outputs_greetings_or_raw_errors(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'stdout'
