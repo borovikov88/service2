@@ -10,6 +10,8 @@ from unittest.mock import patch
 from PIL import Image
 from django.contrib.auth.models import User
 from django.core.files.base import ContentFile
+from django.core.signals import request_finished
+from django.db import close_old_connections, connection as database
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -25,6 +27,7 @@ from pool_service.models import Organization, OrganizationAccess
 from pool_service.tests.test_avito_services_feed import export_bytes
 
 
+REAL_PREVIEW = operation._preview
 REAL_PROFILE_CURRENT = operation._profile_current
 REAL_CAPTURE_REPORT = operation._capture_report
 
@@ -39,6 +42,18 @@ class ApprovedPhotoPublicationTests(TestCase):
         setting.enable()
         self.addCleanup(setting.disable)
         storage = AvitoImageStorage()
+        # Like Django's test client, a synthetic view call must not close the
+        # TestCase's outer transaction when FileResponse.close emits request_finished.
+        # All real preview permission, storage, streaming and checksum code still runs.
+        def preview_without_test_connection_close(*args):
+            connected = request_finished.disconnect(close_old_connections)
+            try:
+                return REAL_PREVIEW(*args)
+            finally:
+                if connected:
+                    request_finished.connect(close_old_connections)
+        self.patch('pool_service.avito_services_approved_photo._preview',
+                   side_effect=preview_without_test_connection_close)
         self.patch('pool_service.avito_services_approved_photo._actor', side_effect=lambda c: self.owner)
         field = patch.object(AvitoServicesImage._meta.get_field('file'), 'storage', storage)
         field.start()
@@ -410,7 +425,11 @@ class ApprovedPhotoPublicationTests(TestCase):
         self.assertEqual(result['state'], 'later_completed')
         self.assertEqual(result['target']['status'], 'rejected')
         self.assertEqual(result['target']['messages'], [{'type': 'error', 'code': 4001}])
-        self.assertEqual(version.publication.attempts.get().state, 'upload_failed')
+        attempt = version.publication.attempts.get()
+        # The provider reported an error, but its unverified source takes
+        # precedence: it must not be labelled this version's failed upload.
+        self.assertEqual(attempt.state, 'report_source_unknown')
+        self.assertEqual(attempt.upload_status, 'error')
 
     def test_report_read_failure_has_safe_code_without_provider_body(self):
         operation.run_approved_photo_publication('a' * 40)
@@ -441,3 +460,11 @@ class ApprovedPhotoPublicationTests(TestCase):
         self.assertEqual(result['state'], 'later_unfinished')
         self.assertIsNone(result['upload_status'])
         correlate.assert_not_called()
+
+
+    def test_manual_private_preview_keeps_the_synthetic_test_transaction_usable(self):
+        operation._preview(self.connection, self.owner, self.asset)
+        self.assertFalse(database.closed_in_transaction)
+        self.assertFalse(database.needs_rollback)
+        self.assertEqual(ChannelConnection.objects.get(pk=4).external_id, operation.ACCOUNT_ID)
+        self.assertIsNone(AvitoServicesImage.objects.get(pk=self.asset.pk).published_in_feed_at)
