@@ -243,6 +243,7 @@ from .communication_views import (
     communication_telephony_set_active,
 )
 from .avito_daily_statistics_views import control as avito_daily_statistics_control
+from .avito_crm_attribution_views import attribution as avito_crm_attribution, request_lookup as avito_crm_request_lookup
 from .avito_management import avito_dashboard, avito_check_api, avito_refresh_data, avito_configure_monitor, avito_download_report, avito_configure_autoload_auto
 from .communication_api import (
     avito_webhook,
@@ -278,6 +279,8 @@ urlpatterns = [
     path("avito/<int:connection_id>/services-feed/draft.xlsx", services_feed_download, name="avito_services_feed_download"),
     path("avito/", avito_dashboard, name="avito_dashboard"),
     path("avito/<int:connection_id>/statistics-daily/", avito_daily_statistics_control, name="avito_daily_statistics_control"),
+    path("avito/<int:connection_id>/attribution/", avito_crm_attribution, name="avito_crm_attribution"),
+    path("avito/<int:connection_id>/attribution/requests/", avito_crm_request_lookup, name="avito_crm_request_lookup"),
     path("avito/<int:connection_id>/autoload-auto/", avito_configure_autoload_auto, name="avito_configure_autoload_auto"),
     path("avito/<int:connection_id>/autoload-report.csv", avito_download_report, name="avito_download_report"),
     path("avito/<int:connection_id>/monitor/", avito_configure_monitor, name="avito_configure_monitor"),

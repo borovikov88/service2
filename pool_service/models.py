@@ -3248,3 +3248,5 @@ from . import avito_media_models  # noqa: E402,F401
 from . import avito_publication_models  # noqa: E402,F401
 
 from . import avito_statistics_models  # noqa: E402,F401
+
+from . import crm_source_models  # noqa: E402,F401
