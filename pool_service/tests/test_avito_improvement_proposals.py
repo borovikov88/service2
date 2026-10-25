@@ -350,6 +350,23 @@ class ImprovementProjectTests(ProposalFixture, TestCase):
 
     @patch.dict(os.environ, {'SERVICE2_AVITO_DEPLOY_SETUP': '1'})
     @patch('pool_service.avito_services_workplace_setup._actor')
+    def test_zero_eligible_projects_is_explicitly_blocked_not_prepared_success(self, actor):
+        actor.return_value = self.owner
+        for row in self.analysis['ads'].values():
+            row['received_at'] = None
+        first = projects.setup_owner_cycle_once()
+        second = projects.setup_owner_cycle_once()
+        self.assertEqual(first['state'], 'blocked')
+        self.assertEqual(first['code'], 'no_eligible_projects')
+        self.assertEqual(first['project_count'], 0)
+        self.assertTrue(all(row['state'] == 'skipped' for row in first['results']))
+        self.assertEqual(second['attempt_state'], 'blocked')
+        self.assertEqual(second['project_count'], 0)
+        self.assertEqual(second['code'], 'no_eligible_projects')
+        self.assertFalse(self.events().exists())
+
+    @patch.dict(os.environ, {'SERVICE2_AVITO_DEPLOY_SETUP': '1'})
+    @patch('pool_service.avito_services_workplace_setup._actor')
     def test_blocked_first_attempt_is_recorded_and_later_deploy_does_not_retry(self, actor):
         actor.return_value = self.owner
         with patch.object(projects, 'prepare', side_effect=projects.ProposalError('source_unavailable')) as attempt:

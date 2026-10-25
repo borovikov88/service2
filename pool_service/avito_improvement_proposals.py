@@ -38,6 +38,7 @@ ERRORS = {
     'source_unavailable': 'Нет проверенного текущего опубликованного снимка Service2.',
     'revision_changed': 'Версия изменилась. Обновите страницу перед подготовкой проектов.',
     'analysis_unavailable': 'Нет доступного подтверждения получения аналитики для текущего подключения.',
+    'no_eligible_projects': 'Подходящих проектов пока нет; причины по объявлениям сохранены отдельно.',
     'unavailable': 'Не удалось подготовить проекты. Опубликованное содержимое не изменено.',
 }
 SKIPS = {
@@ -346,8 +347,11 @@ def prepare(connection, actor, *, expected_revision=None, expected_source=None):
                             source_version=version, extra_changes=[change])
                         result.update(state='created', event_id=event.pk)
             output.append(result)
+        project_count = sum(row['state'] in {'created', 'existing'} for row in output)
         return {'schema_version': 1, 'connection_id': 4, 'account_id': ACCOUNT,
-            'state': 'prepared', 'source_version_id': version.pk, 'publication_revision': version.revision,
+            'state': 'prepared' if project_count else 'blocked',
+            'code': '' if project_count else 'no_eligible_projects', 'project_count': project_count,
+            'source_version_id': version.pk, 'publication_revision': version.revision,
             'results': output, 'draft_changed': False, 'published_changed': False,
             'provider_action_performed': False}
 
@@ -426,6 +430,7 @@ def setup_owner_cycle_once():
                 return {'state': 'already_attempted', 'attempt_state': prior.get('state') if prior.get('state') in {'prepared', 'blocked'} else 'blocked',
                     'code': prior.get('code') if prior.get('code') in {'', *ERRORS} else 'unavailable',
                     'connection_id': 4, 'account_id': ACCOUNT,
+                    'project_count': prior.get('project_count') if type(prior.get('project_count')) is int and 0 <= prior['project_count'] <= 3 else 0,
                     'source_version_id': prior.get('source_version_id') if type(prior.get('source_version_id')) is int else None,
                     'publication_revision': prior.get('publication_revision') if type(prior.get('publication_revision')) is int else None,
                     'results': [{'avito_id': row['avito_id'], 'state': row['state'], 'code': row['code'],
@@ -451,11 +456,11 @@ def setup_owner_cycle_once():
             metadata = dict(current.settings) if isinstance(current.settings, dict) else {}
             metadata[SETUP_KEY] = {'campaign': CAMPAIGN, 'attempted_at': timezone.now().isoformat(),
                 'binding_sha256': binding, 'state': result['state'], 'code': result.get('code', ''),
-                'source_version_id': result.get('source_version_id'),
+                'source_version_id': result.get('source_version_id'), 'project_count': result.get('project_count', 0),
                 'publication_revision': result.get('publication_revision'), 'results': result['results']}
             current.settings = metadata
             current.save(update_fields=['settings'])
-            return {**result, 'connection_id': 4, 'account_id': ACCOUNT, 'provider_action_performed': False}
+            return {**result, 'project_count': result.get('project_count', 0), 'connection_id': 4, 'account_id': ACCOUNT, 'provider_action_performed': False}
     except PermissionDenied:
         code = 'scope_changed'
     except ProposalError as error:
