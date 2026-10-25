@@ -365,7 +365,10 @@ class AvitoStatisticsReasonTests(SimpleTestCase):
         self.assertIs(type(error), AvitoError)
         self.assertEqual(str(error), 'provider_data_invalid')
         self.assertEqual(error.args, ('provider_data_invalid',))
-        self.assertEqual(vars(error), {'statistics_reason': reason})
+        self.assertEqual(vars(error)['statistics_reason'], reason)
+        self.assertEqual(set(vars(error)), {'statistics_reason', 'statistics_shape'})
+        self.assertIsNotNone(avito_workspace.statistics_shape_metadata(error.statistics_shape))
+        self.assertNotIn('PRIVATE', repr(vars(error)))
         self.assertIn(reason, avito_workspace.STATISTICS_INVALID_REASONS)
         self.assertNotIn('PRIVATE', repr(error))
 
@@ -416,6 +419,7 @@ class AvitoStatisticsReasonTests(SimpleTestCase):
             self.assertEqual(output['rows'], [])
             self.assertEqual(output['total'], total)
             self.assertNotIn('statistics_reason', output)
+            self.assertNotIn('statistics_shape', output)
         output = self.parse({'result': {'groupings': [{'id': 11, 'metrics': [
             {'slug': 'views', 'value': 0}, {'slug': 'spending', 'value': 12599}]}],
             'dataTotalCount': 1}})
@@ -426,3 +430,43 @@ class AvitoStatisticsReasonTests(SimpleTestCase):
         totals = self.parse({'result': {'groupings': [{'metrics': []}]}}, 'totals')
         self.assertEqual(totals['rows'][0]['id'], 0)
 
+
+    def test_failure_shape_contains_only_fixed_json_types_and_signs(self):
+        group_cases = [({}, 'empty_object'), ({'PRIVATE': 'PRIVATE'}, 'object'),
+            ([], 'empty_list'), ([{'PRIVATE': 'PRIVATE'}], 'list'),
+            ('PRIVATE https://private.invalid/customer', 'string'), (123456, 'integer'),
+            (1.25, 'number'), (True, 'bool'), (None, 'null'), (object(), 'other')]
+        total_cases = [(None, 'null'), (0, 'zero_integer'), (987654, 'positive_integer'),
+            (-987654, 'negative_integer'), ('+79990000001', 'string'), (False, 'bool'),
+            (0.5, 'number'), ({'PRIVATE': 'PRIVATE'}, 'other')]
+        for value, expected in group_cases:
+            with self.subTest(expected=expected):
+                shape = avito_workspace._statistics_response_shape({'result': {'groupings': value}})
+                self.assertEqual(shape, {'groupings_kind': expected,
+                    'data_total_count_kind': 'missing', 'provider_error_present': False})
+        for value, expected in total_cases:
+            with self.subTest(expected=expected):
+                shape = avito_workspace._statistics_response_shape({'result': {'dataTotalCount': value}})
+                self.assertEqual(shape, {'groupings_kind': 'missing',
+                    'data_total_count_kind': expected, 'provider_error_present': False})
+        payload = {'result': {'groupings': 'PRIVATE https://private.invalid/customer',
+            'dataTotalCount': '+79990000001', 'errors': ['PRIVATE']}}
+        with self.assertRaises(AvitoError) as caught:
+            self.parse(payload)
+        self.assertEqual(caught.exception.args, ('provider_data_invalid',))
+        self.assertEqual(str(caught.exception), 'provider_data_invalid')
+        self.assertEqual(caught.exception.statistics_shape, {'groupings_kind': 'string',
+            'data_total_count_kind': 'string', 'provider_error_present': True})
+        for private in ('PRIVATE', '+79990000001', 'https://'):
+            self.assertNotIn(private, repr(vars(caught.exception)))
+        self.assertEqual(avito_workspace._statistics_response_shape({}),
+            {'groupings_kind': 'missing', 'data_total_count_kind': 'missing', 'provider_error_present': False})
+
+    def test_shape_metadata_rejects_extra_keys_values_and_non_boolean_error_flag(self):
+        valid = {'groupings_kind': 'empty_object', 'data_total_count_kind': 'zero_integer',
+            'provider_error_present': False}
+        self.assertEqual(valid, avito_workspace.statistics_shape_metadata(valid))
+        for invalid in (None, [], valid | {'raw': 'PRIVATE'}, valid | {'groupings_kind': 'PRIVATE'},
+                valid | {'data_total_count_kind': '+79990000001'},
+                valid | {'provider_error_present': 1}, {'groupings_kind': 'null'}):
+            self.assertIsNone(avito_workspace.statistics_shape_metadata(invalid))
