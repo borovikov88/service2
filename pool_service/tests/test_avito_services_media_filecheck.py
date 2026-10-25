@@ -11,9 +11,10 @@ from unittest.mock import MagicMock, patch
 
 from PIL import Image
 from django.core import signing
+from django.core.exceptions import DisallowedHost
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command, CommandError
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -26,6 +27,8 @@ from pool_service.models import OrganizationAccess
 from . import test_avito_services_media_livecheck as live_fixtures
 
 
+@override_settings(AVITO_SERVICES_PUBLIC_ORIGIN='https://service2.aqualine22.ru',
+    ALLOWED_HOSTS=['service2.aqualine22.ru', 'testserver', 'localhost', '127.0.0.1'])
 class StoredFileInputTests(TestCase):
     def setUp(self):
         # Reuse the fixture setup, not inheritance of its old external-link tests.
@@ -73,6 +76,17 @@ class StoredFileInputTests(TestCase):
         self.feed.draft[0]['rows'][0]['ImageUrls'] = ' | '.join(values)
         self.feed.published = deepcopy(self.feed.draft)
         self.feed.save()
+
+
+    def test_reopen_reproduces_disallowed_canonical_host_without_changing_the_draft(self):
+        # Real editor rendering calls brand_context.get_host(). Without this
+        # fixture's trusted canonical host that exception became endpoint409.
+        before = self.state()
+        expected = self.feed.draft[0]['rows'][0]['ImageUrls']
+        with override_settings(ALLOWED_HOSTS=['testserver']):
+            with self.assertRaises(DisallowedHost):
+                live._reopen_file_editor(self.owner, self.connection, '111', expected)
+        self.assertEqual(self.state(), before)
 
     def test_inventory_is_database_only_closed_and_readonly(self):
         before = self.state()

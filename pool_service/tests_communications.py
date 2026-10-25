@@ -90,6 +90,34 @@ class CommunicationsTests(TestCase):
         self.addCleanup(account_id_patcher.stop)
         self.addCleanup(messenger_access_patcher.stop)
 
+    def test_compact_avito_dialog_has_channel_link_and_message_metadata(self):
+        conversation = Conversation.objects.create(
+            organization=self.organization, connection=self.connection,
+            external_id="u2i-test-chat", participant_name="Test caller",
+        )
+        ConversationMessage.objects.create(
+            conversation=conversation, direction="in", body="Test message",
+            sender_name="Test caller",
+        )
+        ConversationMessage.objects.create(
+            conversation=conversation, direction="out", body="Test outgoing",
+            sender_name="Test employee", delivery_status="delivered",
+            external_id="accepted-test-reply", delivery_attempts=1,
+        )
+        self.client.force_login(self.owner)
+        page = self.client.get(reverse("communications_conversations"))
+        self.assertContains(page, "channel-icon")
+        self.assertContains(page, "https://www.avito.ru/profile/messenger/channel/u2i-test-chat")
+        self.assertContains(page, 'rel="noopener noreferrer"')
+        self.assertContains(page, 'class="message-meta"')
+        self.assertContains(page, "Test message")
+        outgoing = page.content.decode().split('<div class="bubble out">', 1)[1]
+        self.assertLess(outgoing.index("Попыток:"), outgoing.index('class="message-meta"'))
+        conversation.external_id = "../chat?x=1#fragment"
+        self.assertTrue(conversation.external_chat_url.endswith("..%2Fchat%3Fx%3D1%23fragment"))
+        self.channel.kind = "website"
+        self.assertEqual(conversation.external_chat_url, "")
+
     @patch("pool_service.services.notifications.send_push_to_users")
     def test_incoming_message_creates_conversation_and_notifications(self, _send_push):
         message, created = receive_message(connection=self.connection, external_conversation_id="chat-1", participant_name="Иван", body="Здравствуйте", external_message_id="message-1")
@@ -5820,7 +5848,7 @@ class CommunicationsTests(TestCase):
         self.client.login(username="worker", password="test")
         response = self.client.get(reverse("communications_conversations"), {"conversation": conversation.uuid})
         self.assertContains(response, "Ошибка")
-        self.assertContains(response, "Для Авито сейчас доступна отправка только текста")
+        self.assertContains(response, "Avito · только текст")
         self.assertNotContains(response, 'type="file"')
 
     def test_avito_attachment_is_rejected_on_server(self):

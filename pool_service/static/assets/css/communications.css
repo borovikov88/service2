@@ -1,0 +1,47 @@
+.call-filters.card-body{padding:.5rem!important;margin-bottom:.6rem}
+.call-filters>.row{display:flex;flex-wrap:nowrap;align-items:center;margin:0;gap:.4rem;--bs-gutter-y:0}
+.call-filters>.row>div{padding:0;min-width:0;flex:1 1 0;width:auto}
+.call-filters>.row>.col-md-auto{flex:0 0 auto;align-items:center!important}
+.call-filters .form-label{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
+.call-filters .form-control,.call-filters .form-select,.call-filters .btn{min-height:30px;font-size:.8rem;padding-top:.25rem;padding-bottom:.25rem}
+.call-filters .form-control,.call-filters .form-select{padding-left:.45rem}
+.call-filters [data-lookup-status]{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+.call-filters [data-crm-lookup] .input-group{flex-wrap:nowrap}
+.call-filters [data-crm-lookup] .btn{padding-left:.35rem;padding-right:.35rem}
+.call-filters .form-check{white-space:nowrap;font-size:.8rem;margin:0!important;align-self:center}
+.call-filters [name="date_from"],.call-filters [name="date_to"]{min-width:112px}
+.table-responsive>.calls-table{font-size:.8rem;line-height:1.25}
+.calls-table>thead>tr>th,.calls-table>tbody>tr>td{padding:.3rem .5rem}
+.calls-table th{white-space:nowrap;font-size:.76rem}
+.call-date,.call-duration{white-space:nowrap}
+.call-employee{max-width:180px}
+.call-employee__name{display:block;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.call-employee small{font-size:.7rem}
+.call-contact{display:inline-flex;align-items:center;gap:.3rem;white-space:nowrap}
+.call-save-contact{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;flex:0 0 24px;border-radius:.3rem;text-decoration:none;opacity:0;pointer-events:none}
+.calls-table tr:hover .call-save-contact,.calls-table tr:focus-within .call-save-contact,.call-save-contact:focus-visible{opacity:1;pointer-events:auto}
+.call-save-contact:hover{background:var(--bs-primary-bg-subtle)}
+.communication-icon{width:18px;height:18px;vertical-align:middle;flex:0 0 18px}
+.call-direction{display:inline-flex;align-items:center;font-size:1rem}
+.call-direction--in{color:#1671d9}.call-direction--out{color:#16864e}.call-direction--missed{color:#dc3545}.call-direction--internal{color:var(--bs-secondary-color)}
+html[data-theme="dark"] .call-direction--in{color:#73b5ff}html[data-theme="dark"] .call-direction--out{color:#62d69c}
+.channel-icon{display:inline-flex;align-items:center;justify-content:center;flex:0 0 22px;width:22px;height:22px;vertical-align:middle;color:var(--bs-primary)}
+.channel-icon svg{width:22px;height:22px}
+.conversation-title{display:flex;align-items:center;gap:.4rem;min-width:0}
+.conversation-title strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.86rem}
+.conversation-header{padding:.5rem .65rem!important}
+.conversation-header .btn,.conversation-header .form-select{font-size:.78rem;min-height:30px;padding-top:.25rem;padding-bottom:.25rem}
+.conversation-actions{flex-wrap:wrap;gap:.35rem!important}
+.conversation-actions .form-select{max-width:185px}
+.conversation-source-link{font-size:.75rem;white-space:nowrap}
+.conversation-row{position:relative}
+.conversation-row .conversation-select{display:block;margin:-.55rem -.65rem;padding:.55rem 2rem .55rem .65rem;color:inherit;text-decoration:none}
+.conversation-external{position:absolute;right:.5rem;bottom:.35rem;font-size:.9rem;text-decoration:none}
+.bubble{overflow-wrap:anywhere;min-width:100px}
+.message-meta{display:flex;justify-content:flex-end;align-items:baseline;gap:.3rem;flex-wrap:wrap;text-align:right;font-size:.65rem;line-height:1.25;margin-top:.2rem;color:var(--bs-secondary-color)}
+.message-meta__sender{max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.conversation-composer{padding:.5rem .65rem!important}
+.conversation-composer .form-control,.conversation-composer .btn{font-size:.85rem}
+@media(hover:none),(pointer:coarse){.call-save-contact{opacity:1;pointer-events:auto;min-width:30px;height:30px}}
+@media(max-width:1199.98px){.call-filters>.row{flex-wrap:wrap}.call-filters>.row>div{flex:1 1 120px}.call-filters>.row>.col-md-auto{flex:0 1 auto}}
+@media(max-width:575.98px){.call-filters>.row>div{flex:1 1 42%}.call-filters>.row>.col-md-auto{flex:1 1 100%}.conversation-actions .form-select{max-width:160px}}
