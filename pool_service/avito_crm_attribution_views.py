@@ -10,6 +10,7 @@ from django.http import HttpResponseBadRequest, JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_GET, require_http_methods
 
@@ -63,12 +64,13 @@ def _url(connection, kind, source):
 
 
 def _choice_rows(actor, connection, query="", selected=None):
-    queryset = links.requests_for(actor, connection)
+    eligible = links.requests_for(actor, connection)
+    queryset = eligible
     query = query.strip()[:100]
     if query:
         queryset = queryset.filter(title__icontains=query)
     rows = list(queryset.order_by("-updated_at", "-pk")[:20])
-    if selected and all(item.pk != selected.pk for item in rows):
+    if selected and eligible.filter(pk=selected.pk).exists() and all(item.pk != selected.pk for item in rows):
         rows.insert(0, selected)
     return [("", "Не связано / снять связь")] + [
         (str(item.pk), "#" + str(item.pk) + " · " + item.title[:120]) for item in rows]
@@ -136,6 +138,7 @@ def attribution(request, connection_id):
         form.fields.pop("call_origin")
     if can_finance:
         observed = orders.candidates(request.user, connection.channel.organization, item) or []
+        form.fields["order_guid"].help_text = "До 50 наблюдаемых документов клиента; это не полный реестр заказов или оплат."
         form.fields["order_guid"].widget.choices = [("", "Не выбрано")] + [(str(row["guid"]), (row["number"] or str(row["guid"])) + " · " + (row["date"] or "дата неизвестна")) for row in observed]
     else:
         form.fields.pop("order_action")
@@ -169,6 +172,10 @@ def attribution(request, connection_id):
     if conversation_capability(request.user, "can_view_conversations", connection.channel.organization):
         for row in Conversation.objects.filter(connection=connection,
                 organization=connection.channel.organization).order_by("-last_message_at", "-pk")[:50]:
+            try:
+                links.source_for(request.user, connection, "conversation", row.uuid)
+            except PermissionDenied:
+                continue
             dialogs.append({"label": row.display_name, "url": _url(connection, "conversation", row),
                 "last_message_at": row.last_message_at})
     call_query = PhoneCall.objects.filter(organization=connection.channel.organization,
@@ -178,13 +185,22 @@ def attribution(request, connection_id):
             call_query = call_query.filter(Q(employee=request.user) | Q(peer_employee=request.user))
         else:
             call_query = call_query.none()
-    calls = [{"id": call.pk, "started_at": call.started_at, "url": _url(connection, "call", call)}
-        for call in visible_calls(list(call_query.order_by("-started_at", "-pk")[:50]))]
+    calls = []
+    for call in visible_calls(list(call_query.filter(connection__organization=connection.channel.organization).order_by("-started_at", "-pk")[:50])):
+        try:
+            links.source_for(request.user, connection, "call", call.pk)
+        except PermissionDenied:
+            continue
+        calls.append({"id": call.pk, "started_at": call.started_at, "url": _url(connection, "call", call)})
+    from .views import CRM_STAGE_LABELS
+    order_state = orders.state(request.user, connection.channel.organization, link, item)
+    order_fetched_at = parse_datetime(order_state.get("fetched_at", "")) if order_state.get("fetched_at") else None
     return render(request, "pool_service/avito/attribution.html", {
         "active_tab": "communications", "connection": connection, "form": form if source else None,
         "source": source, "source_kind": kind, "can_edit": can_edit, "link": link, "crm_item": item,
         "can_finance": can_finance, "existing_hidden": existing_hidden,
-        "order_state": orders.state(request.user, connection.channel.organization, link, item),
+        "order_state": order_state, "order_fetched_at": order_fetched_at,
+        "crm_stage_label": CRM_STAGE_LABELS.get(item.stage, item.stage) if item else "",
         "history": list(DataAuditLog.objects.filter(entity_type="crm_source_link", entity_id=str(link.pk), organization=connection.channel.organization).order_by("-pk")[:20]) if link else [],
         "dialogs": dialogs, "calls": calls, "coverage": links.coverage(request.user, connection),
         "lookup_url": reverse("avito_crm_request_lookup", args=[connection.pk]) + "?" + urlencode({

@@ -20,7 +20,7 @@
         {% if existing_hidden %}<p class="small text-warning-emphasis">Существующая связь недоступна при текущих правах. Подробности и оценка скрыты.</p>{% endif %}
         <h2 class="h5">{% if source_kind == "call" %}Звонок №{{ source.pk }}{% else %}Выбранный диалог{% endif %}</h2>
         {% if link %}<p class="small text-muted">Ручное подтверждение · версия {{ link.revision }} · {% timezone "Asia/Barnaul" %}{{ link.confirmed_at|date:"d.m.Y H:i" }}{% endtimezone %} · Барнаул.</p>{% endif %}
-        {% if crm_item %}<p>Заявка №{{ crm_item.pk }}: <strong>{{ crm_item.title }}</strong>. Текущий этап CRM: {{ crm_item.stage }}. Этап не подтверждает заказ, оплату или выручку.</p>{% endif %}
+        {% if crm_item %}<p>Заявка №{{ crm_item.pk }}: <strong>{{ crm_item.title }}</strong>. Текущий этап CRM: {{ crm_stage_label }}. Этап не подтверждает заказ, оплату или выручку.</p>{% endif %}
         {% if source_kind == "call" %}<p class="small text-warning-emphasis">Объявление-источник звонка неизвестно, пока менеджер явно не подтвердит выбранное принадлежащее аккаунту объявление.</p>{% endif %}
         {% if link.avito_item_id %}<p class="small">Ранее сохранённый ID объявления: {{ link.avito_item_id }} · способ: {{ link.get_ad_source_display }}. Свежая проверка принадлежности учитывается отдельно.</p>{% endif %}
         <form method="post" data-crm-attribution data-lookup-url="{{ lookup_url }}">
@@ -34,7 +34,7 @@
           {% if can_edit %}<button class="btn btn-primary" type="submit">Подтвердить связь и оценку</button>{% else %}<p class="small">Изменение недоступно при текущем назначении или правах источника.</p>{% endif %}
         </form>
         {% if can_finance %}<div class="border-top pt-2 mt-3"><strong>Финансовая ссылка</strong><p class="small">{{ order_state.label }}</p>
-        {% if order_state.state == "observed" %}<p class="small">{{ order_state.number }} · {{ order_state.date|default:"дата неизвестна" }}. Источник получен {{ order_state.fetched_at }}. Наблюдение не подтверждает оплату, выручку или причинную принадлежность рекламы.</p>{% endif %}</div>{% endif %}
+        {% if order_state.state == "observed" %}<p class="small">{{ order_state.number }} · {{ order_state.date|default:"дата неизвестна" }}. Источник получен {% timezone "Asia/Barnaul" %}{{ order_fetched_at|date:"d.m.Y H:i" }}{% endtimezone %} · Барнаул. Наблюдение не подтверждает оплату, выручку или причинную принадлежность рекламы.</p>{% endif %}</div>{% endif %}
         <details class="small mt-3"><summary>История подтверждения</summary>
         {% timezone "Asia/Barnaul" %}{% for event in history %}<div>{{ event.created_at|date:"d.m.Y H:i" }} · сотрудник №{{ event.actor_id|default:"не указан" }} · {{ event.changed_fields|join:", " }}</div>{% empty %}<div>Истории подтверждений пока нет.</div>{% endfor %}{% endtimezone %}
         <p class="text-muted">В аудите сохраняются ID и коды изменений; сообщения, расшифровки, финансовые суммы и текст причины туда не копируются.</p></details>

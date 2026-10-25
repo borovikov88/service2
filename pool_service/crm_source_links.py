@@ -9,6 +9,7 @@ from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from .communication_models import ChannelConnection, Conversation, PhoneCall
 from .communication_services import organization_access, conversation_capability
@@ -54,6 +55,8 @@ def source_for(actor, connection, kind, identifier, *, edit=False, lock=False):
             query = query.select_for_update()
         source = query.filter(uuid=parsed, organization=organization, connection=connection,
             connection__channel__organization=organization).first()
+        if source is not None and CrmSourceLink.objects.filter(conversation=source).exclude(organization=organization, avito_connection=connection).exists():
+            raise PermissionDenied
         if source is None or not conversation_capability(actor, "can_view_conversations", organization):
             raise PermissionDenied
         if edit and (not conversation_capability(actor, "can_take_conversation", organization)
@@ -74,12 +77,18 @@ def source_for(actor, connection, kind, identifier, *, edit=False, lock=False):
             or source.connection is None or source.connection.organization_id != organization.pk
             or not (all_calls or own_calls and actor.pk in (source.employee_id, source.peer_employee_id))):
         raise PermissionDenied
+    if CrmSourceLink.objects.filter(phone_call=source).exclude(organization=organization, avito_connection=connection).exists():
+        raise PermissionDenied
     return source
 
 
 def requests_for(actor, connection):
-    return crm_items_for_user(actor, connection.channel.organization).exclude(
-        is_archived=True, archived_reason=CrmItem.ARCHIVE_REASON_DELETED)
+    organization = connection.channel.organization
+    return crm_items_for_user(actor, organization).exclude(
+        is_archived=True, archived_reason=CrmItem.ARCHIVE_REASON_DELETED).filter(
+        Q(client__isnull=True) | Q(client__organization=organization)).filter(
+        Q(pool__isnull=True) | (Q(pool__client__organization=organization)
+            & (Q(pool__organization=organization) | Q(pool__organization__isnull=True))))
 
 
 def item_for(actor, connection, item_id):
@@ -90,7 +99,7 @@ def item_for(actor, connection, item_id):
     if item is None:
         raise PermissionDenied
     if (item.client_id and item.client.organization_id != organization_id
-            or item.pool_id and (item.pool.organization_id != organization_id
+            or item.pool_id and (item.pool.organization_id not in (None, organization_id)
                 or item.pool.client.organization_id != organization_id)):
         raise PermissionDenied
     return item
@@ -107,7 +116,10 @@ def task_allowed(actor, task, item, organization_id):
     while current is not None:
         if (current.pk in seen or len(seen) >= 20 or current.organization_id != organization_id
                 or current.is_archived or not _task_can_view(current, actor)
-                or task_source_is_private(current)):
+                or task_source_is_private(current)
+                or current.client_id and current.client.organization_id != organization_id
+                or current.pool_id and (current.pool.organization_id not in (None, organization_id)
+                    or current.pool.client.organization_id != organization_id)):
             return False
         seen.add(current.pk)
         current = current.parent_task
@@ -160,11 +172,22 @@ def ad_provenance(connection, kind, source, mode, manual_id, existing, now):
 
 
 def _audit_value(link):
+    evidence = link.order_evidence if isinstance(link.order_evidence, dict) else {}
+    stamp = evidence.get("manual_confirmed_at")
+    try:
+        stamp = parse_datetime(stamp) if isinstance(stamp, str) else None
+    except (TypeError, ValueError, OverflowError):
+        stamp = None
+    stamp = stamp.isoformat() if stamp is not None and timezone.is_aware(stamp) else None
     return {"crm_item_id": link.crm_item_id, "next_task_id": link.next_task_id,
         "ad_source": link.ad_source, "avito_item_id": link.avito_item_id,
         "quality": link.quality, "call_origin": link.call_origin,
         "order_guid_sha256": hashlib.sha256(str(link.order_guid).encode()).hexdigest() if link.order_guid else "",
         "reason_sha256": hashlib.sha256(link.reason.encode()).hexdigest(),
+        "order_evidence_sha256": hashlib.sha256(json.dumps(evidence, sort_keys=True).encode()).hexdigest(),
+        "order_snapshot_id": evidence.get("snapshot_id") if type(evidence.get("snapshot_id")) is int else None,
+        "order_confirmed_by_id": evidence.get("manual_confirmed_by_id") if type(evidence.get("manual_confirmed_by_id")) is int else None,
+        "order_confirmed_at": stamp,
         "revision": link.revision}
 
 
@@ -195,10 +218,18 @@ def save_link(actor, connection_id, kind, identifier, *, item_id=None, task_id=N
     fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     with transaction.atomic():
         current = scope(actor, connection_id)
+        def binding(value):
+            return (value.pk, value.channel_id, value.channel.organization_id, str(value.external_id),
+                value.is_active, value.channel.is_active, value.channel.kind)
+        expected_binding = binding(current)
         # Match communication_enrichment: connection -> organization -> source.
-        ChannelConnection.objects.select_for_update().select_related("channel").get(pk=current.pk)
-        Organization.objects.select_for_update().get(pk=current.channel.organization_id)
+        locked = ChannelConnection.objects.select_for_update().select_related("channel").get(pk=current.pk)
+        if binding(locked) != expected_binding:
+            raise PermissionDenied
+        Organization.objects.select_for_update().get(pk=locked.channel.organization_id)
         current = scope(actor, connection_id)
+        if binding(current) != expected_binding:
+            raise PermissionDenied
         source = source_for(actor, current, kind, identifier, edit=True, lock=True)
         if item_id is not None:
             lock_crm_graph([item_id], extra_task_ids=[task_id] if task_id else [])
@@ -258,7 +289,10 @@ def save_link(actor, connection_id, kind, identifier, *, item_id=None, task_id=N
         if order_action == "clear":
             link.order_guid, link.order_evidence = None, {}
         elif order_action == "set":
-            link.order_guid, link.order_evidence = observed_order["guid"], observed_order["evidence"]
+            link.order_guid = observed_order["guid"]
+            link.order_evidence = dict(observed_order["evidence"])
+            link.order_evidence.update(manual_confirmation=True, manual_confirmed_by_id=actor.pk,
+                manual_confirmed_at=now.isoformat())
         elif can_finance and link.order_guid and link.crm_item_id != before["crm_item_id"]:
             raise ValueError("При смене заявки подтвердите или снимите ссылку на документ заказа.")
         link.confirmed_by, link.confirmed_at = actor, now

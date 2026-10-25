@@ -4,6 +4,8 @@ import json
 import uuid
 
 from django.core.exceptions import PermissionDenied
+from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from .client_crm_models import ClientCRMProfile
 from .finance_imports.money_forecast import _active_snapshot
@@ -93,7 +95,14 @@ def state(actor, organization, link, item):
         return {"state": "unknown", "label": "Документ заказа не связан; оплата и выручка неизвестны."}
     current = observed(actor, organization, item, link.order_guid)
     stored = link.order_evidence if isinstance(link.order_evidence, dict) else {}
-    if (current is None or stored.get("source") != "active_money_forecast_planning_snapshot"
+    try:
+        stamp = parse_datetime(stored.get("manual_confirmed_at", ""))
+    except (TypeError, ValueError, OverflowError):
+        stamp = None
+    acknowledgement = (stored.get("manual_confirmation") is True
+        and type(stored.get("manual_confirmed_by_id")) is int and stored["manual_confirmed_by_id"] > 0
+        and stamp is not None and timezone.is_aware(stamp) and stamp <= timezone.now())
+    if (not acknowledgement or current is None or stored.get("source") != "active_money_forecast_planning_snapshot"
             or stored.get("business_sha256") != current["evidence"]["business_sha256"]):
         return {"state": "unknown", "label": "Ссылка сохранена исторически; текущий источник требует сверки. Оплата неизвестна."}
     return {"state": "observed", "label": LABEL, "guid": current["guid"],
