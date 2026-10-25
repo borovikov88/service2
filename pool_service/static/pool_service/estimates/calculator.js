@@ -475,6 +475,10 @@ $('#pe-row-catalog').addEventListener('click', () => {
   if (existing) { openCatalog(block.id, rowBeingEdited.id); return; }
   const draft = structuredClone(rowBeingEdited);
   draft.kind = f.elements.kind.value === 'work' ? 'other' : f.elements.kind.value;
+  if (['filter_media','filter_valve'].includes(draft.kind)) {
+    draft.filter_parent = f.elements.filter_parent.value;
+    draft.basis = draft.kind === 'filter_media' ? 'filter_load' : 'filter_valve';
+  }
   draft.name = f.elements.name.value || 'Новая позиция';
   draft.quantity = rawValue(f.elements.quantity) || '1';
   draft.unit = f.elements.unit.value || 'шт.';
