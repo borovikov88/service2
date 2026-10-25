@@ -82,7 +82,7 @@ class ApprovedPhotoPublicationTests(TestCase):
         Image.new('RGB', (1536, 1152), 'blue').save(raw, format='JPEG')
         self.raw = raw.getvalue()
         self.asset = AvitoServicesImage(connection=self.connection, account_id=operation.ACCOUNT_ID,
-            organization_id_at_upload=self.org.pk, public_key='00000000-0000-4000-8000-000000000018',
+            organization_id_at_upload=self.org.pk, public_key=uuid.UUID('00000000-0000-4000-8000-000000000018'),
             sha256=hashlib.sha256(self.raw).hexdigest(), byte_size=len(self.raw),
             width=1536, height=1152, uploaded_by=self.owner)
         self.asset.public_url = 'https://service2.aqualine22.ru' + reverse(
