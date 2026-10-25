@@ -46,6 +46,8 @@ class Command(BaseCommand):
             result["improvement_projects"] = setup_owner_cycle_once()
             from pool_service.avito_owner_review import safe_owner_review_receipt
             result["owner_review"] = safe_owner_review_receipt()
+            from pool_service.avito_comparable_subsets import safe_setup_evidence as comparable_subset_evidence
+            result["comparable_subsets"] = comparable_subset_evidence()
             from pool_service import avito_tariff_subscription
             from pool_service.avito_services_workplace_setup import _actor, _connection
             try:

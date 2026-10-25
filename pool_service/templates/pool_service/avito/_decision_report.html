@@ -13,6 +13,32 @@
       <tr><th scope="row">{{ metric.label }}</th><td>{% if metric.value != None %}{{ metric.value }} {{ metric.unit }}{% else %}Нет полного значения{% endif %}</td><td class="small text-muted">Известно: {{ metric.known_cells }}/{{ report.account_current.expected_cells }} строк; пропущено дат: {{ report.account_current.missing_days }}.</td></tr>
     {% endif %}{% endfor %}
   </tbody></table></div>
+
+  <details class="my-3" open>
+    <summary>Сопоставимая часть аккаунта: отдельный набор для каждого показателя</summary>
+    <p class="small mt-2">Это результат только по перечисленным объявлениям, а не полный итог аккаунта. Для каждой строки используются одинаковые ID и известные входные показатели за все даты обоих периодов. Наборы разных строк могут различаться; их расходы и счётчики нельзя складывать между собой. Отсутствующие строки исключаются, не заменяются нулём. Отношения рассчитываются из сумм входов одного набора. Известный набор взят из снимков и ответов в этих периодах; это не доказательство прежней активности. Результат исключённых объявлений может отличаться.</p>
+    {% for pair in report.comparable_subsets %}
+    <div class="border-top py-2">
+      <strong>{{ pair.label }}</strong>
+      <div class="small">Текущий: {{ pair.current_from|date:"d.m.Y" }}–{{ pair.current_to|date:"d.m.Y" }} (страницы {{ pair.current_completed_dates }}/{{ pair.current_dates }} дат); предыдущий: {{ pair.previous_from|date:"d.m.Y" }}–{{ pair.previous_to|date:"d.m.Y" }} ({{ pair.previous_completed_dates }}/{{ pair.previous_dates }}). Часовой пояс дат источника неизвестен.</div>
+      {% timezone "Asia/Barnaul" %}<div class="small text-muted">Получение текущего: {{ pair.current_received_at|date:"d.m.Y H:i:s"|default:"не подтверждено" }}; предыдущего: {{ pair.previous_received_at|date:"d.m.Y H:i:s"|default:"не подтверждено" }} · Барнаул.</div>{% endtimezone %}
+      {% if not pair.known_cohort_complete or pair.truncated %}<p class="small text-warning-emphasis">Охват неполный; все объявления аккаунта этим сравнением не подтверждены.</p>{% endif %}
+      {% if pair.source_cohort_changed %}<p class="small text-muted">Известный общий состав менялся либо подтверждён не для всех дат. Внутри каждой строки оставлено только одинаковое подмножество.</p>{% endif %}
+      <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Показатель</th><th>Текущий</th><th>Предыдущий</th><th>Разница</th><th>Изменение, %</th><th>Покрытие и ID</th></tr></thead><tbody>
+      {% for metric in pair.metrics %}<tr>
+        <th scope="row">{{ metric.label }}</th>
+        <td>{% if metric.current != None %}{{ metric.current }} {{ metric.unit }}{% else %}Нет данных{% endif %}</td>
+        <td>{% if metric.previous != None %}{{ metric.previous }} {{ metric.unit }}{% else %}Нет данных{% endif %}</td>
+        <td>{% if metric.delta != None %}{{ metric.delta }} {{ metric.delta_unit }}{% else %}Не рассчитано{% endif %}</td>
+        <td>{% if metric.relative_change != None %}{{ metric.relative_change }}{% else %}Не рассчитано{% endif %}</td>
+        <td class="small">Включено {{ metric.included_ads }}/{{ metric.known_ads }} известных ID; исключено {{ metric.excluded_ads }}. Строки выбранного набора: текущий {{ metric.current_cells }}, предыдущий {{ metric.previous_cells }}.
+          {% if metric.low_or_unknown_volume %}<div class="text-muted">Малый или неизвестный объём: устойчивый вывод об эффективности не сформирован.</div>{% else %}<div class="text-muted">Порог объёма пройден; устойчивость и причинность не доказаны.</div>{% endif %}
+          <details><summary>Состав сравнения</summary>Одинаковые ID в обоих периодах: {{ metric.included_ids|join:", "|default:"нет" }}. Исключены: {{ metric.excluded_ids|join:", "|default:"нет" }}{% if metric.excluded_ids_truncated %} (список сокращён){% endif %}. Входы: {{ metric.required_inputs|join:", " }}.</details>
+        </td>
+      </tr>{% endfor %}</tbody></table></div>
+    </div>{% endfor %}
+  </details>
+
   <details class="small mb-3"><summary>Ограничения выводов</summary><ul class="mt-2">{% for item in report.limitations %}<li>{{ item }}</li>{% endfor %}</ul></details>
   <h4 class="h6">Приоритетные действия</h4>
   {% if report.actions %}
