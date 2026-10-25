@@ -175,12 +175,13 @@ def display_state(connection, user):
     state = _state(connection)
     if state.get("actor_id") is not None and state.get("actor_id") != user.pk:
         return {}
+    from .avito_runtime import scoped_scheduler_display
     return {"allowed": True, "enabled": state.get("enabled") is True,
             "needs_reactivation": state.get("enabled") is True and not _allowed(connection, state),
             "next_due_at": _date(state.get("next_due_at")),
             "last_success_at": _date(state.get("last_success_at")),
             "last_error_detail": state.get("last_error_detail", ""),
-            "scheduler": _scheduler_state()}
+            "scheduler": scoped_scheduler_display(connection, "advance", _scheduler_state())}
 
 
 def _failure(exc):

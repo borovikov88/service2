@@ -150,7 +150,7 @@ def _saved(connection, check):
         "next_due_at": when(state.get("next_due_at"))}
 
 
-def checks(connection):
+def checks(connection, *, only_check=None):
     """Auth scope is checked by the caller; rows expose only this exact binding."""
     try:
         heartbeat = AvitoSchedulerHeartbeat.objects.filter(pk="avito-status-monitor").first()
@@ -161,6 +161,8 @@ def checks(connection):
     recorded = heartbeat.checks if complete and isinstance(heartbeat.checks, list) else []
     output = []
     for key, label in CHECKS.items():
+        if only_check is not None and key != only_check:
+            continue
         saved = _saved(connection, key)
         match = next((row for row in recorded if isinstance(row, dict) and
             row.get("connection_id") == connection.pk and row.get("account_id") == str(connection.external_id)
@@ -186,4 +188,50 @@ def checks(connection):
             "last_worker_consistency_guard_label": CONSISTENCY_GUARDS.get(consistency_guard(match.get("consistency_guard")), "")
                 if match and key == "autoload_report" and match["outcome"] == "failed" and match["code"] == "autoload_report_changed" else "",
             "last_worker_verified": bool(match)})
+    return output
+
+
+def scoped_scheduler_display(connection, check, scheduler):
+    """Keep activation gates intact; attribute display evidence to one binding/check."""
+    from zoneinfo import ZoneInfo
+    from .avito_scheduler import MAX_AGE
+
+    if check not in CHECKS:
+        raise ValueError("Unknown Avito check")
+    output = dict(scheduler)
+    label = f"Подключение №{connection.pk} · {CHECKS[check]}"
+    row = next(item for item in checks(connection, only_check=check) if item["check"] == check)
+    now = timezone.now()
+    stamp = when(row.get("last_worker_checked_at"))
+    saved_stamp = when(row.get("checked_at"))
+
+    def display_time(value):
+        return value.astimezone(ZoneInfo("Asia/Barnaul")).strftime("%d.%m.%Y %H:%M:%S") + " · Барнаул" if value else "время не подтверждено"
+
+    fresh = bool(row.get("last_worker_verified") and stamp and
+        timedelta(0) <= now - stamp <= MAX_AGE and
+        scheduler.get("code") in {"ready", "partial", "failed"})
+    failed = False
+    state = "not_confirmed"
+    if not row["configured"] or not row["enabled"]:
+        state, message = "disabled", "Проверка выключена или ещё не настроена."
+    elif row["scope_valid"] is False:
+        state, message = "blocked", "Настройки или права подключения требуют повторного подтверждения."
+    elif fresh and row["last_worker_outcome"] == "failed":
+        failed, state = True, "failed"
+        message = "Проверка завершилась ошибкой (" + safe_code(row["last_worker_code"]) + ")."
+    elif fresh and row["last_worker_outcome"] in {"baseline", "success"}:
+        state, message = "success", "Успешная проверка подтверждена."
+    elif fresh and row["last_worker_outcome"] in {"skipped", "not_run"}:
+        state, message = "skipped", "В этом запуске проверка не выполнялась; сбой не подтверждён."
+    elif row["state"] == "due":
+        state, message = "due", "Проверка ожидает запуска по расписанию; нового результата ещё нет."
+    else:
+        message = "Нет свежего подтверждённого результата этой проверки."
+
+    # No global partial/exit status or another account's row becomes this check's error.
+    result_time = display_time(stamp) if fresh and state not in {"disabled", "blocked"} else "время нового результата не подтверждено"
+    output.update(detail=f"{label} · {result_time}: {message}",
+        display_failed=failed, display_state=state, scope_label=label,
+        checked_at_display=display_time(saved_stamp))
     return output
