@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {setExcluded, emptyRow, automaticQuantity, quantityRequired} from '../static/pool_service/estimates/state.js';
 import {availabilityStatus} from '../static/pool_service/estimates/availability.js';
+import {renderCatalogCard} from '../static/pool_service/estimates/catalog-card.js';
 
 function sample() {
   return {variants: Object.fromEntries(['economy', 'standard', 'premium'].map(key => [key, {blocks: [{id: 'equipment', excluded: false, reason: '', rows: [emptyRow('pump'), {...emptyRow('filter'), excluded: true, price: '120'}]}]}]))};
@@ -160,4 +161,33 @@ test('filter valve quantity stays server-owned and individual exclusion locks ma
  setExcluded(s,'economy',s.variants.economy.blocks[0].id,row.id,false);
  assert.equal(row.excluded,false);
  assert.equal(row.selection_locked,true);
+});
+
+test('compact catalogue keeps manual choice, full help and one safe product link', () => {
+ const html=renderCatalogCard({id:'9',name:'Насос <Test>',brand:'A & B',sku:'A-9',price:'100',
+  url:'https://shop.aqualine22.ru/item.html',kind:'pump',nominal_flow:'7',head:'4',power:'230',
+  warning:'Проверить <совместимость>',available:false,availability:{state:'preorder',orderable:true}},
+  {money:String,thumbnail:()=>''});
+ assert.match(html,/Насос &lt;Test&gt;/);
+ assert.match(html,/A &amp; B/);
+ assert.match(html,/href="https:\/\/shop\.aqualine22\.ru\/item.html"/);
+ assert.equal((html.match(/<a /g)||[]).length,1);
+ assert.match(html,/арт\. A-9/);
+ assert.match(html,/7 м³\/ч по каталогу при 4 м/);
+ assert.match(html,/230 В/);
+ assert.match(html,/data-help-label="●">Наличие: Под заказ/);
+ assert.match(html,/data-help-label="!">Проверить &lt;совместимость&gt;/);
+ assert.match(html,/data-catalog-product="9">Выбрать/);
+ assert.doesNotMatch(html,/disabled|>Карточка товара ↗</);
+});
+
+test('compact catalogue preserves material units and code without allowing an unsafe link', () => {
+ const html=renderCatalogCard({id:'10',name:'Лайнер',sku:'',price:'200',url:'javascript:alert(1)',
+  kind:'liner',roll_area:'42',liner:{price_unit:'roll'},power:'unknown'},
+  {money:String,thumbnail:()=>''});
+ assert.match(html,/код 10/);
+ assert.match(html,/200 ₽ \/ рулон/);
+ assert.match(html,/42 м²\/рулон; в смете за м²/);
+ assert.match(html,/pe-catalog-no-image/);
+ assert.doesNotMatch(html,/<a |javascript:|undefined|> В</);
 });
