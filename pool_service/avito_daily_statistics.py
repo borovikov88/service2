@@ -283,6 +283,7 @@ def collect_next(connection_id=4):
     connection, state, run, lease = reserved
     error, page, retry_at = '', None, None
     phase, exception_class, attempt_started_at = 'authorization', '', timezone.now()
+    statistics_reason = ''
     try:
         token = access_token(connection)
         if authorized_account_id(connection) != ACCOUNT:
@@ -312,6 +313,10 @@ def collect_next(connection_id=4):
     except Exception as exc:
         code = exc.args[0] if isinstance(exc, AvitoError) and len(exc.args) == 1 else None
         error, exception_class = _error_code(code), _exception_class(exc)
+        reason = vars(exc).get('statistics_reason') if isinstance(exc, AvitoError) else None
+        if (error == 'provider_data_invalid' and isinstance(reason, str)
+                and reason in avito_workspace.STATISTICS_INVALID_REASONS):
+            statistics_reason = reason
     with transaction.atomic():
         current = ChannelConnection.objects.select_for_update().select_related('channel').get(pk=connection_id)
         metadata, active, now = dict(current.settings), _state(current), timezone.now()
@@ -388,6 +393,8 @@ def collect_next(connection_id=4):
             'exception_class': exception_class, 'error_code': active.get('last_error_code', ''),
             'started_at': attempt_started_at.isoformat(), 'finished_at': now.isoformat(),
             'outcome': status}
+        if statistics_reason:
+            active['last_attempt']['statistics_reason'] = statistics_reason
         locked.save()
         metadata[KEY] = active
         current.settings = metadata

@@ -350,3 +350,79 @@ class AvitoPromotionFieldPresenceTests(SimpleTestCase):
             with self.subTest(value=value), patch.object(avito_workspace, '_get',
                     return_value={'status': 'active', 'vas': value}), self.assertRaises(AvitoError):
                 avito_workspace.fetch_item_detail('opaque', '446312402', '11')
+
+
+
+class AvitoStatisticsReasonTests(SimpleTestCase):
+    def parse(self, payload, grouping='item'):
+        return avito_workspace.statistics_data(payload, start='2026-09-26',
+            end='2026-09-26', grouping=grouping, offset=0)
+
+    def assert_reason(self, payload, reason, grouping='item'):
+        with self.assertRaises(AvitoError) as caught:
+            self.parse(payload, grouping)
+        error = caught.exception
+        self.assertIs(type(error), AvitoError)
+        self.assertEqual(str(error), 'provider_data_invalid')
+        self.assertEqual(error.args, ('provider_data_invalid',))
+        self.assertEqual(vars(error), {'statistics_reason': reason})
+        self.assertIn(reason, avito_workspace.STATISTICS_INVALID_REASONS)
+        self.assertNotIn('PRIVATE', repr(error))
+
+    def test_each_existing_rejection_has_a_fixed_reason_without_payload_values(self):
+        group = {'id': 11, 'metrics': []}
+        cases = [
+            ({}, 'result_missing', 'item'),
+            ({'result': None}, 'result_type', 'item'),
+            ({'result': []}, 'result_type', 'item'),
+            ({'result': {}}, 'groupings_type', 'item'),
+            ({'result': {'groupings': 'PRIVATE'}}, 'groupings_type', 'item'),
+            ({'result': {'groupings': [group]*51}}, 'groupings_limit', 'item'),
+            ({'result': {'groupings': [group, {'id': 12, 'metrics': []}]}},
+                'totals_multiple_groups', 'totals'),
+            ({'result': {'groupings': [None]}}, 'group_type', 'item'),
+            ({'result': {'groupings': [{'id': 11, 'metrics': None}]}}, 'metrics_type', 'item'),
+            ({'result': {'groupings': [{'id': 'PRIVATE', 'metrics': []}]}}, 'id_type', 'item'),
+            ({'result': {'groupings': [{'id': True, 'metrics': []}]}}, 'id_type', 'item'),
+            ({'result': {'groupings': [group, group]}}, 'id_duplicate', 'item'),
+            ({'result': {'groupings': [{'id': 11, 'metrics': [None]}]}}, 'metric_type', 'item'),
+            ({'result': {'groupings': [{'id': 11, 'metrics': [{'slug': 123}]}]}},
+                'metric_slug_type', 'item'),
+            ({'result': {'groupings': [{'id': 11, 'metrics': [
+                {'slug': 'PRIVATE', 'value': 'PRIVATE'}, {'slug': 'PRIVATE'}]}]}},
+                'metric_duplicate', 'item'),
+        ]
+        for payload, reason, grouping in cases:
+            with self.subTest(reason=reason):
+                self.assert_reason(payload, reason, grouping)
+
+    def test_missing_groupings_with_explicit_zero_is_classified_but_still_rejected(self):
+        for result in ({'dataTotalCount': 0}, {'groupings': None, 'dataTotalCount': 0}):
+            self.assert_reason({'result': result}, 'grouping_missing_with_explicit_zero_total')
+        for payload in (
+                {'result': {'groupings': None, 'dataTotalCount': False}},
+                {'result': {'groupings': None, 'dataTotalCount': '0'}},
+                {'result': {'groupings': {}, 'dataTotalCount': 0}},
+                {'result': {'groupings': None, 'dataTotalCount': 0, 'error': 'PRIVATE'}},
+                {'result': {'groupings': None, 'dataTotalCount': 0, 'errors': ['PRIVATE']}},
+                {'result': {'groupings': None, 'dataTotalCount': 0}, 'error': {'PRIVATE': 'PRIVATE'}},
+                {'result': {'groupings': None, 'dataTotalCount': 0}, 'errors': ['PRIVATE']}):
+            self.assert_reason(payload, 'groupings_type')
+
+    def test_explicit_empty_groups_and_existing_normalized_values_keep_prior_contract(self):
+        for result, total in (({'groupings': [], 'dataTotalCount': 0}, 0),
+                ({'groupings': []}, None)):
+            output = self.parse({'result': result})
+            self.assertEqual(output['rows'], [])
+            self.assertEqual(output['total'], total)
+            self.assertNotIn('statistics_reason', output)
+        output = self.parse({'result': {'groupings': [{'id': 11, 'metrics': [
+            {'slug': 'views', 'value': 0}, {'slug': 'spending', 'value': 12599}]}],
+            'dataTotalCount': 1}})
+        values = {item['slug']: item['value'] for item in output['rows'][0]['metrics']}
+        self.assertEqual(values['views'], '0')
+        self.assertEqual(values['spending'], '125.99')
+        self.assertIsNone(values['contacts'])
+        totals = self.parse({'result': {'groupings': [{'metrics': []}]}}, 'totals')
+        self.assertEqual(totals['rows'][0]['id'], 0)
+

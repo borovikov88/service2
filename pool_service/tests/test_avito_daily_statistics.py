@@ -772,6 +772,83 @@ class DailyHistoryTests(TestCase):
         self.assertEqual(daily._choose_day(self.connection, tomorrow), daily.collection_cutoff(tomorrow))
 
 
+
+    def test_statistics_structural_reason_is_persisted_without_payload_or_accepting_empty_groups(self):
+        def rejected(*args, **kwargs):
+            return avito_workspace.statistics_data(
+                {'result': {'groupings': None, 'dataTotalCount': 0}, 'PRIVATE': 'PRIVATE'},
+                start='2026-10-23', end='2026-10-23', grouping='item', offset=0)
+        with patch.object(avito_workspace, 'fetch_statistics', side_effect=rejected) as fetch:
+            self.assertEqual(daily.collect_next(), 'failed')
+        fetch.assert_called_once()
+        self.connection.refresh_from_db()
+        attempt = self.connection.settings[daily.KEY]['last_attempt']
+        self.assertEqual(attempt['error_code'], 'provider_data_invalid')
+        self.assertEqual(attempt['statistics_reason'], 'grouping_missing_with_explicit_zero_total')
+        self.assertEqual(attempt['exception_class'], 'AvitoError')
+        self.assertEqual(attempt['phase'], 'fetch_statistics')
+        self.assertFalse(AvitoStatisticsRun.objects.get().pagination_complete)
+        self.assertFalse(AvitoDailyStatistic.objects.exists())
+        evidence = self.gap_evidence()
+        self.assertEqual(evidence['last_attempt']['statistics_reason'],
+                         'grouping_missing_with_explicit_zero_total')
+        self.assertNotIn('PRIVATE', str(self.connection.settings))
+        self.assertNotIn('PRIVATE', str(evidence))
+        self.goods.refresh_from_db()
+        self.assertEqual(self.goods.settings, {'preserve': 'goods sentinel'})
+
+    def test_statistics_reason_requires_exact_code_exception_type_and_allowlisted_string(self):
+        for error, reason in ((daily.AvitoError('provider_data_invalid'), 'PRIVATE'),
+                (daily.AvitoError('provider_data_invalid'), ['result_type']),
+                (daily.AvitoError('provider_http_400'), 'result_type'),
+                (RuntimeError('provider_data_invalid'), 'result_type')):
+            error.statistics_reason = reason
+            self.retry()
+            with patch.object(avito_workspace, 'fetch_statistics', side_effect=error):
+                self.assertEqual(daily.collect_next(), 'failed')
+            self.connection.refresh_from_db()
+            self.assertNotIn('statistics_reason', self.connection.settings[daily.KEY]['last_attempt'])
+            self.assertNotIn('PRIVATE', str(self.connection.settings))
+        # Previously persisted attempts without the new field remain valid.
+        self.retry()
+        with patch.object(avito_workspace, 'fetch_statistics',
+                side_effect=daily.AvitoError('provider_data_invalid')):
+            daily.collect_next()
+        self.assertEqual(self.gap_evidence()['last_attempt']['state'], 'observed')
+        self.assertNotIn('statistics_reason', self.gap_evidence()['last_attempt'])
+
+    def test_saved_unknown_or_misbound_statistics_reason_is_rejected_without_echoing_it(self):
+        with patch.object(avito_workspace, 'fetch_statistics',
+                side_effect=daily.AvitoError('provider_data_invalid')):
+            daily.collect_next()
+        self.connection.refresh_from_db()
+        for reason, code in (('PRIVATE', 'provider_data_invalid'),
+                (['result_type'], 'provider_data_invalid'), ('result_type', 'provider_http_403')):
+            self.connection.settings[daily.KEY]['last_attempt'].update(
+                statistics_reason=reason, error_code=code)
+            self.connection.save(update_fields=['settings'])
+            attempt = self.gap_evidence()['last_attempt']
+            self.assertEqual(attempt['state'], 'unconfirmed')
+            self.assertNotIn('statistics_reason', attempt)
+            self.assertNotIn('PRIVATE', str(attempt))
+
+    def test_lost_lease_cannot_persist_even_an_allowlisted_statistics_reason(self):
+        def rejected_after_lease_change(*args, **kwargs):
+            current = ChannelConnection.objects.get(pk=4)
+            current.settings[daily.KEY].update(lease='other-worker',
+                last_attempt={'sentinel': 'newer-worker-evidence'})
+            current.save(update_fields=['settings'])
+            return avito_workspace.statistics_data({'result': None},
+                start='2026-10-23', end='2026-10-23', grouping='item', offset=0)
+        with patch.object(avito_workspace, 'fetch_statistics', side_effect=rejected_after_lease_change):
+            self.assertEqual(daily.collect_next(), 'failed')
+        self.connection.refresh_from_db()
+        self.assertEqual(self.connection.settings[daily.KEY]['last_attempt'],
+                         {'sentinel': 'newer-worker-evidence'})
+        self.assertEqual(AvitoStatisticsRun.objects.get().state, 'collecting')
+        self.assertFalse(AvitoDailyStatistic.objects.exists())
+
+
 class DailySourceComparisonTests(SimpleTestCase):
     now = datetime(2026, 10, 25, 7, tzinfo=dt_timezone.utc)
 
