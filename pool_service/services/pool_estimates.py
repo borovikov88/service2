@@ -491,6 +491,8 @@ def normalize_catalog(raw):
     result['lining_denied'] = denied[:]
     from .estimate_inlet_taxonomy import normalize as normalize_inlet_taxonomy
     result['inlet_taxonomy'] = normalize_inlet_taxonomy(raw.get('inlet_taxonomy'))
+    from .estimate_pump_facts import normalize as normalize_pump_facts
+    result['pump_facts'] = normalize_pump_facts(raw.get('pump_facts'))
     result["filtration"] = None if raw.get("filtration") is None else boolean(raw["filtration"])
     result["heater_purpose_note"] = string(raw.get("heater_purpose_note", ""), "Назначение нагревателя", 300)
     from .estimate_auxiliary import normalize_facts

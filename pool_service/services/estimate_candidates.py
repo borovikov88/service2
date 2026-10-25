@@ -20,6 +20,20 @@ def assess(product, inputs, required_flow, profile=None):
     missing, kind = [], product['kind']
     if kind not in CORE:
         return 'Нет правил предварительного подбора этой категории.', []
+    if kind == 'pump' and product.get('pump_facts'):
+        facts = product['pump_facts']
+        if facts.get('issue'):
+            return facts['issue'], []
+        if not facts.get('in_category'):
+            return 'Принадлежность категории «Насосы для бассейнов» не подтверждена.', []
+        if not facts.get('structured'):
+            missing.append('характеристики насоса в карточке магазина')
+        elif facts.get('prefilter') is not True:
+            missing.append('отдельный префильтр перед насосом' if facts.get('prefilter') is False else 'наличие префильтра')
+        if facts.get('mode_note'):
+            missing.append(facts['mode_note'])
+        if facts.get('purpose_note'):
+            missing.append(facts['purpose_note'])
     if kind == 'pump' and product.get('filtration') is not True:
         # A vague "pump" could be an attraction/spa device: minimum identity gate.
         return 'Назначение для фильтрации с префильтром не подтверждено.', []
@@ -64,7 +78,11 @@ def choose(products, tier, inputs, required_flow, profile=None):
     # sufficient model just because its catalogue price is lower.
     field = {'pump':'nominal_flow','filter':'filter_flow','heater':'heating_power'}.get(eligible[0][0]['kind'])
     def evidence_rank(p, missing):
-        return (int(bool(field) and not p.get(field)), len(missing))
+        pump = p.get('pump_facts', {}) if p['kind'] == 'pump' else {}
+        return (int(bool(field) and not p.get(field)),
+                int(p['kind'] == 'pump' and not p.get('power_options')),
+                int(bool(pump) and pump.get('prefilter') is not True),
+                int(bool(pump.get('purpose_note'))), len(missing))
     best = min(evidence_rank(p, missing) for p, missing in eligible)
     choices = [p for p, missing in eligible if evidence_rank(p, missing) == best]
     known = [p for p in choices if field and p.get(field)]
