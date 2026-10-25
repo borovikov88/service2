@@ -208,9 +208,6 @@ def safe_owner_review_receipt():
             'state', 'avito_id', 'checked_at', 'confirmed_water_sources_inspected',
             'awaiting_quality_inspected', 'assessed_water_sources_inspected',
             'unknown_source_inspected', 'scan_complete', 'display_complete')}
-        result['water_quality']['sources'] = [{key: row[key] for key in (
-            'kind', 'id', 'source_method', 'quality', 'crm_item_id', 'next_task_id', 'can_edit')}
-            for row in queue['rows']]
     except Exception:
         result['water_quality'] = {'state': 'unavailable', 'code': 'crm_access_or_source_unverified'}
     return result

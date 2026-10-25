@@ -205,15 +205,28 @@ class OwnerReviewTests(ProposalFixture, TestCase):
         self.assertEqual(self.readonly_baseline(), before)
         self.provider.assert_not_called()
 
-    def test_operator_receipt_never_exports_titles_urls_names_or_amounts(self):
+    def test_operator_receipt_exports_counts_but_no_working_source_or_crm_identifiers(self):
+        item = CrmItem.objects.create(pk=981234567, organization=self.org, direction='service',
+            title='Synthetic private request', stage='srv_new')
+        task = ServiceTask.objects.create(pk=982345678, organization=self.org, crm_item=item,
+            title='Synthetic private follow-up', start_date=self.now.date(), created_by=self.owner)
+        links.save_link(self.owner, 4, 'conversation', self.dialog.uuid,
+            item_id=item.pk, task_id=task.pk, quality='unknown', ad_mode='auto',
+            operation=uuid.uuid4(), expected_revision=0)
+        private = review.water_quality_queue(self.owner, self.connection)
+        self.assertEqual(private['rows'][0]['id'], str(self.dialog.uuid))
+        self.assertEqual(private['rows'][0]['crm_item_id'], item.pk)
+        self.assertEqual(private['rows'][0]['next_task_id'], task.pk)
         with patch('pool_service.avito_services_workplace_setup._connection', return_value=self.connection), \
                 patch('pool_service.avito_services_workplace_setup._actor', return_value=self.owner):
             before = self.readonly_baseline()
             result = review.safe_owner_review_receipt()
         encoded = json.dumps(result, ensure_ascii=False)
         self.assertEqual(result['state'], 'available')
-        self.assertEqual(result['water_quality']['sources'][0]['id'], str(self.dialog.uuid))
-        for private in ('Тестовая', 'PRIVATE', 'manager_url', '/attribution/', 'amount', 'reason'):
-            self.assertNotIn(private, encoded)
+        self.assertEqual(result['water_quality']['awaiting_quality_inspected'], 1)
+        self.assertNotIn('sources', result['water_quality'])
+        for value in ('Тестовая', 'PRIVATE', 'manager_url', '/attribution/', 'amount', 'reason',
+                str(self.dialog.uuid), str(item.pk), str(task.pk), 'crm_item_id', 'next_task_id'):
+            self.assertNotIn(value, encoded)
         self.assertEqual(self.readonly_baseline(), before)
         self.provider.assert_not_called()
