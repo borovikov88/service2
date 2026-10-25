@@ -1,5 +1,5 @@
 """Closed DB-only evidence for one priority announcement; no provider requests."""
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.db.models import Max, Q
@@ -190,7 +190,26 @@ def display(receipt):
         return receipt
     from . import avito_daily_statistics as daily
     attempt = receipt['last_attempt']
-    return {**receipt, 'last_attempt': {**attempt,
+    explanation = ''
+    try:
+        source_date = date.fromisoformat(attempt.get('source_date', ''))
+    except (TypeError, ValueError):
+        source_date = None
+    shape = daily.avito_workspace.statistics_shape_metadata(attempt.get('statistics_shape'))
+    if (type(receipt.get('connection_id')) is int and receipt['connection_id'] == 4
+            and receipt.get('account_id') == daily.ACCOUNT and receipt.get('source') == 'avito_stats_v2_items'
+            and type(attempt.get('run_id')) is int and attempt['run_id'] > 0
+            and attempt.get('state') == 'observed' and attempt.get('outcome') == 'failed'
+            and attempt.get('phase') == 'fetch_statistics' and attempt.get('exception_class') == 'AvitoError'
+            and attempt.get('error_code') == 'provider_data_invalid'
+            and attempt.get('statistics_reason') == 'groupings_type'
+            and source_date is not None and source_date.isoformat() == attempt['source_date']
+            and shape == {'groupings_kind': 'missing', 'data_total_count_kind': 'missing',
+                          'provider_error_present': False}):
+        explanation = ('В result ответа Авито отсутствуют groupings и dataTotalCount; '
+            'признак error/errors не обнаружен. Полнота и показатели за эту дату не подтверждены; '
+            'отсутствие полей не означает нули.')
+    return {**receipt, 'last_attempt': {**attempt, 'response_shape_explanation': explanation,
         'finished_at': daily._date(attempt.get('finished_at'))},
         'dates': [{**item, 'explanation': STATES[item['state']],
             'completed_at': daily._date(item['completed_at']),
