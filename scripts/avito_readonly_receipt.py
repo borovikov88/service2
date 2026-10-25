@@ -895,7 +895,8 @@ def _statistics_gaps(value, cutoff):
             codes[key] = list(raw)
         known = integer(row.get("known_metric_count"), len(STAT_METRIC_CODES))
         require(known + len(codes["missing_metric_codes"]) == len(STAT_METRIC_CODES)
-            and not set(codes["missing_metric_codes"]) & set(codes["zero_metric_codes"]))
+            and not set(codes["missing_metric_codes"]) & set(codes["zero_metric_codes"])
+            and (not known or row["stored_row_consistent"] and row["provider_row_present"] is True))
         counts = {key: integer(row[key], 200) if row.get(key) is not None else None
             for key in ("expected_total", "received_rows")}
         ids = {}

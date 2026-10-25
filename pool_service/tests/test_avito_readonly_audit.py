@@ -1141,6 +1141,26 @@ class StatisticsSourceProjectionTests(SimpleTestCase):
         false_success["gap_diagnostics"]["dates"][0]["state"] = "known"
         false_success["gap_diagnostics"]["states"].update(no_completed_request=29, known=1)
         cases.append(false_success)
+        false_known = statistics_evidence()
+        false_known["gap_diagnostics"]["dates"][0].update(
+            known_metric_count=13, missing_metric_codes=[], zero_metric_codes=["views"])
+        cases.append(false_known)
+        missing_fact = statistics_evidence()
+        missing_fact["completed_dates"] = 1
+        gap = missing_fact["gap_diagnostics"]
+        gap["completed_dates"] = 1
+        gap["states"].update(no_completed_request=29, local_fact_missing=1)
+        gap["dates"][0].update(state="local_fact_missing", pages_complete=True,
+            request_provenance_consistent=True, latest_complete_run_id=91,
+            completed_at="2026-10-25T17:20:00+00:00", pages=[{"offset": 0, "rows": 11}],
+            expected_total=11, received_rows=11, expected_manifest_member=True,
+            provider_row_present=True, known_metric_count=13, missing_metric_codes=[])
+        for row in missing_fact["periods"]:
+            if row["key"] in {"day", "seven_days", "thirty_days"}:
+                row["missing_dates"] -= 1
+                row["pages_complete"] = row["missing_dates"] == 0
+                row["expected_ad_cells"], row["reported_ad_cells"] = 11, 10
+        cases.append(missing_fact)
         for raw in cases:
             with self.subTest(raw=raw), self.assertRaises((ValueError, TypeError)):
                 receipt.statistics_source_evidence(raw)
