@@ -5,10 +5,10 @@
     <span class="small {% if not tariff_reminder_state.enabled or tariff_reminder_state.needs_reactivation %}text-warning{% else %}text-muted{% endif %}">{% if tariff_reminder_state.enabled and not tariff_reminder_state.needs_reactivation %}Напоминания включены · {{ tariff_reminder_state.expires_on|date:"d.m.Y" }} · дата указана вручную{% elif tariff_reminder_state.expires_on %}{{ tariff_reminder_state.expires_on|date:"d.m.Y" }} · дата указана вручную · напоминания выключены{% else %}Дата окончания тарифа не задана{% endif %}</span>
   </div>
   <div class="avito-panel__body">
-    {% if tariff_reminder_state.last_error_detail %}<p class="small text-warning mb-2" role="status">{{ tariff_reminder_state.last_error_detail }}</p>{% endif %}
+    {% if tariff_reminder_state.last_error_detail %}<p class="small text-warning mb-2" role="status">{{ tariff_reminder_state.scheduler.scope_label }} · {{ tariff_reminder_state.scheduler.checked_at_display }} · сохранённая ошибка: {{ tariff_reminder_state.last_error_detail }}</p>{% endif %}
     {% if tariff_reminder_state.needs_reactivation %}<p class="small text-warning mb-2">Права или подключение изменились. Включите напоминания повторно.</p>{% endif %}
     {% if not tariff_reminder_state.in_app_enabled %}<p class="small text-warning mb-2">Уведомления внутри Service2 выключены в вашем профиле.</p>{% endif %}
-    {% if not tariff_reminder_state.scheduler.ready %}<p class="small text-warning mb-2">{{ tariff_reminder_state.scheduler.detail }}</p>{% endif %}
+    {% if tariff_reminder_state.scheduler.display_failed or not tariff_reminder_state.scheduler.ready %}<p class="small {% if tariff_reminder_state.scheduler.display_failed %}text-warning{% else %}text-muted{% endif %} mb-2">{{ tariff_reminder_state.scheduler.detail }}</p>{% endif %}
     {% if not tariff_reminder_state.enabled %}<p class="small text-muted mb-2">Остаток аванса не показывает срок тарифа. Дата окончания вашей подписки из API здесь не получена.</p>{% endif %}
     {% if tariff_reminder_state.services_schedule and tariff_reminder_state.expires_on %}
       <p class="small text-muted mb-2">{% if tariff_reminder_state.confirmed_at_display %}{{ tariff_reminder_state.confirmation_source_label }}. Вы подтвердили: {{ tariff_reminder_state.confirmed_at_display }} · Барнаул.{% else %}Дата введена вручную; время её подтверждения не сохранено. Сохраните проверенную в кабинете дату, чтобы зафиксировать подтверждение.{% endif %}</p>

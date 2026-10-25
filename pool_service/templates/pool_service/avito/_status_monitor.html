@@ -3,10 +3,8 @@
   <h2 class="h5" id="avito-status-monitor-title">Почасовой контроль объявлений</h2>
   <p class="small fw-semibold">Уведомления только вам. Другой администратор не может изменить получателя этой подписки.</p>
   <p class="small text-muted">Service2 проверяет все страницы объявлений этого подключения. Первое успешное чтение создаёт начальный снимок без старых уведомлений. Новые переходы в «Снято», «Истекло / архив», «Заблокировано» и «Отклонено» видите только вы внутри Service2. Новые неизвестные объявления и исчезнувшие записи сами по себе не считаются изменением статуса.</p>
-  <div class="alert {% if status_monitor_state.scheduler.ready %}alert-light border{% else %}alert-warning{% endif %} small" role="status">
+  <div class="alert {% if status_monitor_state.scheduler.display_failed %}alert-warning{% else %}alert-light border{% endif %} small" role="status">
     {{ status_monitor_state.scheduler.detail }}
-    {% if status_monitor_state.scheduler.success_at %}{{ status_monitor_state.scheduler.success_at|date:"d.m.Y H:i:s" }}.{% endif %}
-    {% if status_monitor_state.monitor.enabled and not status_monitor_state.scheduler.ready %}Подписка сохранена. Проверки могут задерживаться; предыдущие данные не считаются свежими.{% endif %}
   </div>
   {% if status_monitor_state.panel_command %}
   <details class="small mb-3">
@@ -28,7 +26,7 @@
         {% if monitor.enabled %}<dt class="col-sm-5">Следующая проверка, не ранее</dt><dd class="col-sm-7">{{ monitor.next_due_at|date:"d.m.Y H:i:s" }}</dd>{% endif %}
       </dl>
     {% endif %}
-    {% if status_monitor_state.error %}<div class="alert alert-warning small" role="status">{{ status_monitor_state.error }} Ошибка API не создаёт уведомлений об отключении объявлений.</div>{% endif %}
+    {% if status_monitor_state.error %}<div class="alert alert-warning small" role="status">{{ status_monitor_state.scheduler.scope_label }} · {{ status_monitor_state.scheduler.checked_at_display }} · сохранённая ошибка: {{ status_monitor_state.error }} Ошибка API не создаёт уведомлений об отключении объявлений.</div>{% endif %}
     <p class="small text-muted">Настроенное расписание должно запускать обработчик каждые 15 минут; успешные проверки идут раз в час по сохранённому расписанию. При ошибках повтор через 15, 30, затем 60 минут. Показано время Service2. Лимит обхода: 100 страниц по 50 объявлений и 7 минут. Неполный обход не обновляет статусы.</p>
     <form method="post" action="{% url 'avito_configure_monitor' connection.pk %}" class="d-flex flex-wrap gap-2">
       {% csrf_token %}

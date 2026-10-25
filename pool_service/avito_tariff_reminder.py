@@ -163,13 +163,14 @@ def display_state(connection, user):
                  and state.get("confirmation_source") == MANUAL_SOURCE
                  and state.get("confirmed_by") == user.pk else None)
     quiet_until = _time(state.get("quiet_until_at")) if services and _allowed(connection, state) else None
+    from .avito_runtime import scoped_scheduler_display
     return {
         "allowed": True, "enabled": state.get("enabled") is True,
         "needs_reactivation": state.get("enabled") is True and not _allowed(connection, state),
         "expires_on": _date(state.get("expires_on")),
         "last_checked_at": _time(state.get("last_checked_at")),
         "last_error_detail": state.get("last_error_detail", ""),
-        "in_app_enabled": _in_app(user.pk), "timezone": str(SERVICES_ZONE if services else zone()), "scheduler": _scheduler(),
+        "in_app_enabled": _in_app(user.pk), "timezone": str(SERVICES_ZONE if services else zone()), "scheduler": scoped_scheduler_display(connection, "tariff", _scheduler()),
         "services_schedule": services,
         "confirmation_source_label": "Введено вручную из кабинета Авито" if confirmed else "",
         "confirmed_at_display": confirmed.astimezone(SERVICES_ZONE).strftime("%d.%m.%Y %H:%M:%S") if confirmed else "",
