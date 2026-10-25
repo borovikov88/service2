@@ -14,7 +14,7 @@ CODES = {
     'approved_photo_binding_changed', 'approved_photo_busy',
     'approved_photo_prior_result_unknown', 'approved_photo_preflight_failed',
     'approved_photo_public_readback_failed', 'approved_photo_internal_error',
-    'approved_photo_source_not_current_stable',
+    'approved_photo_source_not_current_stable', 'approved_photo_current_state_changed',
 }
 
 def require(value):
@@ -91,9 +91,9 @@ def normalize(value):
     active = value.get('active_count')
     require(active is None or type(active) is int and active == 11)
     result.update(published_revision=revision, active_count=active)
-    for key in ('asset_storage_verified', 'authorized_preview_verified'):
+    for key in ('asset_storage_verified', 'authorized_preview_verified', 'local_publication_committed'):
         result[key] = flag(value.get(key))
-    for key in ('xml_public_verified', 'image_public_verified', 'source_matches_current_stable', 'configured_source_public_verified'):
+    for key in ('xml_public_verified', 'image_public_verified', 'source_matches_current_stable', 'configured_source_public_verified', 'current_publication_verified'):
         result[key] = flag(value.get(key), nullable=True)
     require(value.get('source_mode') == 'stable_current')
     result['source_mode'] = 'stable_current'
@@ -103,6 +103,9 @@ def normalize(value):
         rows = value.get(key)
         require(isinstance(rows, list) and len(rows) <= maximum)
         result[key] = [reference(row, diagnostic=key == 'legacy_diagnostics') for row in rows]
+    failure = value.get('media_failure')
+    require(failure is None or isinstance(failure, dict))
+    result['media_failure'] = reference(failure, diagnostic=True) if failure is not None else None
     report = value.get('provider_report')
     require(isinstance(report, dict) and report.get('state') in {
         'not_checked', 'unavailable', 'predates_publication', 'later_unfinished', 'later_completed'})
@@ -134,6 +137,10 @@ def normalize(value):
         if report['state'] == 'later_completed':
             require(projected_report['complete'] is True
                 and report['upload_status'] in {'success', 'success_warning', 'error'})
+    error = report.get('error_code', '')
+    require(error == '' or isinstance(error, str) and re.fullmatch(
+        r'(?:provider_http_(?:401|402|403|404|429|5[0-9]{2})|autoload_report_(?:changed|limit|invalid|pagination|duplicate_rows)|provider_(?:unavailable|account_mismatch|credentials_missing|credentials_invalid|token_missing)|provider_report_unavailable)', error))
+    projected_report['error_code'] = error
     result['provider_report'] = projected_report
     facts = value.get('facts')
     require(isinstance(facts, dict))
@@ -142,12 +149,14 @@ def normalize(value):
     require(result['facts']['live_content_verified'] is False)
     if result['state'] in {'published', 'verified'}:
         require(result['version_id'] is not None and revision == 18 and active == 11
-            and result['published_at'] is not None and result['facts']['file_published'])
+            and result['published_at'] is not None and result['facts']['file_published']
+            and result['local_publication_committed'] is True)
     if result['state'] == 'verified':
         require(result['code'] == 'approved_photo_verified'
             and result['xml_public_verified'] is True and result['image_public_verified'] is True
             and result['source_matches_current_stable'] is True
-            and result['configured_source_public_verified'] is True)
+            and result['configured_source_public_verified'] is True
+            and result['current_publication_verified'] is True)
     require(len(json.dumps(result, ensure_ascii=False).encode()) <= MAX_BYTES)
     return result
 

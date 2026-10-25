@@ -30,6 +30,7 @@ def sample():
         'code': 'approved_photo_scope_invalid', 'version_id': None,
         'published_revision': None, 'published_at': None, 'readback_checked_at': None,
         'active_count': None, 'asset_storage_verified': False, 'authorized_preview_verified': False,
+        'local_publication_committed': False, 'current_publication_verified': None, 'media_failure': None,
         'xml_public_verified': None, 'image_public_verified': None,
         'legacy_diagnostics': [], 'retained_references': [],
         'provider_report': {'state': 'not_checked', 'upload_id': None, 'started_at': None,

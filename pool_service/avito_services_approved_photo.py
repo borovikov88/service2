@@ -41,7 +41,7 @@ CODES = frozenset({
     'approved_photo_binding_changed', 'approved_photo_busy',
     'approved_photo_prior_result_unknown', 'approved_photo_preflight_failed',
     'approved_photo_public_readback_failed', 'approved_photo_internal_error',
-    'approved_photo_source_not_current_stable',
+    'approved_photo_source_not_current_stable', 'approved_photo_current_state_changed',
 })
 
 
@@ -64,10 +64,11 @@ def _result():
         'code': 'approved_photo_scope_invalid', 'version_id': None,
         'published_revision': None, 'published_at': None, 'readback_checked_at': None, 'active_count': None,
         'asset_storage_verified': False, 'authorized_preview_verified': False,
+        'local_publication_committed': False, 'current_publication_verified': None,
         'xml_public_verified': None, 'image_public_verified': None,
-        'legacy_diagnostics': [], 'retained_references': [],
+        'legacy_diagnostics': [], 'retained_references': [], 'media_failure': None,
         'provider_report': {'state': 'not_checked', 'upload_id': None, 'started_at': None,
-            'complete': None, 'upload_status': '', 'target': None},
+            'complete': None, 'upload_status': '', 'target': None, 'error_code': ''},
         'source_mode': 'stable_current', 'source_matches_current_stable': None,
         'configured_source_format': 'unknown', 'configured_source_public_verified': None,
         'facts': dict.fromkeys(('file_published', 'upload_found', 'source_confirmed',
@@ -263,21 +264,23 @@ def _published(marker):
             raise Blocked('approved_photo_binding_changed')
         saved = {**saved, 'state': 'published', 'version_id': version.pk,
             'file_sha256': version.file_digest, 'published_at': version.created_at.isoformat(),
-            'asset_storage_verified': True, 'authorized_preview_verified': True}
+            'asset_storage_verified': True, 'authorized_preview_verified': True,
+            'public_key': str(feed.public_key)}
         metadata[KEY] = saved
         connection.settings = metadata
         connection.save(update_fields=['settings'])
     return save
 
 
-def _current_publication(marker):
+def _publication_context(connection, actor, binding, feed, marker):
+    """Validate current publication using caller's rows, including locked rows."""
     from .avito_services_feed import entries, images
     from .avito_services_xml import xml_bytes
-    connection, actor, binding, feed = _base()
     saved = connection.settings.get(KEY) if isinstance(connection.settings, dict) else None
     if (not isinstance(saved, dict) or saved.get('token') != marker['token']
             or saved.get('state') not in {'published', 'verified'}
             or saved.get('binding') != binding or saved.get('actor_id') != actor.pk
+            or saved.get('public_key') != str(feed.public_key)
             or feed.published_revision != DRAFT_REVISION):
         raise Blocked('approved_photo_binding_changed')
     version = feed.versions.filter(pk=saved.get('version_id'), action='publish',
@@ -298,20 +301,25 @@ def _current_publication(marker):
     return connection, feed, version, asset, content
 
 
+def _current_publication(marker):
+    return _publication_context(*_base(), marker)
+
 
 def _capture_report(connection, feed, version, marker):
     from .communication_avito import access_token, authorized_account_id
     from .avito_autoload_report import fetch_report
     from .avito_services_publication import _date, correlate_report
     result = {'state': 'unavailable', 'upload_id': None, 'started_at': None,
-              'complete': None, 'upload_status': '', 'target': None}
+              'complete': None, 'upload_status': '', 'target': None, 'error_code': ''}
     try:
         if authorized_account_id(connection) != ACCOUNT_ID:
+            result['error_code'] = 'provider_account_mismatch'
             return result
-        report = fetch_report(access_token(connection), ACCOUNT_ID, kind='last_successful',
+        report = fetch_report(access_token(connection), ACCOUNT_ID, kind='current',
             include_input_proof=True, input_proof_connection=connection, allow_shop_recovery=False)
         started = _date(report.get('started_at'))
         if started is None:
+            result['error_code'] = 'autoload_report_invalid'
             return result
         result.update(upload_id=report['upload_id'], started_at=started.isoformat(),
             complete=report.get('complete') is True, upload_status=report.get('upload_status', ''))
@@ -331,25 +339,32 @@ def _capture_report(connection, feed, version, marker):
             result['state'] = 'later_completed'
             with transaction.atomic():
                 current, actor, binding, locked = _base(locked=True)
-                saved = current.settings.get(KEY)
-                if (not isinstance(saved, dict) or saved.get('token') != marker['token']
-                        or saved.get('version_id') != version.pk
-                        or locked.published_revision != DRAFT_REVISION):
+                _, _, current_version, _, _ = _publication_context(current, actor, binding, locked, marker)
+                if current_version.pk != version.pk:
                     raise Blocked('approved_photo_binding_changed')
                 correlate_report(current, report)
     except Blocked:
         raise
-    except Exception:
-        pass
+    except Exception as exc:
+        value = str(exc)
+        result['error_code'] = value if re.fullmatch(
+            r'(?:provider_http_(?:401|402|403|404|429|5[0-9]{2})|autoload_report_(?:changed|limit|invalid|pagination|duplicate_rows)|provider_(?:unavailable|account_mismatch|credentials_missing|credentials_invalid|token_missing))', value) else 'provider_report_unavailable'
     return result
+
+def _committed_result(result, version):
+    """A later readback failure cannot undo or conceal a known local commit."""
+    result.update(state='published', code='approved_photo_published', version_id=version.pk,
+        published_revision=DRAFT_REVISION, published_at=version.created_at.isoformat(), active_count=11,
+        local_publication_committed=True, current_publication_verified=False)
+    result['facts']['file_published'] = True
+
 
 def _readback(marker, result):
     from .avito_input_copy import _download_url, MAX_SECONDS
     from .avito_services_media import _download
     connection, feed, version, asset, content = _current_publication(marker)
-    result.update(state='published', code='approved_photo_published', version_id=version.pk,
-        published_revision=DRAFT_REVISION, published_at=version.created_at.isoformat(), active_count=11,
-        asset_storage_verified=True, authorized_preview_verified=True)
+    _committed_result(result, version)
+    result.update(asset_storage_verified=True, authorized_preview_verified=True)
     result['facts'] = publication_release_check(connection, revision=DRAFT_REVISION)['facts']
     try:
         source = _profile_current(connection, feed)
@@ -394,11 +409,13 @@ def _readback(marker, result):
         result['code'] = 'approved_photo_public_readback_failed'
     with transaction.atomic():
         current, actor, binding, locked_feed = _base(locked=True)
-        metadata = dict(current.settings)
-        saved = metadata.get(KEY)
-        if (not isinstance(saved, dict) or saved.get('token') != marker['token']
-                or saved.get('version_id') != version.pk or saved.get('binding') != binding):
+        _, _, current_version, _, current_content = _publication_context(
+            current, actor, binding, locked_feed, marker)
+        if current_version.pk != version.pk or current_content != content:
             raise Blocked('approved_photo_binding_changed')
+        metadata = dict(current.settings)
+        saved = metadata[KEY]
+        result['current_publication_verified'] = True
         metadata[KEY] = {**saved, 'state': result['state'],
             'readback_checked_at': result['readback_checked_at'],
             'xml_public_verified': result['xml_public_verified'],
@@ -435,6 +452,13 @@ def run_approved_photo_publication(expected_sha):
     try:
         connection, actor, binding, feed, marker, repeated = _reserve(expected_sha)
         if repeated:
+            # _reserve has validated the original account/org/actor binding.
+            version = feed.versions.filter(pk=marker.get('version_id'), action='publish',
+                revision=DRAFT_REVISION, source_version_id=SOURCE_VERSION_ID,
+                file_digest=marker.get('file_sha256')).first()
+            if version is None:
+                raise Blocked('approved_photo_binding_changed')
+            _committed_result(result, version)
             return _readback(marker, result)
         asset = _approved_shape(connection, feed)
         _preview(connection, actor, asset)
@@ -449,6 +473,7 @@ def run_approved_photo_publication(expected_sha):
         published = publish_services_snapshot(connection, actor,
             expected_revision=DRAFT_REVISION, expected_guard=_guard(marker),
             published_callback=_published(marker))
+        _committed_result(result, published['version'])
         observations = published['observations']
         if (len(observations) != 11 or any(row.get('status') != 'active' for row in observations)
                 or len(entries(published['feed'].published)) != 11):
@@ -459,8 +484,25 @@ def run_approved_photo_publication(expected_sha):
         result['retained_references'] = (published.get('media') or {}).get('retained', [])
         return _readback(marker, result)
     except Exception as exc:
+        diagnostic = getattr(exc, 'diagnostic', None)
+        if isinstance(diagnostic, dict):
+            result['media_failure'] = {key: diagnostic.get(key) for key in (
+                'avito_id', 'photo_number', 'checked_at', 'reason', 'http_status', 'cached', 'url_sha256')}
+            result['media_failure']['source_host'] = ''
         code = str(exc) if isinstance(exc, Blocked) and str(exc) in CODES else 'approved_photo_preflight_failed'
         result.update(state='blocked' if isinstance(exc, ValueError) else 'unknown', code=code)
+        if code == 'approved_photo_binding_changed':
+            result['facts'] = dict.fromkeys(result['facts'], False)
+            result['xml_public_verified'] = result['image_public_verified'] = None
+            result['configured_source_public_verified'] = None
+        if result['local_publication_committed']:
+            result.update(state='published', code='approved_photo_current_state_changed',
+                current_publication_verified=False, xml_public_verified=None,
+                image_public_verified=None, configured_source_public_verified=None,
+                source_matches_current_stable=None)
+            result['facts'] = dict.fromkeys(result['facts'], False)
+            result['facts']['file_published'] = True
+            return result
         # A committed publication is authoritative even if later HTTP failed.
         if marker is not None:
             try:

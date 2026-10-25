@@ -27,7 +27,7 @@ through the existing stable source.
 After local commit, bounded pinned unauthenticated HTTP reads verify the
 stable XML bytes and approved image SHA-256. If the configured source is
 XLSX, its parsed canonical XML must also match. This does not confirm the
-live Avito card. The latest detailed report is read normally; an older
+live Avito card. The current detailed report is read normally; an older
 report is explicitly historical and is not inserted as a new publication
 attempt. Only a complete later report reaches the existing strict correlator,
 which independently decides source/version and per-row evidence.
@@ -44,3 +44,8 @@ exact checkout and marker. Remote preflight rechecks origin/main and the
 canonical deployment lock. Unit fixtures use synthetic local image bytes;
 they are not production photo proof. Independent review and exact-head CI
 are mandatory before the operation marker is authorised.
+
+Local committed publication and current-source readback have separate flags.
+A postcommit binding/source/snapshot change preserves the known historical
+publication and blocks stale current verification. Final proof and report
+correlation revalidate the original publication on locked current rows.

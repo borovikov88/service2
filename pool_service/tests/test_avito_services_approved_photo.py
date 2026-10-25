@@ -4,6 +4,7 @@ from datetime import timedelta
 from io import BytesIO
 import hashlib
 import tempfile
+import uuid
 from unittest.mock import patch
 
 from PIL import Image
@@ -262,7 +263,7 @@ class ApprovedPhotoPublicationTests(TestCase):
 
 
     def report_for(self, version, delta):
-        return {'kind': 'last_successful', 'upload_id': '999', 'complete': True,
+        return {'kind': 'current', 'upload_id': '999', 'complete': True,
             'upload_finished': True, 'upload_status': 'success',
             'started_at': (version.created_at + delta).isoformat(),
             'total': 11, 'source_url_sha256': [],
@@ -302,3 +303,124 @@ class ApprovedPhotoPublicationTests(TestCase):
         self.assertEqual(len(attempt.rows), 11)
         self.assertFalse(attempt.source_confirmed)
         self.assertFalse(attempt.content_verified)
+
+
+    def test_public_key_change_in_readback_gap_preserves_commit_without_stale_current_proof(self):
+        original = operation._current_publication
+        calls = [0]
+        def change_after_outside_check(marker):
+            value = original(marker)
+            calls[0] += 1
+            if calls[0] == 2:
+                AvitoServicesFeed.objects.filter(pk=self.feed.pk).update(public_key=uuid.uuid4())
+            return value
+        with patch.object(operation, '_current_publication', side_effect=change_after_outside_check):
+            result = operation.run_approved_photo_publication('a' * 40)
+        self.assertEqual(result['state'], 'published', result)
+        self.assertEqual(result['code'], 'approved_photo_current_state_changed')
+        self.assertTrue(result['local_publication_committed'])
+        self.assertFalse(result['current_publication_verified'])
+        self.assertTrue(result['facts']['file_published'])
+        self.assertIsNone(result['xml_public_verified'])
+        self.connection.refresh_from_db()
+        self.assertEqual(self.connection.settings[operation.KEY]['state'], 'published')
+        self.assertEqual(self.feed.versions.filter(action='publish').count(), 1)
+        with patch('pool_service.avito_services_feed.publish_services_snapshot') as publish:
+            again = operation.run_approved_photo_publication('a' * 40)
+        publish.assert_not_called()
+        self.assertTrue(again['local_publication_committed'])
+        self.assertFalse(again['current_publication_verified'])
+
+    def test_locked_report_revalidation_rejects_snapshot_or_key_change_without_correlation(self):
+        operation.run_approved_photo_publication('a' * 40)
+        version = self.feed.versions.get(action='publish')
+        self.feed.refresh_from_db()
+        good_key = self.feed.public_key
+        self.connection.refresh_from_db()
+        marker = self.connection.settings[operation.KEY]
+        report = self.report_for(version, timedelta(seconds=1))
+        original = operation._base
+        changed_snapshot = deepcopy(version.snapshot)
+        entries(changed_snapshot)[1]['Title'] = 'Concurrent publication change'
+        for update in ({'public_key': uuid.uuid4()}, {'published': changed_snapshot},
+                       {'published_revision': 19}, {'enabled': False}):
+            with self.subTest(update=tuple(update)):
+                def race(*, locked=False):
+                    if locked:
+                        AvitoServicesFeed.objects.filter(pk=self.feed.pk).update(**update)
+                    return original(locked=locked)
+                with patch.object(operation, '_base', side_effect=race), \
+                     patch('pool_service.communication_avito.authorized_account_id', return_value=operation.ACCOUNT_ID), \
+                     patch('pool_service.communication_avito.access_token', return_value='TEST'), \
+                     patch('pool_service.avito_autoload_report.fetch_report', return_value=report) as read, \
+                     patch('pool_service.avito_services_publication.correlate_report') as correlate:
+                    with self.assertRaises(operation.Blocked):
+                        REAL_CAPTURE_REPORT(self.connection, self.feed, version, marker)
+                self.assertEqual(read.call_args.kwargs['kind'], 'current')
+                correlate.assert_not_called()
+                AvitoServicesFeed.objects.filter(pk=self.feed.pk).update(
+                    published=version.snapshot, public_key=good_key, published_revision=18, enabled=True)
+        self.assertEqual(version.publication.attempts.count(), 0)
+
+    def test_media_failure_keeps_the_specific_nonfirst_listing_photo_and_safe_cause(self):
+        from pool_service import avito_services_media as media
+        row = entries(self.feed.draft)[1]
+        url = row['ImageUrls'].split(' | ')[4]
+        error = media.SnapshotMediaError(row, 5, url, media._PhotoTransportError(
+            'PRIVATE PROVIDER BODY', reason='dns_private_address', phase='dns'))
+        with patch('pool_service.avito_services_feed.validate_snapshot_media', side_effect=error):
+            result = operation.run_approved_photo_publication('a' * 40)
+        self.assertEqual(result['state'], 'blocked', result)
+        self.assertEqual(result['media_failure']['avito_id'], operation.WATER_ID)
+        self.assertEqual(result['media_failure']['photo_number'], 5)
+        self.assertIn('checked_at', result['media_failure'])
+        self.assertNotIn('PRIVATE', str(result))
+        self.assertNotIn(url, str(result))
+        self.assert_not_published()
+
+    def test_current_processing_report_does_not_confirm_or_correlate_application(self):
+        operation.run_approved_photo_publication('a' * 40)
+        version = self.feed.versions.get(action='publish')
+        self.connection.refresh_from_db()
+        marker = self.connection.settings[operation.KEY]
+        report = self.report_for(version, timedelta(seconds=1))
+        report.update(upload_status='processing', upload_finished=False)
+        with patch('pool_service.communication_avito.authorized_account_id', return_value=operation.ACCOUNT_ID), \
+             patch('pool_service.communication_avito.access_token', return_value='TEST'), \
+             patch('pool_service.avito_autoload_report.fetch_report', return_value=report) as read, \
+             patch('pool_service.avito_services_publication.correlate_report') as correlate:
+            result = REAL_CAPTURE_REPORT(self.connection, self.feed, version, marker)
+        self.assertEqual(read.call_args.kwargs['kind'], 'current')
+        self.assertEqual(result['state'], 'later_unfinished')
+        correlate.assert_not_called()
+        self.assertEqual(version.publication.attempts.count(), 0)
+
+    def test_later_error_report_keeps_target_error_codes_and_uses_existing_failure_state(self):
+        operation.run_approved_photo_publication('a' * 40)
+        version = self.feed.versions.get(action='publish')
+        self.connection.refresh_from_db()
+        marker = self.connection.settings[operation.KEY]
+        report = self.report_for(version, timedelta(seconds=1))
+        report['upload_status'] = 'error'
+        report['rows'][0].update(avito_status='rejected', messages=[{'type': 'error', 'code': 4001}])
+        with patch('pool_service.communication_avito.authorized_account_id', return_value=operation.ACCOUNT_ID), \
+             patch('pool_service.communication_avito.access_token', return_value='TEST'), \
+             patch('pool_service.avito_autoload_report.fetch_report', return_value=report):
+            result = REAL_CAPTURE_REPORT(self.connection, self.feed, version, marker)
+        self.assertEqual(result['state'], 'later_completed')
+        self.assertEqual(result['target']['status'], 'rejected')
+        self.assertEqual(result['target']['messages'], [{'type': 'error', 'code': 4001}])
+        self.assertEqual(version.publication.attempts.get().state, 'upload_failed')
+
+    def test_report_read_failure_has_safe_code_without_provider_body(self):
+        operation.run_approved_photo_publication('a' * 40)
+        version = self.feed.versions.get(action='publish')
+        self.connection.refresh_from_db()
+        marker = self.connection.settings[operation.KEY]
+        with patch('pool_service.communication_avito.authorized_account_id', return_value=operation.ACCOUNT_ID), \
+             patch('pool_service.communication_avito.access_token', return_value='TEST'), \
+             patch('pool_service.avito_autoload_report.fetch_report', side_effect=ValueError('PRIVATE BODY')):
+            result = REAL_CAPTURE_REPORT(self.connection, self.feed, version, marker)
+        self.assertEqual(result['state'], 'unavailable')
+        self.assertEqual(result['error_code'], 'provider_report_unavailable')
+        self.assertNotIn('PRIVATE', str(result))
