@@ -53,11 +53,44 @@ def safe_code(value):
     return value
 
 
+def periodic_run(value):
+    require(isinstance(value, dict) and value.get("state") in {"success", "error", "running", "unknown"})
+    start = timestamp(value.get("started_at"))
+    end = timestamp(value.get("completed_at"), nullable=True)
+    require(end is None or datetime.fromisoformat(end) >= datetime.fromisoformat(start))
+    state, code = value["state"], safe_code(value.get("error_code"))
+    require((end is not None) == (state in {"success", "error"}))
+    require(not (state == "success" and code) and not (state == "error" and not code))
+    counts = {}
+    for name, keys, limit in (("queue_before", ("pending", "unknown", "failed"), 10**7),
+                              ("queue_after", ("pending", "unknown", "failed"), 10**7),
+                              ("result", ("accepted", "pending", "unknown", "failed", "held"), 50)):
+        raw = value.get(name)
+        if name != "queue_before" and end is None:
+            require(raw is None)
+            counts[name] = None
+        else:
+            require(isinstance(raw, dict))
+            counts[name] = {key: integer(raw.get(key), limit) for key in keys}
+    return {"started_at": start, "completed_at": end, "state": state, "error_code": code, **counts}
+
+
 def worker(value):
     require(isinstance(value, dict) and value.get("worker_state") in WORKER_STATES)
     result = {"worker_state": value["worker_state"]}
     for key in ("last_started_at", "last_success_at", "last_periodic_started_at", "last_periodic_success_at", "oldest_pending_at"):
         result[key] = timestamp(value.get(key), nullable=True)
+    for key in ("last_immediate_started_at", "last_immediate_completed_at", "last_immediate_success_at",
+                "last_periodic_completed_at"):
+        result[key] = timestamp(value.get(key), nullable=True)
+    for mode in ("immediate", "periodic"):
+        state = value.get(mode + "_state", "unknown")
+        require(state in {"disabled", "never_run", "running", "healthy", "stale", "error", "unknown"})
+        result[mode + "_state"] = state
+        result["last_" + mode + "_error_code"] = safe_code(value.get("last_" + mode + "_error_code", ""))
+    history = value.get("periodic_runs", [])
+    require(isinstance(history, list) and len(history) <= 4)
+    result["periodic_runs"] = [periodic_run(row) for row in history]
     result["last_error_code"] = safe_code(value.get("last_error_code", ""))
     for key in ("pending_count", "unknown_count", "failed_count", "legacy_held_count"):
         result[key] = integer(value.get(key), 10**7)

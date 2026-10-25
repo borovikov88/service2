@@ -90,6 +90,35 @@ class ProjectionTests(unittest.TestCase):
                 self.assertEqual(output.getvalue(), "AVITO_OUTBOX_READONLY_UNAVAILABLE receipt_invalid\n")
 
 
+    def test_periodic_history_exports_closed_counts_and_drops_private_run_tokens(self):
+        value = sample()
+        row = {"started_at": "2026-10-25T03:23:00+00:00", "completed_at": "2026-10-25T03:23:01+00:00",
+               "state": "success", "error_code": "", "token": "PRIVATE",
+               "queue_before": {"pending": 0, "unknown": 0, "failed": 0},
+               "queue_after": {"pending": 0, "unknown": 0, "failed": 0},
+               "result": {"accepted": 0, "pending": 0, "unknown": 0, "failed": 0, "held": 0}}
+        value["worker"].update(immediate_state="healthy", periodic_state="healthy", periodic_runs=[row, row])
+        result = receipt.normalize(value)["worker"]
+        self.assertEqual(len(result["periodic_runs"]), 2)
+        self.assertNotIn("PRIVATE", json.dumps(result))
+        self.assertIsNone(result["last_immediate_success_at"])
+        for mutate in (
+            lambda r: r.update(state="success", completed_at=None),
+            lambda r: r.update(completed_at="2026-10-25T03:22:00+00:00"),
+            lambda r: r.update(state="error", error_code=""),
+            lambda r: r["queue_before"].update(pending=False),
+            lambda r: r["result"].update(accepted=51),
+        ):
+            import copy
+            invalid = copy.deepcopy(value)
+            mutate(invalid["worker"]["periodic_runs"][0])
+            with self.assertRaises(ValueError):
+                receipt.normalize(invalid)
+        value["worker"]["periodic_runs"] = [row] * 5
+        with self.assertRaises(ValueError):
+            receipt.normalize(value)
+
+
 class RemoteTests(unittest.TestCase):
     def setUp(self):
         legacy.RemoteTests.setUp(self)

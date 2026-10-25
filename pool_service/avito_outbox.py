@@ -315,7 +315,19 @@ def record_reconciled_message(connection_id, message_id, provider_id, *, expecte
                    provider_id=provider_id, expected_snapshot=expected_snapshot, expected_guard=expected_guard)
 
 
-def _start(connection_id, periodic=False):
+def _queue_counts(connection):
+    queue = ConversationMessage.objects.filter(
+        conversation__connection=connection,
+        conversation__organization_id=connection.channel.organization_id,
+        direction=ConversationMessage.DIRECTION_OUT)
+    return {key: queue.filter(delivery_status=status).count() for key, status in (
+        ("pending", ConversationMessage.DELIVERY_PENDING),
+        ("unknown", ConversationMessage.DELIVERY_SENDING),
+        ("failed", ConversationMessage.DELIVERY_FAILED),
+    )}
+
+
+def _start(connection_id, periodic=False, immediate=False):
     token = str(uuid.uuid4())
     now = timezone.now()
     with transaction.atomic():
@@ -337,13 +349,27 @@ def _start(connection_id, periodic=False):
         workers[token] = until
         metadata.update(workers=workers, lease_until=max(workers.values(), key=_date),
                         last_started_at=now.isoformat(), last_error_code="")
+        modes = metadata.get("worker_modes") if isinstance(metadata.get("worker_modes"), dict) else {}
+        mode = "periodic" if periodic else "immediate" if immediate else "manual"
+        metadata["worker_modes"] = {key: value for key, value in modes.items() if key in workers}
+        metadata["worker_modes"][token] = mode
+        if mode in {"periodic", "immediate"}:
+            metadata["last_" + mode + "_run_token"] = token
+            metadata["last_" + mode + "_error_code"] = ""
         if periodic:
             metadata["last_periodic_started_at"] = now.isoformat()
+            history = metadata.get("periodic_runs") if isinstance(metadata.get("periodic_runs"), list) else []
+            metadata["periodic_runs"] = history[-3:] + [{
+                "token": token, "started_at": now.isoformat(), "completed_at": None,
+                "error_code": "", "result": None, "queue_before": _queue_counts(connection), "queue_after": None,
+            }]
+        elif immediate:
+            metadata["last_immediate_started_at"] = now.isoformat()
         _set_metadata(connection, metadata)
     return token
 
 
-def _finish(connection_id, token, error="", periodic=False):
+def _finish(connection_id, token, error="", periodic=False, immediate=False, result=None):
     with transaction.atomic():
         connection = _locked_connection(connection_id)
         metadata = _metadata(connection)
@@ -355,19 +381,33 @@ def _finish(connection_id, token, error="", periodic=False):
                    if key != token and _date(value) and _date(value) > now}
         metadata.update(workers=workers, lease_until=max(workers.values(), key=_date) if workers else None,
                         last_error_code=safe_error(error))
+        modes = metadata.get("worker_modes") if isinstance(metadata.get("worker_modes"), dict) else {}
+        metadata["worker_modes"] = {key: value for key, value in modes.items() if key in workers}
+        prefix = "periodic" if periodic else "immediate" if immediate else None
+        if prefix and metadata.get("last_" + prefix + "_run_token") == token:
+            metadata["last_" + prefix + "_completed_at"] = now.isoformat()
+            metadata["last_" + prefix + "_error_code"] = safe_error(error)
+        if periodic:
+            history = metadata.get("periodic_runs") if isinstance(metadata.get("periodic_runs"), list) else []
+            metadata["periodic_runs"] = [
+                {**row, "completed_at": now.isoformat(), "error_code": safe_error(error),
+                 "queue_after": _queue_counts(connection), "result": {key: result[key] for key in ("accepted", "pending", "failed", "unknown", "held")}}
+                if isinstance(row, dict) and row.get("token") == token and isinstance(result, dict) else row
+                for row in history[-4:]
+            ]
         if not error:
             metadata["last_success_at"] = now.isoformat()
-            if periodic:
-                metadata["last_periodic_success_at"] = metadata["last_success_at"]
+            if prefix:
+                metadata["last_" + prefix + "_success_at"] = metadata["last_success_at"]
         _set_metadata(connection, metadata)
 
 
 def run_outbox(connection_id, *, message_id=None, limit=10, explicit=False, sender=None,
-               expected_guard=None, periodic=False):
+               expected_guard=None, periodic=False, immediate=False):
     """Only future manager replies, or one explicitly selected legacy row."""
     if database.in_atomic_block:
         raise AvitoError("outbox_transaction_open")
-    lease = _start(connection_id, periodic=periodic)
+    lease = _start(connection_id, periodic=periodic, immediate=immediate)
     result = {"accepted": 0, "pending": 0, "failed": 0, "unknown": 0, "held": 0}
     if not lease:
         result["held"] = 1
@@ -485,18 +525,79 @@ def run_outbox(connection_id, *, message_id=None, limit=10, explicit=False, send
                     _record(connection_id, selected_id, status=ConversationMessage.DELIVERY_SENDING,
                             error=last_error, expected_snapshot=before)
                 result["unknown"] += 1
+    except Exception:
+        # Failure before selecting a row must not be recorded as worker success.
+        last_error = "outbox_internal_error"
+        raise
     finally:
-        _finish(connection_id, lease, last_error, periodic=periodic)
+        _finish(connection_id, lease, last_error, periodic=periodic, immediate=immediate, result=result)
     return result
 
 
 def dispatch_committed_reply(connection_id, message_id):
     """Best effort immediate dispatch after commit; periodic processing is the fallback."""
     try:
-        return run_outbox(connection_id, message_id=message_id)
+        return run_outbox(connection_id, message_id=message_id, immediate=True)
     except Exception:
         # The reply is already durable. Never turn a committed save into an HTTP500.
         return {"unknown": 1}
+
+
+def _mechanism_state(metadata, mode, enabled, now):
+    if not enabled:
+        return "disabled"
+    workers = metadata.get("workers") if isinstance(metadata.get("workers"), dict) else {}
+    modes = metadata.get("worker_modes") if isinstance(metadata.get("worker_modes"), dict) else {}
+    if any(modes.get(key) == mode and _date(until) and _date(until) > now
+           for key, until in workers.items()):
+        return "running"
+    if safe_error(metadata.get("last_" + mode + "_error_code")):
+        return "error"
+    started = _date(metadata.get("last_" + mode + "_started_at"))
+    success = _date(metadata.get("last_" + mode + "_success_at"))
+    if not started:
+        return "never_run"
+    completed = _date(metadata.get("last_" + mode + "_completed_at"))
+    if not success or not completed or completed < started:
+        return "unknown"
+    # Immediate dispatch is event-driven. An idle period is not an outage.
+    if mode == "periodic" and now - success > timedelta(minutes=3):
+        return "stale"
+    return "healthy"
+
+
+def _periodic_history(metadata, now):
+    history = metadata.get("periodic_runs")
+    if not isinstance(history, list):
+        return []
+    result = []
+    for row in history[-4:]:
+        if not isinstance(row, dict):
+            continue
+        started, completed = _date(row.get("started_at")), _date(row.get("completed_at"))
+        counts = row.get("result")
+        if not started or (completed and completed < started):
+            continue
+        valid_counts = (isinstance(counts, dict) and all(
+            type(counts.get(key)) is int and 0 <= counts[key] <= 50
+            for key in ("accepted", "pending", "failed", "unknown", "held")))
+        queue_before, queue_after = row.get("queue_before"), row.get("queue_after")
+        valid_queue = lambda value: isinstance(value, dict) and all(
+            type(value.get(key)) is int and 0 <= value[key] <= 10**7
+            for key in ("pending", "unknown", "failed"))
+        if not valid_queue(queue_before) or (completed and (not valid_counts or not valid_queue(queue_after))):
+            continue
+        code = safe_error(row.get("error_code"))
+        state = ("error" if code else "success") if completed else (
+            "running" if now - started <= timedelta(seconds=LEASE_SECONDS) else "unknown")
+        result.append({"started_at": started.isoformat(),
+                       "completed_at": completed.isoformat() if completed else None,
+                       "state": state, "error_code": code,
+                       "queue_before": {key: queue_before[key] for key in ("pending", "unknown", "failed")},
+                       "queue_after": {key: queue_after[key] for key in ("pending", "unknown", "failed")} if completed else None,
+                       "result": {key: counts[key] for key in ("accepted", "pending", "failed", "unknown", "held")}
+                                 if completed else None})
+    return result
 
 
 def outbox_diagnostics(connection, now=None):
@@ -531,8 +632,15 @@ def outbox_diagnostics(connection, now=None):
         "enabled": enabled, "binding_valid": _scope(connection) and (not metadata or bound),
         "worker_state": state, "last_started_at": started.isoformat() if started else None,
         "last_success_at": success.isoformat() if success else None,
-        "last_periodic_started_at": metadata.get("last_periodic_started_at"),
-        "last_periodic_success_at": metadata.get("last_periodic_success_at"),
+        "immediate_state": _mechanism_state(metadata, "immediate", enabled, now),
+        "periodic_state": _mechanism_state(metadata, "periodic", enabled, now),
+        **{key: value.isoformat() if bound and value else None for key in (
+            "last_immediate_started_at", "last_immediate_completed_at", "last_immediate_success_at",
+            "last_periodic_started_at", "last_periodic_completed_at", "last_periodic_success_at",
+        ) for value in [_date(metadata.get(key))]},
+        "last_immediate_error_code": safe_error(metadata.get("last_immediate_error_code")) if bound else "",
+        "last_periodic_error_code": safe_error(metadata.get("last_periodic_error_code")) if bound else "",
+        "periodic_runs": _periodic_history(metadata, now) if bound else [],
         "last_error_code": safe_error(metadata.get("last_error_code")),
         "pending_count": pending.count(), "oldest_pending_at": oldest.isoformat() if oldest else None,
         "oldest_pending_age_seconds": max(0, int((now - oldest).total_seconds())) if oldest else None,

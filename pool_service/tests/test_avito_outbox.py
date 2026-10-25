@@ -354,3 +354,125 @@ class ScopedOutboxTests(TransactionTestCase):
             expected_snapshot=snapshot, expected_guard=lambda row: True))
         message.refresh_from_db()
         self.assertEqual(message.external_id, "provider-proof")
+
+    def test_two_empty_periodic_runs_record_start_finish_and_zero_counts_without_provider_io(self):
+        base = timezone.now()
+        with patch.object(outbox, "send_message") as sender, patch.object(outbox, "_provider_context") as context:
+            for offset in (0, 60):
+                with patch.object(outbox.timezone, "now", return_value=base + timedelta(seconds=offset)):
+                    outbox.run_outbox(4, periodic=True)
+        sender.assert_not_called()
+        context.assert_not_called()
+        self.connection.refresh_from_db()
+        state = outbox.outbox_diagnostics(self.connection, now=base + timedelta(seconds=61))
+        self.assertEqual(state["periodic_state"], "healthy")
+        self.assertEqual(state["immediate_state"], "never_run")
+        self.assertEqual(len(state["periodic_runs"]), 2)
+        for row in state["periodic_runs"]:
+            self.assertEqual(row["state"], "success")
+            self.assertIsNotNone(row["completed_at"])
+            self.assertEqual(row["queue_before"], {"pending": 0, "unknown": 0, "failed": 0})
+            self.assertEqual(row["queue_after"], {"pending": 0, "unknown": 0, "failed": 0})
+            self.assertEqual(sum(row["result"].values()), 0)
+            self.assertNotIn("token", row)
+        self.assertNotEqual(state["periodic_runs"][0]["started_at"], state["periodic_runs"][1]["started_at"])
+
+    def test_manual_success_cannot_be_attributed_to_immediate_and_immediate_idle_is_not_stale(self):
+        outbox.run_outbox(4)
+        self.connection.refresh_from_db()
+        self.assertIsNone(outbox.outbox_diagnostics(self.connection)["last_immediate_success_at"])
+        with patch.object(outbox, "send_message") as sender:
+            # An empty invocation marks the mechanism only; no customer text is needed.
+            outbox.run_outbox(4, immediate=True)
+        sender.assert_not_called()
+        self.connection.refresh_from_db()
+        state = outbox.outbox_diagnostics(self.connection, now=timezone.now() + timedelta(hours=2))
+        self.assertEqual(state["immediate_state"], "healthy")
+        self.assertEqual(state["periodic_state"], "never_run")
+        self.assertIsNone(state["last_periodic_success_at"])
+
+    def test_late_periodic_finish_cannot_erase_newer_error_or_running_state(self):
+        first = outbox._start(4, periodic=True)
+        second = outbox._start(4, periodic=True)
+        result = dict(accepted=0, pending=0, failed=0, unknown=0, held=0)
+        outbox._finish(4, second, "provider_http_403", periodic=True, result=result)
+        outbox._finish(4, first, periodic=True, result=result)
+        self.connection.refresh_from_db()
+        state = outbox.outbox_diagnostics(self.connection)
+        self.assertEqual(state["periodic_state"], "error")
+        self.assertEqual(state["last_periodic_error_code"], "provider_http_403")
+        self.assertEqual([row["state"] for row in state["periodic_runs"]], ["success", "error"])
+
+    def test_periodic_history_is_bounded_and_does_not_release_old_or_unknown_rows(self):
+        old = self.message()
+        ConversationMessage.objects.filter(pk=old.pk).update(created_at=timezone.now() - timedelta(days=2))
+        self.message(delivery_status="sending", delivery_attempts=1, delivery_error="provider_delivery_unknown")
+        with patch.object(outbox, "send_message") as sender:
+            for _ in range(6):
+                outbox.run_outbox(4, periodic=True)
+        sender.assert_not_called()
+        self.connection.refresh_from_db()
+        state = outbox.outbox_diagnostics(self.connection)
+        self.assertEqual(len(state["periodic_runs"]), 4)
+        self.assertEqual(state["legacy_held_count"], 1)
+        self.assertEqual(state["unknown_count"], 1)
+        self.assertEqual(state["periodic_runs"][-1]["queue_before"], {"pending": 1, "unknown": 1, "failed": 0})
+        self.assertEqual(state["periodic_runs"][-1]["queue_after"], {"pending": 1, "unknown": 1, "failed": 0})
+
+    def test_committed_dispatch_is_the_only_automatic_immediate_attribution(self):
+        with patch.object(outbox, "run_outbox", return_value={"accepted": 1}) as run:
+            outbox.dispatch_committed_reply(4, 123)
+        run.assert_called_once_with(4, message_id=123, immediate=True)
+
+    def test_interrupted_new_periodic_run_is_unknown_even_after_recent_success(self):
+        outbox.run_outbox(4, periodic=True)
+        base = timezone.now() + timedelta(seconds=1)
+        with patch.object(outbox.timezone, "now", return_value=base):
+            outbox._start(4, periodic=True)
+        self.connection.refresh_from_db()
+        state = outbox.outbox_diagnostics(self.connection, now=base + timedelta(seconds=181))
+        self.assertEqual(state["periodic_state"], "unknown")
+        self.assertEqual(state["periodic_runs"][-1]["state"], "unknown")
+
+    def test_prior_error_is_not_the_result_of_a_new_interrupted_run(self):
+        for mode in ("periodic", "immediate"):
+            with self.subTest(mode=mode):
+                options = {mode: True}
+                first = outbox._start(4, **options)
+                result = dict(accepted=0, pending=0, failed=0, unknown=0, held=0)
+                outbox._finish(4, first, "provider_http_403", result=result, **options)
+                base = timezone.now() + timedelta(seconds=1)
+                with patch.object(outbox.timezone, "now", return_value=base):
+                    outbox._start(4, **options)
+                self.connection.refresh_from_db()
+                state = outbox.outbox_diagnostics(self.connection, now=base + timedelta(seconds=181))
+                self.assertEqual(state[mode + "_state"], "unknown")
+                self.assertEqual(state["last_" + mode + "_error_code"], "")
+
+    def test_changed_account_or_organization_cannot_inherit_mechanism_proof(self):
+        outbox.run_outbox(4, periodic=True)
+        outbox.run_outbox(4, immediate=True)
+        self.connection.refresh_from_db()
+        bound_settings = self.connection.settings
+        for field, value in (("account_id", "foreign-account"), ("organization_id", self.org.pk + 1000)):
+            with self.subTest(field=field):
+                self.connection.settings = {
+                    **bound_settings, outbox.KEY: {**bound_settings[outbox.KEY], field: value},
+                }
+                state = outbox.outbox_diagnostics(self.connection)
+                self.assertFalse(state["binding_valid"])
+                self.assertEqual(state["periodic_state"], "disabled")
+                self.assertEqual(state["immediate_state"], "disabled")
+                self.assertEqual(state["periodic_runs"], [])
+                for mode in ("immediate", "periodic"):
+                    for suffix in ("started_at", "completed_at", "success_at"):
+                        self.assertIsNone(state["last_" + mode + "_" + suffix])
+                    self.assertEqual(state["last_" + mode + "_error_code"], "")
+        self.connection.settings = {
+            **bound_settings, outbox.KEY: {**bound_settings[outbox.KEY], "enabled": False},
+        }
+        state = outbox.outbox_diagnostics(self.connection)
+        self.assertTrue(state["binding_valid"])
+        self.assertFalse(state["enabled"])
+        self.assertEqual(len(state["periodic_runs"]), 1)
+        self.assertIsNotNone(state["last_immediate_success_at"])
