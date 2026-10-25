@@ -105,6 +105,7 @@ jobs:
             pool_service.tests.test_avito_outbox_audit \
             pool_service.tests.test_avito_outbox_original_recovery \
             pool_service.tests.test_avito_services_media \
+            pool_service.tests.test_avito_services_media_filecheck \
             pool_service.tests.test_avito_services_media_livecheck \
             pool_service.tests.test_avito_services_media_readiness \
             pool_service.tests.test_avito_services_release_operation \

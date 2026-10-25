@@ -41,6 +41,60 @@ jobs:
           AVITO_EXPECTED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           AVITO_MANUAL_SHA: ${{ inputs.confirm_main_sha }}
         run: python3 .github/scripts/avito_readonly_gate.py
+      - name: Read the Services local-photo database inventory only
+        id: local_photo_inventory
+        continue-on-error: true
+        env:
+          AVITO_EXPECTED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          inventory_temp="$(mktemp -d "$RUNNER_TEMP/avito-services-inventory.XXXXXX")"
+          trap 'rm -rf -- "$inventory_temp"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$inventory_temp/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$inventory_temp/known_hosts"
+          chmod 600 "$inventory_temp/key" "$inventory_temp/known_hosts"
+          ssh-keygen -y -f "$inventory_temp/key" >/dev/null
+          inventory_port="${DEPLOY_PORT:-22}"
+          [[ "$inventory_port" =~ ^[0-9]+$ ]]
+          inventory_lookup="$DEPLOY_HOST"
+          if [[ "$inventory_port" != 22 ]]; then inventory_lookup="[$DEPLOY_HOST]:$inventory_port"; fi
+          ssh-keygen -F "$inventory_lookup" -f "$inventory_temp/known_hosts" >/dev/null
+          inventory_ssh=(ssh -i "$inventory_temp/key" -p "$inventory_port"
+            -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$inventory_temp/known_hosts"
+            -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=3)
+          printf -v inventory_command 'bash -s -- %q %q preflight' "$AVITO_EXPECTED_SHA" "$DEPLOY_APP_PATH"
+          "${inventory_ssh[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "$inventory_command" < update.sh \
+            >"$inventory_temp/preflight-out" 2>"$inventory_temp/preflight-err" || {
+              echo "AVITO_SERVICES_LOCAL_INVENTORY_PREFLIGHT_BLOCKED"; exit 2;
+            }
+          printf -v inventory_command 'bash -s -- %q %q' "$AVITO_EXPECTED_SHA" "$DEPLOY_APP_PATH"
+          inventory_exit=0
+          "${inventory_ssh[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "$inventory_command" \
+            < .github/scripts/avito_services_inventory_remote.sh \
+            >"$inventory_temp/stdout" 2>"$inventory_temp/stderr" || inventory_exit=$?
+          python3 scripts/avito_services_inventory_receipt.py "$inventory_temp/stdout"
+          [[ "$inventory_exit" == 0 ]] || { echo "AVITO_SERVICES_LOCAL_INVENTORY_TRANSPORT_BLOCKED"; exit 2; }
+      - name: Report the local inventory step outcome separately
+        if: always()
+        env:
+          INVENTORY_STEP_OUTCOME: ${{ steps.local_photo_inventory.outcome }}
+        shell: bash
+        run: |
+          case "$INVENTORY_STEP_OUTCOME" in
+            success|failure|skipped|cancelled)
+              printf 'AVITO_SERVICES_LOCAL_INVENTORY_STEP outcome=%s\n' "$INVENTORY_STEP_OUTCOME"
+              ;;
+            *) echo 'AVITO_SERVICES_LOCAL_INVENTORY_STEP outcome=unknown' ;;
+          esac
       - name: Read only services connection4/account446312402 through the deployed operator
         env:
           AVITO_EXPECTED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}

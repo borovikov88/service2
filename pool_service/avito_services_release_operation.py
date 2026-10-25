@@ -157,13 +157,15 @@ def _save(lease, binding, stamp, *, require_original_revision=False, **updates):
         return connection
 
 
-def _post_photo(token):
+def _post_photo(token, *, endpoint='avito_services_media_livecheck'):
     """POST only a signed capability to our fixed canonical first-party endpoint."""
     from .avito_services_media import _resolve, _PinnedHTTPS, _public_ip
     origin = _origin(public_origin())
     parts = urlsplit(origin)
     host = parts.hostname.encode('idna').decode('ascii').lower()
-    path = reverse('avito_services_media_livecheck')
+    if endpoint not in {'avito_services_media_livecheck', 'avito_services_media_filecheck'}:
+        raise ValueError
+    path = reverse(endpoint)
     deadline = time.monotonic() + 45
     address = _resolve(host, 443, deadline)
     if not _public_ip(address):
