@@ -94,7 +94,7 @@ def binding(connection):
     fingerprint = hashlib.sha256((credential.client_id_encrypted + "\0" + credential.client_secret_encrypted).encode()).hexdigest()
     return (current.channel_id, current.channel.organization_id, current.external_id, fingerprint)
 
-def report_summary(report):
+def report_summary(report, connection=None):
     from .avito_report_messages import groups as message_groups
     samples = []
     rows = sorted(report["rows"], key=lambda row: not any(m["type"] == "error" for m in row["messages"]))
@@ -111,7 +111,9 @@ def report_summary(report):
                             "avito_id": str(row["avito_id"]) if row["avito_id"] is not None else None,
                             "messages": [{"type": m["type"], "code": m["code"], "title": safe_text(m["title"], 200),
                                           "description": safe_text(m["description"], 700)} for m in critical[:3]]})
-    return ({"input_copy_proof": report["input_copy_proof"]} if "input_copy_proof" in report else {}) | {"upload_id": report["upload_id"], "upload_status": report["upload_status"],
+    from .avito_autoload_presentation import receipt_summary
+    presentation = receipt_summary(connection, report) if connection is not None else None
+    return ({"service_message_presentation": presentation} if presentation is not None else {}) | ({"input_copy_proof": report["input_copy_proof"]} if "input_copy_proof" in report else {}) | {"upload_id": report["upload_id"], "upload_status": report["upload_status"],
             "read_strategy": report.get("read_strategy", "provider_pages"),
             "complete": report["complete"], "finished": report["upload_finished"], "total": report["total"],
             "counts": report["counts"], "critical_samples": samples,
@@ -405,7 +407,7 @@ def collect_connection(connection, item_ids, index, stocks=None, stock_error=Non
             if release_evidence:
                 proof_options["allow_shop_recovery"] = False
             report = avito_autoload_report.fetch_report(token, account_id, kind="last_successful", **proof_options)
-            summary = report_summary(report)
+            summary = report_summary(report, connection)
             for item in items:
                 if "error" not in item:
                     item["report_xml_ids"] = [public_xml_id(row["ad_id"]) for row in report["rows"]

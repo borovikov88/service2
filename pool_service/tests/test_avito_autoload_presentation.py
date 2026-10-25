@@ -9,7 +9,9 @@ from django.template.loader import render_to_string
 from django.test import SimpleTestCase
 
 from pool_service import avito_autoload_report as report_api
-from pool_service.avito_autoload_presentation import for_display, service_notice
+from pool_service.avito_autoload_presentation import for_display, receipt_summary, service_notice
+from pool_service import avito_readonly_audit as audit
+from scripts import avito_readonly_receipt as public_receipt
 
 
 def connection(pk=4, account="446312402", kind="avito"):
@@ -186,3 +188,63 @@ class ServicesAutoloadPresentationTests(SimpleTestCase):
         self.assertIn("В процессе", html)
         self.assertIn("Загрузка ещё не подтверждена завершённой", html)
         self.assertNotIn("Завершена; служебные уведомления", html)
+
+
+class ServicesAutoloadReceiptTests(SimpleTestCase):
+    def summary(self):
+        return audit.report_summary(current_fixture(), connection())
+
+    def test_live_operator_summary_uses_same_presentation_counts_without_mutating_report(self):
+        data = current_fixture()
+        original = copy.deepcopy(data)
+        summary = audit.report_summary(data, connection())
+        self.assertEqual(data, original)
+        self.assertEqual(summary["counts"]["warning"], 11)
+        proof = summary["service_message_presentation"]
+        self.assertEqual(proof["upload_id"], data["upload_id"])
+        self.assertEqual((proof["service_notice_messages"], proof["actionable_warning_rows"],
+            proof["info_3002_messages"], proof["row_count"]), (11, 0, 11, 11))
+        self.assertTrue(proof["raw_snapshot_unchanged"])
+        projected = public_receipt.report(summary)
+        self.assertEqual(projected["service_message_presentation"], proof)
+        self.assertNotIn("Существующее объявление", str(proof))
+
+    def test_optional_projection_is_backward_compatible_and_does_not_enable_other_scope(self):
+        generic = audit.report_summary(current_fixture())
+        self.assertNotIn("service_message_presentation", public_receipt.report(generic))
+        for conn in (connection(pk=1), connection(account="other"), connection(kind="email")):
+            self.assertIsNone(receipt_summary(conn, current_fixture()))
+            self.assertNotIn("service_message_presentation", audit.report_summary(current_fixture(), conn))
+
+    def test_projection_drops_private_fields_and_rejects_scope_counts_or_false_preservation(self):
+        summary = self.summary()
+        proof = summary["service_message_presentation"]
+        proof.update(raw_messages="PRIVATE", raw_feed_url="https://private.invalid/key", metrics={"cost": "PRIVATE"})
+        self.assertNotIn("PRIVATE", str(public_receipt.report(summary)))
+        self.assertNotIn("private.invalid", str(public_receipt.report(summary)))
+        variants = (
+            {"connection_id": 1}, {"connection_id": True}, {"account_id": "other"},
+            {"upload_id": "999"}, {"row_count": 12}, {"row_count": True},
+            {"actionable_warning_rows": 12}, {"service_notice_messages": 551},
+            {"info_3002_messages": 551}, {"raw_warning_rows": 0},
+            {"raw_info_rows": 0}, {"error_rows": 1}, {"alarm_rows": 1},
+            {"raw_snapshot_unchanged": False}, {"schema_version": True},
+        )
+        for change in variants:
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                public_receipt.report({**summary, "service_message_presentation": {**proof, **change}})
+
+    def test_unknown_warning_is_not_demoted_in_live_projection(self):
+        data = report([row(1, [message(title="Неизвестное предупреждение", description="")])])
+        summary = audit.report_summary(data, connection())
+        projected = public_receipt.report(summary)["service_message_presentation"]
+        self.assertEqual(projected["actionable_warning_rows"], 1)
+        self.assertEqual(projected["service_notice_messages"], 0)
+
+    def test_outer_connection_cannot_claim_another_accounts_service_presentation(self):
+        value = {"connection_id": 4, "account_id": "446312402", "items": [],
+                 "autoload_report": self.summary()}
+        self.assertIn("service_message_presentation", public_receipt.connection(value)["autoload_report"])
+        for change in ({"connection_id": 1}, {"account_id": "999"}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                public_receipt.connection({**value, **change})

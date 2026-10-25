@@ -1,4 +1,6 @@
 """Services-only report presentation; provider snapshots and export remain untouched."""
+import json
+
 from .avito_report_messages import _semantic_evidence, classify
 
 
@@ -54,3 +56,24 @@ def for_display(connection, report):
         for event in (events if isinstance(events, list) else []))
     result["has_attention"] = bool(result["priority_rows"] or event_attention or report.get("upload_status") == "error")
     return result
+
+
+def receipt_summary(connection, report):
+    """Bounded counts from the same live report; no text, IDs of ads or I/O."""
+    before = json.dumps(report, ensure_ascii=False, sort_keys=True)
+    view = for_display(connection, report)
+    if not view["applicable"]:
+        return None
+    rows = report.get("rows", [])
+    counts = report.get("counts", {})
+    return {
+        "schema_version": 1, "connection_id": 4, "account_id": "446312402",
+        "upload_id": report["upload_id"], "row_count": len(rows),
+        "service_notice_messages": view["counts"]["service_notice"],
+        "actionable_warning_rows": view["counts"]["warning"],
+        "info_3002_messages": sum(message.get("type") == "info" and message.get("code") == 3002
+            for row in rows for message in row.get("messages", []) if isinstance(message, dict)),
+        "error_rows": view["counts"]["error"], "alarm_rows": view["counts"]["alarm"],
+        "raw_warning_rows": counts.get("warning", 0), "raw_info_rows": counts.get("info", 0),
+        "raw_snapshot_unchanged": before == json.dumps(report, ensure_ascii=False, sort_keys=True),
+    }
