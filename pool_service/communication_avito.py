@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 from django.conf import settings
 from django.utils import timezone
@@ -99,12 +99,23 @@ def ingest_webhook(connection, payload):
     )
 
 
+class _NoMessageRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _no_redirect_urlopen(request, timeout):
+    return build_opener(_NoMessageRedirect()).open(request, timeout=timeout)
+
+
 def _json_request(url, *, method="GET", headers=None, data=None, timeout=15, ambiguous_transport=False):
     request = Request(url, method=method, headers=headers or {}, data=data)
     try:
-        with urlopen(request, timeout=timeout) as response:
+        with (_no_redirect_urlopen(request, timeout) if ambiguous_transport else urlopen(request, timeout=timeout)) as response:
             raw = response.read(1024 * 1024 + 1)
     except HTTPError as exc:
+        if ambiguous_transport and (exc.code < 400 or exc.code in {408, 409} or exc.code >= 500):
+            raise AvitoAmbiguousDeliveryError("provider_delivery_unknown") from exc
         if not ambiguous_transport and (exc.code == 429 or 500 <= exc.code <= 599):
             raise AvitoRetryableError(f"provider_http_{exc.code}") from exc
         raise AvitoError(f"provider_http_{exc.code}") from exc
@@ -113,12 +124,18 @@ def _json_request(url, *, method="GET", headers=None, data=None, timeout=15, amb
             raise AvitoAmbiguousDeliveryError("provider_delivery_unknown") from exc
         raise AvitoRetryableError("provider_unavailable") from exc
     if len(raw) > 1024 * 1024:
+        if ambiguous_transport:
+            raise AvitoAmbiguousDeliveryError("provider_delivery_unknown")
         raise AvitoError("provider_response_too_large")
     try:
         value = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        if ambiguous_transport:
+            raise AvitoAmbiguousDeliveryError("provider_delivery_unknown") from exc
         raise AvitoError("provider_invalid_json") from exc
     if not isinstance(value, dict):
+        if ambiguous_transport:
+            raise AvitoAmbiguousDeliveryError("provider_delivery_unknown")
         raise AvitoError("provider_invalid_response")
     return value
 
@@ -437,13 +454,13 @@ def unsubscribe_webhook(connection, url):
     return response
 
 
-def send_message(message):
+def send_message(message, *, token=None):
     connection = message.conversation.connection
     if message.attachments.exists():
         raise AvitoError("attachments_require_provider_upload")
     if not message.body.strip():
         raise AvitoError("empty_message")
-    token = access_token(connection)
+    token = token or access_token(connection)
     root = getattr(settings, "AVITO_API_ROOT", AVITO_API_ROOT).rstrip("/")
     account_id = quote(str(connection.external_id), safe="")
     chat_id = quote(str(message.conversation.external_id), safe="")
@@ -455,10 +472,10 @@ def send_message(message):
         ambiguous_transport=True,
     )
     provider_id = response.get("id")
-    if not isinstance(provider_id, str) or not provider_id:
-        raise AvitoError("provider_message_id_missing")
+    if not isinstance(provider_id, str) or not provider_id.strip() or provider_id != provider_id.strip():
+        raise AvitoAmbiguousDeliveryError("provider_delivery_unknown")
     if len(provider_id) > 255:
-        raise AvitoError("provider_identifier_too_long")
+        raise AvitoAmbiguousDeliveryError("provider_delivery_unknown")
     message.external_id = provider_id
     message.delivery_status = ConversationMessage.DELIVERY_DELIVERED
     message.delivered_at = timezone.now()

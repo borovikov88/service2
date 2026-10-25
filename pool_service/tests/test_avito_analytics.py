@@ -96,16 +96,20 @@ class AvitoRemoteParsingTests(SimpleTestCase):
             with self.assertRaises(AvitoError):
                 avito_workspace.fetch_calls("token", "123", start="2026-10-01", end="2026-10-08", item_ids=["11"])
 
+    @patch("pool_service.communication_avito._no_redirect_urlopen")
     @patch("pool_service.communication_avito.urlopen")
-    def test_truncated_transport_is_sanitized_and_sends_stay_ambiguous(self, urlopen):
+    def test_truncated_transport_is_sanitized_and_sends_stay_ambiguous(self, urlopen, no_redirect_open):
         response = MagicMock()
         response.read.side_effect = IncompleteRead(b"PRIVATE_BODY", 100)
         urlopen.return_value.__enter__.return_value = response
+        no_redirect_open.return_value.__enter__.return_value = response
         for request in (_json_request, _json_list_request):
             with self.assertRaisesMessage(AvitoRetryableError, "provider_unavailable"):
                 request("https://api.avito.ru/synthetic")
         with self.assertRaisesMessage(AvitoAmbiguousDeliveryError, "provider_delivery_unknown"):
-            _json_request("https://api.avito.ru/synthetic", ambiguous_transport=True)
+            _json_request("https://api.avito.ru/synthetic", method="POST", ambiguous_transport=True)
+        self.assertEqual(urlopen.call_count, 2)
+        no_redirect_open.assert_called_once()
 
 
 class AvitoAnalyticsViewTests(AvitoWorkspaceViewTests):

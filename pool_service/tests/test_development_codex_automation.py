@@ -1245,6 +1245,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         allowed_automatic_workflows = {
             "avito-status-monitor.yml",
             "avito-readonly-audit.yml",
+            "avito-outbox-readonly.yml",
             "call-recordings-sync.yml",
             "client-sync.yml",
             "employee-identity-sync.yml",
@@ -1267,15 +1268,17 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         for workflow in workflows:
             with self.subTest(workflow=workflow.name):
                 text = workflow.read_text(encoding="utf-8")
-                if workflow.name == "avito-readonly-audit.yml":
-                    expected_triggers = ["schedule", "workflow_run", "workflow_dispatch"]
+                if workflow.name in {"avito-readonly-audit.yml", "avito-outbox-readonly.yml"}:
+                    expected_triggers = (["schedule", "workflow_run", "workflow_dispatch"]
+                        if workflow.name == "avito-readonly-audit.yml" else ["workflow_run", "workflow_dispatch"])
                     self.assertIn("contents: read", text)
                     self.assertIn("actions: read", text)
                     self.assertIn("preflight", text)
                     for forbidden in ("openai/codex-action", "codex exec", "OPENAI_API_KEY",
                                       "CHATGPT_AUTH_JSON", "GITHUB_DEVELOPMENT_TOKEN",
                                       "contents: write", "pull-requests: write", "actions: write",
-                                      "manage.py migrate", "collectstatic", "restart.txt"):
+                                      "manage.py migrate", "collectstatic", "restart.txt",
+                                      "send_avito_outbox", "recover_avito_original_reply", "avito_outbox_recovery_remote.sh"):
                         self.assertNotIn(forbidden, text)
                 elif workflow.name == "avito-status-monitor.yml":
                     expected_triggers = ["workflow_dispatch"]
