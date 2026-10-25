@@ -306,54 +306,111 @@ STATISTICS_INVALID_REASONS = frozenset({
 })
 
 
-def _statistics_data_invalid(reason):
+STATISTICS_GROUPINGS_KINDS = frozenset({
+    "missing", "null", "empty_object", "object", "empty_list", "list",
+    "string", "integer", "number", "bool", "other",
+})
+STATISTICS_TOTAL_KINDS = frozenset({
+    "missing", "null", "zero_integer", "positive_integer", "negative_integer",
+    "string", "bool", "number", "other",
+})
+STATISTICS_SHAPE_KEYS = frozenset({
+    "groupings_kind", "data_total_count_kind", "provider_error_present",
+})
+
+
+def statistics_shape_metadata(value):
+    """Closed structural labels only; arbitrary provider/settings data is discarded."""
+    if (type(value) is not dict or set(value) != STATISTICS_SHAPE_KEYS
+            or type(value["groupings_kind"]) is not str
+            or value["groupings_kind"] not in STATISTICS_GROUPINGS_KINDS
+            or type(value["data_total_count_kind"]) is not str
+            or value["data_total_count_kind"] not in STATISTICS_TOTAL_KINDS
+            or type(value["provider_error_present"]) is not bool):
+        return None
+    return {key: value[key] for key in ("groupings_kind", "data_total_count_kind", "provider_error_present")}
+
+
+def _statistics_response_shape(response):
+    """Inspect fixed JSON slots without retaining values, lengths or arbitrary keys."""
+    missing = object()
+    result = response.get("result") if type(response) is dict else None
+    groups = result.get("groupings", missing) if type(result) is dict else missing
+    total = result.get("dataTotalCount", missing) if type(result) is dict else missing
+    def kind(value, *, count=False):
+        if value is missing:
+            return "missing"
+        if value is None:
+            return "null"
+        if type(value) is bool:
+            return "bool"
+        if type(value) is int:
+            return ("zero_integer" if value == 0 else "positive_integer" if value > 0
+                    else "negative_integer") if count else "integer"
+        if type(value) is float:
+            return "number"
+        if type(value) is str:
+            return "string"
+        if not count and type(value) is dict:
+            return "object" if value else "empty_object"
+        if not count and type(value) is list:
+            return "list" if value else "empty_list"
+        return "other"
+    containers = [item for item in (response, result) if type(item) is dict]
+    # Match the existing truthy error/errors predicate; never export their contents.
+    return {"groupings_kind": kind(groups), "data_total_count_kind": kind(total, count=True),
+        "provider_error_present": any(bool(item.get(key)) for item in containers for key in ("error", "errors"))}
+
+
+def _statistics_data_invalid(reason, response):
     # Same public exception/code; only a fixed structural reason may be retained.
     error = AvitoError("provider_data_invalid")
     error.statistics_reason = reason
+    error.statistics_shape = _statistics_response_shape(response)
     raise error
 
 
 def statistics_data(response, *, start, end, grouping, offset):
     result = response.get("result")
     if "result" not in response:
-        _statistics_data_invalid("result_missing")
+        _statistics_data_invalid("result_missing", response)
     if not isinstance(result, dict):
-        _statistics_data_invalid("result_type")
+        _statistics_data_invalid("result_type", response)
     groups = result.get("groupings")
     if not isinstance(groups, list):
         explicit_zero = type(result.get("dataTotalCount")) is int and result["dataTotalCount"] == 0
         has_error = any(container.get(key) for container in (response, result)
                         for key in ("error", "errors"))
         _statistics_data_invalid("grouping_missing_with_explicit_zero_total"
-            if groups is None and explicit_zero and not has_error else "groupings_type")
+            if groups is None and explicit_zero and not has_error else "groupings_type", response)
     if len(groups) > PAGE_SIZE:
-        _statistics_data_invalid("groupings_limit")
+        _statistics_data_invalid("groupings_limit", response)
     rows = []
     labels = [{"slug": slug, "label": label, "unit": "₽" if unit == "kopeks" else unit} for slug, label, unit in METRICS]
     seen = set()
     if grouping == "totals" and len(groups) > 1:
-        _statistics_data_invalid("totals_multiple_groups")
+        _statistics_data_invalid("totals_multiple_groups", response)
     for group in groups:
         if not isinstance(group, dict):
-            _statistics_data_invalid("group_type")
+            _statistics_data_invalid("group_type", response)
         if not isinstance(group.get("metrics"), list):
-            _statistics_data_invalid("metrics_type")
+            _statistics_data_invalid("metrics_type", response)
         group = dict(group)
         if grouping == "totals" and "id" not in group:
             group["id"] = 0
         if type(group.get("id")) is not int:
-            _statistics_data_invalid("id_type")
+            _statistics_data_invalid("id_type", response)
         if group["id"] in seen:
-            _statistics_data_invalid("id_duplicate")
+            _statistics_data_invalid("id_duplicate", response)
         seen.add(group["id"])
         values = {}
         for item in group["metrics"]:
             if not isinstance(item, dict):
-                _statistics_data_invalid("metric_type")
+                _statistics_data_invalid("metric_type", response)
             if not isinstance(item.get("slug"), str):
-                _statistics_data_invalid("metric_slug_type")
+                _statistics_data_invalid("metric_slug_type", response)
             if item["slug"] in values:
-                _statistics_data_invalid("metric_duplicate")
+                _statistics_data_invalid("metric_duplicate", response)
             values[item["slug"]] = item.get("value")
         metrics = []
         for slug, label, unit in METRICS:

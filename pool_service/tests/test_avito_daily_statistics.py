@@ -785,6 +785,8 @@ class DailyHistoryTests(TestCase):
         attempt = self.connection.settings[daily.KEY]['last_attempt']
         self.assertEqual(attempt['error_code'], 'provider_data_invalid')
         self.assertEqual(attempt['statistics_reason'], 'grouping_missing_with_explicit_zero_total')
+        self.assertEqual(attempt['statistics_shape'], {'groupings_kind': 'null',
+            'data_total_count_kind': 'zero_integer', 'provider_error_present': False})
         self.assertEqual(attempt['exception_class'], 'AvitoError')
         self.assertEqual(attempt['phase'], 'fetch_statistics')
         self.assertFalse(AvitoStatisticsRun.objects.get().pagination_complete)
@@ -792,6 +794,7 @@ class DailyHistoryTests(TestCase):
         evidence = self.gap_evidence()
         self.assertEqual(evidence['last_attempt']['statistics_reason'],
                          'grouping_missing_with_explicit_zero_total')
+        self.assertEqual(evidence['last_attempt']['statistics_shape'], attempt['statistics_shape'])
         self.assertNotIn('PRIVATE', str(self.connection.settings))
         self.assertNotIn('PRIVATE', str(evidence))
         self.goods.refresh_from_db()
@@ -847,6 +850,56 @@ class DailyHistoryTests(TestCase):
                          {'sentinel': 'newer-worker-evidence'})
         self.assertEqual(AvitoStatisticsRun.objects.get().state, 'collecting')
         self.assertFalse(AvitoDailyStatistic.objects.exists())
+
+
+    def test_invalid_shape_or_wrong_error_origin_is_never_persisted(self):
+        valid = {'groupings_kind': 'empty_object', 'data_total_count_kind': 'positive_integer',
+            'provider_error_present': False}
+        for error, shape in (
+                (daily.AvitoError('provider_data_invalid'), valid | {'raw': 'PRIVATE https://private.invalid/'}),
+                (daily.AvitoError('provider_data_invalid'), valid | {'groupings_kind': '+79990000001'}),
+                (daily.AvitoError('provider_data_invalid'), valid | {'provider_error_present': 1}),
+                (daily.AvitoError('provider_http_403'), valid),
+                (RuntimeError('provider_data_invalid'), valid)):
+            error.statistics_reason, error.statistics_shape = 'groupings_type', shape
+            self.retry()
+            with patch.object(avito_workspace, 'fetch_statistics', side_effect=error) as fetch:
+                self.assertEqual(daily.collect_next(), 'failed')
+            fetch.assert_called_once()
+            self.connection.refresh_from_db()
+            attempt = self.connection.settings[daily.KEY]['last_attempt']
+            self.assertNotIn('statistics_shape', attempt)
+            self.assertNotIn('PRIVATE', str(attempt))
+            self.assertNotIn('+79990000001', str(attempt))
+
+    def test_saved_shape_requires_exact_schema_code_and_confirmed_parser_reason(self):
+        with patch.object(avito_workspace, 'fetch_statistics', side_effect=daily.AvitoError('provider_data_invalid')):
+            daily.collect_next()
+        self.connection.refresh_from_db()
+        baseline = deepcopy(self.connection.settings[daily.KEY]['last_attempt'])
+        self.assertNotIn('statistics_shape', self.gap_evidence()['last_attempt'])
+        valid = {'groupings_kind': 'empty_object', 'data_total_count_kind': 'missing',
+            'provider_error_present': False}
+        for shape, code, reason in (
+                (valid | {'PRIVATE': 'PRIVATE'}, 'provider_data_invalid', 'groupings_type'),
+                (valid | {'data_total_count_kind': 'https://private.invalid/'}, 'provider_data_invalid', 'groupings_type'),
+                (valid | {'provider_error_present': 0}, 'provider_data_invalid', 'groupings_type'),
+                (valid, 'provider_http_403', 'groupings_type'),
+                (valid, 'provider_data_invalid', None)):
+            attempt = deepcopy(baseline)
+            attempt.update(statistics_shape=shape, error_code=code)
+            if reason is not None:
+                attempt['statistics_reason'] = reason
+            self.connection.settings[daily.KEY]['last_attempt'] = attempt
+            self.connection.save(update_fields=['settings'])
+            output = self.gap_evidence()['last_attempt']
+            self.assertEqual(output['state'], 'unconfirmed')
+            self.assertNotIn('statistics_shape', output)
+            self.assertNotIn('PRIVATE', str(output))
+        self.connection.settings[daily.KEY]['last_attempt'] = baseline
+        self.connection.save(update_fields=['settings'])
+        self.assertEqual(self.gap_evidence()['last_attempt']['state'], 'observed')
+        self.assertNotIn('statistics_shape', self.gap_evidence()['last_attempt'])
 
 
 class DailySourceComparisonTests(SimpleTestCase):
