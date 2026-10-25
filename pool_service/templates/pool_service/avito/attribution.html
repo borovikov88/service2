@@ -1,0 +1,62 @@
+{% extends "pool_service/base.html" %}
+{% load static tz %}
+{% block title %}Авито Услуги · Связи с CRM{% endblock %}
+{% block extra_head %}<script src="{% static 'assets/js/avito-crm-attribution.js' %}" defer></script>{% endblock %}
+{% block content %}
+<div class="container-fluid py-3">
+  <h1 class="h3">Авито Услуги · Связи с CRM</h1>
+  <p class="text-muted">Подключение №{{ connection.pk }}. Выберите диалог или звонок и подтвердите существующую заявку. Сообщения не создают новые заявки автоматически.</p>
+  <div class="row g-3">
+    <aside class="col-lg-4">
+      <details open class="card card-body"><summary>Диалоги подключения · последние 50</summary>
+      {% for row in dialogs %}<a class="d-block py-1" href="{{ row.url }}">{{ row.label }}</a>{% empty %}<p class="small">Нет доступных диалогов.</p>{% endfor %}</details>
+      <details class="card card-body mt-3"><summary>Звонки организации · последние 50 доступных</summary>
+      <p class="small text-muted">Источник Авито для этих звонков автоматически не установлен.</p>
+      {% timezone "Asia/Barnaul" %}{% for row in calls %}<a class="d-block py-1" href="{{ row.url }}">Звонок №{{ row.id }} · {{ row.started_at|date:"d.m.Y H:i" }}</a>{% empty %}<p class="small">Нет доступных звонков.</p>{% endfor %}{% endtimezone %}</details>
+    </aside>
+    <section class="col-lg-8">
+      {% if form %}
+      <div class="card card-body">
+        {% if existing_hidden %}<p class="small text-warning-emphasis">Существующая связь недоступна при текущих правах. Подробности и оценка скрыты.</p>{% endif %}
+        <h2 class="h5">{% if source_kind == "call" %}Звонок №{{ source.pk }}{% else %}Выбранный диалог{% endif %}</h2>
+        {% if link %}<p class="small text-muted">Ручное подтверждение · версия {{ link.revision }} · {% timezone "Asia/Barnaul" %}{{ link.confirmed_at|date:"d.m.Y H:i" }}{% endtimezone %} · Барнаул.</p>{% endif %}
+        {% if crm_item %}<p>Заявка №{{ crm_item.pk }}: <strong>{{ crm_item.title }}</strong>. Текущий этап CRM: {{ crm_item.stage }}. Этап не подтверждает заказ, оплату или выручку.</p>{% endif %}
+        {% if source_kind == "call" %}<p class="small text-warning-emphasis">Объявление-источник звонка неизвестно, пока менеджер явно не подтвердит выбранное принадлежащее аккаунту объявление.</p>{% endif %}
+        {% if link.avito_item_id %}<p class="small">Ранее сохранённый ID объявления: {{ link.avito_item_id }} · способ: {{ link.get_ad_source_display }}. Свежая проверка принадлежности учитывается отдельно.</p>{% endif %}
+        <form method="post" data-crm-attribution data-lookup-url="{{ lookup_url }}">
+          {% csrf_token %}{{ form.source_kind }}{{ form.source_id }}{{ form.revision }}{{ form.operation }}
+          {% if form.non_field_errors %}<div class="alert alert-danger">{{ form.non_field_errors }}</div>{% endif %}
+          <label class="form-label" for="crm-request-search">Найти существующую заявку</label>
+          <input id="crm-request-search" class="form-control mb-2" type="search" placeholder="Название заявки" autocomplete="off" data-request-search value="{{ request.GET.request_q }}">
+          <div class="small text-muted" role="status" aria-live="polite" data-request-search-status></div>
+          {% for field in form.visible_fields %}<div class="mb-3"><label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% if field.help_text %}<div class="small text-muted">{{ field.help_text }}</div>{% endif %}{% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}</div>{% endfor %}
+          <p class="small text-muted">Причина вводится менеджером отдельно; исходные сообщения и расшифровки сюда не копируются. Следующий шаг выбирается среди существующих задач выбранной заявки.</p>
+          {% if can_edit %}<button class="btn btn-primary" type="submit">Подтвердить связь и оценку</button>{% else %}<p class="small">Изменение недоступно при текущем назначении или правах источника.</p>{% endif %}
+        </form>
+        {% if can_finance %}<div class="border-top pt-2 mt-3"><strong>Финансовая ссылка</strong><p class="small">{{ order_state.label }}</p>
+        {% if order_state.state == "observed" %}<p class="small">{{ order_state.number }} · {{ order_state.date|default:"дата неизвестна" }}. Источник получен {{ order_state.fetched_at }}. Наблюдение не подтверждает оплату, выручку или причинную принадлежность рекламы.</p>{% endif %}</div>{% endif %}
+        <details class="small mt-3"><summary>История подтверждения</summary>
+        {% timezone "Asia/Barnaul" %}{% for event in history %}<div>{{ event.created_at|date:"d.m.Y H:i" }} · сотрудник №{{ event.actor_id|default:"не указан" }} · {{ event.changed_fields|join:", " }}</div>{% empty %}<div>Истории подтверждений пока нет.</div>{% endfor %}{% endtimezone %}
+        <p class="text-muted">В аудите сохраняются ID и коды изменений; сообщения, расшифровки, финансовые суммы и текст причины туда не копируются.</p></details>
+      </div>
+      {% else %}<div class="card card-body">Выберите источник слева. Новые клиенты, заявки или заказы на этой странице не создаются.</div>{% endif %}
+      <details class="card card-body mt-3" open><summary>Покрытие подтверждённых связей</summary>
+        <p class="small text-muted">Доступные источники Service2, не счётчики уникальных людей Авито. Звонки учитываются отдельно; их рекламный источник может оставаться неизвестным.</p>
+        <dl class="row mb-0">
+          <dt class="col-sm-8">Доступные диалоги подключения</dt><dd class="col-sm-4">{{ coverage.dialogs }}</dd>
+          <dt class="col-sm-8">Из них связаны с заявкой</dt><dd class="col-sm-4">{{ coverage.linked_dialogs }}</dd>
+          <dt class="col-sm-8">Звонки с ручным подтверждением Авито / связаны с заявкой</dt><dd class="col-sm-4">{{ coverage.calls }} / {{ coverage.linked_calls }}</dd>
+          <dt class="col-sm-8">Кандидаты звонков с неизвестным каналом / связаны с заявкой</dt><dd class="col-sm-4">{{ coverage.candidate_calls_unknown }} / {{ coverage.candidate_calls_linked }}</dd>
+          <dt class="col-sm-8">Обращений без подтверждённой заявки</dt><dd class="col-sm-4">{{ coverage.unknown_requests }}</dd>
+          <dt class="col-sm-8">Различных заявок</dt><dd class="col-sm-4">{{ coverage.distinct_requests }}</dd>
+          <dt class="col-sm-8">Источник объявления неизвестен или не подтверждён свежими данными</dt><dd class="col-sm-4">{{ coverage.ad_source_unknown }}</dd>
+          <dt class="col-sm-8">Качество: целевые / нецелевые</dt><dd class="col-sm-4">{{ coverage.quality_target }} / {{ coverage.quality_non_target }}</dd>
+          {% if can_finance %}<dt class="col-sm-8">Различных наблюдаемых документов заказа 1С / неоднозначна принадлежность объявлению</dt><dd class="col-sm-4">{{ coverage.observed_order_references }} / {{ coverage.order_attribution_ambiguous }}</dd>{% endif %}
+          <dt class="col-sm-8">Подтверждённые заказы, оплаты, выручка</dt><dd class="col-sm-4">Не установлены. Планирование и ручная ссылка не являются оплатой или результатом рекламы.</dd>
+        </dl>
+        {% if not coverage.complete %}<p class="small text-warning-emphasis">Охват ограничен первыми 500 записями.</p>{% endif %}
+      </details>
+    </section>
+  </div>
+</div>
+{% endblock %}

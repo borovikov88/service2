@@ -26,6 +26,8 @@
     {% endtimezone %}
     {% if daily.error %}<p class="text-warning-emphasis small mt-2">{{ daily.error }}</p>{% endif %}
 
+    {% include 'pool_service/avito/_decision_report.html' with report=daily.decision_report only %}
+
     <details class="mt-3">
       <summary>Запрошенные сравнения по полным дням Барнаула</summary>
       <p class="small mt-2">Недоступны до подтверждения часового пояса источника либо появления почасовых данных. Текущий день исключён; отсутствующие значения не заменяются нулями.</p>
@@ -94,6 +96,7 @@
 
     {% if daily.crm %}
     <details class="mt-3"><summary>Покрытие связи с существующей CRM</summary>
+      <a class="btn btn-sm btn-outline-primary my-2" href="{% url 'avito_crm_attribution' connection.pk %}">Оценить обращения и подтвердить заявки</a>
       <p class="small mt-2">Все существующие диалоги Service2, отдельно от периода статистики Авито. Проверено {{ daily.crm.inspected_dialogs }}/{{ daily.crm.total_dialogs }}{% if not daily.crm.complete %}; охват неполный{% endif %}.</p>
       <dl class="small">
         <dt>Диалоги с подтверждённым ID объявления</dt><dd>{{ daily.crm.ad_source_confirmed_dialogs }}</dd>
@@ -102,7 +105,12 @@
         <dt>Различных карточек клиентов</dt><dd>{{ daily.crm.distinct_client_cards }}</dd>
         <dt>Подтверждённые цепочки объявление → диалог → клиент</dt><dd>{{ daily.crm.ad_dialog_client_chains }}</dd>
         <dt>Объявление → звонок</dt><dd>Нет подтверждённого идентификатора для связи.</dd>
-        <dt>Диалог/звонок → лид → заказ → оплата</dt><dd>Прямые связи не подтверждены; количество и выручка неизвестны.</dd>
+        {% if daily.crm.association %}
+        <dt>Подтверждённые источники → существующие заявки</dt><dd>{{ daily.crm.association.linked_dialogs }} диалогов; {{ daily.crm.association.linked_calls }} звонков с ручным подтверждением Авито; {{ daily.crm.association.distinct_requests }} различных заявок.</dd>
+        <dt>Источник звонка не подтверждён</dt><dd>{{ daily.crm.association.candidate_calls_unknown }} вручную разобранных кандидатов. Они не включены в обращения Авито.</dd>
+        <dt>Без подтверждённой заявки</dt><dd>{{ daily.crm.association.unknown_requests }}</dd>
+        {% else %}<dt>Диалог/звонок → заявка</dt><dd>Связи не подтверждены.</dd>{% endif %}
+        <dt>Заказ → оплата → выручка</dt><dd>Неизвестны. Ручная ссылка на наблюдаемый плановый документ 1С не является оплатой или причинной атрибуцией рекламы.</dd>
       </dl>
       <p class="small text-muted">Источник — сохранённый provider_context.item.id и проверка принадлежности объявления за последние 24 часа. Client FK используется только при доступе к карточке той же организации. Совпадение телефона или названия не создаёт связь с лидом, заказом или оплатой. Карточки клиентов не равны уникальным людям из счётчиков Авито.</p>
     </details>
