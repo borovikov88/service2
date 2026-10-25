@@ -428,12 +428,19 @@ def client_detail(request, client_id):
     new_task_url = reverse("task_create") + "?" + urlencode(
         {"client": client.id, "next": next_url}
     )
+    from .communication_services import conversation_capability
+    from .communication_models import Conversation
+    client_conversations = []
+    if conversation_capability(request.user, "can_view_conversations", client.organization):
+        client_conversations = list(Conversation.objects.filter(client=client, organization_id=client.organization_id,
+            connection__channel__organization_id=client.organization_id).select_related("connection__channel").order_by("-last_message_at")[:30])
 
     return render(
         request,
         "pool_service/client_detail.html",
         {
             "client": client,
+            "client_conversations": client_conversations,
             "profile": profile,
             "client_kind_label": client_kind_label,
             "phones": phones,

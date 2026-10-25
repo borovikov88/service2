@@ -16,11 +16,13 @@ class ClientCRMProfile(models.Model):
     SOURCE_ONEC = "onec"
     SOURCE_ONEC_IP = "onec_ip"
     SOURCE_PHONEBOOK = "phonebook"
+    SOURCE_COMMUNICATIONS = "communications"
     SOURCE_CHOICES = [
         (SOURCE_MANUAL, "Вручную"),
         (SOURCE_ONEC, "1С"),
         (SOURCE_ONEC_IP, "1С / ИП"),
         (SOURCE_PHONEBOOK, "Телефонная книга"),
+        (SOURCE_COMMUNICATIONS, "Коммуникации"),
     ]
 
     client = models.OneToOneField(
@@ -62,6 +64,7 @@ class ClientCRMProfile(models.Model):
         related_name="crm_managed_clients",
     )
     notes = models.TextField(blank=True)
+    communication_data = models.JSONField(default=dict, blank=True, null=True, editable=False)
     last_synced_at = models.DateTimeField(null=True, blank=True)
     merged_into = models.ForeignKey(
         "pool_service.Client",

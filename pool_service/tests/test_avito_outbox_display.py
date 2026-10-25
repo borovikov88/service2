@@ -173,20 +173,26 @@ class AvitoOutboxDisplayTests(TestCase):
                               "owner_notification_label": "Не проверено."}
         self.connection.external_id = "446312402"
         self.connection.save(update_fields=["external_id"])
+        state = for_connection(self.connection, user=self.owner)
+        administrative_content = render_to_string("pool_service/communications/_avito_outbox.html", {"outbox": state})
+        self.assertIn("SAFE-OWNER-PANEL-COMMAND", administrative_content)
+        panel.reset_mock()
         self.client.force_login(self.owner)
         response = self.client.get(reverse("communications_conversations"), {"conversation": self.conversation.uuid})
-        self.assertContains(response, "SAFE-OWNER-PANEL-COMMAND")
+        self.assertNotContains(response, "SAFE-OWNER-PANEL-COMMAND")
+        self.assertNotContains(response, "Исходящие Авито")
         manager = User.objects.create_user("outbox-ui-command-manager")
         OrganizationAccess.objects.create(organization=self.organization, user=manager, role="manager")
         self.client.force_login(manager)
         response = self.client.get(reverse("communications_conversations"), {"conversation": self.conversation.uuid})
-        self.assertContains(response, "Исходящие Авито")
+        self.assertNotContains(response, "Исходящие Авито")
         self.assertNotContains(response, "SAFE-OWNER-PANEL-COMMAND")
         self.assertNotContains(response, "Команда для текущего Service2")
+        panel.assert_not_called()
 
     @patch("pool_service.communication_avito._json_request")
     @patch("pool_service.avito_outbox.outbox_diagnostics")
-    def test_conversation_get_shows_attempts_and_safe_failure_without_provider_requests(self, diagnostics, request):
+    def test_conversation_get_shows_safe_failure_without_technical_panel_or_provider_requests(self, diagnostics, request):
         diagnostics.return_value = self.queue
         ConversationMessage.objects.create(
             conversation=self.conversation, direction="out", body="Test reply",
@@ -194,11 +200,13 @@ class AvitoOutboxDisplayTests(TestCase):
         self.client.force_login(self.owner)
         response = self.client.get(reverse("communications_conversations"), {"conversation": self.conversation.uuid})
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Исходящие Авито")
+        self.assertNotContains(response, "Исходящие Авито")
+        self.assertContains(response, "Test reply")
         self.assertContains(response, "Ошибка отправки")
-        self.assertContains(response, "Попыток: 2")
+        self.assertNotContains(response, "Попыток:")
         self.assertNotContains(response, "SECRET")
         request.assert_not_called()
+        diagnostics.assert_not_called()
 
     @patch("pool_service.avito_webhook_chain.display")
     @patch("pool_service.avito_outbox.outbox_diagnostics")

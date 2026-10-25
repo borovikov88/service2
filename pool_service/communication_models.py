@@ -244,6 +244,12 @@ class Conversation(models.Model):
     external_id = models.CharField(max_length=255)
     participant_name = models.CharField(max_length=255)
     participant_phone = models.CharField(max_length=40, blank=True)
+    participant_external_id = models.CharField(max_length=255, blank=True, null=True, default="")
+    client = models.ForeignKey(Client, on_delete=models.SET_NULL, null=True, blank=True, related_name="communication_conversations")
+    provider_context = models.JSONField(default=dict, blank=True, null=True)
+    contact_data = models.JSONField(default=dict, blank=True, null=True)
+    context_synced_at = models.DateTimeField(null=True, blank=True)
+    context_attempted_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_NEW)
     assignee = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="assigned_conversations")
     last_message_at = models.DateTimeField(null=True, blank=True, db_index=True)
@@ -257,15 +263,38 @@ class Conversation(models.Model):
             return "https://www.avito.ru/profile/messenger/channel/" + quote(self.external_id, safe="")
         return ""
 
+    @property
+    def client_card_url(self):
+        from django.urls import reverse
+        if self.client_id and self.client.organization_id == self.organization_id:
+            return reverse("client_detail", args=[self.client_id])
+        return ""
+
+    @property
+    def display_name(self):
+        if self.client_card_url:
+            return self.client.name
+        name = self.participant_name.strip()
+        return name if name and not name.isdigit() else "Клиент"
+
+    @property
+    def listing(self):
+        from .communication_contact_data import clean_listing
+        context = self.provider_context if isinstance(self.provider_context, dict) else {}
+        return clean_listing(context.get("item"))
+
     class Meta:
         unique_together = ("connection", "external_id")
         ordering = ["-last_message_at", "-created_at"]
+        indexes = [models.Index(fields=["organization", "participant_external_id"], name="comm_org_participant_idx")]
 
     def clean(self):
         if self.connection_id and self.organization_id and self.connection.channel.organization_id != self.organization_id:
             raise ValidationError("Conversation connection belongs to another organization.")
         if self.assignee_id and not self.assignee.organizationaccess_set.filter(organization_id=self.organization_id).exists():
             raise ValidationError("Conversation assignee must belong to the organization.")
+        if self.client_id and self.client.organization_id != self.organization_id:
+            raise ValidationError("Conversation client belongs to another organization.")
 
 
 class ConversationMessage(models.Model):

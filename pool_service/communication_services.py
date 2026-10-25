@@ -5,7 +5,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from pool_service.communication_models import CommunicationAccess, Conversation, ConversationMessage
-from pool_service.models import OrganizationAccess
+from pool_service.models import Organization, OrganizationAccess
 from pool_service.services.notifications import notify_users
 
 
@@ -71,18 +71,20 @@ def optimize_message_image(attachment):
 
 
 @transaction.atomic
-def receive_message(*, connection, external_conversation_id, participant_name, body, external_message_id=None, participant_phone=""):
-    if connection.pk == 4 and connection.channel.kind == "avito":
+def receive_message(*, connection, external_conversation_id, participant_name, body, external_message_id=None, participant_phone="", participant_external_id="", provider_context=None):
+    if connection.pk:
         from .communication_models import ChannelConnection
+        avito_workplace = connection.pk == 4 and connection.channel.kind == "avito"
         authenticated = (connection.channel_id, connection.channel.organization_id,
             str(connection.external_id), connection.api_token_hash,
-            connection.is_active, connection.channel.is_active)
+            connection.is_active, connection.channel.is_active, connection.channel.kind)
         locked = ChannelConnection.objects.select_for_update().select_related("channel__organization").get(pk=connection.pk)
         current = (locked.channel_id, locked.channel.organization_id, str(locked.external_id),
-                   locked.api_token_hash, locked.is_active, locked.channel.is_active)
-        if current != authenticated or not locked.is_active or not locked.channel.is_active or locked.channel.kind != "avito":
-            raise ValueError("avito_connection_binding_changed")
+                   locked.api_token_hash, locked.is_active, locked.channel.is_active, locked.channel.kind)
+        if current != authenticated or not locked.is_active or not locked.channel.is_active:
+            raise ValueError("avito_connection_binding_changed" if avito_workplace else "communication_connection_binding_changed")
         connection = locked
+    Organization.objects.select_for_update().get(pk=connection.channel.organization_id)
     external_message_id = external_message_id or None
     conversation, _ = Conversation.objects.select_for_update().get_or_create(
         connection=connection,
@@ -91,16 +93,26 @@ def receive_message(*, connection, external_conversation_id, participant_name, b
             "organization": connection.channel.organization,
             "participant_name": participant_name,
             "participant_phone": participant_phone,
+            "participant_external_id": participant_external_id,
         },
     )
-    if (connection.pk == 4 and connection.channel.kind == "avito"
-            and conversation.organization_id != connection.channel.organization_id):
-        raise ValueError("avito_conversation_binding_changed")
+    if conversation.organization_id != connection.channel.organization_id:
+        raise ValueError("avito_conversation_binding_changed" if connection.pk == 4 and connection.channel.kind == "avito" else "conversation_organization_mismatch")
+    if participant_external_id and conversation.participant_external_id and str(participant_external_id) != conversation.participant_external_id:
+        raise ValueError("conversation_participant_mismatch")
+    if participant_external_id and not conversation.participant_external_id:
+        conversation.participant_external_id = str(participant_external_id)[:255]
+        conversation.save(update_fields=["participant_external_id"])
+    from .communication_clients import capture_client
+    if provider_context:
+        from .communication_enrichment import apply_chat_context_locked
+        apply_chat_context_locked(conversation, provider_context)
     if external_message_id is not None:
         existing = ConversationMessage.objects.filter(
             conversation=conversation, external_id=external_message_id
         ).first()
         if existing:
+            capture_client(conversation)
             return existing, False
     try:
         with transaction.atomic():
@@ -119,12 +131,17 @@ def receive_message(*, connection, external_conversation_id, participant_name, b
             conversation=conversation,
             external_id=external_message_id,
         ), False
-    conversation.participant_name = participant_name or conversation.participant_name
+    if participant_name and (not conversation.participant_name or not str(participant_name).isdigit() and participant_name != "Клиент Авито"):
+        conversation.participant_name = participant_name
     conversation.participant_phone = participant_phone or conversation.participant_phone
     conversation.last_message_at = message.created_at
     if conversation.status == Conversation.STATUS_DONE:
         conversation.status = Conversation.STATUS_NEW
     conversation.save(update_fields=["participant_name", "participant_phone", "last_message_at", "status", "updated_at"])
+    capture_client(conversation, body=body, message_id=message.pk)
+    if connection.channel.kind == "avito" and not provider_context:
+        from .communication_enrichment import start_client_enrichment_worker
+        transaction.on_commit(lambda: start_client_enrichment_worker([conversation.pk]))
     from .avito_deferred_messages import partition_users
     recipients = partition_users(connection, message, users_with_conversation_access(conversation.organization))
     notify_users(
