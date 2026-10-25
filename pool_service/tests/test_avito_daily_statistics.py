@@ -409,7 +409,7 @@ class DailyHistoryTests(TestCase):
         self.assertEqual(evidence, second['source_period_evidence'])
         self.assertEqual(set(evidence), {'schema_version', 'state', 'source', 'cutoff',
             'provider_timezone', 'barnaul_calendar_confirmed', 'completed_dates',
-            'expected_dates', 'comparison_rule', 'periods'})
+            'expected_dates', 'comparison_rule', 'periods', 'decision_report'})
         self.assertEqual((evidence['completed_dates'], evidence['expected_dates']), (1, 30))
         self.assertEqual(evidence['cutoff'], '2026-10-23')
         self.assertEqual(evidence['provider_timezone'], 'unknown')
