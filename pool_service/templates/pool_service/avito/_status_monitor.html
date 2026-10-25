@@ -16,6 +16,7 @@
   {% endif %}
   {% with monitor=status_monitor_state.monitor %}
     <div class="mb-2"><strong>{% if monitor.enabled %}Включён{% else %}Отключён{% endif %}</strong>{% if status_monitor_state.running %} · Проверка выполняется{% endif %}</div>
+    {% if monitor.enabled %}<p class="small text-muted mb-2">Подписка сохранена. Готовность проверок показана отдельно выше.</p>{% endif %}
     {% if monitor %}
       <dl class="row small mb-2">
         <dt class="col-sm-5">Получатель</dt><dd class="col-sm-7">{{ monitor.recipient.get_full_name|default:monitor.recipient.username }} · только внутри Service2</dd>
