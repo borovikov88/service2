@@ -254,11 +254,12 @@ from .communication_api import (
 
 from .avito_services_feed import services_feed, services_feed_edit, services_feed_download, services_feed_publish, services_feed_public, services_feed_version_public
 from .avito_services_media import services_image_upload, services_image_preview, services_image_public, services_media_probe
-from .avito_services_media_livecheck import services_media_livecheck
+from .avito_services_media_livecheck import services_media_livecheck, services_media_filecheck
 
 urlpatterns = [
     path("api/communications/avito/services-media/probe/", services_media_probe, name="avito_services_media_probe"),
     path("api/communications/avito/services-media/livecheck/", services_media_livecheck, name="avito_services_media_livecheck"),
+    path("api/communications/avito/services-media/filecheck/", services_media_filecheck, name="avito_services_media_filecheck"),
     path("api/communications/avito/services-media/<uuid:public_key>/photo.jpg", services_image_public, name="avito_services_image_public"),
     path("avito/<int:connection_id>/services-media/upload/", services_image_upload, name="avito_services_image_upload"),
     path("avito/<int:connection_id>/services-media/<uuid:public_key>/preview/", services_image_preview, name="avito_services_image_preview"),
