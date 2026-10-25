@@ -681,3 +681,227 @@ class MediaAssetsTests(TestCase):
                                          content_type='application/json')
                 self.assertEqual(response.status_code, 403)
                 probe.assert_not_called()
+
+
+class PublishedReferenceRetentionTests(TestCase):
+    # Reuse only fixture helpers, not inherited tests.
+    setUp = MediaAssetsTests.setUp
+    upload = MediaAssetsTests.upload
+
+    def services_feed(self):
+        self.feed.delete()
+        channel = self.connection.channel
+        self.connection.delete()
+        self.connection = ChannelConnection.objects.create(pk=4, channel=channel,
+            external_id='446312402', name='Services scoped retention')
+        data = parse_export(export_bytes(('111', '222')))
+        for row in data[0]['rows']:
+            row['ImageUrls'] = ' | '.join(f'http://photos.example.org/{row["AvitoId"]}/{number}.jpg'
+                                         for number in range(1, 11))
+        self.feed = AvitoServicesFeed.objects.create(connection=self.connection, account_id='446312402',
+            organization_id_at_import=self.org.pk, draft=deepcopy(data), published=deepcopy(data),
+            revision=18, published_revision=15, enabled=True)
+        self.upload_url = reverse('avito_services_image_upload', args=[4])
+        return deepcopy(data)
+
+    def observations(self, data):
+        from django.utils import timezone
+        return [{'id': row['Id'], 'avito_id': row['AvitoId'], 'source': 'avito_item_detail',
+                 'status': 'active', 'included': True, 'checked_at': timezone.now().isoformat()}
+                for sheet in data for row in sheet['rows']]
+
+    def test_exact_published_positions_preserved_without_external_get_but_not_claimed_available(self):
+        data = self.services_feed()
+        with patch.object(media, '_resolve', return_value='8.8.8.8') as resolve, patch.object(media, '_download') as get:
+            result = media.validate_snapshot_media(self.connection, data,
+                                                   verified_observations=self.observations(data))
+        get.assert_not_called()
+        self.assertEqual(resolve.call_count, 1)
+        self.assertEqual(len(result['retained']), 20)
+        self.assertEqual(result['local_count'], 0)
+        self.assertEqual(result['checked_count'], 0)
+        self.assertEqual(result['retained'][0]['code'], 'published_reference_retained')
+        self.assertNotIn('http:', str(result))
+        self.assertNotIn('available', str(result))
+
+    def test_new_local_tenth_photo_remains_private_and_uses_storage_not_public_http(self):
+        data = self.services_feed()
+        response = self.upload(picture(format='JPEG'))
+        self.assertEqual(response.status_code, 200)
+        asset = AvitoServicesImage.objects.get()
+        urls = data[0]['rows'][0]['ImageUrls'].split(' | ')
+        data[0]['rows'][0]['ImageUrls'] = ' | '.join(urls[:9] + [asset.public_url])
+        with patch.object(media, '_resolve', return_value='8.8.8.8'), patch.object(media, '_download') as get:
+            result = media.validate_snapshot_media(self.connection, data,
+                                                   verified_observations=self.observations(data))
+        get.assert_not_called()
+        self.assertEqual(result['local_count'], 1)
+        self.assertEqual(len(result['retained']), 19)
+        self.assertEqual(Client().get(reverse('avito_services_image_public', args=[asset.public_key])).status_code, 404)
+        self.assertEqual(self.client.get(response.json()['images'][0]['preview_url']).status_code, 200)
+        self.feed.refresh_from_db()
+        self.assertEqual(self.feed.published_revision, 15)
+        self.assertEqual(self.feed.draft[0]['rows'][0]['ImageUrls'], ' | '.join(urls))
+
+    def test_new_cross_ad_reordered_or_query_tampered_reference_requires_strict_get(self):
+        original = self.services_feed()
+        for kind in ('new', 'other_ad', 'reordered', 'query'):
+            data = deepcopy(original)
+            urls = data[0]['rows'][0]['ImageUrls'].split(' | ')
+            if kind == 'new':
+                urls[0] = 'https://photos.example.org/new.jpg'
+            elif kind == 'other_ad':
+                urls[0] = data[0]['rows'][1]['ImageUrls'].split(' | ')[0]
+            elif kind == 'reordered':
+                urls[0], urls[1] = urls[1], urls[0]
+            else:
+                urls[0] += '?changed=1'
+            data[0]['rows'][0]['ImageUrls'] = ' | '.join(urls)
+            with self.subTest(kind=kind), patch.object(media, '_resolve', return_value='8.8.8.8'), \
+                 patch.object(media, '_download', side_effect=media._PhotoTransportError(
+                     'fixed', reason='http_status', phase='headers', http_status=403)) as get:
+                with self.assertRaises(media.SnapshotMediaError) as caught:
+                    media.validate_snapshot_media(self.connection, data,
+                                                   verified_observations=self.observations(data))
+            self.assertEqual(caught.exception.diagnostic['photo_number'], 1)
+            self.assertEqual(caught.exception.diagnostic['avito_id'], '111')
+            self.assertEqual(get.call_count, 1)
+
+    def test_no_retention_without_current_complete_owned_active_inventory(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        data = self.services_feed()
+        for kind in ('missing', 'stale', 'wrong_id', 'inactive', 'missing_row', 'duplicate'):
+            observations = self.observations(data)
+            if kind == 'missing':
+                observations = None
+            elif kind == 'stale':
+                observations[0]['checked_at'] = (timezone.now() - timedelta(minutes=3)).isoformat()
+            elif kind == 'wrong_id':
+                observations[0]['id'] = 'foreign'
+            elif kind == 'inactive':
+                observations[0].update(status='removed', included=False)
+            elif kind == 'missing_row':
+                observations.pop()
+            else:
+                observations.append(deepcopy(observations[0]))
+            with self.subTest(kind=kind), patch.object(media, '_resolve') as resolve, \
+                 patch.object(media, '_download', side_effect=ValueError('fixed')) as get:
+                with self.assertRaises(media.SnapshotMediaError):
+                    media.validate_snapshot_media(self.connection, data, verified_observations=observations)
+            get.assert_called_once()
+            resolve.assert_not_called()
+
+    def test_changed_account_org_disabled_feed_or_other_connection_cannot_reuse_provenance(self):
+        data = self.services_feed()
+        for kind in ('account', 'organization', 'disabled', 'other'):
+            target = self.connection
+            self.feed.account_id = '446312402'
+            self.feed.organization_id_at_import = self.org.pk
+            self.feed.enabled = True
+            if kind == 'account':
+                self.feed.account_id = 'foreign'
+            elif kind == 'organization':
+                self.feed.organization_id_at_import = self.org.pk + 1000
+            elif kind == 'disabled':
+                self.feed.enabled = False
+            else:
+                target = self.other
+            self.feed.save()
+            with self.subTest(kind=kind), patch.object(media, '_download', side_effect=ValueError('fixed')) as get:
+                with self.assertRaises(media.SnapshotMediaError):
+                    media.validate_snapshot_media(target, data, verified_observations=self.observations(data))
+            get.assert_called_once()
+
+    def test_retained_url_still_rejects_credentials_private_dns_and_foreign_local_assets(self):
+        data = self.services_feed()
+        for url in ('http://user:secret@photos.example.org/a.jpg', 'http://127.0.0.1/a.jpg'):
+            altered = deepcopy(data)
+            altered[0]['rows'][0]['ImageUrls'] = url
+            self.feed.published = altered
+            self.feed.save()
+            with self.subTest(url=url), patch.object(media, '_download') as get, self.assertRaises(ValueError):
+                media.validate_snapshot_media(self.connection, altered,
+                                               verified_observations=self.observations(altered))
+            get.assert_not_called()
+        self.feed.published = data
+        self.feed.save()
+        with patch.object(media.socket, 'getaddrinfo', return_value=[
+                (media.socket.AF_INET, media.socket.SOCK_STREAM, 6, '', ('8.8.8.8', 80)),
+                (media.socket.AF_INET, media.socket.SOCK_STREAM, 6, '', ('10.0.0.1', 80))]), \
+             patch.object(media, '_download') as get, self.assertRaises(media.SnapshotMediaError) as caught:
+            media.validate_snapshot_media(self.connection, data, verified_observations=self.observations(data))
+        get.assert_not_called()
+        self.assertEqual(caught.exception.diagnostic['reason'], 'dns_private_address')
+        self.upload()
+        asset = AvitoServicesImage.objects.get()
+        altered = deepcopy(data)
+        altered[0]['rows'][0]['ImageUrls'] = asset.public_url.replace(str(asset.public_key),
+                                                                    '00000000-0000-4000-8000-000000000000')
+        self.feed.published = altered
+        self.feed.save()
+        with patch.object(media, '_download') as get, self.assertRaises(ValueError):
+            media.validate_snapshot_media(self.connection, altered,
+                                           verified_observations=self.observations(altered))
+        get.assert_not_called()
+
+    def test_failure_location_distinguishes_http_auth_rate_redirect_and_decode_without_url(self):
+        data = self.services_feed()
+        for status in (401, 403, 429, 302):
+            with self.subTest(status=status), patch.object(media, '_download', side_effect=media._PhotoTransportError(
+                    'SECRET REMOTE BODY', reason='http_status', phase='headers', http_status=status)):
+                with self.assertRaises(media.SnapshotMediaError) as caught:
+                    media.validate_snapshot_media(self.connection, data)
+            detail = caught.exception.diagnostic
+            self.assertEqual(detail['http_status'], status)
+            self.assertEqual(detail['avito_id'], '111')
+            self.assertEqual(detail['photo_number'], 1)
+            self.assertNotIn('SECRET', str(caught.exception))
+            self.assertNotIn('photos.example.org', str(caught.exception))
+            self.connection.settings = {}
+            self.connection.save(update_fields=['settings'])
+        with patch.object(media, '_download', return_value=b'<html>SECRET</html>'):
+            with self.assertRaises(media.SnapshotMediaError) as caught:
+                media.validate_snapshot_media(self.connection, data)
+        self.assertEqual(caught.exception.diagnostic['reason'], 'image_invalid')
+
+    def test_negative_403_429_cache_is_scoped_and_probe_does_not_retry_same_hostname(self):
+        data = self.services_feed()
+        for status in (403, 429):
+            with self.subTest(status=status), patch.object(media, '_download', side_effect=media._PhotoTransportError(
+                    'fixed', reason='http_status', phase='headers', http_status=status)) as get:
+                first = media.diagnose_snapshot_media(self.connection, data, target_ids=['111', '222'])
+                second = media.diagnose_snapshot_media(self.connection, data, target_ids=['111', '222'])
+            self.assertEqual(get.call_count, 1)
+            self.assertEqual(first[0]['http_status'], status)
+            self.assertEqual(second[0]['http_status'], status)
+            self.assertTrue(second[0]['cached'])
+            self.assertEqual(first[1]['reason'], 'not_probed_same_host')
+            self.assertIsNone(first[1]['http_status'])
+            self.assertNotIn('http:', str(first))
+            self.other.settings = deepcopy(ChannelConnection.objects.get(pk=4).settings)
+            self.other.save(update_fields=['settings'])
+            self.assertEqual(media._read_checks(self.other, failures=True), {})
+            self.connection.settings = {}
+            self.connection.save(update_fields=['settings'])
+
+    def test_inactive_row_does_not_block_retention_of_independent_active_rows(self):
+        data = self.services_feed()
+        observations = self.observations(data)
+        observations[1].update(status='old', included=False)
+        active = deepcopy(data)
+        active[0]['rows'] = active[0]['rows'][:1]
+        with patch.object(media, '_resolve', return_value='8.8.8.8'), patch.object(media, '_download') as get:
+            result = media.validate_snapshot_media(self.connection, active, verified_observations=observations)
+        get.assert_not_called()
+        self.assertEqual(len(result['retained']), 10)
+
+
+    def test_diagnostic_duplicate_rows_cannot_expand_two_ad_probe_bound(self):
+        data = self.services_feed()
+        duplicate = deepcopy(data)
+        duplicate[0]['rows'] = [deepcopy(data[0]['rows'][0]) for _ in range(12)]
+        with patch.object(media, '_download', return_value=picture(format='JPEG')) as get:
+            result = media.diagnose_snapshot_media(self.connection, duplicate, target_ids=['111'])
+        self.assertEqual(get.call_count, 1)
+        self.assertEqual(len(result), 1)

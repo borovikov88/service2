@@ -1,3 +1,4 @@
+from copy import deepcopy
 import json
 import io
 from unittest.mock import patch
@@ -7,6 +8,7 @@ from django.core.management import call_command
 from django.test import SimpleTestCase, TestCase
 
 from pool_service import avito_readonly_audit as audit
+from pool_service.avito_feed_models import AvitoServicesFeed
 from pool_service.communication_avito import AvitoError
 from pool_service.communication_models import AvitoCredential, ChannelConnection, CommunicationAccess, CommunicationChannel
 from pool_service.models import Notification, Organization, OrganizationAccess
@@ -682,6 +684,113 @@ class ScopedServicesReleaseAuditTests(TestCase):
         helpers.assert_not_called()
 
 
+    def test_current_publication_is_server_selected_while_legacy_stays_revision15(self):
+        self.feed.revision = 18
+        self.feed.published_revision = 18
+        self.feed.save(update_fields=["revision", "published_revision"])
+        before = list(ChannelConnection.objects.order_by("pk").values_list("pk", "settings"))
+        with patch.object(audit, "collect_connection", return_value={
+                "connection_id": 4, "error": "provider_http_403"}) as read:
+            current = audit.collect_services(current_publication=True)
+            self.assertEqual(18, current["scope"]["revision"])
+            self.assertEqual("current_published", current["scope"]["revision_source"])
+            self.assertEqual({"release_evidence": True, "release_revision": 18}, read.call_args.kwargs)
+            legacy = audit.collect_services()
+            self.assertEqual(15, legacy["scope"]["revision"])
+            self.assertNotIn("revision_source", legacy["scope"])
+            self.assertEqual({"release_evidence": True}, read.call_args.kwargs)
+        self.assertEqual(before, list(ChannelConnection.objects.order_by("pk").values_list("pk", "settings")))
+        self.assertFalse(Notification.objects.exists())
+
+    def test_current_publication_binding_and_mid_read_change_fail_closed(self):
+        with patch.object(audit, "collect_connection") as read:
+            self.feed.organization_id_at_import += 1
+            self.feed.save(update_fields=["organization_id_at_import"])
+            result = audit.collect_services(current_publication=True)
+            self.assertEqual("audit_services_binding_invalid", result["reason"])
+            read.assert_not_called()
+        self.feed.organization_id_at_import = self.org.pk
+        self.feed.published_revision = 18
+        self.feed.save(update_fields=["organization_id_at_import", "published_revision"])
+        def changed(*args, **kwargs):
+            AvitoServicesFeed.objects.filter(pk=self.feed.pk).update(published_revision=19)
+            return {"connection_id": 4, "error": "provider_http_403"}
+        with patch.object(audit, "collect_connection", side_effect=changed):
+            result = audit.collect_services(current_publication=True)
+        self.assertEqual(18, result["scope"]["revision"])
+        self.assertEqual([{"connection_id": 4, "error": "audit_publication_changed"}], result["connections"])
+
+    def test_current_publication_command_is_explicit_and_cannot_mix_revision(self):
+        from pool_service.management.commands import audit_avito_readonly as command
+        from django.core.management.base import CommandError
+        with patch.object(command, "collect_services", return_value={"status": "blocked"}) as collect:
+            call_command("audit_avito_readonly", current_publication=True, stdout=io.StringIO())
+            collect.assert_called_once_with([], connection_id=4, account_id="446312402",
+                                            revision=15, current_publication=True)
+            with self.assertRaises(CommandError):
+                call_command("audit_avito_readonly", current_publication=True, revision=15,
+                             stdout=io.StringIO())
+            with self.assertRaises(CommandError):
+                call_command("audit_avito_readonly", current_publication=True, connection_id=1,
+                             stdout=io.StringIO())
+            self.assertEqual(1, collect.call_count)
+
+
+    def test_selected_revision_reaches_publication_check(self):
+        from pool_service import avito_services_publication as publication
+        from pool_service import avito_webhook_chain as chain
+        from pool_service import avito_services_media_livecheck as media
+        from pool_service import avito_services_media_readiness as readiness
+        from pool_service import avito_services_release_operation as operation
+        with patch.object(publication, "publication_release_check", return_value=release_publication()) as check, \
+             patch.object(chain, "summary", return_value=release_chain()), \
+             patch.object(media, "media_release_source", return_value=release_photo()), \
+             patch.object(readiness, "media_release_readiness", return_value=release_readiness()), \
+             patch.object(operation, "release_operation_diagnostics", return_value=release_ledger()):
+            audit._services_release_evidence(self.target, revision=18)
+        check.assert_called_once_with(self.target, revision=18, check_http=True)
+
+
+    def test_current_selection_discards_result_after_credential_or_channel_change(self):
+        original_channel = self.target.channel_id
+        other_channel = CommunicationChannel.objects.create(
+            organization=self.org, kind="avito", name="Changed during read")
+        for kind in ("credential", "channel"):
+            with self.subTest(kind=kind):
+                def changed(*args, **kwargs):
+                    if kind == "credential":
+                        AvitoCredential.objects.filter(connection=self.target).update(
+                            client_secret_encrypted="changed-synthetic-secret")
+                    else:
+                        ChannelConnection.objects.filter(pk=4).update(channel=other_channel)
+                    return {"connection_id": 4, "error": "provider_http_403"}
+                try:
+                    with patch.object(audit, "collect_connection", side_effect=changed):
+                        result = audit.collect_services(current_publication=True)
+                    self.assertEqual([{"connection_id": 4, "error": "audit_publication_changed"}],
+                                     result["connections"])
+                finally:
+                    AvitoCredential.objects.filter(connection=self.target).update(
+                        client_secret_encrypted="synthetic")
+                    ChannelConnection.objects.filter(pk=4).update(channel_id=original_channel)
+
+
+    def test_current_selection_discards_result_after_enable_or_photo_contract_change(self):
+        for field, value in (("enabled", False), ("published_photo_limit", 30)):
+            with self.subTest(field=field):
+                def changed(*args, **kwargs):
+                    AvitoServicesFeed.objects.filter(pk=self.feed.pk).update(**{field: value})
+                    return {"connection_id": 4, "error": "provider_http_403"}
+                try:
+                    with patch.object(audit, "collect_connection", side_effect=changed):
+                        result = audit.collect_services(current_publication=True)
+                    self.assertEqual([{"connection_id": 4, "error": "audit_publication_changed"}],
+                                     result["connections"])
+                finally:
+                    AvitoServicesFeed.objects.filter(pk=self.feed.pk).update(
+                        enabled=True, published_photo_limit=10)
+
+
 class ServicesReleaseProjectionTests(SimpleTestCase):
     def test_publication_and_photo_projection_never_exports_urls_hashes_values_or_actors(self):
         for projector, raw in ((receipt.publication_release, release_publication()),
@@ -724,6 +833,23 @@ class ServicesReleaseProjectionTests(SimpleTestCase):
         ):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 receipt.normalize(scoped | change)
+
+
+    def test_dynamic_revision_requires_explicit_current_selection_and_matching_proof(self):
+        value = {"schema_version": 1, "status": "partial", "checked_at": "2026-10-25T12:00:00+07:00",
+            "scope": {"kind": "services_readonly", "connection_id": 4, "account_id": "446312402",
+                      "revision": 18, "revision_source": "current_published"},
+            "prepared_owner_page": "/avito/4/services-feed/",
+            "source": {"scope": "services", "state": "not_applicable", "reason": "services_have_no_physical_stock"},
+            "connections": [{"connection_id": 4, "error": "provider_http_403"}]}
+        self.assertEqual(18, receipt.normalize(value)["scope"]["revision"])
+        legacy = deepcopy(value)
+        legacy["scope"].pop("revision_source")
+        for scope in (legacy["scope"], value["scope"] | {"revision_source": "user_supplied"},
+                      value["scope"] | {"revision": True}, value["scope"] | {"revision": 0},
+                      value["scope"] | {"account_id": "another-account"}):
+            with self.subTest(scope=scope), self.assertRaises(ValueError):
+                receipt.normalize(value | {"scope": scope})
 
 
 class RawItemContentBoundaryTests(SimpleTestCase):

@@ -815,9 +815,15 @@ def normalize(value):
         require(isinstance(scope, dict) and scope.get("kind") == "services_readonly"
                 and type(scope.get("connection_id")) is int and scope["connection_id"] == 4
                 and scope.get("account_id") == "446312402"
-                and type(scope.get("revision")) is int and scope["revision"] == 15)
+                and type(scope.get("revision")) is int
+                and 0 < scope["revision"] <= 1000000000)
+        selection = scope.get("revision_source")
+        require(selection in (None, "current_published"))
+        require(selection == "current_published" or scope["revision"] == 15)
         result["scope"] = {"kind": "services_readonly", "connection_id": 4,
-                           "account_id": "446312402", "revision": 15}
+                           "account_id": "446312402", "revision": scope["revision"]}
+        if selection is not None:
+            result["scope"]["revision_source"] = selection
         require(value.get("prepared_owner_page") == "/avito/4/services-feed/")
         result["prepared_owner_page"] = "/avito/4/services-feed/"
     if "reason" in value:
@@ -846,7 +852,7 @@ def normalize(value):
                 require(all(key in row for key in
                             ("publication_release", "webhook_chain", "approved_photo", "raw_content_fields")) )
                 if "error" not in row["publication_release"]:
-                    require(row["publication_release"]["revision"] == 15)
+                    require(row["publication_release"]["revision"] == result["scope"]["revision"])
     result["full_account_listing_scan_verified"] = bool(result["connections"]) and all(
         "error" not in row and row["listing_scan"].get("complete") is True for row in result["connections"])
     result["listing_stock_reconciliation_verified"] = False
