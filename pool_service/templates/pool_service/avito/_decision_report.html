@@ -1,0 +1,71 @@
+{% load tz %}
+{% if report %}
+<section class="border rounded p-3 my-3" aria-label="Управленческий отчёт Авито">
+  <h3 class="h5">Управленческий отчёт</h3>
+  <p class="small mb-2">Период источника для краткого результата: {{ report.account_current.from|date:"d.m.Y" }}–{{ report.account_current.to|date:"d.m.Y" }}.
+    Часовой пояс суточных групп неизвестен. {% timezone "Asia/Barnaul" %}Последнее получение: {{ report.received_at|date:"d.m.Y H:i:s"|default:"не подтверждено" }} · Барнаул.{% endtimezone %}</p>
+  <div class="small mb-2">История: {{ report.completed_dates }}/{{ report.expected_dates }} дат.
+    Объявлений с полными строками за 7 дат: {{ report.fully_reported_ads_7 }}/{{ report.displayed_ad_count }}.
+    С известными показами, просмотрами, контактами и денежными расходами: {{ report.core_metrics_known_ads_7 }}/{{ report.displayed_ad_count }}.
+    Малый или неизвестный объём: {{ report.low_volume_ads }}.</div>
+  <div class="table-responsive"><table class="table table-sm mb-2"><caption class="small">Общие результаты периода. Неполный известный набор не подменяется суммой отдельных доступных строк.</caption><tbody>
+    {% for metric in report.account_current.metrics %}{% if metric.key == "impressions" or metric.key == "views" or metric.key == "contacts" or metric.key == "spending" %}
+      <tr><th scope="row">{{ metric.label }}</th><td>{% if metric.value != None %}{{ metric.value }} {{ metric.unit }}{% else %}Нет полного значения{% endif %}</td><td class="small text-muted">Известно: {{ metric.known_cells }}/{{ report.account_current.expected_cells }} строк; пропущено дат: {{ report.account_current.missing_days }}.</td></tr>
+    {% endif %}{% endfor %}
+  </tbody></table></div>
+  <details class="small mb-3"><summary>Ограничения выводов</summary><ul class="mt-2">{% for item in report.limitations %}<li>{{ item }}</li>{% endfor %}</ul></details>
+  <h4 class="h6">Приоритетные действия</h4>
+  {% if report.actions %}
+  <ol class="small">{% for action in report.actions %}<li class="mb-2">
+    <strong>№{{ action.avito_id }} · {{ action.issue }}</strong>
+    <div>{{ action.reason }}</div><div>{{ action.next_step }}</div>
+    <div class="text-muted">Основание: сохранённые данные Авито за {{ action.from|date:"d.m.Y" }}–{{ action.to|date:"d.m.Y" }}.
+      Проверить результат: {{ action.review_on|date:"d.m.Y" }}. Причинность не установлена.</div>
+  </li>{% endfor %}</ol>
+  {% else %}<p class="small text-muted">Пока нет достаточного основания для действия с конкретным объявлением. Продолжается обычный сбор; вывод об эффективности не сформирован.</p>{% endif %}
+  <details class="mt-3" open>
+    <summary>Отчёт по объявлениям за периоды · {{ report.displayed_ad_count }}</summary>
+    {% if report.truncated %}<p class="small text-muted">Показано {{ report.displayed_ad_count }} из {{ report.ad_count }} объявлений. Охват неполный.</p>{% endif %}
+    <p class="small text-muted mt-2">Основная строка — 7 дат источника. Покрытие указано рядом с показателями. Цена контакта использует денежные расходы; размещение, продвижение, комиссии и allSpending показаны раздельно в подробностях. Списанные бонусы остаются неизвестными до подтверждения единицы.</p>
+    <div class="table-responsive"><table class="table table-sm">
+      <thead><tr><th>Объявление</th><th>Покрытие</th><th>Показы</th><th>Просмотры</th><th>Контакты</th><th>Денежные расходы, ₽</th><th>CTR, %</th><th>Контакты / просмотры, %</th><th>₽ / контакт</th></tr></thead>
+      <tbody>{% for ad in report.ads %}<tr>
+        <td><strong>{{ ad.avito_id }}</strong><div class="small">{{ ad.title }}</div><div class="small text-muted">{{ ad.service|default:"Услуга неизвестна" }} · {{ ad.city|default:"Город неизвестен" }}</div></td>
+        <td class="small">Даты: {{ ad.current.completed_days }}/{{ ad.current.total_days }}<br>Строки: {{ ad.current.reported_cells }}/{{ ad.current.expected_cells }}<br>{% if ad.low_volume %}Малый или неизвестный объём{% else %}Порог объёма пройден; устойчивость не доказана{% endif %}</td>
+        <td>{% if ad.current.metric_values.impressions != None %}{{ ad.current.metric_values.impressions }}{% else %}Нет данных{% endif %}</td>
+        <td>{% if ad.current.metric_values.views != None %}{{ ad.current.metric_values.views }}{% else %}Нет данных{% endif %}</td>
+        <td>{% if ad.current.metric_values.contacts != None %}{{ ad.current.metric_values.contacts }}{% else %}Нет данных{% endif %}</td>
+        <td>{% if ad.current.metric_values.spending != None %}{{ ad.current.metric_values.spending }}{% else %}Нет данных{% endif %}</td>
+        <td>{% if ad.current.metric_values.ctr != None %}{{ ad.current.metric_values.ctr }}{% else %}Нет данных{% endif %}</td>
+        <td>{% if ad.current.metric_values.conversion != None %}{{ ad.current.metric_values.conversion }}{% else %}Нет данных{% endif %}</td>
+        <td>{% if ad.current.metric_values.cpl_cash != None %}{{ ad.current.metric_values.cpl_cash }}{% else %}Нет данных{% endif %}</td>
+      </tr><tr><td colspan="9">
+        <details class="small"><summary>Все периоды, показатели и сравнения №{{ ad.avito_id }}</summary>
+          {% for period in ad.periods %}<div class="border-top py-2">
+            <strong>{{ period.label }}: {{ period.from|date:"d.m.Y" }}–{{ period.to|date:"d.m.Y" }}</strong>
+            <div>Даты со всеми страницами: {{ period.completed_days }}/{{ period.total_days }}.
+              Объявление известно в снимках: {{ period.known_manifest_days }}/{{ period.total_days }} дат.
+              Полученные строки: {{ period.reported_cells }}/{{ period.expected_cells }}.
+              {% timezone "Asia/Barnaul" %}Последнее получение: {{ period.received_at|date:"d.m.Y H:i:s"|default:"не подтверждено" }} · Барнаул.{% endtimezone %}</div>
+            <div class="text-muted">Ожидаемая строка — требование сопоставимости выбранного объявления, а не доказательство, что оно было активно на каждой прошлой дате. Источник: {{ period.source }}; timezone: {{ period.provider_timezone }}.</div>
+            <dl>{% for metric in period.metrics %}<dt>{{ metric.label }}</dt><dd>{% if metric.value != None %}{{ metric.value }} {{ metric.unit }}{% else %}Нет данных{% endif %}{% if metric.known_cells != None %} · известно {{ metric.known_cells }}/{{ period.expected_cells }}{% endif %}</dd>{% endfor %}</dl>
+          </div>{% endfor %}
+          {% for comparison in ad.comparisons %}<div class="border-top py-2">
+            <strong>{{ comparison.label }}</strong>
+            <div>{{ comparison.current.from|date:"d.m.Y" }}–{{ comparison.current.to|date:"d.m.Y" }} (строки {{ comparison.current.reported_cells }}/{{ comparison.current.expected_cells }})
+              и {{ comparison.previous.from|date:"d.m.Y" }}–{{ comparison.previous.to|date:"d.m.Y" }} (строки {{ comparison.previous.reported_cells }}/{{ comparison.previous.expected_cells }}).</div>
+            {% if comparison.reason %}<div class="text-muted">Полная сопоставимость пока не подтверждена; дельты не рассчитаны.</div>{% endif %}
+            <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Показатель</th><th>Текущий</th><th>Предыдущий</th><th>Разница</th><th>Изменение, %</th></tr></thead><tbody>
+            {% for metric in comparison.metrics %}<tr><th scope="row">{{ metric.label }}</th>
+              <td>{% if metric.current != None %}{{ metric.current }} {{ metric.unit }}{% else %}Нет данных{% endif %}</td>
+              <td>{% if metric.previous != None %}{{ metric.previous }} {{ metric.unit }}{% else %}Нет данных{% endif %}</td>
+              <td>{% if metric.delta != None %}{{ metric.delta }} {{ metric.delta_unit }}{% else %}Не рассчитано{% endif %}</td>
+              <td>{% if metric.relative_change != None %}{{ metric.relative_change }}{% else %}Не рассчитано{% endif %}</td></tr>{% endfor %}
+            </tbody></table></div>
+          </div>{% endfor %}
+        </details>
+      </td></tr>{% empty %}<tr><td colspan="9">Сохранённых объявлений для отчёта пока нет.</td></tr>{% endfor %}</tbody>
+    </table></div>
+  </details>
+</section>
+{% endif %}

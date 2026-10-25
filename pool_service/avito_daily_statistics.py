@@ -536,11 +536,14 @@ def source_period_evidence(connection, now=None):
                 'same_cohort': comparison['same_cohort'] if comparison is not None else False,
                 'comparison_available': bool(comparison is not None and not comparison['reason']
                     and comparison['metrics'] and all(item['comparable'] for item in comparison['metrics']))})
+        from .avito_decision_report import build, evidence
+        decision = evidence(build(rows, day_runs, now))
         return {'schema_version': 1, 'state': 'observed', 'source': 'avito_stats_v2_items',
             'cutoff': cutoff.isoformat(), 'provider_timezone': 'unknown',
             'barnaul_calendar_confirmed': False, 'completed_dates': len(day_runs),
             'expected_dates': BACKFILL_DAYS,
-            'comparison_rule': 'all_requested_metrics_known', 'periods': windows}
+            'comparison_rule': 'all_requested_metrics_known', 'periods': windows,
+            'decision_report': decision}
 
 
 def display(connection, actor, now=None):
@@ -565,6 +568,8 @@ def display(connection, actor, now=None):
         'rows': [], 'groups': [], 'changes': [], 'total_cells': len(rows),
         'provider_periods': source_periods(rows, completed_days, now, day_runs=day_runs)}
     output['provider_comparisons'] = source_comparisons(output['provider_periods'])
+    from .avito_decision_report import build as build_decision_report
+    output['decision_report'] = build_decision_report(rows, day_runs, now)
     output['backfill'] = {'from': cutoff-timedelta(days=BACKFILL_DAYS-1), 'to': cutoff,
         'completed_days': len(completed_days), 'remaining_days': BACKFILL_DAYS-len(completed_days),
         'total_days': BACKFILL_DAYS, 'oldest_complete_day': min(completed_days, default=None),

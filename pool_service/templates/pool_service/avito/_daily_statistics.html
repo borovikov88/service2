@@ -26,6 +26,8 @@
     {% endtimezone %}
     {% if daily.error %}<p class="text-warning-emphasis small mt-2">{{ daily.error }}</p>{% endif %}
 
+    {% include 'pool_service/avito/_decision_report.html' with report=daily.decision_report only %}
+
     <details class="mt-3">
       <summary>Запрошенные сравнения по полным дням Барнаула</summary>
       <p class="small mt-2">Недоступны до подтверждения часового пояса источника либо появления почасовых данных. Текущий день исключён; отсутствующие значения не заменяются нулями.</p>
