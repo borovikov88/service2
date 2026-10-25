@@ -15,7 +15,7 @@ from pool_service.communication_models import (
     PhoneCall,
     TelephonyConnection,
 )
-from pool_service.models import Client, Notification, Organization, OrganizationAccess, ServiceTask
+from pool_service.models import Client, CrmItem, Notification, Organization, OrganizationAccess, ServiceTask
 from pool_service.operations_mcp_views import _get_call_analysis, _list_control_tasks
 from pool_service.communication_recordings import download_call_recording
 from pool_service.services.call_ai import process_call_analysis, request_call_analysis
@@ -358,6 +358,24 @@ class PrivateCallEnforcementTests(TestCase):
             },
         )
         task.responsibles.add(self.owner)
+        item = CrmItem.objects.create(
+            organization=self.org, direction="service", stage="srv_new",
+            title="Permitted CRM card", created_by=self.owner,
+        )
+        task.crm_item = item
+        task.save(update_fields=["crm_item"])
+        visible = ServiceTask.objects.create(
+            organization=self.org, crm_item=item, title="Visible neighbouring task",
+            start_date=timezone.localdate(), created_by=self.owner,
+            primary_responsible=self.employee,
+        )
+
+        crm_response = self.client.get(reverse("crm_view", args=["service", item.pk]))
+        self.assertEqual(crm_response.status_code, 200)
+        self.assertNotIn(task.pk, [row.pk for row in crm_response.context["related_tasks"]])
+        self.assertIn(visible.pk, [row.pk for row in crm_response.context["related_tasks"]])
+        self.assertNotContains(crm_response, task.title)
+        self.assertNotContains(crm_response, reverse("task_edit", args=[task.pk]))
 
         tasks_response = self.client.get(
             reverse("crm_tasks"),
@@ -373,3 +391,63 @@ class PrivateCallEnforcementTests(TestCase):
 
         direct = self.client.get(reverse("task_edit", args=[task.pk]))
         self.assertEqual(direct.status_code, 404)
+
+
+    @patch("pool_service.views._redirect_if_access_blocked", return_value=None)
+    def test_new_private_source_closes_existing_card_archive_and_notifications(self, _blocked):
+        call = self.call(phone="+7 999 000-00-99")
+        item = CrmItem.objects.create(organization=self.org, direction="service", stage="srv_new", title="Permitted card")
+        task = ServiceTask.objects.create(organization=self.org, crm_item=item,
+            title="REVOKED_SOURCE_SENTINEL", start_date=timezone.localdate(),
+            created_by=self.owner, primary_responsible=self.owner, is_archived=True,
+            payload_json={"source_call_id": call.pk})
+        note = Notification.objects.create(user=self.owner, organization=self.org, kind="task_assignment",
+            title="Task", message=task.title, action_url=reverse("task_edit", args=[task.pk]))
+        urls = [reverse("crm_view", args=["service", item.pk]), reverse("archive_list"), reverse("notifications")]
+        for url in urls:
+            self.assertContains(self.client.get(url), task.title)
+        CallPrivateNumber.objects.create(organization=self.org, owner=self.owner,
+            label="New privacy", phone_key="9990000099")
+        for url in urls:
+            self.assertNotContains(self.client.get(url), task.title)
+        self.assertEqual(self.client.get(reverse("task_edit", args=[task.pk])).status_code, 404)
+        self.assertEqual(self.client.get(reverse("notification_push_open", args=[note.pk])).status_code, 404)
+
+
+    def test_private_source_batch_classification_has_constant_queries(self):
+        from pool_service.services.task_read_permissions import readable_tasks
+        call = self.call()
+        for index in range(12):
+            ServiceTask.objects.create(organization=self.org, title=f"Private batch {index}",
+                start_date=timezone.localdate(), created_by=self.owner,
+                payload_json={"source_call_id": call.pk})
+        with self.assertNumQueries(5):
+            self.assertEqual(readable_tasks(ServiceTask.objects.all(), self.owner), [])
+
+
+    @patch("pool_service.views._redirect_if_access_blocked", return_value=None)
+    def test_crm_bulk_assignment_does_not_publish_call_task_text(self, _blocked):
+        call = self.call()
+        item = CrmItem.objects.create(organization=self.org, direction="service", stage="srv_new",
+            title="Permitted card", description="Permitted business description")
+        task = ServiceTask.objects.create(organization=self.org, crm_item=item,
+            title="PRIVATE_COPY_TITLE", description="PRIVATE_COPY_DESCRIPTION", start_date=timezone.localdate(),
+            created_by=self.owner, primary_responsible=self.owner,
+            payload_json={"source_call_id": call.pk})
+        other_org = Organization.objects.create(name="Copy scope B")
+        foreign_call = self.call(organization=other_org, external_id="copy-scope-call")
+        public_call = self.call(phone="+7 999 000-00-99", external_id="public-copy-call")
+        for payload in ({"source_call_id": call.pk}, {"source_call_id": public_call.pk},
+                        {"source_call_id": foreign_call.pk}, {"source_call_id": "malformed"},
+                        {"source": "call_analysis"}):
+            with self.subTest(payload=payload):
+                task.payload_json = payload
+                task.save(update_fields=["payload_json"])
+                item.responsible = self.owner
+                item.save(update_fields=["responsible"])
+                response = self.client.post(reverse("crm_bulk_update", args=["service"]),
+                    {"item_ids": [item.pk], "bulk_action": "set_responsible", "bulk_responsible": self.employee.pk})
+                self.assertEqual(response.status_code, 302)
+                item.refresh_from_db()
+                self.assertEqual(item.title, "Permitted card")
+                self.assertEqual(item.description, "Permitted business description")

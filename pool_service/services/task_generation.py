@@ -152,6 +152,13 @@ def sync_crm_item_for_task(task, user=None):
     crm_item = task.crm_item
     if not can_sync_task_crm(task, user):
         return crm_item
+    payload = task.payload_json if isinstance(task.payload_json, dict) else {}
+    # CRM membership is not permission to publish call-derived task text.
+    # Block even before a call becomes private; there is no provenance on
+    # copied CRM fields to revoke them later. Malformed/mismatched source IDs
+    # must not turn a call-backed task into a publishable legacy supply task.
+    if "source_call_id" in payload or payload.get("source") == "call_analysis":
+        return crm_item
     update_fields = []
 
     if task.task_type == ServiceTask.TYPE_SUPPLY_REQUEST and task.water_reading_id:

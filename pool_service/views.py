@@ -178,10 +178,10 @@ from .services.task_archive import archive_task, restore_task
 from .services.crm_archive import archive_crm_item, restore_crm_item, sync_crm_archive_state
 from .services.crm_locking import lock_crm_graph, locked_task_with_crm_graph
 from .services.task_generation import sync_crm_item_for_task, sync_task_with_crm_item
+from .services.task_read_permissions import readable_tasks, readable_task_queryset, visible_task_notifications
 from .services.call_privacy import (
     is_private_call,
     locked_call_for_privacy,
-    private_source_task_ids,
     task_source_is_private,
 )
 from .services.task_feedback import waiting_control
@@ -3953,12 +3953,7 @@ def crm_tasks(request):
             Q(created_by=request.user) | Q(primary_responsible=request.user) | Q(responsibles=request.user)
         ).distinct()
 
-    visible_tasks = list(task_qs)
-    hidden_private_task_ids = private_source_task_ids(visible_tasks)
-    if hidden_private_task_ids:
-        visible_tasks = [
-            task for task in visible_tasks if task.pk not in hidden_private_task_ids
-        ]
+    visible_tasks = readable_tasks(task_qs, request.user, allow_preview=True)
     if q:
         q_lower = q.lower()
         filtered_tasks = []
@@ -4793,8 +4788,9 @@ def crm_view(request, direction, item_id):
 
     item_photo_urls = _crm_item_photo_urls(item)
 
-    related_tasks = list(
-        item.service_tasks.filter(organization=item.organization).select_related("pool", "client", "primary_responsible").order_by("-updated_at")
+    related_tasks = readable_tasks(
+        item.service_tasks.filter(organization=item.organization).select_related("pool", "client", "primary_responsible").order_by("-updated_at"),
+        request.user,
     )
 
     archive_state = None
@@ -5081,7 +5077,9 @@ def archive_list(request):
             archived_pools = archived_pools.none()
             archived_readings = archived_readings.none()
 
-    archived_tasks = archived_tasks.order_by("-archived_at", "-updated_at")
+    archived_tasks = readable_tasks(
+        archived_tasks.order_by("-archived_at", "-updated_at"), request.user
+    )
     archived_crm_items = archived_crm_items.order_by("-archived_at", "-updated_at")
     archived_pools = archived_pools.order_by("-deleted_at", "-id")
     archived_readings = archived_readings.order_by("-deleted_at", "-date", "-id")
@@ -5105,12 +5103,12 @@ def archive_list(request):
             "archived_pools": archived_pools,
             "archived_readings": archived_readings,
             "archive_total_count": (
-                archived_tasks.count()
+                len(archived_tasks)
                 + archived_crm_items.count()
                 + archived_pools.count()
                 + archived_readings.count()
             ),
-            "archive_task_count": archived_tasks.count(),
+            "archive_task_count": len(archived_tasks),
             "archive_crm_count": archived_crm_items.count(),
             "archive_pool_count": archived_pools.count(),
             "archive_reading_count": archived_readings.count(),
@@ -7477,7 +7475,7 @@ def _task_can_edit(task, user):
 
 
 def _task_can_view(task, user):
-    return _task_can_edit(task, user)
+    return readable_task_queryset(ServiceTask.objects.filter(pk=task.pk), user).exists()
 
 
 def _task_history_visibility_filter():
@@ -8821,11 +8819,8 @@ def readings_all(request):
         )
 
         task_qs = task_qs.select_related("created_by").prefetch_related("responsibles").distinct()
-        calendar_tasks = list(task_qs)
-        hidden_private_task_ids = private_source_task_ids(calendar_tasks)
+        calendar_tasks = readable_tasks(task_qs, request.user, allow_preview=True)
         for task in calendar_tasks:
-            if task.pk in hidden_private_task_ids:
-                continue
             if waiting_schedule_metadata(task).get("schedule_kind") == "no_appointment":
                 continue
             task_start = task.start_date
@@ -9766,7 +9761,7 @@ def organization_norms(request):
 @login_required
 def notifications_list(request):
     qs = Notification.objects.filter(user=request.user, is_resolved=False).order_by("-created_at")
-    notifications = list(qs)
+    notifications = visible_task_notifications(qs, request.user)
 
     current_tz = timezone.get_current_timezone()
     default_tz = timezone.get_default_timezone()
@@ -9952,6 +9947,8 @@ def notification_mark_read(request, notification_id):
 @login_required
 def notification_push_open(request, notification_id):
     note = get_object_or_404(Notification, id=notification_id, user=request.user)
+    if not visible_task_notifications([note], request.user):
+        raise Http404
     if not note.is_read:
         note.is_read = True
         note.save(update_fields=["is_read"])
@@ -9975,6 +9972,8 @@ def notification_push_open_token(request, token):
         return redirect("notifications")
 
     note = get_object_or_404(Notification, id=notification_id, user=request.user)
+    if not visible_task_notifications([note], request.user):
+        raise Http404
     if not note.is_read:
         note.is_read = True
         note.save(update_fields=["is_read"])
