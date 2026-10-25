@@ -57,6 +57,85 @@ class ServicesRuntimeTests(TestCase):
         self.heartbeat.exit_code = code
         self.heartbeat.save()
 
+
+    def test_statistics_structure_code_is_check_specific_in_worker_display_and_safe_receipt(self):
+        from pool_service import avito_daily_statistics as daily
+        daily.configure(self.fresh(), self.owner, "enable")
+        connection = self.fresh()
+        connection.settings[daily.KEY].update(last_error_code="provider_data_invalid",
+            last_checked_at=timezone.now().isoformat())
+        connection.settings[avito_advance.KEY]["last_error_code"] = "provider_data_invalid"
+        connection.save(update_fields=["settings"])
+        with patch("pool_service.avito_workspace.fetch_statistics") as fetch:
+            self.begin()
+            runtime.record(4, "statistics_daily", "failed", run_id=str(self.run_id))
+            runtime.record(4, "advance", "failed", run_id=str(self.run_id))
+            self.finish()
+            rows = {row["check"]: row for row in runtime.checks(self.fresh())}
+            stats = rows["statistics_daily"]
+            self.assertEqual(stats["code"], "provider_data_invalid")
+            self.assertEqual(stats["last_worker_code"], "provider_data_invalid")
+            self.assertEqual(stats["state"], "failed")
+            self.assertTrue(stats["scope_valid"])
+            display = runtime.scoped_scheduler_display(self.fresh(), "statistics_daily",
+                {"code": "partial", "ready": True})
+        fetch.assert_not_called()
+        self.assertIn("Подключение №4 · Суточная история эффективности", display["detail"])
+        self.assertIn("provider_data_invalid", display["detail"])
+        self.assertNotIn("check_error_unclassified", display["detail"])
+        self.assertEqual(rows["advance"]["code"], "check_error_unclassified")
+        self.assertEqual(rows["advance"]["last_worker_code"], "check_error_unclassified")
+        self.assertEqual(runtime.safe_code("provider_data_invalid"), "check_error_unclassified")
+        self.assertEqual(runtime.safe_code("provider_data_invalid", check="statuses"), "check_error_unclassified")
+        self.assertEqual(runtime.safe_code("provider_data_invalid PRIVATE", check="statistics_daily"),
+                         "check_error_unclassified")
+        projected = receipt.runtime_checks([stats])[0]
+        self.assertEqual(projected["code"], "provider_data_invalid")
+        self.assertEqual(projected["last_worker_code"], "provider_data_invalid")
+        with self.assertRaises(ValueError):
+            receipt.runtime_checks([dict(stats, check="advance")])
+
+    def test_statistics_structure_failure_does_not_override_binding_or_leak_other_account(self):
+        from copy import deepcopy
+        from pool_service import avito_daily_statistics as daily
+        daily.configure(self.fresh(), self.owner, "enable")
+        connection = self.fresh()
+        connection.settings[daily.KEY]["last_error_code"] = "provider_data_invalid"
+        connection.save(update_fields=["settings"])
+        self.begin()
+        runtime.record(4, "statistics_daily", "failed", run_id=str(self.run_id))
+        self.finish()
+        goods = ChannelConnection.objects.create(pk=1, channel=connection.channel,
+            external_id="other-account", settings={"preserve": "goods"})
+        before = deepcopy(goods.settings)
+        row = runtime.checks(goods, only_check="statistics_daily")[0]
+        self.assertFalse(row["last_worker_verified"])
+        self.assertIsNone(row["last_worker_code"])
+        goods.refresh_from_db()
+        self.assertEqual(goods.settings, before)
+        OrganizationAccess.objects.filter(user=self.owner, organization=self.org).update(role="manager")
+        row = runtime.checks(self.fresh(), only_check="statistics_daily")[0]
+        self.assertEqual(row["code"], "binding_changed")
+        self.assertEqual(row["state"], "blocked")
+        blocked = runtime.scoped_scheduler_display(self.fresh(), "statistics_daily",
+            {"code": "partial", "ready": True})
+        self.assertEqual(blocked["display_state"], "blocked")
+        self.assertFalse(blocked["display_failed"])
+        self.assertNotIn("provider_data_invalid", blocked["detail"])
+        OrganizationAccess.objects.filter(user=self.owner, organization=self.org).update(role="owner")
+        ChannelConnection.objects.filter(pk=4).update(external_id="changed-account")
+        row = runtime.checks(self.fresh(), only_check="statistics_daily")[0]
+        self.assertEqual(row["code"], "binding_changed")
+        self.assertEqual(row["state"], "blocked")
+        self.assertFalse(row["last_worker_verified"])
+        ChannelConnection.objects.filter(pk=4).update(external_id="446312402")
+        foreign = Organization.objects.create(name="Synthetic foreign runtime organization")
+        CommunicationChannel.objects.filter(pk=connection.channel_id).update(organization=foreign)
+        row = runtime.checks(self.fresh(), only_check="statistics_daily")[0]
+        self.assertEqual(row["code"], "binding_changed")
+        self.assertEqual(row["state"], "blocked")
+        self.assertFalse(row["last_worker_verified"])
+
     def test_legacy_partial_has_no_invented_current_failure(self):
         connection = self.fresh()
         data = dict(connection.settings)

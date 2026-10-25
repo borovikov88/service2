@@ -902,6 +902,77 @@ class DailyHistoryTests(TestCase):
         self.assertNotIn('statistics_shape', self.gap_evidence()['last_attempt'])
 
 
+
+    def test_known_missing_statistics_slots_have_precise_collapsed_explanation_without_zero_inference(self):
+        from django.template.loader import render_to_string
+        def rejected(*args, **kwargs):
+            return avito_workspace.statistics_data({'result': {'unobserved_key': 'PRIVATE'}},
+                start='2026-10-23', end='2026-10-23', grouping='item', offset=0)
+        with patch.object(avito_workspace, 'fetch_statistics', side_effect=rejected):
+            self.assertEqual(daily.collect_next(), 'failed')
+        self.connection.refresh_from_db()
+        with patch.object(avito_workspace, 'fetch_statistics') as fetch:
+            state = daily.display(self.connection, self.owner, self.now)
+        fetch.assert_not_called()
+        attempt = state['gap_diagnostics']['last_attempt']
+        self.assertEqual(attempt['source_date'], '2026-10-23')
+        self.assertEqual(attempt['statistics_reason'], 'groupings_type')
+        self.assertEqual(attempt['statistics_shape'], {'groupings_kind': 'missing',
+            'data_total_count_kind': 'missing', 'provider_error_present': False})
+        message = attempt['response_shape_explanation']
+        self.assertIn('В result ответа Авито отсутствуют groupings и dataTotalCount', message)
+        self.assertIn('признак error/errors не обнаружен', message)
+        self.assertIn('Полнота и показатели за эту дату не подтверждены', message)
+        self.assertIn('отсутствие полей не означает нули', message)
+        for unsupported in ('пустой объект', 'пустой ответ', 'нулевые показатели',
+                            'неисправность объявления', 'PRIVATE', 'unobserved_key'):
+            self.assertNotIn(unsupported, message)
+        html = render_to_string('pool_service/avito/_daily_statistics.html',
+            {'daily': state, 'connection': self.connection})
+        self.assertIn('data-avito-statistics-shape-explanation', html)
+        self.assertIn('дата источника 2026-10-23', html)
+        self.assertIn('Причина проверки структуры: groupings_type', html)
+        section = html.split('Почему не хватает данных:')[0]
+        opening_details = section.rsplit('<details', 1)[1].split('>', 1)[0]
+        self.assertNotIn(' open', opening_details)
+        self.assertFalse(AvitoStatisticsRun.objects.get().pagination_complete)
+        self.assertFalse(AvitoDailyStatistic.objects.exists())
+        # UI-only explanation never changes the closed protected receipt.
+        self.assertNotIn('response_shape_explanation', str(self.gap_evidence()))
+
+    def test_other_shapes_phases_states_and_scopes_do_not_get_missing_slots_explanation(self):
+        from pool_service import avito_statistics_gaps as gaps
+        def rejected(*args, **kwargs):
+            return avito_workspace.statistics_data({'result': {}},
+                start='2026-10-23', end='2026-10-23', grouping='item', offset=0)
+        with patch.object(avito_workspace, 'fetch_statistics', side_effect=rejected):
+            daily.collect_next()
+        baseline = self.gap_evidence()
+        mutations = (
+            ('statistics_shape', {'groupings_kind': 'null', 'data_total_count_kind': 'missing',
+                                  'provider_error_present': False}),
+            ('statistics_shape', {'groupings_kind': 'missing', 'data_total_count_kind': 'zero_integer',
+                                  'provider_error_present': False}),
+            ('statistics_shape', {'groupings_kind': 'missing', 'data_total_count_kind': 'missing',
+                                  'provider_error_present': True}),
+            ('statistics_shape', {'groupings_kind': 'missing', 'data_total_count_kind': 'missing',
+                                  'provider_error_present': 0}),
+            ('statistics_reason', 'result_missing'), ('statistics_reason', 'result_type'),
+            ('phase', 'authorization'), ('outcome', 'success'), ('state', 'historical_unknown'),
+            ('source_date', '2026-10-23 PRIVATE'), ('error_code', 'statistics_unavailable'),
+        )
+        for field, value in mutations:
+            with self.subTest(field=field, value=value):
+                changed = deepcopy(baseline)
+                changed['last_attempt'][field] = value
+                self.assertEqual(gaps.display(changed)['last_attempt']['response_shape_explanation'], '')
+        for field, value in (('connection_id', 1), ('account_id', 'other-account'),
+                ('source', 'other-source')):
+            changed = deepcopy(baseline)
+            changed[field] = value
+            self.assertEqual(gaps.display(changed)['last_attempt']['response_shape_explanation'], '')
+
+
 class DailySourceComparisonTests(SimpleTestCase):
     now = datetime(2026, 10, 25, 7, tzinfo=dt_timezone.utc)
 
