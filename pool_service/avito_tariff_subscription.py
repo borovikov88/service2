@@ -153,7 +153,8 @@ def _valid_data(data):
     if not isinstance(data, dict) or set(data) != {"state", "is_active", "level", "expiry_state"}:
         return False
     state, active, level = data["state"], data["is_active"], data["level"]
-    if data["expiry_state"] not in {"absent", "date_unconfirmed"}:
+    if (not isinstance(state, str) or not isinstance(data["expiry_state"], str)
+            or data["expiry_state"] not in {"absent", "date_unconfirmed"}):
         return False
     if level is not None and (not isinstance(level, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,31}", level)):
         return False
@@ -205,7 +206,7 @@ def display_state(connection, actor):
     value = _saved(current)
     bound = value.get("binding") == binding
     code = value.get("last_attempt_code", "access_unverified") if bound else "access_unverified"
-    code = code if code in ERRORS or code == "" else "tariff_read_failed"
+    code = code if isinstance(code, str) and (code in ERRORS or code == "") else "tariff_read_failed"
     stamp = _time(value.get("last_success_at")) if bound and value.get("source") == SOURCE and value.get("category") == "services" else None
     data = value.get("data") if stamp is not None and isinstance(value.get("data"), dict) else {}
     states = {"active": "Подписка активна по явному ответу API",
@@ -242,7 +243,7 @@ def display_state(connection, actor):
 
 
 def support_question(code):
-    safe = code if code in ERRORS else "tariff_read_failed"
+    safe = code if isinstance(code, str) and code in ERRORS else "tariff_read_failed"
     return ("Подскажите, доступно ли чтение подписки категории services для аккаунта 446312402 "
         "через сохранённое подключение client_credentials обычного аккаунта? "
         "Для POST /api/1/agency/clients с extra.subscription=true нужен доступ Авито Promo агентства. "

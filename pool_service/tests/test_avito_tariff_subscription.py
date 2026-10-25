@@ -174,6 +174,31 @@ class TariffSubscriptionTests(TestCase):
         self.assertIsNone(shown["last_success_at"])
         self.assertEqual(shown["state"], "access_unverified")
 
+    def test_malformed_json_cache_codes_and_state_fields_never_break_dashboard(self):
+        self.store_synthetic_success()
+        original = copy.deepcopy(self.saved())
+        for raw in ([], {}, ["PRIVATE-PAYLOAD"], {"unsafe": "PRIVATE-PAYLOAD"}):
+            for field in ("last_attempt_code", "state", "expiry_state"):
+                with self.subTest(field=field, raw=raw):
+                    metadata = copy.deepcopy(original)
+                    if field == "last_attempt_code":
+                        metadata[tariff.KEY][field] = raw
+                    else:
+                        metadata[tariff.KEY]["data"][field] = raw
+                    self.connection.settings = metadata
+                    self.connection.save(update_fields=["settings"])
+                    shown = tariff.display_state(self.connection, self.owner)
+                    self.assertIn(shown["code"], {"tariff_read_failed", "tariff_data_invalid"})
+                    self.assertNotIn("PRIVATE-PAYLOAD", str(shown))
+                    if field != "last_attempt_code":
+                        self.assertIsNone(shown["last_success_at"])
+                        self.assertIsNone(shown["is_active"])
+                    self.assertIn("tariff_read_failed", tariff.support_question(raw))
+        self.client.force_login(self.owner)
+        response = self.client.get(reverse("avito_dashboard"), {"account": 4})
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "PRIVATE-PAYLOAD")
+
     def test_stale_data_and_http_denial_are_separate_from_inactive_or_expired(self):
         self.store_synthetic_success()
         metadata = self.saved()
