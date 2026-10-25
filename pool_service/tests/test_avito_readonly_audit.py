@@ -1202,6 +1202,48 @@ class StatisticsSourceProjectionTests(SimpleTestCase):
         self.assertEqual({"error": "audit_statistics_source_evidence_unavailable"},
             receipt.connection(self.parent(historical))["statistics_source_evidence"])
 
+    def test_optional_statistics_shape_is_exact_typed_private_and_idempotent(self):
+        from pool_service import avito_workspace
+        self.assertEqual(receipt.STAT_SHAPE_GROUPINGS, avito_workspace.STATISTICS_GROUPINGS_KINDS)
+        self.assertEqual(receipt.STAT_SHAPE_TOTALS, avito_workspace.STATISTICS_TOTAL_KINDS)
+        raw = statistics_evidence()
+        attempt = {"state": "observed", "run_id": 92, "source_date": raw["cutoff"],
+            "offset": 0, "phase": "fetch_statistics", "exception_class": "AvitoError",
+            "error_code": "provider_data_invalid", "statistics_reason": "groupings_type", "outcome": "failed",
+            "started_at": "2026-10-25T19:37:28+00:00", "finished_at": "2026-10-25T19:37:28.45+00:00"}
+        raw["gap_diagnostics"]["last_attempt"] = attempt
+        legacy = receipt.statistics_source_evidence(raw)
+        self.assertNotIn("statistics_shape", legacy["gap_diagnostics"]["last_attempt"])
+        valid = {"groupings_kind": "empty_object", "data_total_count_kind": "positive_integer",
+            "provider_error_present": False}
+        for group in receipt.STAT_SHAPE_GROUPINGS:
+            for total in receipt.STAT_SHAPE_TOTALS:
+                attempt["statistics_shape"] = valid | {"groupings_kind": group, "data_total_count_kind": total}
+                result = receipt.statistics_source_evidence(raw)
+                self.assertEqual(attempt["statistics_shape"], result["gap_diagnostics"]["last_attempt"]["statistics_shape"])
+                self.assertEqual(result, receipt.statistics_source_evidence(result))
+        for invalid in (None, [], valid | {"raw": "PRIVATE https://private.invalid/"},
+                valid | {"groupings_kind": "+79990000001"}, valid | {"data_total_count_kind": "PRIVATE"},
+                valid | {"provider_error_present": 1}, {"groupings_kind": "null"}):
+            attempt["statistics_shape"] = invalid
+            result = receipt.connection(self.parent(raw))
+            self.assertEqual({"error": "audit_statistics_source_evidence_unavailable"},
+                result["statistics_source_evidence"])
+            self.assertEqual({"error": "audit_report_unavailable"}, result["autoload_report"])
+            for private in ("PRIVATE", "https://", "+79990000001"):
+                self.assertNotIn(private, json.dumps(result))
+        attempt["statistics_shape"] = valid
+        attempt.pop("statistics_reason")
+        self.assertEqual({"error": "audit_statistics_source_evidence_unavailable"},
+            receipt.connection(self.parent(raw))["statistics_source_evidence"])
+        attempt.update(statistics_reason="groupings_type", error_code="provider_http_403")
+        self.assertEqual({"error": "audit_statistics_source_evidence_unavailable"},
+            receipt.connection(self.parent(raw))["statistics_source_evidence"])
+        historical = statistics_evidence()
+        historical["gap_diagnostics"]["last_attempt"]["statistics_shape"] = valid
+        self.assertEqual({"error": "audit_statistics_source_evidence_unavailable"},
+            receipt.connection(self.parent(historical))["statistics_source_evidence"])
+
     def test_foreign_parent_never_exports_statistics_and_disabled_is_not_an_api_error(self):
         child = {"schema_version": 1, "state": "blocked", "code": "statistics_binding_changed", "PRIVATE": "PRIVATE"}
         result = receipt.connection(self.parent(child))

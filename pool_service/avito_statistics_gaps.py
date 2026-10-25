@@ -76,6 +76,7 @@ def _attempt(state, runs, daily):
             'error_code': daily._error_code(state.get('last_error_code')) if state.get('last_error_code') else '',
             'finished_at': _iso(daily._date(state.get('last_checked_at')))}
     run = next((item for item in runs if item.pk == raw.get('run_id')), None)
+    shape = daily.avito_workspace.statistics_shape_metadata(raw.get('statistics_shape'))
     if (run is None or type(raw.get('run_id')) is not int
             or raw.get('source_date') != run.day.isoformat()
             or not isinstance(raw.get('phase'), str) or raw['phase'] not in PHASES
@@ -85,7 +86,9 @@ def _attempt(state, runs, daily):
             or daily._date(raw.get('started_at')) is None or daily._date(raw.get('finished_at')) is None
             or 'statistics_reason' in raw and (raw.get('error_code') != 'provider_data_invalid'
                 or not isinstance(raw['statistics_reason'], str)
-                or raw['statistics_reason'] not in daily.avito_workspace.STATISTICS_INVALID_REASONS)):
+                or raw['statistics_reason'] not in daily.avito_workspace.STATISTICS_INVALID_REASONS)
+            or 'statistics_shape' in raw and (raw.get('error_code') != 'provider_data_invalid'
+                or 'statistics_reason' not in raw or shape is None)):
         return {'state': 'unconfirmed', 'phase': 'unknown', 'error_code': 'statistics_unavailable'}
     output = {'state': 'observed', 'run_id': run.pk, 'source_date': run.day.isoformat(),
         'offset': raw['offset'], 'phase': raw['phase'], 'exception_class': raw['exception_class'],
@@ -94,6 +97,8 @@ def _attempt(state, runs, daily):
         'finished_at': daily._date(raw['finished_at']).isoformat()}
     if 'statistics_reason' in raw:
         output['statistics_reason'] = raw['statistics_reason']
+    if 'statistics_shape' in raw:
+        output['statistics_shape'] = shape
     return output
 
 

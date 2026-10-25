@@ -814,6 +814,13 @@ STAT_INVALID_REASONS = frozenset({
     "groupings_type", "groupings_limit", "totals_multiple_groups", "group_type",
     "metrics_type", "id_type", "id_duplicate", "metric_type", "metric_slug_type",
     "metric_duplicate"})
+STAT_SHAPE_GROUPINGS = frozenset({
+    "missing", "null", "empty_object", "object", "empty_list", "list",
+    "string", "integer", "number", "bool", "other"})
+STAT_SHAPE_TOTALS = frozenset({
+    "missing", "null", "zero_integer", "positive_integer", "negative_integer",
+    "string", "bool", "number", "other"})
+STAT_SHAPE_KEYS = frozenset({"groupings_kind", "data_total_count_kind", "provider_error_present"})
 STAT_ERROR_CODES = {'', 'statistics_binding_changed', 'statistics_data_invalid',
     'statistics_total_unavailable', 'statistics_limit', 'statistics_unavailable',
     'statistics_incomplete', 'provider_cooldown', 'provider_unavailable',
@@ -834,12 +841,20 @@ def _statistics_error(value):
     return value
 
 
+def _statistics_shape(value):
+    require(type(value) is dict and set(value) == STAT_SHAPE_KEYS
+        and type(value["groupings_kind"]) is str and value["groupings_kind"] in STAT_SHAPE_GROUPINGS
+        and type(value["data_total_count_kind"]) is str and value["data_total_count_kind"] in STAT_SHAPE_TOTALS
+        and type(value["provider_error_present"]) is bool)
+    return {key: value[key] for key in ("groupings_kind", "data_total_count_kind", "provider_error_present")}
+
+
 def _statistics_attempt(value, first, last):
     require(isinstance(value, dict) and value.get("state") in {
         "observed", "historical_unknown", "not_observed", "unconfirmed"})
     state = value["state"]
     if state != "observed":
-        require(value.get("phase") == "unknown" and "statistics_reason" not in value)
+        require(value.get("phase") == "unknown" and "statistics_reason" not in value and "statistics_shape" not in value)
         return {"state": state, "phase": "unknown",
             "error_code": _statistics_error(value.get("error_code")),
             "finished_at": release_timestamp(value.get("finished_at"))}
@@ -865,6 +880,9 @@ def _statistics_attempt(value, first, last):
         require(result["error_code"] == "provider_data_invalid"
             and isinstance(reason, str) and reason in STAT_INVALID_REASONS)
         result["statistics_reason"] = reason
+    if "statistics_shape" in value:
+        require(result["error_code"] == "provider_data_invalid" and "statistics_reason" in result)
+        result["statistics_shape"] = _statistics_shape(value["statistics_shape"])
     return result
 
 
