@@ -1170,6 +1170,38 @@ class StatisticsSourceProjectionTests(SimpleTestCase):
             self.assertEqual({"error": "audit_report_unavailable"}, result["autoload_report"])
             self.assertNotIn("PRIVATE", json.dumps(result))
 
+    def test_optional_statistics_reason_is_fixed_typed_conditional_and_idempotent(self):
+        raw = statistics_evidence()
+        attempt = {"state": "observed", "run_id": 92, "source_date": raw["cutoff"],
+            "offset": 0, "phase": "fetch_statistics", "exception_class": "AvitoError",
+            "error_code": "provider_data_invalid", "outcome": "failed",
+            "started_at": "2026-10-25T18:04:00+00:00", "finished_at": "2026-10-25T18:04:00.45+00:00"}
+        raw["gap_diagnostics"]["last_attempt"] = attempt
+        legacy = receipt.statistics_source_evidence(raw)
+        self.assertNotIn("statistics_reason", legacy["gap_diagnostics"]["last_attempt"])
+        for reason in receipt.STAT_INVALID_REASONS:
+            with self.subTest(reason=reason):
+                attempt["statistics_reason"] = reason
+                result = receipt.statistics_source_evidence(raw)
+                self.assertEqual(reason, result["gap_diagnostics"]["last_attempt"]["statistics_reason"])
+                self.assertEqual(result, receipt.statistics_source_evidence(result))
+        for reason in ("PRIVATE https://private.invalid/payload", "+79990000001", "unknown_reason", 1, [], None):
+            with self.subTest(reason=reason):
+                attempt["statistics_reason"] = reason
+                result = receipt.connection(self.parent(raw))
+                self.assertEqual({"error": "audit_statistics_source_evidence_unavailable"},
+                    result["statistics_source_evidence"])
+                self.assertEqual({"error": "audit_report_unavailable"}, result["autoload_report"])
+                self.assertNotIn("PRIVATE", json.dumps(result))
+                self.assertNotIn("+79990000001", json.dumps(result))
+        attempt.update(statistics_reason="result_missing", error_code="statistics_unavailable")
+        self.assertEqual({"error": "audit_statistics_source_evidence_unavailable"},
+            receipt.connection(self.parent(raw))["statistics_source_evidence"])
+        historical = statistics_evidence()
+        historical["gap_diagnostics"]["last_attempt"]["statistics_reason"] = "result_missing"
+        self.assertEqual({"error": "audit_statistics_source_evidence_unavailable"},
+            receipt.connection(self.parent(historical))["statistics_source_evidence"])
+
     def test_foreign_parent_never_exports_statistics_and_disabled_is_not_an_api_error(self):
         child = {"schema_version": 1, "state": "blocked", "code": "statistics_binding_changed", "PRIVATE": "PRIVATE"}
         result = receipt.connection(self.parent(child))

@@ -809,6 +809,11 @@ STAT_METRIC_CODES = ('impressions', 'views', 'contacts', 'favorites', 'contactsS
 STAT_GAP_STATES = {'no_completed_request', 'not_in_known_manifest', 'provider_omitted_row',
     'local_fact_missing', 'local_fact_mismatch', 'request_provenance_inconsistent',
     'provider_metrics_missing', 'known'}
+STAT_INVALID_REASONS = frozenset({
+    "result_missing", "result_type", "grouping_missing_with_explicit_zero_total",
+    "groupings_type", "groupings_limit", "totals_multiple_groups", "group_type",
+    "metrics_type", "id_type", "id_duplicate", "metric_type", "metric_slug_type",
+    "metric_duplicate"})
 STAT_ERROR_CODES = {'', 'statistics_binding_changed', 'statistics_data_invalid',
     'statistics_total_unavailable', 'statistics_limit', 'statistics_unavailable',
     'statistics_incomplete', 'provider_cooldown', 'provider_unavailable',
@@ -834,7 +839,7 @@ def _statistics_attempt(value, first, last):
         "observed", "historical_unknown", "not_observed", "unconfirmed"})
     state = value["state"]
     if state != "observed":
-        require(value.get("phase") == "unknown")
+        require(value.get("phase") == "unknown" and "statistics_reason" not in value)
         return {"state": state, "phase": "unknown",
             "error_code": _statistics_error(value.get("error_code")),
             "finished_at": release_timestamp(value.get("finished_at"))}
@@ -850,11 +855,17 @@ def _statistics_attempt(value, first, last):
         and datetime.fromisoformat(started) <= datetime.fromisoformat(finished))
     run_id = integer(value.get("run_id"))
     require(run_id > 0)
-    return {"state": "observed", "run_id": run_id, "source_date": value["source_date"],
+    result = {"state": "observed", "run_id": run_id, "source_date": value["source_date"],
         "offset": integer(value.get("offset"), 200), "phase": value["phase"],
         "exception_class": value["exception_class"], "outcome": value["outcome"],
         "error_code": _statistics_error(value.get("error_code")),
         "started_at": started, "finished_at": finished}
+    if "statistics_reason" in value:
+        reason = value["statistics_reason"]
+        require(result["error_code"] == "provider_data_invalid"
+            and isinstance(reason, str) and reason in STAT_INVALID_REASONS)
+        result["statistics_reason"] = reason
+    return result
 
 
 def _statistics_gaps(value, cutoff):
