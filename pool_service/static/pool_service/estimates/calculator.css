@@ -53,4 +53,30 @@
 
 .pe-documents-dialog{width:min(900px,calc(100vw - 24px));max-height:90dvh;overflow:auto}.pe-documents-dialog textarea{width:100%;box-sizing:border-box;resize:vertical;font:inherit;padding:8px;border:1px solid #bad0d4;border-radius:6px}.pe-document-choices{display:flex;gap:12px;flex-wrap:wrap;border:1px solid #c9d9dd;margin:12px 0;padding:10px}.pe-document-choices label,.pe-document-review{display:flex;align-items:center;gap:7px}.pe-document-choices input,.pe-document-review input{width:auto!important;margin:0}.pe-document-review{margin:18px 0}.pe-documents-dialog details{margin:14px 0}.pe-documents-dialog summary{cursor:pointer;font-weight:600;margin-bottom:10px}#pe-document-errors{white-space:pre-line}#pe-document-links{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}#pe-document-links p{width:100%}
 
-.pe-availability{display:flex;align-items:center;gap:6px;font-size:11px;margin-top:6px;color:var(--pe-ink)}.pe-availability-dot{width:8px;height:8px;border-radius:50%;flex:0 0 8px;background:#d69b12;box-shadow:0 0 0 1px #0002}.pe-availability-confirmed .pe-availability-dot{background:#238452}.pe-availability-unavailable .pe-availability-dot{background:#c74949}
+/* Catalogue cards share two compact lines; details stay in the existing popover. */
+#pe-catalog-dialog .pe-catalog-item{grid-template-columns:44px minmax(0,1fr) auto;grid-template-areas:"photo title cost" "photo meta actions";gap:3px 10px;padding:8px 0;align-items:start}
+#pe-catalog-dialog .pe-catalog-no-image{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"title cost" "meta actions"}
+#pe-catalog-dialog .pe-catalog-photo{grid-area:photo}
+#pe-catalog-dialog .pe-thumbnail-catalog{float:none;width:44px;height:44px;margin:0;padding:2px}
+#pe-catalog-dialog .pe-catalog-title{grid-area:title;min-width:0;font-size:13px;line-height:1.35}
+#pe-catalog-dialog .pe-catalog-cost{grid-area:cost;white-space:nowrap;line-height:1.35;text-align:right;font-size:13px}
+#pe-catalog-dialog .pe-catalog-meta{grid-area:meta;display:flex;align-items:center;flex-wrap:wrap;gap:2px 5px;min-width:0;font-size:11px;line-height:1.4;color:var(--pe-muted)}
+#pe-catalog-dialog .pe-catalog-meta>span:not(.pe-catalog-icons){overflow-wrap:anywhere}
+#pe-catalog-dialog .pe-catalog-code{font:inherit;padding:0;overflow-wrap:anywhere}
+#pe-catalog-dialog .pe-catalog-separator{color:var(--pe-muted)}
+#pe-catalog-dialog .pe-catalog-actions{grid-area:actions;align-self:center}
+#pe-catalog-dialog .pe-catalog-actions .pe-btn{min-height:28px;padding:4px 10px;font-size:12px;line-height:1.4;white-space:nowrap}
+#pe-catalog-dialog .pe-catalog-icons{display:inline-flex;align-items:center;gap:2px;flex:none}
+#pe-catalog-dialog .pe-catalog-icons .pe-help-button.pe-help-warning{position:relative;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;min-width:24px;min-height:24px;padding:0;margin:0;border:0;border-radius:0;background:transparent;box-shadow:none;font:700 16px/1 Arial,sans-serif;vertical-align:middle}
+#pe-catalog-dialog .pe-catalog-stock .pe-help-button{color:#d69b12;font-size:12px!important}
+#pe-catalog-dialog .pe-catalog-stock-confirmed .pe-help-button{color:#238452}
+#pe-catalog-dialog .pe-catalog-stock-unavailable .pe-help-button{color:#c74949}
+#pe-catalog-dialog .pe-catalog-check .pe-help-button{color:#985a05}
+[data-theme=dark] #pe-catalog-dialog .pe-catalog-check .pe-help-button{color:#f5d39a}
+[data-theme=dark] #pe-catalog-dialog .pe-catalog-stock-confirmed .pe-help-button{color:#50bb80}
+@media(max-width:620px){
+  #pe-catalog-dialog .pe-catalog-item{grid-template-columns:36px minmax(0,1fr) auto;grid-template-areas:"photo title cost" "meta meta actions";gap:5px 8px}
+  #pe-catalog-dialog .pe-catalog-no-image{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"title cost" "meta actions"}
+  #pe-catalog-dialog .pe-thumbnail-catalog{width:36px;height:36px}
+  #pe-catalog-dialog .pe-catalog-meta{gap:2px 4px}
+}

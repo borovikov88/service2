@@ -1,7 +1,7 @@
 {% extends 'pool_service/base.html' %}
 {% load static %}
 {% block title %}Расчёт бассейна · {{ brand_name }}{% endblock %}
-{% block extra_head %}<link rel="stylesheet" href="{% static 'pool_service/estimates/calculator.css' %}?v=catalog-availability-valve-1">{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="{% static 'pool_service/estimates/calculator.css' %}?v=compact-catalog-1">{% endblock %}
 {% block content %}
 <main class="pe" id="pool-estimator" data-api="{% url 'pool_estimate_api' %}" data-organization="{{ estimate_organization.pk }}">
   {% csrf_token %}
@@ -101,5 +101,5 @@
   <dialog id="pe-new-dialog" class="pe-dialog"><h2>Начать новый расчёт?</h2><p>Сохранить текущий расчёт перед созданием нового или удалить текущие несохранённые изменения? Сохранённые версии останутся в истории.</p><p id="pe-new-error" class="pe-error" role="alert"></p><div class="pe-dialog-actions"><button type="button" class="pe-btn pe-primary" data-new-action="save">Сохранить и создать новый</button><button type="button" class="pe-btn" data-new-action="discard">Удалить несохранённое и создать новый</button><button type="button" class="pe-btn" data-close="pe-new-dialog">Отмена — вернуться к расчёту</button></div></dialog>
   {% include "pool_service/estimates/document_dialog.html" %}
 </main>
-<script type="module" src="{% static 'pool_service/estimates/calculator.js' %}?v=catalog-availability-valve-1"></script>
+<script type="module" src="{% static 'pool_service/estimates/calculator.js' %}?v=compact-catalog-1"></script>
 {% endblock %}
