@@ -70,6 +70,13 @@ class ObservedOrderReferenceTests(TestCase):
     def observed(self):
         return orders.observed(self.owner, self.org, self.item, str(self.guid))
 
+    def manual_evidence(self, candidate=None):
+        evidence = dict((candidate or self.observed())["evidence"])
+        evidence.update(
+            manual_confirmed_by_id=self.owner.pk,
+            manual_confirmed_at=timezone.now().isoformat())
+        return evidence
+
     def assert_no_money_or_private_payload(self, value):
         serialized = json.dumps(value, default=str)
         for forbidden in (
@@ -96,7 +103,7 @@ class ObservedOrderReferenceTests(TestCase):
 
     def test_permissions_are_scoped_and_restricted_results_do_not_leak_the_reference(self):
         self.assertTrue(orders.allowed(self.owner, self.org))
-        link = SimpleNamespace(order_guid=self.guid, order_evidence=self.observed()["evidence"])
+        link = SimpleNamespace(order_guid=self.guid, order_evidence=self.manual_evidence())
         for actor in (self.manager, self.foreign, AnonymousUser()):
             with self.subTest(actor=actor):
                 self.assertFalse(orders.allowed(actor, self.org))
@@ -200,13 +207,13 @@ class ObservedOrderReferenceTests(TestCase):
         self.assertIsNone(self.observed())
 
     def test_new_active_snapshot_without_order_does_not_reuse_old_historical_rows(self):
-        old = self.observed()
+        old = self.manual_evidence()
         self.snapshot.is_active = False
         self.snapshot.save(update_fields=["is_active"])
         self.new_snapshot(minutes_ago=0)
         self.assertIsNone(self.observed())
         projected = orders.state(self.owner, self.org,
-            SimpleNamespace(order_guid=self.guid, order_evidence=old["evidence"]), self.item)
+            SimpleNamespace(order_guid=self.guid, order_evidence=old), self.item)
         self.assertEqual(projected["state"], "unknown")
         self.assertEqual(set(projected), {"state", "label"})
 
@@ -228,22 +235,51 @@ class ObservedOrderReferenceTests(TestCase):
 
     def test_stored_evidence_is_revalidated_and_unsupported_or_changed_sources_stay_unknown(self):
         result = self.observed()
-        link = SimpleNamespace(order_guid=self.guid, order_evidence=result["evidence"])
+        manual = self.manual_evidence(result)
+        link = SimpleNamespace(order_guid=self.guid, order_evidence=manual)
         projected = orders.state(self.owner, self.org, link, self.item)
         self.assertEqual(projected["state"], "observed")
         self.assertIs(projected["payment_confirmed"], False)
         self.assert_no_money_or_private_payload(projected)
-        for stored in ({}, {**result["evidence"], "source": "manual_guess"},
-                       {**result["evidence"], "business_sha256": "0"*64}):
+        for stored in ({}, {**manual, "source": "manual_guess"},
+                       {**manual, "business_sha256": "0"*64}):
             with self.subTest(stored=stored):
                 link.order_evidence = stored
                 unknown = orders.state(self.owner, self.org, link, self.item)
                 self.assertEqual(unknown["state"], "unknown")
                 self.assertNotIn("guid", unknown)
-        link.order_evidence = result["evidence"]
+        link.order_evidence = manual
         self.row.order_state = "Завершен"
         self.row.save(update_fields=["order_state"])
         self.assertEqual(orders.state(self.owner, self.org, link, self.item)["state"], "unknown")
+
+    def test_candidate_alone_or_invalid_manual_ack_does_not_confirm_the_link(self):
+        candidate = self.observed()
+        link = SimpleNamespace(order_guid=self.guid, order_evidence=candidate["evidence"])
+        unknown = orders.state(self.owner, self.org, link, self.item)
+        self.assertEqual(unknown["state"], "unknown")
+        self.assertEqual(set(unknown), {"state", "label"})
+        acknowledged = self.manual_evidence(candidate)
+        cases = (
+            {**acknowledged, "manual_confirmation": False},
+            {**acknowledged, "manual_confirmed_by_id": None},
+            {**acknowledged, "manual_confirmed_by_id": 0},
+            {**acknowledged, "manual_confirmed_by_id": -1},
+            {**acknowledged, "manual_confirmed_by_id": True},
+            {**acknowledged, "manual_confirmed_by_id": str(self.owner.pk)},
+            {**acknowledged, "manual_confirmed_at": None},
+            {**acknowledged, "manual_confirmed_at": "not-a-timestamp"},
+            {**acknowledged, "manual_confirmed_at": "2026-10-25T10:00:00"},
+            {**acknowledged, "manual_confirmed_at":
+                (timezone.now()+timedelta(days=1)).isoformat()},
+        )
+        for stored in cases:
+            with self.subTest(stored=stored):
+                link.order_evidence = stored
+                projected = orders.state(self.owner, self.org, link, self.item)
+                self.assertEqual(projected["state"], "unknown")
+                self.assertEqual(set(projected), {"state", "label"})
+                self.assert_no_money_or_private_payload(projected)
 
     def test_unknown_reference_does_not_turn_into_zero_payments_or_revenue(self):
         for link in (None, SimpleNamespace(order_guid=None, order_evidence={})):

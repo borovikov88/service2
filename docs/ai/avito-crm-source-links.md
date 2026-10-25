@@ -74,3 +74,9 @@ The protected deployment may call crm_source_links.setup_evidence() for closed
 read-only table/scope/count metadata. It never creates business associations.
 Actual customer links require a manager's explicit selection; production proof
 must not fabricate a source-to-request or financial association for testing.
+
+Explicit ad and observed-order confirmations keep their own actor/time. Quality
+edits preserve those acknowledgements. Safe audit hashes distinguish same-ID
+reconfirmation against changed source evidence; financial-only history remains
+hidden from non-finance users. MySQL-only two-connection concurrency tests check
+one link and one audit entry for a repeated operation; SQLite skips that test.

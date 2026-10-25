@@ -46,11 +46,11 @@
           <dt class="col-sm-8">Доступные диалоги подключения</dt><dd class="col-sm-4">{{ coverage.dialogs }}</dd>
           <dt class="col-sm-8">Из них связаны с заявкой</dt><dd class="col-sm-4">{{ coverage.linked_dialogs }}</dd>
           <dt class="col-sm-8">Звонки с ручным подтверждением Авито / связаны с заявкой</dt><dd class="col-sm-4">{{ coverage.calls }} / {{ coverage.linked_calls }}</dd>
-          <dt class="col-sm-8">Кандидаты звонков с неизвестным каналом / связаны с заявкой</dt><dd class="col-sm-4">{{ coverage.candidate_calls_unknown }} / {{ coverage.candidate_calls_linked }}</dd>
+          <dt class="col-sm-8">Разобранные звонки с неизвестным каналом / связаны с заявкой</dt><dd class="col-sm-4">{{ coverage.candidate_calls_unknown }} / {{ coverage.candidate_calls_linked }}</dd>
           <dt class="col-sm-8">Обращений без подтверждённой заявки</dt><dd class="col-sm-4">{{ coverage.unknown_requests }}</dd>
           <dt class="col-sm-8">Различных заявок</dt><dd class="col-sm-4">{{ coverage.distinct_requests }}</dd>
           <dt class="col-sm-8">Источник объявления неизвестен или не подтверждён свежими данными</dt><dd class="col-sm-4">{{ coverage.ad_source_unknown }}</dd>
-          <dt class="col-sm-8">Качество: целевые / нецелевые</dt><dd class="col-sm-4">{{ coverage.quality_target }} / {{ coverage.quality_non_target }}</dd>
+          <dt class="col-sm-8">Качество источников Авито: целевые / нецелевые</dt><dd class="col-sm-4">{{ coverage.quality_target }} / {{ coverage.quality_non_target }}</dd>
           {% if can_finance %}<dt class="col-sm-8">Различных наблюдаемых документов заказа 1С / неоднозначна принадлежность объявлению</dt><dd class="col-sm-4">{{ coverage.observed_order_references }} / {{ coverage.order_attribution_ambiguous }}</dd>{% endif %}
           <dt class="col-sm-8">Подтверждённые заказы, оплаты, выручка</dt><dd class="col-sm-4">Не установлены. Планирование и ручная ссылка не являются оплатой или результатом рекламы.</dd>
         </dl>

@@ -76,6 +76,31 @@ def _choice_rows(actor, connection, query="", selected=None):
         (str(item.pk), "#" + str(item.pk) + " · " + item.title[:120]) for item in rows]
 
 
+def _history(link, organization, can_finance):
+    if link is None:
+        return []
+    labels = {"crm_item_id": "заявка", "next_task_id": "следующий шаг",
+        "quality": "качество обращения", "reason_sha256": "пояснение менеджера",
+        "source_evidence_sha256": "подтверждение источника обращения",
+        "ad_confirmed_by_id": "автор подтверждения объявления", "ad_confirmed_at": "время подтверждения объявления",
+        "ad_source": "способ подтверждения объявления", "avito_item_id": "объявление",
+        "call_origin": "происхождение звонка",
+        "order_guid_sha256": "ссылка на документ заказа",
+        "order_evidence_sha256": "подтверждение финансового источника",
+        "order_snapshot_id": "снимок финансового источника",
+        "order_confirmed_by_id": "автор финансового подтверждения",
+        "order_confirmed_at": "время финансового подтверждения"}
+    rows = []
+    for event in DataAuditLog.objects.filter(entity_type="crm_source_link",
+            entity_id=str(link.pk), organization=organization).order_by("-pk")[:20]:
+        fields = [labels[key] for key in event.changed_fields if key in labels
+            and (can_finance or not key.startswith("order_"))]
+        if fields:
+            rows.append({"created_at": event.created_at, "actor_id": event.actor_id,
+                "changed_fields": fields})
+    return rows
+
+
 @login_required
 @never_cache
 @require_GET
@@ -201,7 +226,7 @@ def attribution(request, connection_id):
         "can_finance": can_finance, "existing_hidden": existing_hidden,
         "order_state": order_state, "order_fetched_at": order_fetched_at,
         "crm_stage_label": CRM_STAGE_LABELS.get(item.stage, item.stage) if item else "",
-        "history": list(DataAuditLog.objects.filter(entity_type="crm_source_link", entity_id=str(link.pk), organization=connection.channel.organization).order_by("-pk")[:20]) if link else [],
+        "history": _history(link, connection.channel.organization, can_finance),
         "dialogs": dialogs, "calls": calls, "coverage": links.coverage(request.user, connection),
         "lookup_url": reverse("avito_crm_request_lookup", args=[connection.pk]) + "?" + urlencode({
             "conversation" if kind == "conversation" else "call": identifier}) if source else "",

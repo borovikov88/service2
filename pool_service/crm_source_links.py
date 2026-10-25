@@ -121,6 +121,23 @@ def task_allowed(actor, task, item, organization_id):
                 or current.pool_id and (current.pool.organization_id not in (None, organization_id)
                     or current.pool.client.organization_id != organization_id)):
             return False
+        payload = current.payload_json if isinstance(current.payload_json, dict) else {}
+        if "source_call_id" in payload:
+            raw = payload["source_call_id"]
+            if type(raw) is bool or not re.fullmatch(r"[1-9][0-9]{0,17}", str(raw)):
+                return False
+            call = PhoneCall.objects.select_related("connection").filter(pk=int(raw), organization_id=organization_id).first()
+            if (call is None or call.direction == PhoneCall.DIRECTION_INTERNAL
+                    or call.source_kind == PhoneCall.SOURCE_TELEPHONY
+                    and (call.connection is None or call.connection.organization_id != organization_id)):
+                return False
+            from types import SimpleNamespace
+            from django.http import Http404
+            from .communication_views import _authorize_call_access
+            try:
+                _authorize_call_access(SimpleNamespace(user=actor), call)
+            except (PermissionDenied, Http404):
+                return False
         seen.add(current.pk)
         current = current.parent_task
     return True
@@ -171,8 +188,17 @@ def ad_provenance(connection, kind, source, mode, manual_id, existing, now):
     return "", "unknown", evidence
 
 
+def _audit_stamp(raw):
+    try:
+        stamp = parse_datetime(raw) if isinstance(raw, str) else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return stamp if stamp is not None and timezone.is_aware(stamp) else None
+
+
 def _audit_value(link):
     evidence = link.order_evidence if isinstance(link.order_evidence, dict) else {}
+    source_evidence = link.evidence if isinstance(link.evidence, dict) else {}
     stamp = evidence.get("manual_confirmed_at")
     try:
         stamp = parse_datetime(stamp) if isinstance(stamp, str) else None
@@ -185,6 +211,9 @@ def _audit_value(link):
         "order_guid_sha256": hashlib.sha256(str(link.order_guid).encode()).hexdigest() if link.order_guid else "",
         "reason_sha256": hashlib.sha256(link.reason.encode()).hexdigest(),
         "order_evidence_sha256": hashlib.sha256(json.dumps(evidence, sort_keys=True).encode()).hexdigest(),
+        "source_evidence_sha256": hashlib.sha256(json.dumps(source_evidence, sort_keys=True).encode()).hexdigest(),
+        "ad_confirmed_by_id": source_evidence.get("ad_confirmed_by_id") if type(source_evidence.get("ad_confirmed_by_id")) is int else None,
+        "ad_confirmed_at": _audit_stamp(source_evidence.get("ad_confirmed_at")).isoformat() if _audit_stamp(source_evidence.get("ad_confirmed_at")) else None,
         "order_snapshot_id": evidence.get("snapshot_id") if type(evidence.get("snapshot_id")) is int else None,
         "order_confirmed_by_id": evidence.get("manual_confirmed_by_id") if type(evidence.get("manual_confirmed_by_id")) is int else None,
         "order_confirmed_at": stamp,
@@ -270,6 +299,8 @@ def save_link(actor, connection_id, kind, identifier, *, item_id=None, task_id=N
             "unknown" if call_origin == "preserve" else call_origin)
         if kind == "call" and ad_source == "manual" and origin != "manual":
             raise ValueError("Сначала явно подтвердите происхождение звонка с Авито.")
+        if (ad_mode != "preserve" or link is None) and identifier_ad:
+            evidence.update(ad_confirmed_by_id=actor.pk, ad_confirmed_at=now.isoformat())
         evidence.update(schema_version=1, connection_id=current.pk, account_id=ACCOUNT,
             organization_id=current.channel.organization_id, source_kind=kind, source_id=source.pk)
         if kind == "call" and call_origin == "manual":
@@ -325,9 +356,17 @@ def _evidence_valid(link, connection, kind, source):
     valid = (data.get("connection_id") == connection.pk and data.get("account_id") == ACCOUNT
         and data.get("organization_id") == connection.channel.organization_id
         and data.get("source_kind") == kind and data.get("source_id") == source.pk)
+    if link.ad_source in {"provider", "manual"}:
+        stamp = _audit_stamp(data.get("ad_confirmed_at"))
+        valid = (valid and type(data.get("ad_confirmed_by_id")) is int and data["ad_confirmed_by_id"] > 0
+            and stamp is not None and stamp <= timezone.now()
+            and data.get("ad_method") == ("manager_selection" if link.ad_source == "manual" else "stored_provider_context"))
     if kind == "call" and link.call_origin == "manual":
         ack = data.get("call_origin_ack")
-        valid = valid and isinstance(ack, dict) and ack.get("method") == "manager_ack" and type(ack.get("actor_id")) is int
+        stamp = _audit_stamp(ack.get("confirmed_at")) if isinstance(ack, dict) else None
+        valid = (valid and isinstance(ack, dict) and ack.get("method") == "manager_ack"
+            and type(ack.get("actor_id")) is int and ack["actor_id"] > 0
+            and stamp is not None and stamp <= timezone.now())
     return bool(valid)
 
 
@@ -422,11 +461,13 @@ def setup_evidence():
         actor = _actor(connection)
         scope(actor, 4)
         counts = coverage(actor, connection)
+        if not isinstance(counts, dict):
+            return {"state": "blocked", "code": "crm_source_scope_invalid"}
     except (PermissionDenied, ValueError):
         return {"state": "blocked", "code": "crm_source_actor_unavailable"}
     return {"schema_version": 1, "state": "ready", "connection_id": 4, "account_id": ACCOUNT,
         "visible_dialogs": counts["dialogs"], "confirmed_request_sources": counts["linked_dialogs"] + counts["linked_calls"],
-        "distinct_requests": counts["distinct_requests"], "calls_with_unknown_origin": counts["candidate_calls_unknown"],
+        "distinct_requests": counts["distinct_requests"], "assessed_calls_with_unknown_origin": counts["candidate_calls_unknown"],
         "table_ready": True, "manager_route": "/avito/4/attribution/",
         "automatic_request_creation": False, "customer_post_performed": False,
         "financial_amounts_logged": False}

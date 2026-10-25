@@ -1,9 +1,13 @@
 import uuid
 from unittest.mock import patch
+from unittest import skipUnless
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+from django.db import connection, close_old_connections
 
 from django.contrib.auth.models import User
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.test import TestCase, Client as TestClient
+from django.test import TestCase, TransactionTestCase, Client as TestClient
 from django.urls import reverse
 from django.utils import timezone
 
@@ -327,13 +331,14 @@ class CrmAttributionTests(TestCase):
 
     def test_sidebar_and_get_reject_call_with_foreign_telephony_or_foreign_source_binding(self):
         call = self.make_call()
+        original_connection = call.connection
         foreign_connection = TelephonyConnection.objects.create(organization=self.foreign, name="Foreign telephony")
         PhoneCall.objects.filter(pk=call.pk).update(connection=foreign_connection)
         page = self.client.get(reverse("avito_crm_attribution", args=[4]))
         self.assertNotIn(call.pk, {row["id"] for row in page.context["calls"]})
         denied = self.client.get(reverse("avito_crm_attribution", args=[4]), {"call": call.pk})
         self.assertEqual(denied.status_code, 403)
-        PhoneCall.objects.filter(pk=call.pk).update(connection=self.make_call().connection)
+        PhoneCall.objects.filter(pk=call.pk).update(connection=original_connection)
         CrmSourceLink.objects.create(organization=self.foreign, avito_connection=self.goods, phone_call=call)
         with self.assertRaises(PermissionDenied):
             links.source_for(self.manager, self.connection, "call", call.pk)
@@ -389,3 +394,73 @@ class CrmAttributionTests(TestCase):
             organization_lock.assert_not_called()
         self.assertFalse(CrmSourceLink.objects.exists())
         self.assertFalse(DataAuditLog.objects.filter(entity_type="crm_source_link").exists())
+
+
+    def test_financial_only_history_is_not_disclosed_to_a_manager(self):
+        link, _ = self.save()
+        DataAuditLog.objects.create(entity_type="crm_source_link", entity_id=str(link.pk),
+            organization=self.org, actor=self.owner, action="update",
+            changed_fields=["order_evidence_sha256", "order_snapshot_id", "revision"])
+        page = self.client.get(self.target())
+        self.assertEqual(page.status_code, 200)
+        labels = [label for event in page.context["history"] for label in event["changed_fields"]]
+        self.assertNotIn("подтверждение финансового источника", labels)
+        self.assertNotIn("снимок финансового источника", labels)
+
+    @patch("pool_service.crm_source_links.owned_ads")
+    def test_ad_reconfirmation_audits_source_evidence_and_quality_preserves_its_actor(self, owned):
+        owned.return_value = {"8343962135": timezone.now()}
+        link, _ = self.save(ad_mode="manual", manual_ad_id="8343962135")
+        self.assertEqual(link.evidence["ad_confirmed_by_id"], self.manager.pk)
+        owned.return_value = {"8343962135": timezone.now()}
+        link, _ = links.save_link(self.owner, 4, "conversation", self.dialog.uuid,
+            item_id=self.item.pk, ad_mode="manual", manual_ad_id="8343962135",
+            expected_revision=1, operation=uuid.uuid4())
+        event = DataAuditLog.objects.filter(entity_type="crm_source_link").order_by("-pk").first()
+        self.assertNotEqual(event.before["source_evidence_sha256"], event.after["source_evidence_sha256"])
+        self.assertEqual(event.after["ad_confirmed_by_id"], self.owner.pk)
+        ad_ack = dict(link.evidence)
+        link, _ = self.save(expected_revision=2, quality="target")
+        self.assertEqual(link.evidence, ad_ack)
+        self.assertEqual(link.confirmed_by_id, self.manager.pk)
+        self.assertEqual(link.evidence["ad_confirmed_by_id"], self.owner.pk)
+
+    def test_task_with_foreign_or_unknown_call_source_is_not_an_eligible_next_step(self):
+        task = ServiceTask.objects.create(organization=self.org, crm_item=self.item,
+            title="PRIVATE-TASK-SOURCE", start_date=timezone.localdate(), created_by=self.manager,
+            payload_json={"source_call_id": 999999})
+        self.assertFalse(links.task_allowed(self.manager, task, self.item, self.org.pk))
+        with self.assertRaises(PermissionDenied):
+            self.save(task_id=task.pk)
+
+
+@skipUnless(connection.vendor == "mysql", "Requires MySQL row-lock concurrency, not SQLite.")
+class CrmSourceConcurrentOperationTests(TransactionTestCase):
+    reset_sequences = True
+
+    def setUp(self):
+        CrmAttributionTests.setUp(self)
+
+    def test_two_natural_database_connections_with_same_operation_create_one_link_and_audit(self):
+        operation = uuid.uuid4()
+        barrier = Barrier(2)
+
+        def run():
+            close_old_connections()
+            try:
+                barrier.wait(timeout=20)
+                result, changed = links.save_link(self.manager, 4, "conversation", self.dialog.uuid,
+                    item_id=self.item.pk, quality="target", expected_revision=0, operation=operation)
+                return result.pk, changed, result.revision
+            finally:
+                close_old_connections()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(run) for _ in range(2)]
+            results = [future.result(timeout=40) for future in futures]
+        self.assertEqual(len({row[0] for row in results}), 1)
+        self.assertEqual(sorted(row[1] for row in results), [False, True])
+        self.assertEqual({row[2] for row in results}, {1})
+        self.assertEqual(CrmSourceLink.objects.count(), 1)
+        self.assertEqual(DataAuditLog.objects.filter(entity_type="crm_source_link").count(), 1)
+
