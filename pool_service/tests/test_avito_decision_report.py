@@ -54,6 +54,20 @@ class AdDecisionReportTests(SimpleTestCase):
         self.assertFalse(result['barnaul_calendar_confirmed'])
         self.assertEqual(result['completed_dates'], 14)
 
+    def test_current_window_freshness_does_not_inherit_a_recent_old_backfill(self):
+        rows, runs = facts()
+        earlier = NOW-timedelta(days=2)
+        cutoff = daily.collection_cutoff(NOW)
+        for day, run in runs.items():
+            run.finished_at = earlier
+        # The collector has just backfilled an older date outside the selected seven.
+        runs[cutoff-timedelta(days=10)].finished_at = NOW
+        result = report.build(rows, runs, NOW)
+        self.assertEqual(result['account_current']['received_at'], earlier)
+        self.assertEqual(result['received_at'], earlier)
+        self.assertTrue(all(ad['current']['received_at'] == earlier for ad in result['ads']))
+        self.assertEqual(result['periods'][4]['received_at'], NOW)
+
     def test_one_unknown_ad_does_not_hide_a_covered_ad_or_create_zero(self):
         rows, runs = facts()
         for row in rows:
