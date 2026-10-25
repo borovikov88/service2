@@ -1,9 +1,10 @@
+import {availabilityStatus} from './availability.js?v=1';
 import {installDocuments} from './documents.js?v=1';
 import {productDetails,productTitle} from './product-details.js?v=1';
 import {sections as viewSections, groupFor, moveViewRow} from './layout.js?v=6';
 import {installHelp} from './help.js?v=5';
 import {displayNumber, money, indivisible, exactNumber, cleanNote, bindNumber, rawValue, installNumbers} from './numbers.js?v=3';
-import {constructionScope, setConstructionExcluded, setExcluded, addRow, emptyRow, isWork, samePrice, workPriceTargets, automaticQuantity, quantityRequired, moveRow} from './state.js?v=15';
+import {constructionScope, setConstructionExcluded, setExcluded, addRow, emptyRow, isWork, samePrice, workPriceTargets, automaticQuantity, quantityRequired, moveRow} from './state.js?v=16';
 
 const root = document.querySelector('#pool-estimator');
 const $ = selector => root.querySelector(selector);
@@ -13,6 +14,10 @@ const titles = {economy: 'Эконом', standard: 'Стандарт', premium: 
 installNumbers(root);
 const help = installHelp(root);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
+function availabilityBadge(product) {
+  const status = availabilityStatus(product);
+  return `<span class="pe-availability pe-availability-${status.tone}" title="${esc(status.detail)}" aria-label="${esc(status.detail)}"><span class="pe-availability-dot" aria-hidden="true"></span>${esc(status.label)}</span>`;
+}
 function safeImage(value) {
   try { const u = new URL(value); return u.protocol === 'https:' && u.hostname === 'shop.aqualine22.ru' && !u.username && !u.password && (!u.port || u.port === '443') && u.pathname.startsWith('/image/') ? u.href : ''; }
   catch { return ''; }
@@ -86,7 +91,7 @@ async function searchCatalog() {
     const data = await api({action: 'catalog_search', variant: selected, embedded_profile: snapshot.variants[selected].embedded_profile, q: query, kind: $('#pe-catalog-kind').value, brand: $('#pe-catalog-brand').value, inputs: snapshot.inputs}, catalogAbort.signal);
     if (token !== catalogSequence || !$('#pe-catalog-dialog').open) return;
     showCatalogStatus(data);
-    $('#pe-catalog-results').innerHTML = `<p class="pe-catalog-count">Найдено: ${data.total}${data.total > 40 ? '. Показаны первые 40 — уточните поиск.' : ''}</p>` + data.products.map(p => `<article class="pe-catalog-item"><div class="pe-product-description">${thumbnail(p.image, p.name, true)}<strong>${esc(p.name)}</strong><span class="pe-row-detail">${esc(p.brand)}${p.sku ? ' · арт. ' + esc(p.sku) : ''} · ${p.available ? 'Доступен к заказу' : 'Доступность не подтверждена'}</span><span class="pe-row-detail">${p.kind === 'circulation_pump' ? (p.frequency_control === true ? 'Частотное регулирование указано в названии · ' : p.frequency_control === false ? 'Без частотного регулирования · ' : 'Регулирование не подтверждено · ') : ''}${p.nominal_flow ? money(p.nominal_flow) + ' м³/ч по каталогу · ' : ''}${p.head ? 'при ' + money(p.head) + ' м · ' : ''}${p.heating_power ? money(p.heating_power) + ' кВт · ' : ''}${p.power !== 'unknown' ? esc(p.power) + ' В' : ''}</span><p class="pe-help" ${p.warning ? 'data-help-warning' : ''}>${esc(p.warning || (p.kind === 'other' ? 'Назначение, единицу измерения и количество проверьте в карточке.' : 'Предварительный кандидат. Проверьте рабочий режим, совместимость и комплектацию.'))}</p><a class="pe-link" href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">Карточка товара ↗</a></div><div class="pe-catalog-price"><strong>${money(p.price)} ₽${p.kind==='liner'&&p.liner?.price_unit==='m2'?' / м²':p.roll_area || p.kind==='liner'&&p.liner?.price_unit==='roll'?' / рулон':''}</strong>${p.roll_area ? `<small>${esc(p.roll_area)} м² в рулоне; в смете пересчёт на м²</small>` : ""}<button class="pe-btn" type="button" data-catalog-product="${esc(p.id)}">Выбрать</button></div></article>`).join('') + (!data.total ? '<p>Товары не найдены. Измените бренд или запрос; строка сметы останется без замены.</p>' : '');
+    $('#pe-catalog-results').innerHTML = `<p class="pe-catalog-count">Найдено: ${data.total}${data.total > 40 ? '. Показаны первые 40 — уточните поиск.' : ''}</p>` + data.products.map(p => `<article class="pe-catalog-item"><div class="pe-product-description">${thumbnail(p.image, p.name, true)}<strong>${esc(p.name)}</strong><span class="pe-row-detail">${esc(p.brand)}${p.sku ? ' · арт. ' + esc(p.sku) : ''}</span>${availabilityBadge(p)}<span class="pe-row-detail">${p.kind === 'circulation_pump' ? (p.frequency_control === true ? 'Частотное регулирование указано в названии · ' : p.frequency_control === false ? 'Без частотного регулирования · ' : 'Регулирование не подтверждено · ') : ''}${p.nominal_flow ? money(p.nominal_flow) + ' м³/ч по каталогу · ' : ''}${p.head ? 'при ' + money(p.head) + ' м · ' : ''}${p.heating_power ? money(p.heating_power) + ' кВт · ' : ''}${p.power !== 'unknown' ? esc(p.power) + ' В' : ''}</span><p class="pe-help" ${p.warning ? 'data-help-warning' : ''}>${esc(p.warning || (p.kind === 'other' ? 'Назначение, единицу измерения и количество проверьте в карточке.' : 'Предварительный кандидат. Проверьте рабочий режим, совместимость и комплектацию.'))}</p><a class="pe-link" href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">Карточка товара ↗</a></div><div class="pe-catalog-price"><strong>${money(p.price)} ₽${p.kind==='liner'&&p.liner?.price_unit==='m2'?' / м²':p.roll_area || p.kind==='liner'&&p.liner?.price_unit==='roll'?' / рулон':''}</strong>${p.roll_area ? `<small>${esc(p.roll_area)} м² в рулоне; в смете пересчёт на м²</small>` : ""}<button class="pe-btn" type="button" data-catalog-product="${esc(p.id)}">Выбрать</button></div></article>`).join('') + (!data.total ? '<p>Товары не найдены. Измените бренд или запрос; строка сметы останется без замены.</p>' : '');
     help.refresh();
   } catch (error) { if (error.name !== 'AbortError' && token === catalogSequence) $('#pe-catalog-results').textContent = error.message; }
 }
@@ -451,7 +456,7 @@ root.addEventListener('click', event => {
     edit.elements.level_status.value = rowBeingEdited.level_status || 'unknown';
     edit.elements.level_evidence.value = rowBeingEdited.level_evidence || '';
     for (const el of edit.querySelectorAll('input[type=number], input[name=price]')) bindNumber(el, el.value, {money:el.name==='price', whole:el.name==='quantity' && indivisible(rowBeingEdited.unit)});
-    $('#pe-filter-parent-label').hidden = rowBeingEdited.kind!=='filter_media';
+    $('#pe-filter-parent-label').hidden = !['filter_media','filter_valve'].includes(rowBeingEdited.kind);
     edit.elements.filter_parent.innerHTML='<option value="">Не привязан</option>'+snapshot.variants[selected].blocks.flatMap(b=>b.rows).filter(r=>r.kind==='filter').map(r=>`<option value="${esc(r.id)}">${esc(r.name)} · ${esc(r.model||r.id)}</option>`).join('');
     edit.elements.filter_parent.value=rowBeingEdited.filter_parent||'';
     const accessory = ['circulation_pump','solenoid_valve','thermostat'].includes(rowBeingEdited.kind);
@@ -478,6 +483,7 @@ $('#pe-row-catalog').addEventListener('click', () => {
 $('#pe-row-form').addEventListener('change', event => {
   if (!['auto_quantity', 'kind', 'unit'].includes(event.target.name)) return;
   const f = event.currentTarget;
+  $('#pe-filter-parent-label').hidden = !['filter_media','filter_valve'].includes(f.elements.kind.value);
   bindNumber(f.elements.quantity, rawValue(f.elements.quantity), {whole:indivisible(f.elements.unit.value)});
   f.elements.quantity.required = quantityRequired({...rowBeingEdited, kind:f.elements.kind.value,
     auto_quantity:f.elements.auto_quantity.checked});
@@ -497,7 +503,7 @@ $('#pe-row-form').addEventListener('submit', event => {
   if (row.kind === 'work' && !row.work_code) row.work_code = row.id.startsWith('finish_work') ? 'finish_' + (row.finish_type || 'unknown') : row.id;
   if (['name', 'brand', 'model', 'kind'].some(key => row[key] !== rowBeingEdited[key])) row.catalog = null;
   if (row.quantity !== rowBeingEdited.quantity || row.unit !== rowBeingEdited.unit) { row.quantity_stale = false; row.quantity_edited = true; }
-  if(row.kind==='filter_media'){row.filter_parent=f.elements.filter_parent.value;row.basis='filter_load';}
+  if(['filter_media','filter_valve'].includes(row.kind)){row.filter_parent=f.elements.filter_parent.value;row.basis=row.kind==='filter_media'?'filter_load':'filter_valve';}
   if (['circulation_pump','solenoid_valve','thermostat'].includes(row.kind)) {
     row.heating_parent = f.elements.heating_parent.value;
     row.heating_unbound = !row.heating_parent;
@@ -701,6 +707,8 @@ root.addEventListener('click', async event => {
     if (target.draft) {
       rowBeingEdited = structuredClone(data.snapshot.variants[target.variant].blocks.find(b => b.id === target.block).rows.find(r => r.id === target.row));
       const f = $('#pe-row-form');
+      $('#pe-filter-parent-label').hidden = !['filter_media','filter_valve'].includes(rowBeingEdited.kind);
+      f.elements.filter_parent.value = rowBeingEdited.filter_parent || '';
       for (const key of ['name','unit','brand','model','kind','quantity','price']) f.elements.namedItem(key).value = rowBeingEdited[key] ?? '';
       for (const key of ['flow','head','filter_flow','backwash_flow']) f.elements.namedItem(key).value = rowBeingEdited.specs[key] ?? '';
       for (const el of f.querySelectorAll('input[type=number], input[name=price]')) bindNumber(el, el.value, {money:el.name==='price', whole:el.name==='quantity' && indivisible(rowBeingEdited.unit)});

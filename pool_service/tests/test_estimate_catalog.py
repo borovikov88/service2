@@ -21,6 +21,8 @@ def offer(pid, name, price="100.10", brand="Aquaviva", available="true", descrip
     category = '<param name="Наличие для подбора">own_stock</param>'
     if name.startswith('Насос ') and not name.startswith('Насос циркуляцион'):
         category += '<param name="Категория подбора">Насосы для бассейнов</param>'
+    elif name.startswith(('Фильтр ', 'Песочный фильтр ')):
+        category += '<param name="Категория подбора">Фильтры</param>'
     return f'<offer id="{pid}" available="{available}"><url>{escape(url or f"https://shop.aqualine22.ru/product-{pid}.html")}</url><price>{price}</price><currencyId>{currency}</currencyId><name>{escape(name)}</name><vendor>{brand}</vendor><description>{escape(description)}</description>{category}</offer>'
 
 

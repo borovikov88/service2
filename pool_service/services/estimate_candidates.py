@@ -38,6 +38,12 @@ def assess(product, inputs, required_flow, profile=None):
     if kind == 'pump' and product.get('filtration') is not True:
         # A vague "pump" could be an attraction/spa device: minimum identity gate.
         return 'Назначение для фильтрации с префильтром не подтверждено.', []
+    if kind == 'filter':
+        from .estimate_filter_facts import assess as assess_filter
+        blocked, notes = assess_filter(product)
+        if blocked:
+            return blocked, []
+        missing.extend(notes)
     if kind in {'pump', 'filter'}:
         value = product.get('nominal_flow' if kind == 'pump' else 'filter_flow')
         if value and Decimal(value) < required_flow:
