@@ -31,6 +31,7 @@ from .communication_models import CommunicationAccess, PhoneCall
 from .call_markers import annotate_missed_call_callbacks
 from .models import Client, CrmItem, OrganizationAccess, Pool, ServiceTask
 from .services.task_waiting_schedule import waiting_schedule_metadata
+from .services.crm_permissions import crm_items_for_user
 from .services.call_privacy import private_source_task_ids, visible_calls_page
 
 
@@ -344,7 +345,7 @@ def client_detail(request, client_id):
         else:
             task.schedule_display = task.start_date.strftime("%d.%m.%Y")
 
-    crm_item_qs = CrmItem.objects.filter(
+    crm_item_qs = crm_items_for_user(request.user, client.organization).filter(
         Q(client=client) | Q(pool__client=client)
     ).exclude(
         is_archived=True,

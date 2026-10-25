@@ -1,6 +1,7 @@
 from django.utils import timezone
 
 from pool_service.models import CrmItem, ServiceTask
+from pool_service.services.crm_permissions import can_sync_task_crm
 
 
 def archive_task(task, reason, user=None):
@@ -32,7 +33,9 @@ def archive_task(task, reason, user=None):
     if reason == ServiceTask.ARCHIVE_REASON_COMPLETED:
         from pool_service.services.task_generation import sync_crm_item_for_task
 
-        sync_crm_item_for_task(task)
+        if not can_sync_task_crm(task, user):
+            return task
+        sync_crm_item_for_task(task, user=user)
         crm_item = getattr(task, "crm_item", None)
         if task.crm_item_id and crm_item and crm_item.direction == CrmItem.DIRECTION_SERVICE and (
             not crm_item.is_archived or crm_item.archived_reason != CrmItem.ARCHIVE_REASON_COMPLETED
@@ -67,7 +70,9 @@ def restore_task(task, user=None):
         task.save(update_fields=[*changed, "updated_at"])
     from pool_service.services.task_generation import sync_crm_item_for_task
 
-    sync_crm_item_for_task(task)
+    if not can_sync_task_crm(task, user):
+        return task
+    sync_crm_item_for_task(task, user=user)
     crm_item = getattr(task, "crm_item", None)
     if (
         task.crm_item_id

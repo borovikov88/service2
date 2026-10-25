@@ -38,7 +38,7 @@ from django.db import connection, transaction
 
 from django.db.models import Count, Q, Max, Case, When, Value, IntegerField
 
-from django.http import FileResponse, Http404, HttpResponse, HttpResponseForbidden, HttpResponseNotFound, JsonResponse
+from django.http import QueryDict, FileResponse, Http404, HttpResponse, HttpResponseForbidden, HttpResponseNotFound, JsonResponse
 
 from django.utils import timezone, formats
 
@@ -366,12 +366,14 @@ from .services.permissions import (
     personal_pool,
 
     organization_for_user,
+    company_has_access,
 
     organization_accesses_for_user,
 
 )
 
 from django import forms
+from .services.crm_permissions import crm_directions, crm_items_for_user, crm_staff_users, require_crm_graph_scope
 
 
 
@@ -382,6 +384,7 @@ INVITE_EXPIRY_HOURS = 24
 ADMIN_ROLES = ["owner", "admin"]
 
 ORG_STAFF_ROLES = ["owner", "admin", "service", "installer", "manager"]
+
 
 CRM_ALLOWED_ROLES = {"owner", "admin", "service", "installer", "manager"}
 CRM_SERVICE_ONLY_DIRECTIONS = {"service"}
@@ -454,10 +457,7 @@ def _crm_get_item_for_user(request, direction, item_id, include_archived=False):
     if not include_archived:
         queryset = queryset.filter(is_archived=False)
     item = get_object_or_404(queryset)
-    if not request.user.is_superuser:
-        org = organization_for_user(request.user)
-        if not org or item.organization_id != org.id:
-            raise PermissionDenied
+    _crm_require_item_access(request, item)
     return item
 
 
@@ -475,7 +475,7 @@ def _crm_edit_return_context(request, direction, item):
             "return_context_fields": [("return_to", CRM_EDIT_RETURN_DETAIL)],
         }
     return {
-        "return_url": reverse("crm_list", kwargs={"direction": direction}),
+        "return_url": _crm_context_url(request, reverse("crm_list", kwargs={"direction": direction}), item.organization),
         "return_context_fields": (
             [("return_to", CRM_EDIT_RETURN_LIST)] if token == CRM_EDIT_RETURN_LIST else []
         ),
@@ -569,18 +569,14 @@ def crm_issue_primary_photo_download(request, item_id):
     return _crm_photo_file_response(item.photo, item.photo.name)
 
 
-def _can_access_crm(user):
-    if not user or not user.is_authenticated:
-
+def _can_access_crm(user, organization=None):
+    if not user or not user.is_authenticated or not user.is_active:
         return False
-
+    if organization is not None:
+        return bool(crm_directions(user, organization))
     if user.is_superuser:
-
         return True
-
-    roles = OrganizationAccess.objects.filter(user=user).values_list("role", flat=True)
-
-    return any(role in CRM_ALLOWED_ROLES for role in roles)
+    return OrganizationAccess.objects.filter(user=user, role__in=CRM_ALLOWED_ROLES).exists()
 
 
 def _crm_user_roles(user):
@@ -605,19 +601,12 @@ def _default_authenticated_url(user):
     return reverse("pool_list")
 
 
-def _crm_is_service_only(user):
-    roles = _crm_user_roles(user)
-    if "superuser" in roles:
-        return False
-    return bool(roles & {"service", "installer"}) and not any(role in {"owner", "admin", "manager"} for role in roles)
+def _crm_is_service_only(user, organization):
+    return crm_directions(user, organization) == set(CRM_SERVICE_ONLY_DIRECTIONS)
 
 
-def _crm_allowed_directions(user):
-    if _crm_is_service_only(user):
-        return set(CRM_SERVICE_ONLY_DIRECTIONS)
-    return set(CRM_DIRECTION_META.keys())
-
-
+def _crm_allowed_directions(user, organization):
+    return crm_directions(user, organization)
 
 
 
@@ -1124,9 +1113,10 @@ def _verify_phone_sms(profile, code):
 
 
 
-def _redirect_if_access_blocked(request):
+def _redirect_if_access_blocked(request, organization=None):
 
-    if not is_org_access_blocked(request.user):
+    blocked = (not company_has_access(organization)) if organization is not None else is_org_access_blocked(request.user)
+    if not blocked:
 
         return None
 
@@ -1216,14 +1206,13 @@ def _reading_edit_allowed(reading, user):
 
 
 def _can_restore_pool_data(user, pool):
-    if user.is_superuser:
+    if not user or not user.is_authenticated or not user.is_active or user.is_superuser:
         return False
-    if not pool.organization_id:
+    if not pool.organization_id or pool.client.organization_id != pool.organization_id:
         return False
-    return any(
-        access.organization_id == pool.organization_id and access.role in {"owner", "admin"}
-        for access in organization_accesses_for_user(user)
-    )
+    return OrganizationAccess.objects.filter(
+        user=user, organization_id=pool.organization_id, role__in={"owner", "admin"},
+    ).exists()
 
 
 def _reading_delete_allowed(reading, user):
@@ -3841,13 +3830,14 @@ def clients_list(request):
 
 def crm_index(request):
 
-    if not _can_access_crm(request.user):
+    org = _crm_get_org_for_request(request)
+    if not _can_access_crm(request.user, org):
 
         return HttpResponseForbidden()
 
 
 
-    allowed_directions = _crm_allowed_directions(request.user)
+    allowed_directions = _crm_allowed_directions(request.user, org)
     primary_cards = []
 
     for key, meta in CRM_DIRECTION_META.items():
@@ -3862,7 +3852,7 @@ def crm_index(request):
 
                 "subtitle": meta["subtitle"],
 
-                "url": reverse("crm_list", kwargs={"direction": key}),
+                "url": _crm_context_url(request, reverse("crm_list", kwargs={"direction": key}), org),
 
                 "direction": key,
 
@@ -3875,7 +3865,7 @@ def crm_index(request):
 
 
     secondary_cards = []
-    if not _crm_is_service_only(request.user):
+    if not _crm_is_service_only(request.user, org):
         secondary_cards.append(
             {
                 "label": "Клиенты",
@@ -3888,7 +3878,7 @@ def crm_index(request):
         {
             "label": "Задачи",
             "subtitle": "Планирование работ",
-            "url": reverse("crm_tasks"),
+            "url": _crm_context_url(request, reverse("crm_tasks"), org),
             "icon": "bi-list-check",
         }
     )
@@ -3931,11 +3921,12 @@ def crm_index(request):
 
 def crm_tasks(request):
 
-    if not _can_access_crm(request.user):
+    org = _crm_get_org_for_request(request)
+    if not _can_access_crm(request.user, org):
 
         return HttpResponseForbidden()
 
-    org = _crm_get_org_for_request(request)
+
     if not org:
         messages.error(request, "Не найдена организация для задач.")
         return redirect("crm_index")
@@ -3993,6 +3984,8 @@ def crm_tasks(request):
             responsible_id = int(responsible_query)
         except (TypeError, ValueError):
             responsible_id = None
+        if not responsible_id or not crm_staff_users(org).filter(pk=responsible_id).exists():
+            return HttpResponseForbidden()
         if responsible_id:
             visible_tasks = [
                 task
@@ -4035,10 +4028,7 @@ def crm_tasks(request):
         else:
             task.completed_display = ""
 
-    responsible_users_qs = User.objects.filter(
-        organizationaccess__organization=org,
-        organizationaccess__role__in=ORG_STAFF_ROLES,
-    ).distinct().order_by("first_name", "last_name", "username")
+    responsible_users_qs = crm_staff_users(org).order_by("first_name", "last_name", "username")
     responsible_options = [{"id": user.id, "name": _task_user_label(user)} for user in responsible_users_qs]
     selected_responsible_label = next(
         (option["name"] for option in responsible_options if str(option["id"]) == responsible_query),
@@ -4055,7 +4045,7 @@ def crm_tasks(request):
             "show_search": False,
             "show_add_button": False,
             "add_url": None,
-            "page_action_url": reverse("task_create"),
+            "page_action_url": _crm_context_url(request, reverse("task_create"), org),
             "page_action_label": "Создать",
             "tasks": active_tasks,
             "tasks_total_count": len(visible_tasks),
@@ -4067,6 +4057,7 @@ def crm_tasks(request):
             "responsible_options": responsible_options,
             "selected_responsible_label": selected_responsible_label,
             "bulk_status_choices": ServiceTask.STATUS_CHOICES,
+            "crm_org_id": _crm_context_id(request, org),
         },
     )
 
@@ -4080,13 +4071,14 @@ def crm_tasks_bulk_update(request):
     readonly = _deny_superuser_write(request)
     if readonly:
         return readonly
-    blocked = _redirect_if_access_blocked(request)
+    blocked = _crm_redirect_if_access_blocked(request)
     if blocked:
         return blocked
-    if not _can_access_crm(request.user):
+    org = _crm_get_org_for_request(request)
+    if not _can_access_crm(request.user, org):
         return HttpResponseForbidden()
 
-    org = _crm_get_org_for_request(request)
+
     if not org and not request.user.is_superuser:
         return HttpResponseForbidden()
 
@@ -4095,10 +4087,10 @@ def crm_tasks_bulk_update(request):
         try:
             selected_ids.append(int(raw_id))
         except (TypeError, ValueError):
-            continue
+            raise PermissionDenied
     if not selected_ids:
         messages.warning(request, "Не выбраны задачи.")
-        return redirect(reverse("crm_tasks"))
+        return redirect(_crm_context_url(request, reverse("crm_tasks"), org))
 
     tasks_qs = ServiceTask.objects.filter(id__in=selected_ids, organization=org)
     if not _is_org_admin_or_owner(request.user, org):
@@ -4110,6 +4102,8 @@ def crm_tasks_bulk_update(request):
         tasks_qs.order_by("id").values("id", "crm_item_id")
     )
     candidate_ids = {row["id"] for row in candidate_rows}
+    if candidate_ids != set(selected_ids):
+        return HttpResponseForbidden()
     crm_item_ids = [
         row["crm_item_id"] for row in candidate_rows if row["crm_item_id"]
     ]
@@ -4130,9 +4124,12 @@ def crm_tasks_bulk_update(request):
             or task.responsibles.filter(id=request.user.id).exists()
         )
     ]
+    if tasks and {task.id for task in tasks} != set(selected_ids):
+        return HttpResponseForbidden()
     if not tasks:
         messages.warning(request, "Подходящие задачи не найдены.")
-        return redirect(reverse("crm_tasks"))
+        return redirect(_crm_context_url(request, reverse("crm_tasks"), org))
+
 
     action = (request.POST.get("bulk_action") or "").strip()
     changed = 0
@@ -4142,7 +4139,7 @@ def crm_tasks_bulk_update(request):
         allowed = {choice[0] for choice in ServiceTask.STATUS_CHOICES}
         if status not in allowed:
             messages.error(request, "Выберите корректный статус.")
-            return redirect(reverse("crm_tasks"))
+            return redirect(_crm_context_url(request, reverse("crm_tasks"), org))
 
         skipped_waiting = 0
         for task in tasks:
@@ -4186,7 +4183,7 @@ def crm_tasks_bulk_update(request):
                 if completed_unknown_appointment and status == ServiceTask.STATUS_WAITING:
                     # The restore helper already established the only safe
                     # no-date state. Do not touch the legacy calendar key.
-                    sync_crm_item_for_task(task)
+                    sync_crm_item_for_task(task, user=request.user)
                     changed += 1
                     continue
 
@@ -4211,7 +4208,7 @@ def crm_tasks_bulk_update(request):
                 task.save(update_fields=list(dict.fromkeys([
                     *waiting_fields, "status", "updated_at",
                 ])))
-                sync_crm_item_for_task(task)
+                sync_crm_item_for_task(task, user=request.user)
             changed += 1
         messages.success(request, f"Статус обновлён у задач: {changed}.")
         if skipped_waiting:
@@ -4220,38 +4217,33 @@ def crm_tasks_bulk_update(request):
                 "Задачи в ожидании без новой даты не переведены в активный статус. "
                 "Сначала укажите новую дату через «Обсуждение и изменения».",
             )
-        return redirect(reverse("crm_tasks"))
+        return redirect(_crm_context_url(request, reverse("crm_tasks"), org))
 
     if action == "set_responsible":
         responsible_raw = (request.POST.get("bulk_responsible") or "").strip()
         if not responsible_raw:
             messages.error(request, "Выберите ответственного.")
-            return redirect(reverse("crm_tasks"))
+            return redirect(_crm_context_url(request, reverse("crm_tasks"), org))
         try:
             responsible_id = int(responsible_raw)
         except (TypeError, ValueError):
             messages.error(request, "Выберите корректного ответственного.")
-            return redirect(reverse("crm_tasks"))
+            return redirect(_crm_context_url(request, reverse("crm_tasks"), org))
 
-        responsible = User.objects.filter(
-            id=responsible_id,
-            is_active=True,
-            organizationaccess__organization=org,
-            organizationaccess__role__in=ORG_STAFF_ROLES,
-        ).distinct().first()
+        responsible = crm_staff_users(org).filter(id=responsible_id).first()
         if not responsible:
             messages.error(request, "Ответственный не найден.")
-            return redirect(reverse("crm_tasks"))
+            return redirect(_crm_context_url(request, reverse("crm_tasks"), org))
 
         for task in tasks:
             if task.primary_responsible_id == responsible.id:
                 continue
             task.primary_responsible = responsible
             task.save(update_fields=["primary_responsible", "updated_at"])
-            sync_crm_item_for_task(task)
+            sync_crm_item_for_task(task, user=request.user)
             changed += 1
         messages.success(request, f"Ответственный обновлён у задач: {changed}.")
-        return redirect(reverse("crm_tasks"))
+        return redirect(_crm_context_url(request, reverse("crm_tasks"), org))
 
     if action == "archive":
         for task in tasks:
@@ -4270,43 +4262,70 @@ def crm_tasks_bulk_update(request):
             archive_task(task, ServiceTask.ARCHIVE_REASON_DELETED, request.user)
             changed += 1
         messages.success(request, f"В архив отправлено задач: {changed}.")
-        return redirect(reverse("crm_tasks"))
+        return redirect(_crm_context_url(request, reverse("crm_tasks"), org))
 
     messages.error(request, "Неизвестное массовое действие.")
-    return redirect(reverse("crm_tasks"))
+    return redirect(_crm_context_url(request, reverse("crm_tasks"), org))
 
 
 
 
 
 def _crm_get_org_for_request(request):
-
-    org = organization_for_user(request.user)
-
-    if org:
-
-        return org
-
+    # CRM context is explicit and checked fresh; do not reuse the general login cache.
+    if not request.user.is_authenticated or not request.user.is_active:
+        raise PermissionDenied
+    values = [value for value in (request.GET.get("org_id"), request.POST.get("org_id")) if value]
+    if len(set(values)) > 1:
+        raise PermissionDenied
+    organizations = Organization.objects.all()
     if not request.user.is_superuser:
+        organizations = organizations.filter(accesses__user=request.user).distinct()
+    if values:
+        value = values[0]
+        if not value.isascii() or not value.isdigit() or len(value) > 18:
+            raise PermissionDenied
+        org = organizations.filter(pk=int(value)).first()
+        if not org:
+            raise PermissionDenied
+        return org
+    return organizations.order_by("id").first()
 
-        return None
 
-    org_id = request.GET.get("org_id") or request.POST.get("org_id")
-
-    if not org_id:
-        return Organization.objects.order_by("id").first()
-
-    return Organization.objects.filter(id=org_id).first()
-
+def _crm_require_item_access(request, item):
+    if item.direction not in crm_directions(request.user, item.organization):
+        raise PermissionDenied
+    if request.GET.get("org_id") or request.POST.get("org_id"):
+        if _crm_get_org_for_request(request) != item.organization:
+            raise PermissionDenied
 
 
+def _crm_redirect_if_access_blocked(request, organization=None):
+    org = organization or _crm_get_org_for_request(request)
+    return _redirect_if_access_blocked(request, organization=org)
+
+
+def _crm_context_id(request, organization):
+    default_org = Organization.objects.filter(accesses__user=request.user).order_by("id").first()
+    if organization and (request.GET.get("org_id") or request.POST.get("org_id") or organization != default_org):
+        return organization.pk
+    return None
+
+
+def _crm_context_url(request, url, organization=None):
+    # Retain explicit selection and non-default item context across navigation.
+    org = organization or _crm_get_org_for_request(request)
+    if _crm_context_id(request, org):
+        return f"{url}{'&' if '?' in url else '?'}{urlencode({'org_id': org.pk})}"
+    return url
 
 
 @login_required
 
 def crm_list(request, direction):
 
-    if not _can_access_crm(request.user):
+    org = _crm_get_org_for_request(request)
+    if not _can_access_crm(request.user, org):
 
         return HttpResponseForbidden()
 
@@ -4314,23 +4333,15 @@ def crm_list(request, direction):
 
         return HttpResponseNotFound("Unknown CRM direction")
 
-    if direction not in _crm_allowed_directions(request.user):
+    if direction not in _crm_allowed_directions(request.user, org):
 
         return HttpResponseForbidden()
 
 
 
-    org = _crm_get_org_for_request(request)
 
-    base_items = CrmItem.objects.filter(direction=direction)
 
-    if org:
-
-        base_items = base_items.filter(organization=org)
-
-    elif not request.user.is_superuser:
-
-        return HttpResponseForbidden()
+    base_items = crm_items_for_user(request.user, org).filter(direction=direction)
 
 
 
@@ -4347,11 +4358,7 @@ def crm_list(request, direction):
 
     if org:
         responsible_users = list(
-            User.objects.filter(
-                is_active=True,
-                organizationaccess__organization=org,
-                organizationaccess__role__in=ORG_STAFF_ROLES,
-            )
+            crm_staff_users(org)
             .distinct()
             .order_by("last_name", "first_name", "username")
         )
@@ -4375,6 +4382,8 @@ def crm_list(request, direction):
                 responsible_id = int(responsible_query)
             except (TypeError, ValueError):
                 responsible_id = None
+            if not responsible_id or str(responsible_id) not in {option["id"] for option in responsible_options}:
+                return HttpResponseForbidden()
             if responsible_id:
                 items = items.filter(responsible_id=responsible_id)
                 for option in responsible_options:
@@ -4535,26 +4544,26 @@ def crm_list(request, direction):
 
     table_columns = _crm_list_columns(direction, is_superuser=request.user.is_superuser)
     crm_table_colspan = len(table_columns) + 1
-    allowed_directions = _crm_allowed_directions(request.user)
+    allowed_directions = _crm_allowed_directions(request.user, org)
     crm_menu_items = [
         {
             "label": "Задачи",
             "icon": "bi-list-check",
-            "url": reverse("crm_tasks"),
+            "url": _crm_context_url(request, reverse("crm_tasks"), org),
             "is_active": False,
         },
         *[
             {
                 "label": direction_meta["label"],
                 "icon": direction_meta["icon"],
-                "url": reverse("crm_list", kwargs={"direction": direction_key}),
+                "url": _crm_context_url(request, reverse("crm_list", kwargs={"direction": direction_key}), org),
                 "is_active": direction_key == direction,
             }
             for direction_key, direction_meta in CRM_DIRECTION_META.items()
             if direction_key in allowed_directions
         ],
     ]
-    if not _crm_is_service_only(request.user):
+    if not _crm_is_service_only(request.user, org):
         crm_menu_items.append(
             {
                 "label": "Клиенты",
@@ -4581,6 +4590,8 @@ def crm_list(request, direction):
             "active_tab": "crm",
 
             "direction": direction,
+            "crm_org_id": _crm_context_id(request, org),
+            "crm_list_url": _crm_context_url(request, reverse("crm_list", kwargs={"direction": direction}), org),
 
             "direction_label": CRM_DIRECTION_META[direction]["label"],
 
@@ -4589,7 +4600,7 @@ def crm_list(request, direction):
             "items": items,
 
             "page_action_label": "\u0421\u043e\u0437\u0434\u0430\u0442\u044c",
-            "page_action_url": reverse("crm_create", kwargs={"direction": direction}),
+            "page_action_url": _crm_context_url(request, reverse("crm_create", kwargs={"direction": direction}), org),
 
             "service_done_stage": service_done_stage,
 
@@ -4623,7 +4634,7 @@ def crm_list(request, direction):
 
             "bulk_stage_choices": CRM_STAGE_CHOICES_BY_DIRECTION.get(direction, []),
 
-            "archive_url": reverse("archive_list"),
+            "archive_url": _crm_context_url(request, reverse("archive_list"), org),
 
         },
 
@@ -4634,22 +4645,23 @@ def crm_list(request, direction):
 @transaction.atomic
 def crm_bulk_update(request, direction):
     if request.method != "POST":
-        return redirect("crm_list", direction=direction)
+        return redirect(_crm_context_url(request, reverse("crm_list", kwargs={"direction": direction})))
 
     readonly = _deny_superuser_write(request)
     if readonly:
         return readonly
-    blocked = _redirect_if_access_blocked(request)
+    blocked = _crm_redirect_if_access_blocked(request)
     if blocked:
         return blocked
-    if not _can_access_crm(request.user):
+    org = _crm_get_org_for_request(request)
+    if not _can_access_crm(request.user, org):
         return HttpResponseForbidden()
     if direction not in CRM_DIRECTION_META:
         return HttpResponseNotFound("Unknown CRM direction")
-    if direction not in _crm_allowed_directions(request.user):
+    if direction not in _crm_allowed_directions(request.user, org):
         return HttpResponseForbidden()
 
-    org = _crm_get_org_for_request(request)
+
     if not org and not request.user.is_superuser:
         return HttpResponseForbidden()
 
@@ -4658,16 +4670,16 @@ def crm_bulk_update(request, direction):
         try:
             selected_ids.append(int(raw_id))
         except (TypeError, ValueError):
-            continue
+            raise PermissionDenied
     if not selected_ids:
         messages.warning(request, "Не выбраны записи CRM.")
         return redirect(_crm_bulk_redirect_url(request, direction))
 
-    items_qs = CrmItem.objects.filter(id__in=selected_ids, direction=direction, is_archived=False)
-    if org:
-        items_qs = items_qs.filter(organization=org)
+    items_qs = crm_items_for_user(request.user, org).filter(id__in=selected_ids, direction=direction, is_archived=False)
 
     candidate_ids = list(items_qs.order_by("id").values_list("id", flat=True))
+    if set(candidate_ids) != set(selected_ids):
+        return HttpResponseForbidden()
     _locked_tasks, locked_items = lock_crm_graph(candidate_ids)
     items = [
         item
@@ -4677,10 +4689,13 @@ def crm_bulk_update(request, direction):
         and not item.is_archived
         and (not org or item.organization_id == org.id)
     ]
+    if {item.id for item in items} != set(selected_ids):
+        return HttpResponseForbidden()
     if not items:
         messages.warning(request, "Подходящие записи CRM не найдены.")
         return redirect(_crm_bulk_redirect_url(request, direction))
 
+    require_crm_graph_scope(selected_ids)
     action = (request.POST.get("bulk_action") or "").strip()
     changed = 0
 
@@ -4715,12 +4730,7 @@ def crm_bulk_update(request, direction):
             return redirect(_crm_bulk_redirect_url(request, direction))
 
         if org:
-            responsible = User.objects.filter(
-                id=responsible_id,
-                is_active=True,
-                organizationaccess__organization=org,
-                organizationaccess__role__in=ORG_STAFF_ROLES,
-            ).distinct().first()
+            responsible = crm_staff_users(org).filter(id=responsible_id).first()
         else:
             responsible = User.objects.filter(id=responsible_id, is_active=True).first()
         if not responsible:
@@ -4735,7 +4745,7 @@ def crm_bulk_update(request, direction):
             for linked_task in item.service_tasks.all():
                 linked_task.primary_responsible = responsible
                 linked_task.save(update_fields=["primary_responsible", "updated_at"])
-                sync_crm_item_for_task(linked_task)
+                sync_crm_item_for_task(linked_task, user=request.user)
             changed += 1
         messages.success(request, f"Ответственный обновлён у записей: {changed}.")
         return redirect(_crm_bulk_redirect_url(request, direction))
@@ -4752,11 +4762,13 @@ def crm_bulk_update(request, direction):
 
 
 def _crm_bulk_redirect_url(request, direction):
-    query = (request.POST.get("return_query") or "").strip()
+    query = request.POST.get("return_query", "").lstrip("?")
+    params = QueryDict(query, mutable=True)
+    params.pop("org_id", None)
     base_url = reverse("crm_list", kwargs={"direction": direction})
-    if query:
-        return f"{base_url}?{query}"
-    return base_url
+    if params:
+        base_url += "?" + params.urlencode()
+    return _crm_context_url(request, base_url)
 
 
 @login_required
@@ -4765,8 +4777,8 @@ def crm_view(request, direction, item_id):
         return HttpResponseForbidden()
     if direction not in CRM_DIRECTION_META:
         return HttpResponseNotFound("Unknown CRM direction")
-    if direction not in _crm_allowed_directions(request.user):
-        return HttpResponseForbidden()
+    item = _crm_get_item_for_user(request, direction, item_id, include_archived=True)
+    org = item.organization
     if request.GET.get("edit") == "1":
         token = request.GET.get("return_to")
         if token not in {CRM_EDIT_RETURN_LIST, CRM_EDIT_RETURN_DETAIL}:
@@ -4774,7 +4786,6 @@ def crm_view(request, direction, item_id):
         edit_url = reverse("crm_edit", kwargs={"direction": direction, "item_id": item_id})
         return redirect(f"{edit_url}?{urlencode({'return_to': token})}")
 
-    item = _crm_get_item_for_user(request, direction, item_id, include_archived=True)
     item.stage_label = CRM_STAGE_LABELS.get(item.stage, item.stage)
     item.amount_display = "-"
     if item.amount is not None:
@@ -4783,7 +4794,7 @@ def crm_view(request, direction, item_id):
     item_photo_urls = _crm_item_photo_urls(item)
 
     related_tasks = list(
-        item.service_tasks.select_related("pool", "client", "primary_responsible").order_by("-updated_at")
+        item.service_tasks.filter(organization=item.organization).select_related("pool", "client", "primary_responsible").order_by("-updated_at")
     )
 
     archive_state = None
@@ -4811,6 +4822,8 @@ def crm_view(request, direction, item_id):
             "page_subtitle": CRM_DIRECTION_META[direction]["subtitle"],
             "active_tab": "crm",
             "direction": direction,
+            "crm_org_id": _crm_context_id(request, org),
+            "crm_list_url": _crm_context_url(request, reverse("crm_list", kwargs={"direction": direction}), org),
             "direction_label": CRM_DIRECTION_META[direction]["label"],
             "item": item,
             "archive_state": archive_state,
@@ -4818,7 +4831,7 @@ def crm_view(request, direction, item_id):
                 f"{reverse('crm_edit', kwargs={'direction': direction, 'item_id': item.id})}"
                 f"?{urlencode({'return_to': _crm_view_edit_token(request)})}"
             ),
-            "archive_url": reverse("archive_list"),
+            "archive_url": _crm_context_url(request, reverse("archive_list"), org),
             "item_photo_urls": item_photo_urls,
             "item_photo_urls_json": json.dumps(item_photo_urls, ensure_ascii=False),
             "related_tasks": related_tasks,
@@ -4835,13 +4848,14 @@ def crm_create(request, direction):
 
         return readonly
 
-    blocked = _redirect_if_access_blocked(request)
+    blocked = _crm_redirect_if_access_blocked(request)
 
     if blocked:
 
         return blocked
 
-    if not _can_access_crm(request.user):
+    org = _crm_get_org_for_request(request)
+    if not _can_access_crm(request.user, org):
 
         return HttpResponseForbidden()
 
@@ -4849,13 +4863,13 @@ def crm_create(request, direction):
 
         return HttpResponseNotFound("Unknown CRM direction")
 
-    if direction not in _crm_allowed_directions(request.user):
+    if direction not in _crm_allowed_directions(request.user, org):
 
         return HttpResponseForbidden()
 
 
 
-    org = _crm_get_org_for_request(request)
+
 
     if not org:
 
@@ -4888,7 +4902,7 @@ def crm_create(request, direction):
 
             messages.success(request, "Запись CRM создана.")
 
-            return redirect("crm_list", direction=direction)
+            return redirect(_crm_context_url(request, reverse("crm_list", kwargs={"direction": direction}), org))
 
     else:
 
@@ -4911,6 +4925,8 @@ def crm_create(request, direction):
             "active_tab": "crm",
 
             "direction": direction,
+            "crm_org_id": _crm_context_id(request, org),
+            "crm_list_url": _crm_context_url(request, reverse("crm_list", kwargs={"direction": direction}), org),
 
             "direction_label": CRM_DIRECTION_META[direction]["label"],
 
@@ -4936,12 +4952,6 @@ def crm_edit(request, direction, item_id):
 
         return readonly
 
-    blocked = _redirect_if_access_blocked(request)
-
-    if blocked:
-
-        return blocked
-
     if not _can_access_crm(request.user):
 
         return HttpResponseForbidden()
@@ -4950,25 +4960,14 @@ def crm_edit(request, direction, item_id):
 
         return HttpResponseNotFound("Unknown CRM direction")
 
-    if direction not in _crm_allowed_directions(request.user):
-
-        return HttpResponseForbidden()
 
 
 
-    item = get_object_or_404(CrmItem, pk=item_id, direction=direction, is_archived=False)
-
-    if not request.user.is_superuser:
-
-        org = organization_for_user(request.user)
-
-        if not org or item.organization_id != org.id:
-
-            return HttpResponseForbidden()
-
-    else:
-
-        org = item.organization
+    item = _crm_get_item_for_user(request, direction, item_id)
+    org = item.organization
+    blocked = _crm_redirect_if_access_blocked(request, item.organization)
+    if blocked:
+        return blocked
 
     return_context = _crm_edit_return_context(request, direction, item)
 
@@ -4983,6 +4982,8 @@ def crm_edit(request, direction, item_id):
         ):
             return HttpResponseNotFound("CRM item changed while editing.")
 
+        _crm_require_item_access(request, item)
+        require_crm_graph_scope([item.pk])
         form = CrmItemForm(request.POST, instance=item, direction=direction, organization=org)
 
         if form.is_valid():
@@ -5023,6 +5024,8 @@ def crm_edit(request, direction, item_id):
             "active_tab": "crm",
 
             "direction": direction,
+            "crm_org_id": _crm_context_id(request, org),
+            "crm_list_url": _crm_context_url(request, reverse("crm_list", kwargs={"direction": direction}), org),
 
             "direction_label": CRM_DIRECTION_META[direction]["label"],
 
@@ -5055,7 +5058,7 @@ def archive_list(request):
     archived_tasks = ServiceTask.objects.filter(is_archived=True).select_related(
         "organization", "pool", "client", "archived_by", "primary_responsible"
     )
-    archived_crm_items = CrmItem.objects.filter(is_archived=True).select_related(
+    archived_crm_items = crm_items_for_user(request.user, org).filter(is_archived=True).select_related(
         "organization", "pool", "client", "archived_by", "responsible"
     )
     archived_pools = Pool.objects.filter(is_deleted=True).select_related("organization", "client", "deleted_by")
@@ -5091,6 +5094,7 @@ def archive_list(request):
             "page_subtitle": "Завершённые и удалённые записи",
             "active_tab": "crm",
             "kind": kind,
+            "crm_org_id": _crm_context_id(request, org),
             "reason": reason,
             "show_tasks": kind in {"all", "tasks"},
             "show_crm": kind in {"all", "crm"},
@@ -5154,9 +5158,6 @@ def archive_restore_crm_item(request, item_id):
     readonly = _deny_superuser_write(request)
     if readonly:
         return readonly
-    blocked = _redirect_if_access_blocked(request)
-    if blocked:
-        return blocked
     if not _can_access_crm(request.user):
         return HttpResponseForbidden()
 
@@ -5165,14 +5166,15 @@ def archive_restore_crm_item(request, item_id):
     item = next((locked for locked in locked_items if locked.id == seed.id), None)
     if not item or not item.is_archived:
         return HttpResponseNotFound("CRM archive state changed.")
-    if not request.user.is_superuser:
-        org = organization_for_user(request.user)
-        if not org or item.organization_id != org.id:
-            return HttpResponseForbidden()
+    _crm_require_item_access(request, item)
+    require_crm_graph_scope([item.pk])
+    blocked = _crm_redirect_if_access_blocked(request, item.organization)
+    if blocked:
+        return blocked
 
     restore_crm_item(item, request.user)
     messages.success(request, "CRM-запись восстановлена из архива.")
-    return redirect("archive_list")
+    return redirect(_crm_context_url(request, reverse("archive_list"), item.organization))
 
 
 @login_required
@@ -5182,7 +5184,7 @@ def archive_bulk_update(request):
     readonly = _deny_superuser_write(request)
     if readonly:
         return readonly
-    blocked = _redirect_if_access_blocked(request)
+    blocked = _crm_redirect_if_access_blocked(request)
     if blocked:
         return blocked
 
@@ -5199,39 +5201,43 @@ def archive_bulk_update(request):
         try:
             task_ids.append(int(raw_id))
         except (TypeError, ValueError):
-            continue
+            raise PermissionDenied
     for raw_id in request.POST.getlist("item_ids"):
         try:
             item_ids.append(int(raw_id))
         except (TypeError, ValueError):
-            continue
+            raise PermissionDenied
     for raw_uuid in request.POST.getlist("pool_uuids"):
         try:
             pool_uuids.append(uuid.UUID(str(raw_uuid)))
         except (TypeError, ValueError):
-            continue
+            raise PermissionDenied
     for raw_uuid in request.POST.getlist("reading_uuids"):
         try:
             reading_uuids.append(uuid.UUID(str(raw_uuid)))
         except (TypeError, ValueError):
-            continue
+            raise PermissionDenied
 
     tasks_qs = ServiceTask.objects.filter(id__in=task_ids, is_archived=True)
-    items_qs = CrmItem.objects.filter(id__in=item_ids, is_archived=True)
+    items_qs = crm_items_for_user(request.user, org).filter(id__in=item_ids, is_archived=True)
     pools = Pool.objects.filter(uuid__in=pool_uuids, is_deleted=True)
     readings = WaterReading.objects.filter(uuid__in=reading_uuids, is_deleted=True).select_related("pool")
     if org:
         tasks_qs = tasks_qs.filter(organization=org)
         items_qs = items_qs.filter(organization=org)
-        pools = pools.filter(Q(organization=org) | Q(client__organization=org)).distinct()
-        readings = readings.filter(Q(pool__organization=org) | Q(pool__client__organization=org)).distinct()
+        pools = pools.filter(organization=org)
+        readings = readings.filter(pool__organization=org)
 
     task_candidates = list(
         tasks_qs.order_by("id").values("id", "crm_item_id")
     )
+    if {row["id"] for row in task_candidates} != set(task_ids):
+        return HttpResponseForbidden()
     item_candidate_ids = list(
         items_qs.order_by("id").values_list("id", flat=True)
     )
+    if set(item_candidate_ids) != set(item_ids):
+        return HttpResponseForbidden()
     graph_item_ids = item_candidate_ids + [
         row["crm_item_id"] for row in task_candidates if row["crm_item_id"]
     ]
@@ -5253,11 +5259,33 @@ def archive_bulk_update(request):
         and item.is_archived
         and (not org or item.organization_id == org.id)
     ]
+    if {task.id for task in tasks} != set(task_ids):
+        return HttpResponseForbidden()
+    for item in items:
+        _crm_require_item_access(request, item)
+    if {item.id for item in items} != set(item_ids):
+        return HttpResponseForbidden()
+    require_crm_graph_scope(item_ids)
     pools = list(pools)
     readings = list(readings)
+    if {pool.uuid for pool in pools} != set(pool_uuids) or {reading.uuid for reading in readings} != set(reading_uuids):
+        return HttpResponseForbidden()
+    if pools or readings:
+        # These record types only support restore; validate every permission before any CRM/task write.
+        if action != "restore":
+            return HttpResponseForbidden()
+        if any(not _can_restore_pool_data(request.user, pool) for pool in pools):
+            return HttpResponseForbidden()
+        restored_pool_ids = {pool.pk for pool in pools}
+        if any(
+            not _can_restore_pool_data(request.user, reading.pool)
+            or (reading.pool.is_deleted and reading.pool_id not in restored_pool_ids)
+            for reading in readings
+        ):
+            return HttpResponseForbidden()
     if not tasks and not items and not pools and not readings:
         messages.warning(request, "Не выбраны архивные записи.")
-        return redirect("archive_list")
+        return redirect(_crm_context_url(request, reverse("archive_list"), org))
 
     changed = 0
     if action == "restore":
@@ -5278,8 +5306,6 @@ def archive_bulk_update(request):
             restore_crm_item(item, request.user)
             changed += 1
         for pool in pools:
-            if not _can_restore_pool_data(request.user, pool):
-                continue
             before = _snapshot_instance(pool, POOL_AUDIT_FIELDS)
             pool.is_deleted = False
             pool.deleted_at = None
@@ -5295,8 +5321,6 @@ def archive_bulk_update(request):
             )
             changed += 1
         for reading in readings:
-            if reading.pool.is_deleted or not _can_restore_pool_data(request.user, reading.pool):
-                continue
             before = _snapshot_instance(reading, WATER_READING_AUDIT_FIELDS)
             reading.is_deleted = False
             reading.deleted_at = None
@@ -5312,7 +5336,7 @@ def archive_bulk_update(request):
             )
             changed += 1
         messages.success(request, f"Восстановлено записей: {changed}.")
-        return redirect("archive_list")
+        return redirect(_crm_context_url(request, reverse("archive_list"), org))
 
     if action == "delete_forever":
         for task in tasks:
@@ -5326,10 +5350,10 @@ def archive_bulk_update(request):
             item.delete()
             changed += 1
         messages.success(request, f"Удалено навсегда записей: {changed}.")
-        return redirect("archive_list")
+        return redirect(_crm_context_url(request, reverse("archive_list"), org))
 
     messages.warning(request, "Не выбрано действие архива.")
-    return redirect("archive_list")
+    return redirect(_crm_context_url(request, reverse("archive_list"), org))
 
 
 @login_required
@@ -5361,9 +5385,6 @@ def archive_delete_crm_item_forever(request, item_id):
     readonly = _deny_superuser_write(request)
     if readonly:
         return readonly
-    blocked = _redirect_if_access_blocked(request)
-    if blocked:
-        return blocked
     if not _can_access_crm(request.user):
         return HttpResponseForbidden()
 
@@ -5373,13 +5394,14 @@ def archive_delete_crm_item_forever(request, item_id):
         is_archived=True,
         archived_reason=CrmItem.ARCHIVE_REASON_DELETED,
     )
-    if not request.user.is_superuser:
-        org = organization_for_user(request.user)
-        if not org or item.organization_id != org.id:
-            return HttpResponseForbidden()
+    _crm_require_item_access(request, item)
+    require_crm_graph_scope([item.pk])
+    blocked = _crm_redirect_if_access_blocked(request, item.organization)
+    if blocked:
+        return blocked
     item.delete()
     messages.success(request, "CRM-запись удалена навсегда.")
-    return redirect("archive_list")
+    return redirect(_crm_context_url(request, reverse("archive_list"), item.organization))
 
 
 
@@ -6963,14 +6985,8 @@ def pool_detail(request, pool_uuid):
 
     if pool.organization_id:
 
-        org_staff_access = any(
-            access.organization_id == pool.organization_id
-            for access in organization_accesses_for_user(request.user)
-        )
-
-        show_service_issues = org_staff_access or request.user.is_superuser
-
-        can_manage_service_issues = org_staff_access and role in {"admin", "service", "manager"}
+        show_service_issues = CrmItem.DIRECTION_SERVICE in crm_directions(request.user, pool.organization)
+        can_manage_service_issues = show_service_issues and not request.user.is_superuser and role in {"admin", "service", "manager"}
 
         if show_service_issues:
 
@@ -7193,14 +7209,6 @@ def pool_issue_create(request, pool_uuid):
 
         return readonly
 
-    blocked = _redirect_if_access_blocked(request)
-
-    if blocked:
-
-        return blocked
-
-
-
     pool = get_object_or_404(Pool, uuid=pool_uuid, is_deleted=False)
 
     if not pool.organization_id:
@@ -7224,6 +7232,15 @@ def pool_issue_create(request, pool_uuid):
         return HttpResponseForbidden()
 
 
+
+    if CrmItem.DIRECTION_SERVICE not in crm_directions(request.user, pool.organization):
+        return HttpResponseForbidden()
+
+    if pool.client.organization_id != pool.organization_id:
+        return HttpResponseForbidden()
+    blocked = _crm_redirect_if_access_blocked(request, pool.organization)
+    if blocked:
+        return blocked
 
     form = CrmServiceIssueForm(request.POST, request.FILES)
 
@@ -7288,33 +7305,9 @@ def pool_issue_update(request, pool_uuid, item_id):
 
         return readonly
 
-    blocked = _redirect_if_access_blocked(request)
-
-    if blocked:
-
-        return blocked
-
-
-
     pool = get_object_or_404(Pool, uuid=pool_uuid, is_deleted=False)
 
     if not pool.organization_id:
-
-        return HttpResponseForbidden()
-
-
-
-    is_org_staff = OrganizationAccess.objects.filter(
-
-        user=request.user,
-
-        organization=pool.organization,
-
-        role__in=ORG_STAFF_ROLES,
-
-    ).exists()
-
-    if not is_org_staff:
 
         return HttpResponseForbidden()
 
@@ -7333,6 +7326,12 @@ def pool_issue_update(request, pool_uuid, item_id):
         organization=pool.organization,
 
     )
+
+    _crm_require_item_access(request, issue)
+    require_crm_graph_scope([issue.pk])
+    blocked = _crm_redirect_if_access_blocked(request, issue.organization)
+    if blocked:
+        return blocked
 
     stage = (request.POST.get("stage") or "").strip()
 
@@ -7504,13 +7503,13 @@ def task_create(request):
     readonly = _deny_superuser_write(request)
     if readonly:
         return readonly
-    blocked = _redirect_if_access_blocked(request)
+    blocked = _crm_redirect_if_access_blocked(request)
     if blocked:
         return blocked
 
     is_modal = _is_modal_request(request)
 
-    org = organization_for_user(request.user)
+    org = _crm_get_org_for_request(request)
     if not org:
         return HttpResponseForbidden()
     is_staff = OrganizationAccess.objects.filter(
@@ -7518,7 +7517,7 @@ def task_create(request):
         organization=org,
         role__in=ORG_STAFF_ROLES,
     ).exists()
-    if not is_staff:
+    if not is_staff or not _can_access_crm(request.user, org):
         return HttpResponseForbidden()
 
     allowed_responsible_ids = set(
@@ -7648,7 +7647,7 @@ def task_create(request):
         "page_subtitle": "\u0421\u043e\u0437\u0434\u0430\u043d\u0438\u0435 \u0437\u0430\u0434\u0430\u0447\u0438 \u0434\u043b\u044f \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u044f",
         "active_tab": "readings",
         "next_url": next_url,
-        "form_action": request.path,
+        "form_action": _crm_context_url(request, request.path, org),
         "show_history": False,
         "responsible_options": responsible_options,
         "selected_responsibles": selected_responsibles,
@@ -7913,10 +7912,10 @@ def task_edit(request, task_id):
                 if task.is_archived and task.archived_reason == ServiceTask.ARCHIVE_REASON_COMPLETED:
                     restore_task(task, request.user)
                 else:
-                    sync_crm_item_for_task(task)
+                    sync_crm_item_for_task(task, user=request.user)
                 _record_task_change(task, request.user, ServiceTaskChange.ACTION_REOPENED)
             else:
-                sync_crm_item_for_task(task)
+                sync_crm_item_for_task(task, user=request.user)
 
             if is_modal:
                 return JsonResponse({"ok": True})
