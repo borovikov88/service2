@@ -230,6 +230,9 @@ class ConversationClientCaptureTests(Fixtures, TestCase):
         self.assertEqual(self.client.get(url).status_code, 403)
 
 
+# Direct enrichment tests own their provider calls; inbound on_commit must not
+# claim this work first. The launcher test explicitly enables its mocked worker.
+@override_settings(COMMUNICATION_CLIENT_ENRICHMENT_ENABLED=False)
 class ConversationEnrichmentTests(Fixtures, TransactionTestCase):
     def setUp(self):
         super().setUp()
