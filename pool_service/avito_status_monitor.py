@@ -301,7 +301,9 @@ def display_state(connection, user):
     monitor = AvitoStatusMonitor.objects.filter(connection=connection).first()
     if monitor and monitor.recipient_id != user.pk:
         return {}
-    return {"allowed": True, "monitor": monitor, "scheduler": scheduler_state(),
+    from .avito_runtime import scoped_scheduler_display
+    return {"allowed": True, "monitor": monitor,
+            "scheduler": scoped_scheduler_display(connection, "statuses", scheduler_state()),
             "panel_command": panel_command(),
             "error": error_detail(monitor.last_error_code) if monitor else "",
             "running": bool(monitor and monitor.lease_until and monitor.lease_until > timezone.now())}

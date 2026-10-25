@@ -1617,7 +1617,10 @@ def communication_connection_edit(request, connection_id):
     avito_diagnostic_accounts = []
     if kind == CommunicationChannel.KIND_AVITO:
         from pool_service.avito_workspace import diagnostic_account
-        avito_diagnostic_accounts = [diagnostic_account(connection, has_credentials=avito_credentials_configured)]
+        avito_diagnostic_accounts = [diagnostic_account(
+            connection, has_credentials=avito_credentials_configured,
+            user=request.user if connection.pk == 4 and str(connection.external_id) == "446312402" else None,
+        )]
 
     return render(
         request,

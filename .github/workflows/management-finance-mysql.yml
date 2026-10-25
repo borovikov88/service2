@@ -106,6 +106,8 @@ jobs:
             pool_service.tests.test_avito_workspace \
             pool_service.tests.test_avito_outbox \
             pool_service.tests.test_avito_outbox_display \
+            pool_service.tests.test_avito_autoload_presentation \
+            pool_service.tests.test_avito_worker_display \
             pool_service.tests.test_avito_outbox_audit \
             pool_service.tests.test_avito_outbox_original_recovery \
             pool_service.tests.test_avito_services_approved_photo \
