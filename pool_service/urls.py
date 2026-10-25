@@ -254,6 +254,7 @@ from .communication_api import (
     website_request_create,
 )
 
+from .avito_improvement_views import service_improvement_proposals
 from .avito_services_feed import services_feed, services_feed_edit, services_feed_download, services_feed_publish, services_feed_public, services_feed_version_public
 from .avito_services_media import services_image_upload, services_image_preview, services_image_public, services_media_probe
 from .avito_services_media_livecheck import services_media_livecheck, services_media_filecheck
@@ -268,6 +269,7 @@ urlpatterns = [
     path("api/communications/avito/services-feed/<uuid:public_key>/versions/<int:version_id>.xml", services_feed_version_public, name="avito_services_feed_version_public"),
     path("api/communications/avito/services-feed/<uuid:public_key>/feed.xml", services_feed_public, name="avito_services_feed_public"),
     path("api/communications/avito/services-feed/<uuid:public_key>/feed.xlsx", services_feed_public, {"output_format": "xlsx"}, name="avito_services_feed_public_xlsx"),
+    path("avito/<int:connection_id>/services-feed/improvements/", service_improvement_proposals, name="avito_service_improvement_proposals"),
     path("avito/<int:connection_id>/services-feed/publish/", services_feed_publish, name="avito_services_feed_publish"),
     path("estimates/", estimate_page, name="pool_estimate_page"),
     path("estimates/api/", estimate_api, name="pool_estimate_api"),
