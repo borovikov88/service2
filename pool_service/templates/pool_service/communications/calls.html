@@ -7,20 +7,20 @@
   .call-player{
     display:flex;
     align-items:center;
-    gap:.5rem;
-    min-width:360px;
-    max-width:520px;
+    gap:.35rem;
+    min-width:280px;
+    max-width:420px;
   }
   .call-player__play,
   .call-player__download,
   .call-player__analysis{
-    width:34px;
-    height:34px;
+    width:28px;
+    height:28px;
     padding:0;
     display:inline-flex;
     align-items:center;
     justify-content:center;
-    flex:0 0 34px;
+    flex:0 0 28px;
   }
   .call-player__play,
   .call-player__download{
@@ -134,15 +134,15 @@
 </form>
 {% endif %}
 
-<form class="card card-body mb-3" method="get">
+<form class="card card-body call-filters" method="get" data-call-filters>
   <div class="row g-2">
     <div class="col-md">
       <label class="form-label">С</label>
-      <input class="form-control" type="date" name="date_from" value="{{ request.GET.date_from }}">
+      <input class="form-control" aria-label="С даты" title="С даты" type="date" name="date_from" value="{{ request.GET.date_from }}">
     </div>
     <div class="col-md">
       <label class="form-label">По</label>
-      <input class="form-control" type="date" name="date_to" value="{{ request.GET.date_to }}">
+      <input class="form-control" aria-label="По дату" title="По дату" type="date" name="date_to" value="{{ request.GET.date_to }}">
     </div>
     <div class="col-md">
       <label class="form-label" for="filter-client-lookup">Клиент</label>
@@ -151,8 +151,8 @@
     {% if can_view_all and not manual_archive %}
       <div class="col-md">
         <label class="form-label">Сотрудник</label>
-        <select class="form-select" name="employee">
-          <option value="">Все</option>
+        <select class="form-select" name="employee" aria-label="Сотрудник">
+          <option value="">Все сотрудники</option>
           {% for access in employees %}
             <option value="{{ access.user_id }}" {% if request.GET.employee == access.user_id|stringformat:'s' %}selected{% endif %}>
               {{ access.user.get_full_name|default:access.user.username }}
@@ -164,8 +164,8 @@
     {% if not manual_archive %}
     <div class="col-md">
       <label class="form-label">Направление</label>
-      <select class="form-select" name="direction">
-        <option value="">Все</option>
+      <select class="form-select" name="direction" aria-label="Направление">
+        <option value="">Все направления</option>
         <option value="in" {% if request.GET.direction == 'in' %}selected{% endif %}>Входящие</option>
         <option value="out" {% if request.GET.direction == 'out' %}selected{% endif %}>Исходящие</option>
         <option value="internal" {% if request.GET.direction == 'internal' %}selected{% endif %}>Внутренние</option>
@@ -174,7 +174,7 @@
     {% endif %}
     <div class="col-md">
       <label class="form-label">{% if manual_archive %}Клиент или файл{% else %}Номер или имя{% endif %}</label>
-      <input class="form-control" name="q" value="{{ request.GET.q }}">
+      <input class="form-control" type="search" aria-label="{% if manual_archive %}Клиент или файл{% else %}Номер или имя{% endif %}" placeholder="{% if manual_archive %}Клиент или файл{% else %}Номер или имя{% endif %}" name="q" value="{{ request.GET.q }}">
     </div>
     <div class="col-md-auto d-flex align-items-end gap-2">
       {% if not manual_archive %}
@@ -183,11 +183,11 @@
         пропущенные
       </label>
       {% endif %}
-      <button class="btn btn-primary">Найти</button>
+      <noscript><button class="btn btn-primary btn-sm">Найти</button></noscript>
       {% if can_listen %}
       <div class="dropdown">
         <button
-          class="btn btn-outline-secondary dropdown-toggle"
+          class="btn btn-outline-secondary btn-sm dropdown-toggle"
           type="button"
           data-bs-toggle="dropdown"
           aria-expanded="false"
@@ -238,8 +238,8 @@
 </form>
 {% endif %}
 
-<div class="table-responsive card">
-  <table class="table align-middle mb-0">
+<div class="table-responsive card" data-call-results aria-live="polite">
+  <table class="table align-middle mb-0 calls-table">
     <thead>
       <tr>
         {% if manual_archive %}
@@ -278,23 +278,23 @@
               {% endif %}
             </td>
           {% endif %}
-          <td>{{ call.started_at|date:"d.m.Y H:i" }}</td>
+          <td class="call-date">{{ call.started_at|date:"d.m.Y H:i" }}</td>
           {% if not manual_archive %}
-          <td>
+          <td class="call-employee">
             {% if call.employee_profile %}
-              {{ call.employee_profile.display_name }}
+              <span class="call-employee__name" title="{{ call.employee_profile.display_name }}">{{ call.employee_profile.display_name }}</span>
               {% if not call.employee_profile.user_id %}
-                <br><small class="text-muted">без аккаунта Service2</small>
+                <small class="text-muted">без аккаунта Service2</small>
               {% endif %}
             {% elif call.employee %}
-              {{ call.employee.get_full_name|default:call.employee.username }}
+              <span class="call-employee__name" title="{{ call.employee.get_full_name|default:call.employee.username }}">{{ call.employee.get_full_name|default:call.employee.username }}</span>
             {% elif call.provider_user or call.provider_extension %}
               <span class="text-muted">{{ call.provider_user|default:call.provider_extension }}</span>
             {% else %}
               <span class="text-muted">Не сопоставлен</span>
             {% endif %}
             {% if call.direction == 'internal' %}
-              <br><small class="text-muted">
+              <small class="text-muted call-employee__name">
                 <i class="bi bi-arrow-right me-1"></i>
                 {% if call.peer_employee_profile %}
                   {{ call.peer_employee_profile.display_name }}
@@ -322,11 +322,11 @@
                 </small>
               {% endif %}
             {% else %}
-            <div class="d-flex align-items-center gap-2">
+            <div class="call-contact">
               {% if call.phone_number %}{{ call.phone_display }}{% elif not manual_archive %}<span class="text-muted">—</span>{% endif %}
               {% if call.create_client_url %}
-                <a class="btn btn-outline-primary btn-sm" href="{{ call.create_client_url }}" data-call-create-client aria-label="Создать компанию или физлицо для номера {{ call.phone_display }}" title="Создать компанию или физлицо">
-                  <i class="bi bi-plus-lg" aria-hidden="true"></i>
+                <a class="call-save-contact" href="{{ call.create_client_url }}" data-call-create-client aria-label="Сохранить контакт для номера {{ call.phone_display }}" title="Сохранить контакт">
+                  {% include "pool_service/communications/_icon.html" with name="contact" only %}
                 </a>
               {% endif %}
             </div>
@@ -350,8 +350,13 @@
             {% endif %}
           </td>
           {% if not manual_archive %}
-          <td>{{ call.get_direction_display }}</td>
-          <td>{{ call.duration_seconds }} сек.</td>
+          <td class="text-center">
+            {% if call.is_missed %}<span class="call-direction call-direction--missed" role="img" aria-label="Пропущенный · {{ call.get_direction_display }}" title="Пропущенный · {{ call.get_direction_display }}">{% include "pool_service/communications/_icon.html" with name="missed" only %}</span>
+            {% elif call.direction == 'in' %}<span class="call-direction call-direction--in" role="img" aria-label="Входящий" title="Входящий">{% include "pool_service/communications/_icon.html" with name="in" only %}</span>
+            {% elif call.direction == 'out' %}<span class="call-direction call-direction--out" role="img" aria-label="Исходящий" title="Исходящий">{% include "pool_service/communications/_icon.html" with name="out" only %}</span>
+            {% else %}<span class="call-direction call-direction--internal" role="img" aria-label="Внутренний" title="Внутренний">{% include "pool_service/communications/_icon.html" with name="internal" only %}</span>{% endif %}
+          </td>
+          <td class="call-duration">{{ call.duration_seconds }} сек.</td>
           <td><span{% if call.is_missed %} class="text-danger fw-semibold"{% endif %}{% if call.missed_unreturned %} title="Пропущенный вызов — обратного звонка в течение часа нет"{% endif %}>{{ call.get_result_display }}</span>{% if call.callback_at %}<div class="small text-success" title="Обратный звонок в течение часа">Перезвонили {{ call.callback_at|date:"d.m.Y H:i" }}</div>{% endif %}</td>
           {% endif %}
           <td>
@@ -555,6 +560,9 @@
 <script src="{% static 'assets/js/crm-client-picker.js' %}" defer></script>
 <script>
 (() => {
+ let analysisPollTimer;
+ const initCallResults = () => {
+  window.clearInterval(analysisPollTimer);
   const selectAll = document.querySelector("[data-call-select-all]");
   const callSelectors = Array.from(document.querySelectorAll("[data-call-select]"));
   if (selectAll) {
@@ -614,7 +622,7 @@
       }
     };
     pollAnalysisStatus();
-    const analysisPollTimer = window.setInterval(pollAnalysisStatus, 5000);
+    analysisPollTimer = window.setInterval(pollAnalysisStatus, 5000);
     window.addEventListener(
       "pagehide",
       () => window.clearInterval(analysisPollTimer),
@@ -742,6 +750,10 @@
     updateDuration();
     setPlayingState(false);
   });
+};
+initCallResults();
+document.addEventListener("communications:updated", initCallResults);
 })();
 </script>
+<script src="{% static 'assets/js/communication-filters.js' %}" defer></script>
 {% endblock %}

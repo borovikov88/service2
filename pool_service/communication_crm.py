@@ -24,7 +24,6 @@ from .client_crm_ui import (
     ClientEditorForm, CRMProfileEditorForm, LOOKUP_LIMIT, search_tokens,
     sync_primary_contact,
 )
-from .client_crm_views import _can_manage_import
 from .client_phone_matching import clients_by_phone, clients_by_phones
 from .client_queries import active_clients
 from .call_markers import annotate_missed_call_callbacks
@@ -68,7 +67,11 @@ def _scope(user, source_kind, organization=None, *, export=False):
 def _can_create(user, organization):
     return bool(
         not user.is_superuser
-        and _can_manage_import(user, organization.pk)
+        and user.is_active
+        and OrganizationAccess.objects.filter(
+            user=user, organization=organization,
+            role__in={"owner", "admin", "manager", "service", "installer"},
+        ).exists()
         and company_has_access(organization)
     )
 
