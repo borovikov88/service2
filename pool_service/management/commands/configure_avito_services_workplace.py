@@ -38,6 +38,8 @@ class Command(BaseCommand):
                     "connection_id": 4, "account_id": "446312402"}
             from pool_service.avito_period_statistics import prepare_owner_periods_once
             result["period_statistics"] = prepare_owner_periods_once()
+            from pool_service.avito_experiment_baseline import setup_once as water_baseline_setup
+            result["water_experiment_baseline"] = water_baseline_setup()
             from pool_service.crm_source_links import setup_evidence as crm_source_evidence
             try:
                 result["crm_source_links"] = crm_source_evidence()
