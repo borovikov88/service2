@@ -55,5 +55,5 @@ class Command(BaseCommand):
                 result["tariff_subscription"] = avito_tariff_subscription.probe_once()
             except Exception:
                 result["tariff_subscription"] = {"state": "blocked", "code": "tariff_scope_changed",
-                    "connection_id": 4, "account_id": "446312402", "request_performed": False}
+                    "connection_id": 4, "account_id": "446312402", "probe_state": "unconfirmed", "request_performed": None}
         self.stdout.write("AVITO_SERVICES_SETUP " + json.dumps(result, sort_keys=True))
