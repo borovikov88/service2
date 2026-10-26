@@ -23,7 +23,7 @@
             <tr><th scope="row">{{ metric.label }}</th><td>{% if metric.current != None %}{{ metric.current }} {{ metric.unit }}{% else %}Неизвестно{% endif %}</td><td>{% if metric.previous != None %}{{ metric.previous }} {{ metric.unit }}{% else %}Неизвестно{% endif %}</td><td>{% if metric.delta != None %}{{ metric.delta }} {% if metric.unit == '%' %}п.п.{% else %}{{ metric.unit }}{% endif %}{% else %}Не рассчитано{% endif %}</td></tr>
           {% endif %}{% endfor %}</tbody>
         </table></div>
-        <p class="small text-muted">CTR и конверсия — отношения сумм известного одинакового набора; стоимость обращения — денежные расходы / контакты. При неизвестных входах или неположительном знаменателе значение неизвестно. Малая выборка и другие изменения не позволяют считать разницу устойчивым или причинным эффектом.</p>
+        <p class="small text-muted">CTR и конверсия — отношения сумм известного одинакового набора; стоимость обращения — денежные расходы / контакты. При неизвестных входах или неположительном знаменателе значение неизвестно. При малой выборке или других одновременных изменениях устойчивость и причинность разницы не подтверждены.</p>
       </div>
     {% endfor %}
     {% for report in period_reports.reports %}

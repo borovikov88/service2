@@ -483,7 +483,8 @@ def avito_refresh_data(request, connection_id):
         except ValueError as error:
             messages.error(request, str(error))
         return redirect(destination + "#avito-tariff")
-    if section == "statistics" and connection.pk == 4 and str(connection.external_id) == "446312402":
+    if (section == "statistics" and connection.pk == 4 and str(connection.external_id) == "446312402"
+            and form.cleaned_data["grouping"] == "item"):
         try:
             result = avito_period_statistics.refresh(connection, request.user,
                 start=form.cleaned_data["stats_date_from"], end=form.cleaned_data["stats_date_to"],

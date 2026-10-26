@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from django.core.exceptions import PermissionDenied
 from django.db import connection as database
-from django.test import SimpleTestCase, TestCase
+from django.test import Client, SimpleTestCase, TestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -94,6 +94,10 @@ class PeriodCacheTests(SimpleTestCase):
         self.book["latest_attempt"]["private"] = "PRIVATE"
         cleaned = periods._book(saved, self.binding)
         self.assertEqual(cleaned["latest_attempt"], {})
+        self.book["owner_attempts"] = {periods._key(self.query): {
+            "date_from": "2026-09-24", "date_to": "2026-09-30", "grouping": "item",
+            "offset": 0, "checked_at": self.at, "status": "complete", "code": ""}}
+        self.assertEqual(periods._book(saved, self.binding)["owner_attempts"], {})
         bad = deepcopy(self.book["reports"][0])
         bad["page_offsets"] = [False]
         with self.assertRaises(AvitoError):
@@ -207,6 +211,9 @@ class PeriodRefreshTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(self.fetch.call_count, 1)
         self.assertEqual(len(self.saved()[periods.KEY]["reports"]), 1)
+        from pool_service.avito_statistics_models import AvitoStatisticsRun, AvitoDailyStatistic
+        self.assertEqual(AvitoStatisticsRun.objects.count(), 0)
+        self.assertEqual(AvitoDailyStatistic.objects.count(), 0)
         with patch("pool_service.avito_services_workplace_setup._actor", return_value=self.owner):
             receipt = periods.setup_evidence()
         self.assertEqual(receipt["reports"][0]["ids"], ["91", "92"])
@@ -254,3 +261,34 @@ class PeriodRefreshTests(TestCase):
             "grouping": "item", "offset": "1"})
         self.assertEqual(response.status_code, 302)
         self.fetch.assert_not_called()
+
+
+    def test_new_scoped_post_preserves_csrf_boundary(self):
+        csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client.force_login(self.owner)
+        response = csrf_client.post(reverse("avito_refresh_data", args=[4]), {
+            "section": "statistics", "stats_date_from": self.start, "stats_date_to": self.end, "grouping": "item"})
+        self.assertEqual(response.status_code, 403)
+        self.fetch.assert_not_called()
+
+
+    def test_owner_ledger_uses_exact_attempt_and_not_an_interleaved_manual_request(self):
+        original_refresh = periods.refresh
+        calls = []
+        def interleaved(*args, **kwargs):
+            self.fetch.return_value = page(self.start, self.end, ids=tuple(range(1, 51)), total=51)
+            result = original_refresh(*args, **kwargs)
+            calls.append(result["attempt"])
+            self.fetch.return_value = page(self.previous_start, self.previous_end)
+            original_refresh(self.service, self.owner, start=self.previous_start, end=self.previous_end)
+            return result
+        with patch.object(periods, "OWNER_PERIODS", ((self.start, self.end),)), patch(
+                "pool_service.avito_services_workplace_setup._actor", return_value=self.owner), patch.object(
+                periods, "refresh", side_effect=interleaved):
+            periods.prepare_owner_periods_once()
+        book = self.saved()[periods.KEY]
+        key = periods._key(periods._query(self.start, self.end, "item"))
+        self.assertEqual(calls[0]["date_from"], self.start)
+        self.assertEqual(book["latest_attempt"]["date_from"], self.previous_start)
+        self.assertNotIn(key, book["owner_attempts"])
+        self.assertEqual(book["reports"][0]["date_from"], self.previous_start)

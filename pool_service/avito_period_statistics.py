@@ -30,7 +30,7 @@ SOURCE = "own_ads_stats_v2_period"
 UNIT = "workspace_stats_v2_display_rub_v2"
 FIELDS = COUNTERS + MONEY
 MAX_ROWS, MAX_REPORTS, MAX_BYTES = 200, 6, 512 * 1024
-GROUPINGS = {"item", "totals", "day", "week", "month"}
+GROUPINGS = {"item"}
 DETAILS = {
     "statistics_fields_unavailable": "В ответе отсутствуют необязательные поля. Данных недостаточно для подтверждения результата; прежний отчёт сохранён.",
     "statistics_total_unavailable": "Авито не передал общее число групп. Полнота нового периода неизвестна; прежний отчёт сохранён.",
@@ -261,7 +261,8 @@ def _book(saved, binding):
     pending = _pending(candidate.get("pending"))
     owner_attempts = candidate.get("owner_attempts")
     owner_attempts = {key: _safe_attempt(row) for key, row in owner_attempts.items()
-                      if type(key) is str and len(key) <= 40 and _safe_attempt(row)} if type(owner_attempts) is dict else {}
+                      if type(key) is str and len(key) <= 40 and _safe_attempt(row)
+                      and key == _key(_safe_attempt(row))} if type(owner_attempts) is dict else {}
     return {"schema_version": 1, "binding": deepcopy(binding), "reports": reports,
             "pending": deepcopy(pending), "latest_attempt": _safe_attempt(candidate.get("latest_attempt")),
             "owner_attempts": owner_attempts}
@@ -283,6 +284,8 @@ def _merge(book, data, query, received_at):
     if page["total"] is None:
         book["pending"] = {key: {"query": query, "started_at": received_at, "pages": [page]}}
         _attempt(book, query, offset=offset, received_at=received_at, status="incomplete", code="period_incomplete")
+        if len(json.dumps(book, ensure_ascii=False).encode()) > MAX_BYTES:
+            raise AvitoError("period_limit")
         return False
     previous = book["pending"].get(key)
     pages = []
@@ -400,6 +403,8 @@ def refresh(connection, actor, *, start, end, grouping="item", offset=0):
         current.settings = metadata
         current.save(update_fields=["settings"])
     return {"status": "ok" if complete else "warning", "code": error or ("" if complete else "period_incomplete"),
+        "attempt": _safe_attempt(book["latest_attempt"]),
+        "continuation_available": bool(not complete and not error and page_usable),
         "detail": "Периодный отчёт сохранён." if complete else DETAILS.get(error, "Полнота нового периода не подтверждена; прежние отчёты сохранены.")}
 
 
@@ -525,9 +530,9 @@ def prepare_owner_periods_once():
                 metadata = dict(current.settings)
                 saved = deepcopy(metadata.get("avito_workspace", {}))
                 book = _book(saved, after)
-                attempt = _safe_attempt(book["latest_attempt"])
-                unknown_total = any(row.get("total") is None for stage in book["pending"].values() for row in stage["pages"])
-                if attempt and (result.get("code") != "period_incomplete" or not book["pending"] or unknown_total):
+                # The shared latest request may now belong to another manager.
+                attempt = _safe_attempt(result.get("attempt"))
+                if attempt and _key(attempt) == key and result.get("continuation_available") is False:
                     book["owner_attempts"][key] = attempt
                     saved[KEY] = book
                     metadata["avito_workspace"] = saved
