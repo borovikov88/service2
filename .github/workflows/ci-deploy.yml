@@ -68,7 +68,9 @@ jobs:
           python-version: "3.13"
           cache: pip
       - name: Check reuse policy regressions
-        run: python -m unittest discover -s .github/tests -p test_reuse_pr_tests.py -v
+        run: |
+          python -m unittest discover -s .github/tests -p test_reuse_pr_tests.py -v
+          python -m unittest discover -s .github/tests -p test_crm_pilot_db_backup.py -v
       - name: Verify equivalent successful PR tests
         id: reuse
         run: python .github/scripts/reuse_pr_tests.py
@@ -90,7 +92,7 @@ jobs:
             .github/workflows/development-codex.yml .github/workflows/codex-plan-connection.yml \
             .github/workflows/production-health.yml .github/workflows/avito-readonly-audit.yml .github/workflows/call-recordings-sync.yml \
             .github/workflows/employee-identity-sync.yml .github/workflows/avito-status-monitor.yml \
-            .github/workflows/avito-outbox-readonly.yml
+            .github/workflows/avito-outbox-readonly.yml .github/workflows/management-finance-mysql.yml
       - name: Verify Avito monitor scheduling and deployment locks
         if: steps.reuse.outputs.verified != 'true'
         run: python -m unittest discover -s .github/tests -p 'test_avito*py' -v
@@ -470,6 +472,33 @@ jobs:
           if [[ "$audit_exit" != 0 ]]; then
             echo "AVITO_READONLY_AUDIT_UNAVAILABLE transport_or_command_failed (deployment health checked separately)"
           fi
+
+
+      - name: Create verified private CRM pilot database backup
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[crm-pilot-db-backup-20261026]')
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          backup_temp="$(mktemp -d "$RUNNER_TEMP/crm-pilot-backup.XXXXXX")"
+          trap 'rm -rf -- "$backup_temp"' EXIT
+          PORT="${DEPLOY_PORT:-22}"
+          printf -v REMOTE_COMMAND 'bash -s -- %q %q' "$GITHUB_SHA" "$DEPLOY_APP_PATH"
+          backup_exit=0
+          ssh -i ~/.ssh/service2_deploy \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
+            -o StrictHostKeyChecking=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND" \
+            < .github/scripts/crm_pilot_db_backup_remote.sh \
+            >"$backup_temp/stdout" 2>"$backup_temp/stderr" || backup_exit=$?
+          [[ "$backup_exit" == 0 ]] || { echo 'CRM_PILOT_DB_BACKUP_TRANSPORT_BLOCKED'; exit 2; }
+          python3 scripts/crm_pilot_db_backup_receipt.py "$backup_temp/stdout" "$GITHUB_SHA"
 
   calculator:
     name: Publish calculator to the verified informational website
