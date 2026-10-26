@@ -63,6 +63,11 @@ on:
       - "pool_service/tests/test_odata_payroll_drafts.py"
       - "pool_service/management/commands/sync_onec_finance.py"
       - ".github/workflows/management-finance-mysql.yml"
+      - ".github/workflows/ci-deploy.yml"
+      - ".github/scripts/crm_pilot_db_backup_remote.sh"
+      - ".github/tests/test_crm_pilot_db_backup.py"
+      - "scripts/crm_pilot_db_backup.py"
+      - "scripts/crm_pilot_db_backup_receipt.py"
   workflow_dispatch:
 
 permissions:
@@ -107,6 +112,15 @@ jobs:
 
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
+
+      - name: Verify restricted native CRM backup and disposable restore
+        timeout-minutes: 6
+        env:
+          SERVICE2_CRM_BACKUP_MYSQL_INTEGRATION: "1"
+        run: |
+          command -v mysqldump >/dev/null || command -v mariadb-dump >/dev/null
+          command -v mysql >/dev/null || command -v mariadb >/dev/null
+          python -m unittest discover -s .github/tests -p test_crm_pilot_db_backup.py -k NativeMySQLTests -v
 
       - name: Verify MySQL model and migration state
         run: |
