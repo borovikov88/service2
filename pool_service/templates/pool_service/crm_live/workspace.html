@@ -10,6 +10,7 @@
 
 {% block content %}
 <section class="crm-live" id="crm-live" aria-label="Рабочее пространство CRM">
+  <nav aria-label="CRM"><a href="{% url 'crm_object_needs' %}?org_id={{ crm_bootstrap.organization_id }}">Потребности объектов</a></nav>
   <div class="crm-live-heading">
     <div>
       <div class="crm-live-eyebrow">Клиенты и сделки</div>
