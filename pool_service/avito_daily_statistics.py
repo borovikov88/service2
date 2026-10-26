@@ -48,7 +48,9 @@ ERRORS = {
     'provider_response_too_large': 'Ответ Авито превысил допустимый размер.',
     'provider_invalid_json': 'Ответ Авито не является допустимым JSON.',
     'provider_invalid_response': 'Ответ Авито не соответствует ожидаемому объекту.',
-    'provider_data_invalid': 'Статистика Авито не прошла проверку структуры.',
+    'provider_data_invalid': 'Статистика Авито не прошла проверку типов или структуры.',
+    'statistics_fields_unavailable': 'Необязательные поля ответа отсутствуют. Схема не нарушена, но данных недостаточно; полнота не подтверждена.',
+    'statistics_provider_error': 'В ответе статистики Авито явно указан признак ошибки; подробности не сохранены.',
 }
 
 
@@ -273,7 +275,7 @@ def _normalized(row):
     return {'id': str(identifier), 'metrics': output}
 
 
-def collect_next(connection_id=4):
+def collect_next(connection_id=4, *, observer=None):
     """One API page per invocation. No sleeping or silent external retry."""
     if connection_id != 4:
         raise ValueError('statistics_binding_changed')
@@ -281,7 +283,7 @@ def collect_next(connection_id=4):
     if reserved is None:
         return 'skipped'
     connection, state, run, lease = reserved
-    error, page, retry_at = '', None, None
+    error, page, retry_at, partial_code = '', None, None, ''
     phase, exception_class, attempt_started_at = 'authorization', '', timezone.now()
     statistics_reason, statistics_shape = '', None
     try:
@@ -314,8 +316,7 @@ def collect_next(connection_id=4):
         code = exc.args[0] if isinstance(exc, AvitoError) and len(exc.args) == 1 else None
         error, exception_class = _error_code(code), _exception_class(exc)
         reason = vars(exc).get('statistics_reason') if isinstance(exc, AvitoError) else None
-        if (error == 'provider_data_invalid' and isinstance(reason, str)
-                and reason in avito_workspace.STATISTICS_INVALID_REASONS):
+        if avito_workspace.statistics_reason_allowed(error, reason):
             statistics_reason = reason
             statistics_shape = avito_workspace.statistics_shape_metadata(vars(exc).get('statistics_shape'))
     with transaction.atomic():
@@ -338,6 +339,10 @@ def collect_next(connection_id=4):
         if error == 'provider_cooldown':
             active['next_due_at'] = retry_at.isoformat()
             status = 'skipped'
+        elif error == 'statistics_fields_unavailable':
+            locked.state, locked.error_code, locked.finished_at = 'partial', error, now
+            active.update(run_id=None, next_due_at=(now+timedelta(minutes=15)).isoformat())
+            status, partial_code = 'skipped', error
         elif error:
             locked.state, locked.error_code, locked.finished_at = 'failed', error, now
             active.update(run_id=None, next_due_at=(now+timedelta(minutes=15)).isoformat())
@@ -359,7 +364,7 @@ def collect_next(connection_id=4):
                 locked.state, locked.error_code, locked.finished_at = 'partial', 'statistics_total_unavailable', now
                 active.update(run_id=None, last_error_code=locked.error_code,
                               next_due_at=(now+timedelta(hours=1)).isoformat())
-                status = 'failed'
+                status, partial_code = 'skipped', locked.error_code
             elif len(combined) == total:
                 locked.state, locked.pagination_complete, locked.finished_at = 'success', True, now
                 observed = {row['id']: row['metrics'] for row in combined}
@@ -402,6 +407,8 @@ def collect_next(connection_id=4):
         metadata[KEY] = active
         current.settings = metadata
         current.save(update_fields=['settings'])
+    if observer and partial_code:
+        observer(4, 'statistics_daily', 'skipped', reason=partial_code)
     return status
 
 
@@ -410,14 +417,19 @@ def scan_due(*, deadline, limit=1, observer=None):
     if time.monotonic() + 20 > deadline:
         output['skipped'] = 1
         return output
+    notified = False
+    def observed(connection_id, check, outcome, **kwargs):
+        nonlocal notified
+        notified = True
+        observer(connection_id, check, outcome, **kwargs)
     try:
-        status = collect_next(4)
+        status = collect_next(4, observer=observed if observer else None)
     except ChannelConnection.DoesNotExist:
         status = 'skipped'
     except Exception:
         status = 'failed'
     output[status] += 1
-    if observer:
+    if observer and not notified:
         observer(4, 'statistics_daily', status)
     return output
 

@@ -84,11 +84,9 @@ def _attempt(state, runs, daily):
             or not isinstance(raw.get('outcome'), str) or raw['outcome'] not in {'success', 'failed', 'skipped'}
             or _count(raw.get('offset')) is None
             or daily._date(raw.get('started_at')) is None or daily._date(raw.get('finished_at')) is None
-            or 'statistics_reason' in raw and (raw.get('error_code') != 'provider_data_invalid'
-                or not isinstance(raw['statistics_reason'], str)
-                or raw['statistics_reason'] not in daily.avito_workspace.STATISTICS_INVALID_REASONS)
-            or 'statistics_shape' in raw and (raw.get('error_code') != 'provider_data_invalid'
-                or 'statistics_reason' not in raw or shape is None)):
+            or 'statistics_reason' in raw and not daily.avito_workspace.statistics_reason_allowed(
+                raw.get('error_code'), raw['statistics_reason'])
+            or 'statistics_shape' in raw and ('statistics_reason' not in raw or shape is None)):
         return {'state': 'unconfirmed', 'phase': 'unknown', 'error_code': 'statistics_unavailable'}
     output = {'state': 'observed', 'run_id': run.pk, 'source_date': run.day.isoformat(),
         'offset': raw['offset'], 'phase': raw['phase'], 'exception_class': raw['exception_class'],
@@ -199,16 +197,18 @@ def display(receipt):
     if (type(receipt.get('connection_id')) is int and receipt['connection_id'] == 4
             and receipt.get('account_id') == daily.ACCOUNT and receipt.get('source') == 'avito_stats_v2_items'
             and type(attempt.get('run_id')) is int and attempt['run_id'] > 0
-            and attempt.get('state') == 'observed' and attempt.get('outcome') == 'failed'
+            and attempt.get('state') == 'observed'
             and attempt.get('phase') == 'fetch_statistics' and attempt.get('exception_class') == 'AvitoError'
-            and attempt.get('error_code') == 'provider_data_invalid'
-            and attempt.get('statistics_reason') == 'groupings_type'
+            and ((attempt.get('outcome') == 'failed' and attempt.get('error_code') == 'provider_data_invalid'
+                    and attempt.get('statistics_reason') == 'groupings_type')
+                or (attempt.get('outcome') == 'skipped' and attempt.get('error_code') == 'statistics_fields_unavailable'
+                    and attempt.get('statistics_reason') == 'groupings_and_total_absent'))
             and source_date is not None and source_date.isoformat() == attempt['source_date']
             and shape == {'groupings_kind': 'missing', 'data_total_count_kind': 'missing',
                           'provider_error_present': False}):
         explanation = ('В result ответа Авито отсутствуют groupings и dataTotalCount; '
-            'признак error/errors не обнаружен. Полнота и показатели за эту дату не подтверждены; '
-            'отсутствие полей не означает нули.')
+            'признак error/errors не обнаружен. Эти поля необязательны в контракте собственного профиля. '
+            'Полнота и показатели за эту дату не подтверждены; отсутствие полей не означает нули.')
     return {**receipt, 'last_attempt': {**attempt, 'response_shape_explanation': explanation,
         'finished_at': daily._date(attempt.get('finished_at'))},
         'dates': [{**item, 'explanation': STATES[item['state']],

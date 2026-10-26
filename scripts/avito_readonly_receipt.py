@@ -440,14 +440,16 @@ def runtime_checks(value):
         return raw
     for row in value:
         require(isinstance(row, dict) and row.get("check") in names)
-        require(row.get("state") in {"disabled", "blocked", "failed", "pending", "due", "ok"})
+        require(row.get("state") in {"disabled", "blocked", "failed", "pending", "due", "ok"}
+            or row.get("state") == "partial" and row["check"] == "statistics_daily"
+                and row.get("code") in {"statistics_fields_unavailable", "statistics_total_unavailable"})
         require(type(row.get("configured")) is bool and type(row.get("enabled")) is bool)
         require(row.get("scope_valid") is None or type(row.get("scope_valid")) is bool)
         require(type(row.get("last_worker_verified")) is bool)
         require(row.get("last_worker_outcome") is None or row["last_worker_outcome"] in outcomes)
         def fixed_code(raw):
             require(raw is None or (isinstance(raw, str) and (raw in allowed_codes
-                or row["check"] == "statistics_daily" and raw == "provider_data_invalid"
+                or row["check"] == "statistics_daily" and raw in {"provider_data_invalid", "statistics_fields_unavailable", "statistics_provider_error"}
                 or re.fullmatch(r"provider_http_[1-5][0-9]{2}", raw))))
             return raw
         guard_names = {"queried_rows_changed", "shop_xml_snapshot_changed",
@@ -815,7 +817,12 @@ STAT_INVALID_REASONS = frozenset({
     "result_missing", "result_type", "grouping_missing_with_explicit_zero_total",
     "groupings_type", "groupings_limit", "totals_multiple_groups", "group_type",
     "metrics_type", "id_type", "id_duplicate", "metric_type", "metric_slug_type",
-    "metric_duplicate"})
+    "metric_duplicate", "total_type"})
+STAT_DIAGNOSTIC_REASONS = {
+    "provider_data_invalid": STAT_INVALID_REASONS,
+    "statistics_fields_unavailable": frozenset({"groupings_absent", "groupings_and_total_absent"}),
+    "statistics_provider_error": frozenset({"provider_error_reported"}),
+}
 STAT_SHAPE_GROUPINGS = frozenset({
     "missing", "null", "empty_object", "object", "empty_list", "list",
     "string", "integer", "number", "bool", "other"})
@@ -827,7 +834,7 @@ STAT_ERROR_CODES = {'', 'statistics_binding_changed', 'statistics_data_invalid',
     'statistics_total_unavailable', 'statistics_limit', 'statistics_unavailable',
     'statistics_incomplete', 'provider_cooldown', 'provider_unavailable',
     'provider_response_too_large', 'provider_invalid_json', 'provider_invalid_response',
-    'provider_data_invalid'}
+    'provider_data_invalid', 'statistics_fields_unavailable', 'statistics_provider_error'}
 
 
 def _statistics_date(value):
@@ -879,11 +886,10 @@ def _statistics_attempt(value, first, last):
         "started_at": started, "finished_at": finished}
     if "statistics_reason" in value:
         reason = value["statistics_reason"]
-        require(result["error_code"] == "provider_data_invalid"
-            and isinstance(reason, str) and reason in STAT_INVALID_REASONS)
+        require(isinstance(reason, str) and reason in STAT_DIAGNOSTIC_REASONS.get(result["error_code"], ()))
         result["statistics_reason"] = reason
     if "statistics_shape" in value:
-        require(result["error_code"] == "provider_data_invalid" and "statistics_reason" in result)
+        require("statistics_reason" in result)
         result["statistics_shape"] = _statistics_shape(value["statistics_shape"])
     return result
 
