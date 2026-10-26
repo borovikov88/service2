@@ -403,8 +403,9 @@ def page_context(connection, actor):
             'analysis_received_at': _time(change['proposal'].get('analysis', {}).get('received_at')),
             'status_observed_at': _time(change['proposal'].get('status_evidence', {}).get('observed_at')),
             'status_checked_at': _time(change['proposal'].get('status_evidence', {}).get('checked_at'))})
-    return {'connection': current, 'feed': feed, 'source_version': source['version'],
-        'projects': output, 'target_ids': list(TARGETS), 'error': ''}
+    from .avito_experiment_baseline import decorate_context
+    return decorate_context({'connection': current, 'feed': feed, 'source_version': source['version'],
+        'projects': output, 'target_ids': list(TARGETS), 'error': ''}, actor)
 
 
 def setup_owner_cycle_once():
