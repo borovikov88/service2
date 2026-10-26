@@ -56,7 +56,15 @@ const {chromium} = require('playwright');
     });
     await page.locator('#needs-form button[type="submit"]').click();
     await page.locator('#needs-retry:not([hidden])').waitFor();
-    assert.equal(await page.locator('#needs-fields').isDisabled(), true);
+    // Playwright's native disabled-control whitelist excludes FIELDSET itself.
+    // Check its DOM state and the inherited disabled state of every real input
+    // and action, so this still proves that an uncertain operation is frozen.
+    assert.equal(await page.locator('#needs-fields').evaluate((fieldset) => fieldset.disabled), true);
+    const frozenControls = page.locator('#needs-fields input, #needs-fields textarea, #needs-fields select, #needs-fields button');
+    assert.equal(await frozenControls.count(), 10); // two lines, add and submit
+    for (const control of await frozenControls.all()) assert.equal(await control.isDisabled(), true);
+    assert.equal(await page.locator('#needs-close').isDisabled(), true);
+    assert.equal(await page.locator('#needs-retry').isEnabled(), true);
     await page.locator('#needs-retry').click();
     await page.waitForFunction(() => document.querySelector('#needs-feedback').textContent.startsWith('Разбор сохранён'));
     assert.equal(sent.length, 2);
