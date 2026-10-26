@@ -38,7 +38,8 @@ REASONS = frozenset(("unspecified", "lock_directory_path", "lock_directory_owner
                      "native_missing", "native_version_size", "native_version_unsupported",
                      "native_help_size", "private_path", "private_parent_type", "private_parent_mode",
                      "private_owner_type", "private_mode", "client_engine", "client_database",
-                     "client_credentials", "client_options", "client_mirror", "client_port", "app_path"))
+                     "client_credentials", "client_options", "client_mirror", "client_port", "app_path",
+                     "database_timeout"))
 
 
 class Blocked(Exception):
@@ -75,8 +76,22 @@ def safe_failure(error):
     code = getattr(error, "returncode", None)
     code = code if type(code) is int and -127 <= code <= 255 else 0
     reason = error.reason if isinstance(error, Blocked) else "unspecified"
-    os_errno = getattr(error, "errno", None) if isinstance(error, OSError) else None
-    os_errno = os_errno if type(os_errno) is int and 1 <= os_errno <= 133 else 0
+    # Django chains its driver error; PyMySQL chains the original socket error.
+    # Inspect bounded types/numbers only, never exception messages or arguments.
+    os_errno = 0
+    cause = error
+    seen = set()
+    for _ in range(8):
+        if cause is None or id(cause) in seen:
+            break
+        seen.add(id(cause))
+        if isinstance(cause, OSError):
+            number = cause.errno
+            if not os_errno and type(number) is int and 1 <= number <= 133:
+                os_errno = number
+            if category == "database_error" and isinstance(cause, TimeoutError):
+                reason = "database_timeout"
+        cause = cause.__cause__ if cause.__cause__ is not None else cause.__context__
     database_code = error.args[0] if category == "database_error" and error.args else None
     database_code = database_code if type(database_code) is int and 1000 <= database_code <= 2999 else 0
     return ("phase=" + (PHASE if PHASE in PHASES else "initial") + " error=" + category +
@@ -369,6 +384,7 @@ def backup(app, expected):
     receipt_path = destination / (basename + ".receipt.json")
     receipt_partial = destination / (basename + ".receipt.json.partial")
     published = False
+    primary_error = None
     try:
         phase("schema_before")
         before = schema_snapshot(connection)
@@ -422,16 +438,26 @@ def backup(app, expected):
             os.close(directory_fd)
         published = True
         return receipt
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        try:
-            connection.rollback()
-        finally:
+        # A lost socket can make rollback fail again with InterfaceError(0),
+        # masking the original database code/cause. Attempt all cleanup, retain
+        # the primary failure, and still fail if cleanup alone fails on success.
+        cleanup_error = None
+        actions = [connection.rollback, connection.close]
+        if not published:
+            actions.extend(lambda path=path: path.unlink(missing_ok=True)
+                           for path in (partial, final, receipt_partial, receipt_path))
+        for action in actions:
             try:
-                connection.close()
-            finally:
-                if not published:
-                    for path in (partial, final, receipt_partial, receipt_path):
-                        path.unlink(missing_ok=True)
+                action()
+            except BaseException as error:
+                if cleanup_error is None:
+                    cleanup_error = error
+        if primary_error is None and cleanup_error is not None:
+            raise cleanup_error
 
 
 def main():

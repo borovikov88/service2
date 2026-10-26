@@ -122,6 +122,26 @@ class PrivateBackupTests(unittest.TestCase):
         self.assertEqual(R.HELPER_PHASES, B.PHASES)
         self.assertEqual(R.HELPER_REASONS, B.REASONS)
 
+    def test_bounded_exception_chain_distinguishes_timeout_without_private_text(self):
+        database_error = type('OperationalError', (Exception,), {})
+        for socket_error, reason, number in ((TimeoutError('PRIVATE'), 'database_timeout', 0),
+                                              (ConnectionResetError(104, 'PRIVATE'), 'unspecified', 104)):
+            driver = database_error(2013, 'PRIVATE SQL')
+            driver.__context__ = socket_error
+            error = database_error(2013, 'PRIVATE wrapper')
+            error.__cause__ = driver
+            diagnostic = B.safe_failure(error)
+            self.assertIn('error=database_error ', diagnostic)
+            self.assertTrue(diagnostic.endswith('reason=' + reason + ' os_errno=' + str(number) + ' database_code=2013'))
+            self.assertNotIn('PRIVATE', diagnostic)
+            self.assertIn('source=helper', R.failure(b'', (R.HELPER_PREFIX.decode() + diagnostic).encode(), '2'))
+        driver.__context__ = error  # Cycles and long chains remain bounded.
+        self.assertLess(len(B.safe_failure(error)), 200)
+        deep = TimeoutError('PRIVATE')
+        for _ in range(8):
+            wrapper = database_error(2013, 'PRIVATE'); wrapper.__cause__ = deep; deep = wrapper
+        self.assertIn('reason=unspecified ', B.safe_failure(deep))
+
     def test_dirty_checkout_and_head_mismatch_block(self):
         for outputs in ([b'b' * 40 + b'\n'], [SHA.encode() + b'\n', b'/synthetic\n', b'dirty'],
                         [SHA.encode() + b'\n', b'/synthetic\n', b'', b'untracked.py']):
@@ -200,12 +220,15 @@ class PrivateBackupTests(unittest.TestCase):
                 self.assertIsNotNone(children[0].poll())
                 if cap: self.assertLessEqual((Path(temp) / 'dump').stat().st_size, 1)
 
-    def run_backup(self, drift=False, missing=False):
+    def run_backup(self, drift=False, missing=False, primary_error=None, rollback_error=None,
+                   close_error=None, unlink_failure=False):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp); app = root / 'app'; app.mkdir(mode=0o700)
             (root / 'tmp').mkdir(mode=0o700)
             from unittest.mock import MagicMock
             connection = MagicMock(); connection.settings_dict = config()
+            connection.rollback.side_effect = rollback_error
+            connection.close.side_effect = close_error
             fake = types.ModuleType('django.db'); fake.connections = {'default': connection}
             captured = []
             def dump(command, path, expected, deadline):
@@ -219,8 +242,35 @@ class PrivateBackupTests(unittest.TestCase):
                 fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
                 with os.fdopen(fd, 'wb') as output: output.write(gzip.compress(SQL))
                 return len(SQL)
-            snapshots = [SCHEMA, SCHEMA, {} if drift else SCHEMA]
-            with patch.object(B, 'check_checkout'), patch.object(B, 'native_options', return_value=['--no-tablespaces']), patch.object(B.shutil, 'which', return_value=None if missing else '/usr/bin/mysqldump'), patch.dict(sys.modules, {'django.db': fake}), patch.object(B, 'schema_snapshot', side_effect=snapshots), patch.object(B, 'dump_to_gzip', side_effect=dump):
+            snapshots = [SCHEMA, SCHEMA, primary_error if primary_error is not None else ({} if drift else SCHEMA)]
+            real_unlink = Path.unlink
+            unlinked = []
+            def unlink(path, *args, **kwargs):
+                unlinked.append(path)
+                if unlink_failure and len(unlinked) == 1:
+                    raise OSError(13, 'PRIVATE cleanup path')
+                return real_unlink(path, *args, **kwargs)
+            with patch.object(B, 'check_checkout'), patch.object(B, 'native_options', return_value=['--no-tablespaces']), patch.object(B.shutil, 'which', return_value=None if missing else '/usr/bin/mysqldump'), patch.dict(sys.modules, {'django.db': fake}), patch.object(B, 'schema_snapshot', side_effect=snapshots), patch.object(B, 'dump_to_gzip', side_effect=dump), patch.object(Path, 'unlink', unlink):
+                if primary_error is not None or rollback_error is not None or close_error is not None:
+                    expected_error = primary_error if primary_error is not None else (
+                        rollback_error if rollback_error is not None else close_error)
+                    with self.assertRaises(type(expected_error)) as caught:
+                        B.backup(app, SHA)
+                    self.assertIs(caught.exception, expected_error)
+                    connection.rollback.assert_called_once()
+                    connection.close.assert_called_once()
+                    destination = root / 'tmp' / 'service2-crm-backups'
+                    if primary_error is not None:
+                        self.assertEqual(B.PHASE, 'schema_after')
+                        expected_paths = {'.sql.gz.partial', '.sql.gz', '.receipt.json.partial', '.receipt.json'}
+                        self.assertEqual({suffix for suffix in expected_paths
+                                          if any(str(path).endswith(suffix) for path in unlinked)}, expected_paths)
+                        if not unlink_failure:
+                            self.assertEqual(list(destination.iterdir()), [])
+                    else:
+                        # A previously published private archive/receipt is retained.
+                        self.assertEqual(len(list(destination.iterdir())), 2)
+                    return
                 if missing or drift:
                     with self.assertRaises(B.Blocked): B.backup(app, SHA)
                     if not missing: self.assertEqual(list((root / 'tmp' / 'service2-crm-backups').iterdir()), [])
@@ -238,6 +288,25 @@ class PrivateBackupTests(unittest.TestCase):
     def test_complete_backup_and_private_receipt(self): self.run_backup()
     def test_schema_drift_removes_partial_and_receipt(self): self.run_backup(drift=True)
     def test_missing_native_dump_fails_before_settings(self): self.run_backup(missing=True)
+
+    def test_primary_failure_survives_rollback_close_and_unlink_errors(self):
+        database_error = type('OperationalError', (Exception,), {})
+        primary = database_error(2013, 'PRIVATE original query')
+        primary.__context__ = TimeoutError('PRIVATE socket')
+        for unlink_failure in (False, True):
+            self.run_backup(primary_error=primary,
+                            rollback_error=type('InterfaceError', (Exception,), {})(0, 'PRIVATE rollback'),
+                            close_error=OSError(13, 'PRIVATE close'), unlink_failure=unlink_failure)
+            self.assertTrue(B.safe_failure(primary).endswith('reason=database_timeout os_errno=0 database_code=2013'))
+
+    def test_success_cleanup_failure_still_fails_and_retains_published_files(self):
+        for rollback_error, close_error in ((OSError(13, 'PRIVATE rollback'), OSError(13, 'PRIVATE close')),
+                                            (None, OSError(13, 'PRIVATE close'))):
+            try:
+                raise ValueError('unrelated caller exception')
+            except ValueError:
+                self.run_backup(rollback_error=rollback_error, close_error=close_error)
+
 
 
 class ReceiptWorkflowTests(unittest.TestCase):
@@ -375,6 +444,39 @@ class ReceiptWorkflowTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('SERVICE2_CRM_BACKUP_MYSQL_INTEGRATION') == '1',
                      'requires isolated CI MySQL service, never production')
 class NativeMySQLTests(unittest.TestCase):
+    def test_pinned_driver_lost_socket_error_is_preserved_through_cleanup(self):
+        try:
+            import pymysql
+            from django.db.utils import DatabaseErrorWrapper, OperationalError
+        except ImportError:
+            self.skipTest('requires installed pinned Django/PyMySQL, no database access')
+        from unittest.mock import MagicMock
+        raw = pymysql.connections.Connection(defer_connect=True)
+        raw._sock = MagicMock()
+        raw._rfile = MagicMock()
+        raw._rfile.read.side_effect = TimeoutError('PRIVATE socket timeout')
+        wrapper = types.SimpleNamespace(Database=pymysql, errors_occurred=False)
+        try:
+            with DatabaseErrorWrapper(wrapper):
+                raw._read_bytes(1)
+        except OperationalError as primary:
+            self.assertEqual(primary.args[0], 2013)
+            self.assertIsNone(raw._sock)
+            try:
+                with DatabaseErrorWrapper(wrapper):
+                    raw.rollback()
+            except Exception as secondary:
+                self.assertEqual(type(secondary).__name__, 'InterfaceError')
+                self.assertEqual(secondary.args[0], 0)
+                PrivateBackupTests.run_backup(self, primary_error=primary, rollback_error=secondary)
+                self.assertTrue(B.safe_failure(primary).endswith('reason=database_timeout os_errno=0 database_code=2013'))
+            else:
+                self.fail('lost socket must fail rollback')
+        else:
+            self.fail('synthetic socket timeout must produce original driver failure')
+        finally:
+            raw.close()
+
     def test_restricted_native_backup_and_disposable_restore(self):
         import pymysql
         self.assertEqual(os.environ.get('DB_NAME'), 'service2_test')
