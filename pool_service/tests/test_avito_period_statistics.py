@@ -13,7 +13,7 @@ from django.utils import timezone
 
 from pool_service import avito_period_statistics as periods
 from pool_service.communication_avito import AvitoError
-from pool_service.communication_models import AvitoCredential, ChannelConnection, CommunicationChannel
+from pool_service.communication_models import AvitoCredential, ChannelConnection, CommunicationChannel, CommunicationAccess
 from pool_service.models import Organization, OrganizationAccess
 from pool_service.tests.test_avito_management import AvitoManagementTests
 
@@ -177,6 +177,7 @@ class PeriodRefreshTests(TestCase):
     def test_revoked_rights_and_changed_credentials_never_save_external_result(self):
         def revoked(*args, **kwargs):
             OrganizationAccess.objects.filter(user=self.owner, organization=self.org).update(role="manager")
+            CommunicationAccess.objects.filter(user=self.owner, organization=self.org).update(can_manage_channels=False)
             return page(self.start, self.end)
         self.fetch.side_effect = revoked
         with self.assertRaises(PermissionDenied):
@@ -184,6 +185,7 @@ class PeriodRefreshTests(TestCase):
         self.service.refresh_from_db()
         self.assertNotIn("avito_workspace", self.service.settings)
         OrganizationAccess.objects.filter(user=self.owner, organization=self.org).update(role="owner")
+        CommunicationAccess.objects.filter(user=self.owner, organization=self.org).update(can_manage_channels=True)
         self.service.settings = {}
         self.service.save(update_fields=["settings"])
         def changed(*args, **kwargs):
