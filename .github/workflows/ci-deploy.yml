@@ -498,7 +498,11 @@ jobs:
             -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND" \
             < .github/scripts/crm_pilot_db_backup_remote.sh \
             >"$backup_temp/stdout" 2>"$backup_temp/stderr" || backup_exit=$?
-          [[ "$backup_exit" == 0 ]] || { echo 'CRM_PILOT_DB_BACKUP_TRANSPORT_BLOCKED'; exit 2; }
+          if [[ "$backup_exit" != 0 ]]; then
+            python3 scripts/crm_pilot_db_backup_receipt.py --failure \
+              "$backup_temp/stdout" "$backup_temp/stderr" "$backup_exit" || exit 2
+            exit 2
+          fi
           python3 scripts/crm_pilot_db_backup_receipt.py "$backup_temp/stdout" "$GITHUB_SHA"
 
   calculator:
