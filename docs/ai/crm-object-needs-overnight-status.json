@@ -1,0 +1,86 @@
+{
+  "recorded_at": "2026-10-26T17:52:58.115Z",
+  "repository": "borovikov88/service2",
+  "main": "c59c5993c2eff73e540ad86cf098d5ce00a04e5c",
+  "production": {
+    "run": 40361152332,
+    "job": 121706853555,
+    "installed_sha": "c59c5993c2eff73e540ad86cf098d5ce00a04e5c",
+    "health": "success",
+    "crm441": "deployed",
+    "pr444": "merged and deployed"
+  },
+  "intake": {
+    "workflow_runs": 0,
+    "workflow_runs_proof": "GitHub workflow UI viewed while signed out",
+    "url": "https://github.com/borovikov88/service2/actions/workflows/crm-intake.yml",
+    "production_ui": "Приём обращений: ожидает первого запуска",
+    "production_ui_as": "Alexander Borovikov",
+    "first_dispatch": "Not available through connector; browser signed out; no login retried",
+    "real_event_to_lead": "not verified"
+  },
+  "needs": {
+    "scope": "package1 stable sources, queue, classification; package2 excluded",
+    "source_checkpoint_commit": "a95e5728f2389561047db830e4b9c19e4d58375d",
+    "source_checkpoint_tree": "8079d8ce3e0d972ee52a1494089a9bf5805873de",
+    "local_restored_head": "ad5435f80276e39f0e3596a69b313d193f6faf8a",
+    "writer": "/root/crm_object_needs_dev",
+    "reviewer": "/root/crm_object_needs_review",
+    "writer_state": "paused after execution environment became unavailable",
+    "fixed_commit": null,
+    "fixed_tree": null,
+    "approval": "changes required",
+    "uncommitted_edits_reported": [
+      "F1 retained-source missing-org guards",
+      "F2 per-import preflight reset/success plus before-row-save guards",
+      "F2b field-widget ID decoder plus prelocked existing-PK guard",
+      "L1 partial full-task-graph→Reading→fresh-identity-check, readonly parents and READ COMMITTED guard",
+      "new test_crm_object_need_corrections.py"
+    ],
+    "unresolved": "Callback still locks User FOR UPDATE; shared-User implementation and actual MySQL interleavings not done.",
+    "results": [
+      {
+        "kind": "initial red",
+        "tests": 4,
+        "failures": 2,
+        "errors": 1,
+        "passed": 1,
+        "note": "test spy error subsequently fixed"
+      },
+      {
+        "kind": "F1/F2 subset",
+        "tests": 6,
+        "result": "PASS",
+        "seconds": 0.241
+      },
+      {
+        "kind": "expanded delta",
+        "tests": 8,
+        "errors": 2,
+        "note": "pool ID decoder issue; source subsequently edited"
+      },
+      {
+        "kind": "delta_v2",
+        "result": "unknown; execution interrupted, no returned result"
+      }
+    ],
+    "not_executed": [
+      "final targeted checks",
+      "check/makemigrations on corrected freeze",
+      "full suite",
+      "actual MySQL",
+      "actual Chromium",
+      "PR CI",
+      "fixed-source independent review",
+      "merge/deployment"
+    ],
+    "callback_design_review": "Conditional shared-User approval only; _locked_staff_user takes User X and cannot be reused after S. Transport read has no User-X upgrade. Fullgraph→Reading→identity guard→current User shared→current OrgAccess/Employee; parent metadata bounded snapshot; actual SQL and bulk A/B race remain pending."
+  },
+  "durable_archive": {
+    "library_file_id": "libfile_83e395419e048191b62df3f4ff2fb567",
+    "last_saved_version": 21,
+    "contains": "restoration equality, F1/F2/L1 review/probes, actual F2b failing regression/log; not later uncommitted fixes"
+  },
+  "recovery": "When environment returns, same writer checks actual worktree before editing. Preserve if present; if absent restore from remote a95 old checkpoint, then recover same uncommitted fix history. Never claim old8079 includes corrections.",
+  "next": "Complete shared-User design, fixed clean freeze, integrate latest main preserving Avito/PR444, independent exact-head review plus actual MySQL/Chromium/full CI, then gated merge/deploy/health."
+}
