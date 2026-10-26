@@ -1,4 +1,4 @@
-"""Dormant v2 policy; every call rechecks persisted account and organization scope."""
+"""V2 read policy and advisory write availability; commands reauthorize under locks."""
 from django.contrib.auth import get_user_model
 from django.db.models import Q, F
 
@@ -29,6 +29,13 @@ def deals_for_user(user, organization):
 
 
 def can_write_commercial(user, organization):
-    # Flags describe rollout state, not an implementation or permission grant.
-    # PR04 must provide an authorized command boundary before enabling writes.
-    return False
+    # Availability only: this does not authorize any particular card/action.
+    # execute_commercial_command locks/rechecks all current rights and ownership.
+    if not can_view_team_deals(user, organization):
+        return False
+    if not Organization.objects.filter(pk=organization.pk, crm_v2_write=True).exists():
+        return False
+    return CrmAccess.objects.filter(organization_id=organization.pk, user_id=user.pk).filter(
+        Q(edit_own_leads=True) | Q(transition_own_leads=True)
+        | Q(edit_own_deals=True) | Q(transition_own_deals=True)
+    ).exists()

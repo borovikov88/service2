@@ -76,3 +76,30 @@ class CommercialMigrationTests(TransactionTestCase):
         finally:
             executor = MigrationExecutor(connection)
             executor.migrate(executor.loader.graph.leaf_nodes())
+
+
+    def test_command_capabilities_expand_existing_rows_without_granting_access(self):
+        executor = MigrationExecutor(connection)
+        try:
+            executor.migrate(self.after)
+            old = executor.loader.project_state(self.after).apps
+            org = old.get_model("pool_service", "Organization").objects.create(name="Command migration synthetic")
+            user = old.get_model("auth", "User").objects.create(username="command-migration-synthetic")
+            access = old.get_model("pool_service", "CrmAccess").objects.create(
+                organization_id=org.pk, user_id=user.pk, view_team_deals=True)
+            lead = old.get_model("pool_service", "CrmLead").objects.create(organization_id=org.pk, title="Preserved")
+            event = old.get_model("pool_service", "CrmEvent").objects.create(
+                organization_id=org.pk, lead_id=lead.pk, event_type="preserved")
+            executor = MigrationExecutor(connection)
+            leaves = executor.loader.graph.leaf_nodes()
+            executor.migrate(leaves)
+            current = executor.loader.project_state(leaves).apps
+            persisted = current.get_model("pool_service", "CrmAccess").objects.get(pk=access.pk)
+            self.assertTrue(persisted.view_team_deals)
+            self.assertTrue(all(not getattr(persisted, name) for name in (
+                "edit_own_leads", "transition_own_leads", "edit_own_deals", "transition_own_deals")))
+            self.assertEqual(current.get_model("pool_service", "CrmEvent").objects.get(pk=event.pk).reason, "")
+            self.assertEqual(current.get_model("pool_service", "CrmLead").objects.get(pk=lead.pk).revision, 0)
+        finally:
+            executor = MigrationExecutor(connection)
+            executor.migrate(executor.loader.graph.leaf_nodes())

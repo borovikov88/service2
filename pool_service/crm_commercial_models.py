@@ -1,4 +1,4 @@
-"""Dormant commercial schema. No application writer or legacy data conversion."""
+"""Commercial schema with a limited validated ORM write contract."""
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db import models, router, transaction
@@ -14,7 +14,7 @@ class CommercialQuerySet(models.QuerySet):
     """All writes must pass instance validation under the parent row locks.
 
     Unsafe expression/batch writes are intentionally unavailable in this schema
-    release. PR04 can introduce bounded command writes against this contract.
+    release. The PR04 service uses bounded instance writes against this contract.
     """
     def update(self, **kwargs):
         raise ValidationError("Use validated CRM instance.save().")
@@ -67,6 +67,22 @@ class CommercialModel(models.Model):
     def save(self, *args, **kwargs):
         using = kwargs.get("using") or router.db_for_write(type(self), instance=self)
         with transaction.atomic(using=using):
+            # Every supported commercial save joins the command/settings mutex.
+            # Lock both scopes before refusing a reparent; never lock row -> org.
+            from pool_service.models import Organization
+            org_ids = set()
+            candidates = [self]
+            if self.pk:
+                previous = type(self).objects.using(using).filter(pk=self.pk).first()
+                if previous:
+                    candidates.append(previous)
+            for candidate in candidates:
+                org_id = getattr(candidate, "organization_id", None)
+                if isinstance(candidate, CrmStage) and candidate.pipeline_id:
+                    org_id = CrmPipeline.objects.using(using).filter(pk=candidate.pipeline_id).values_list("organization_id", flat=True).first()
+                if org_id:
+                    org_ids.add(org_id)
+            list(Organization.objects.using(using).select_for_update().filter(pk__in=org_ids).order_by("pk"))
             old = type(self).objects.using(using).select_for_update().filter(pk=self.pk).first() if self.pk else None
             if old:
                 for key in self.immutable_scope:
@@ -119,7 +135,7 @@ class CrmStage(CommercialModel):
     name = models.CharField(max_length=160)
     position = models.PositiveIntegerField(default=0)
     is_active = models.BooleanField(default=True)
-    # Rule registry/transition execution belongs to PR04; no executable JSON rules.
+    # PR04 uses an explicit code registry; no executable JSON rules.
 
     class Meta:
         base_manager_name = "objects"
@@ -246,8 +262,9 @@ class CrmEvent(CommercialModel):
     actor = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT)
     occurred_at = models.DateTimeField(default=timezone.now)
     recorded_at = models.DateTimeField(default=timezone.now)
+    reason = models.CharField(max_length=500, blank=True)
     # Structural values only. Free text, names, messages, transcripts and payloads
-    # stay in their authorized source. Extend this contract in PR04 when needed.
+    # stay in their authorized source. Explicit user reasons are bounded above.
     safe_diff = models.JSONField(default=dict, blank=True)
     objects = EventQuerySet.as_manager()
 
@@ -258,12 +275,18 @@ class CrmEvent(CommercialModel):
 
     def clean(self):
         super().clean()
-        allowed = {"stage_id", "pipeline_id", "manager_id", "assignee_id", "revision", "is_archived"}
+        allowed = {"stage_id", "pipeline_id", "manager_id", "assignee_id", "revision", "is_archived", "status", "title_changed", "need_changed"}
         if not isinstance(self.safe_diff, dict) or not self.safe_diff.keys() <= allowed:
             raise ValidationError("Event diff accepts only structural CRM fields.")
-        for change in self.safe_diff.values():
+        for field, change in self.safe_diff.items():
             if not isinstance(change, dict) or set(change) != {"before", "after"}:
                 raise ValidationError("Event change requires before and after.")
+            if field == "status":
+                if any(type(value) is not str or value not in {"new", "working", "qualifying", "waiting", "deferred", "closed"} for value in change.values()):
+                    raise ValidationError("Event status must be a known lead state.")
+                continue
+            if field in {"title_changed", "need_changed"} and any(type(value) is not bool for value in change.values()):
+                raise ValidationError("Content markers must be booleans.")
             if any(value is not None and type(value) not in (int, bool) for value in change.values()):
                 raise ValidationError("Event values must be IDs, revisions or booleans.")
 
@@ -281,6 +304,10 @@ class CrmAccess(CommercialModel):
     organization = models.ForeignKey("pool_service.Organization", on_delete=models.PROTECT)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     view_team_deals = models.BooleanField(default=False)
+    edit_own_leads = models.BooleanField(default=False, editable=False)
+    transition_own_leads = models.BooleanField(default=False, editable=False)
+    edit_own_deals = models.BooleanField(default=False, editable=False)
+    transition_own_deals = models.BooleanField(default=False, editable=False)
 
     class Meta:
         base_manager_name = "objects"

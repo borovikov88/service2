@@ -11,7 +11,7 @@ on:
       - "pool_service/client_merge.py"
       - "pool_service/tests/test_client_merge.py"
       - "pool_service/tests/test_conversation_clients.py"
-      - "pool_service/services/crm_commercial_access.py"
+      - "pool_service/services/crm_commercial_*.py"
       - "pool_service/management/commands/bootstrap_crm_commercial.py"
       - "pool_service/tests/test_crm_commercial_*.py"
       - "pool_service/services/crm_permissions.py"
@@ -121,6 +121,7 @@ jobs:
             pool_service.tests.test_client_merge \
             pool_service.tests.test_conversation_clients \
             pool_service.tests.test_crm_commercial_foundation \
+            pool_service.tests.test_crm_commercial_commands \
             pool_service.tests.test_crm_commercial_migrations \
             pool_service.tests.test_crm_org_scope \
             pool_service.tests.test_task_read_privacy \
