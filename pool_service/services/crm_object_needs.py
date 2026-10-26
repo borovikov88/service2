@@ -51,16 +51,29 @@ def editable(task):
         and item and not item.is_archived and item.stage in (CrmItem.STAGE_SERVICE_NEW, CrmItem.STAGE_SERVICE_IN_PROGRESS))
 
 
-def lock_source_graphs(reading_ids):
-    # One task locking statement includes every candidate and every task
-    # sharing its CRM item. Do not lock a seed task before the sorted graph.
+SOURCE_GRAPH_FIELDS = ('pk', 'organization_id', 'task_type', 'water_reading_id', 'crm_item_id', 'pool_id', 'client_id')
+
+
+def source_graph_queryset(reading_ids):
     from django.db.models import Subquery
     seeds = ServiceTask.objects.filter(water_reading_id__in=reading_ids,
         task_type=ServiceTask.TYPE_SUPPLY_REQUEST)
-    tasks = list(ServiceTask.objects.select_for_update().filter(
+    return ServiceTask.objects.filter(
         Q(water_reading_id__in=reading_ids, task_type=ServiceTask.TYPE_SUPPLY_REQUEST)
         | Q(crm_item_id__in=Subquery(seeds.exclude(crm_item_id=None).values('crm_item_id')))
-    ).order_by('pk'))
+    ).order_by('pk')
+
+
+def source_graph_signature(reading_ids):
+    # A nonlocking recheck, including an initially empty graph. Callers must
+    # not acquire newly discovered task locks after Reading/recipient locks.
+    return tuple(source_graph_queryset(reading_ids).values_list(*SOURCE_GRAPH_FIELDS))
+
+
+def lock_source_graphs(reading_ids, *, with_signature=False):
+    # One task locking statement includes every candidate and every task
+    # sharing its CRM item. Do not lock a seed task before the sorted graph.
+    tasks = list(source_graph_queryset(reading_ids).select_for_update())
     items = {item.pk: item for item in CrmItem.objects.select_for_update().filter(
         pk__in={task.crm_item_id for task in tasks if task.crm_item_id}).order_by('pk')}
     candidates = {}
@@ -69,6 +82,9 @@ def lock_source_graphs(reading_ids):
             candidates.setdefault(task.water_reading_id, []).append(task)
             if task.crm_item_id:
                 task.crm_item = items[task.crm_item_id]
+    if with_signature:
+        signature = tuple(tuple(getattr(task, field) for field in SOURCE_GRAPH_FIELDS) for task in tasks)
+        return candidates, signature
     return candidates
 
 
@@ -84,16 +100,29 @@ def _lock_source_graph(reading_id, organization_id):
     return task
 
 
+def has_retained_source(reading_id):
+    return bool(reading_id and (
+        CrmObjectNeed.objects.filter(reading_id=reading_id).exists()
+        or ServiceTask.objects.filter(water_reading_id=reading_id, task_type=ServiceTask.TYPE_SUPPLY_REQUEST).exists()))
+
+
 @contextmanager
 def source_write_context(reading):
     """Acquire order BEFORE Reading INSERT/UPDATE, not in post_save."""
     with transaction.atomic():
         if not reading.pk and not (reading.required_materials or '').strip():
-            yield None, None
+            yield None, None, None
             return
         org_id = Pool.objects.filter(pk=reading.pool_id).values_list('organization_id', flat=True).first()
         if not org_id:
-            yield None, None
+            # No org/task locks may be acquired after Reading SQL. Serialize a
+            # legitimate unscoped save on its Pool, reject retained identities,
+            # and never switch to a newly appeared organization in this branch.
+            pool = Pool.objects.select_for_update().get(pk=reading.pool_id)
+            if pool.organization_id or has_retained_source(reading.pk):
+                raise NeedConflict('Организация исходной заявки отсутствует или изменилась.')
+            reading.pool = pool
+            yield None, None, None
             return
         Organization.objects.select_for_update().get(pk=org_id)
         task = _lock_source_graph(reading.pk, org_id) if reading.pk else None
@@ -110,7 +139,7 @@ def source_write_context(reading):
         # Reparenting a retained source identity is not a supported source write.
         if old and old.pool_id != reading.pool_id and (task or old.required_materials or reading.required_materials):
             raise NeedConflict('Объект исходной записи нельзя менять этим действием.')
-        yield old, task
+        yield old, task, org_id
 
 
 def _anchor_and_revision(reading, task, *, actor_id=None):
@@ -142,11 +171,17 @@ def _anchor_and_revision(reading, task, *, actor_id=None):
     return need, source, True
 
 
-def synchronize_source(reading, old=None, task=None):
+def synchronize_source(reading, old=None, task=None, *, locked_org_id):
     """Called inside source_write_context after the source SQL succeeds."""
     from pool_service.services.task_generation import _create_supply_task_locked, _supply_description, _crm_supply_title
     materials = (reading.required_materials or '').strip()
-    if not reading.pool.organization_id or (not task and not materials):
+    if locked_org_id is None:
+        if has_retained_source(reading.pk) or (materials and reading.pool.organization_id is not None):
+            raise NeedConflict('Источник изменился вне заранее заблокированной организации.')
+        return None
+    if reading.pool.organization_id != locked_org_id:
+        raise NeedConflict('Организация исходной заявки изменилась.')
+    if not task and not materials:
         return None
     if not task:
         task = _create_supply_task_locked(reading)
@@ -186,9 +221,9 @@ def synchronize_source(reading, old=None, task=None):
 
 @transaction.atomic
 def ensure_source(reading):
-    with source_write_context(reading) as (old, task):
+    with source_write_context(reading) as (old, task, locked_org_id):
         current = WaterReading.objects.select_related('pool__client', 'added_by').get(pk=reading.pk)
-        return synchronize_source(current, old=old, task=task)
+        return synchronize_source(current, old=old, task=task, locked_org_id=locked_org_id)
 
 
 def source_tasks(user, organization):

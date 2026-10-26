@@ -27,11 +27,16 @@ class WaterReadingResource(resources.ModelResource):
         super().__init__(*args, **kwargs)
         self.source_actor = source_actor
         self.source_org_ids = None
+        self.source_preflight_success = False
+        self.prelocked_reading_ids = set()
 
     def import_data(self, dataset, dry_run=False, raise_errors=False, use_transactions=None,
                     collect_failed_rows=False, rollback_on_validation_errors=False, **kwargs):
         # This resource alone requires all-or-nothing source batches, including
         # validation errors and dry-run preview. Other importers are unchanged.
+        self.source_preflight_success = False
+        self.prelocked_reading_ids = set()
+        self.source_org_ids = None
         return super().import_data(dataset, dry_run=dry_run, raise_errors=raise_errors,
             use_transactions=True, collect_failed_rows=collect_failed_rows,
             rollback_on_validation_errors=True, **kwargs)
@@ -42,15 +47,23 @@ class WaterReadingResource(resources.ModelResource):
         from django.db import transaction
         if not transaction.get_connection().in_atomic_block:
             return
-        def ids(column):
-            return {int(str(row.get(column))) for row in dataset.dict
-                if str(row.get(column, '')).isascii() and str(row.get(column, '')).isdigit()}
-        pool_ids = ids('pool')
-        pool_ids.update(WaterReading.objects.filter(pk__in=ids('id')).values_list('pool_id', flat=True))
+        # Use the same Field/widget decoder as ModelInstanceLoader. Numeric
+        # aliases such as "12.0" must address the same prelocked Reading as 12.
+        reading_ids, pool_ids = set(), set()
+        for row in dataset.dict:
+            id_field, pool_field = self.fields['id'], self.fields['pool']
+            if id_field.column_name in row:
+                reading_id = id_field.clean(row)
+                if reading_id is not None:
+                    reading_ids.add(reading_id)
+            if pool_field.column_name in row:
+                pool = pool_field.clean(row)
+                if pool is not None:
+                    pool_ids.add(getattr(pool, 'pk', pool))
+        pool_ids.update(WaterReading.objects.filter(pk__in=reading_ids).values_list('pool_id', flat=True))
         self.source_org_ids = set(Pool.objects.filter(pk__in=pool_ids).values_list('organization_id', flat=True)) - {None}
         list(Organization.objects.select_for_update().filter(pk__in=self.source_org_ids).order_by('pk'))
         from pool_service.services.crm_object_needs import lock_source_graphs
-        reading_ids = ids('id')
         graph = lock_source_graphs(reading_ids)
         self.source_graph = {reading_id: [(task.pk, task.crm_item_id) for task in tasks] for reading_id, tasks in graph.items()}
         locked_pools = list(Pool.objects.select_for_update().filter(pk__in=pool_ids).order_by('pk'))
@@ -71,8 +84,32 @@ class WaterReadingResource(resources.ModelResource):
         if current != self.source_graph:
             from django.core.exceptions import ValidationError
             raise ValidationError('Source candidate graph changed before import locks.')
+        self.prelocked_reading_ids = {reading.pk for reading in locked_readings}
+        self.source_preflight_success = True
+
+    def _require_source_preflight(self):
+        if not self.source_preflight_success:
+            from django.core.exceptions import ValidationError
+            raise ValidationError('Source import preflight failed; no row may be saved.')
+
+    def before_import_row(self, row, **kwargs):
+        # django-import-export records a before_import error but still loops
+        # rows when raise_errors=False. Stop before parsing/saving any row.
+        self._require_source_preflight()
+        id_field = self.fields['id']
+        reading_id = id_field.clean(row) if id_field.column_name in row else None
+        self._require_prelocked_reading(reading_id)
+        return super().before_import_row(row, **kwargs)
+
+    def _require_prelocked_reading(self, reading_id):
+        if (reading_id is not None and reading_id not in self.prelocked_reading_ids
+                and WaterReading.objects.filter(pk=reading_id).exists()):
+            from django.core.exceptions import ValidationError
+            raise ValidationError('Existing Reading was not prelocked; retry the whole batch.')
 
     def before_save_instance(self, instance, row, **kwargs):
+        self._require_source_preflight()
+        self._require_prelocked_reading(instance.pk)
         # Do not acquire an unplanned org lock out of sorted order if a pool
         # was reparented after identifying the batch. Reject and roll back.
         pool_org = Pool.objects.filter(pk=instance.pool_id).values_list('organization_id', flat=True).first()
