@@ -6,6 +6,12 @@ on:
     paths:
       - "pool_service/models.py"
       - "pool_service/avito_*.py"
+      - "pool_service/contact_identity*.py"
+      - "pool_service/communication_clients.py"
+      - "pool_service/communication_enrichment.py"
+      - "pool_service/communication_models.py"
+      - "pool_service/client_crm_models.py"
+      - "pool_service/tests/test_contact_identity*.py"
       - "pool_service/crm_source_*.py"
       - "pool_service/crm_commercial_*.py"
       - "pool_service/client_merge.py"
@@ -120,6 +126,8 @@ jobs:
             pool_service.tests.test_crm_source_orders \
             pool_service.tests.test_client_merge \
             pool_service.tests.test_conversation_clients \
+            pool_service.tests.test_contact_identity \
+            pool_service.tests.test_contact_identity_migrations \
             pool_service.tests.test_crm_commercial_foundation \
             pool_service.tests.test_crm_commercial_commands \
             pool_service.tests.test_crm_commercial_migrations \

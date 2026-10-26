@@ -93,6 +93,7 @@ def receive_message(*, connection, external_conversation_id, participant_name, b
             "organization": connection.channel.organization,
             "participant_name": participant_name,
             "participant_phone": participant_phone,
+            "provider_phone": participant_phone,
             "participant_external_id": participant_external_id,
         },
     )
@@ -134,10 +135,11 @@ def receive_message(*, connection, external_conversation_id, participant_name, b
     if participant_name and (not conversation.participant_name or not str(participant_name).isdigit() and participant_name != "Клиент Авито"):
         conversation.participant_name = participant_name
     conversation.participant_phone = participant_phone or conversation.participant_phone
+    conversation.provider_phone = participant_phone or conversation.provider_phone
     conversation.last_message_at = message.created_at
     if conversation.status == Conversation.STATUS_DONE:
         conversation.status = Conversation.STATUS_NEW
-    conversation.save(update_fields=["participant_name", "participant_phone", "last_message_at", "status", "updated_at"])
+    conversation.save(update_fields=["participant_name", "participant_phone", "provider_phone", "last_message_at", "status", "updated_at"])
     capture_client(conversation, body=body, message_id=message.pk)
     if connection.channel.kind == "avito" and not provider_context:
         from .communication_enrichment import start_client_enrichment_worker

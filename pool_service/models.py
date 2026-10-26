@@ -3261,3 +3261,5 @@ from . import avito_statistics_models  # noqa: E402,F401
 from . import crm_source_models  # noqa: E402,F401
 
 from . import crm_commercial_models  # noqa: E402,F401
+
+from . import contact_identity_models  # noqa: E402,F401

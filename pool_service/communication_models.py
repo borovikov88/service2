@@ -244,6 +244,7 @@ class Conversation(models.Model):
     external_id = models.CharField(max_length=255)
     participant_name = models.CharField(max_length=255)
     participant_phone = models.CharField(max_length=40, blank=True)
+    provider_phone = models.CharField(max_length=40, blank=True, editable=False)
     participant_external_id = models.CharField(max_length=255, blank=True, null=True, default="")
     client = models.ForeignKey(Client, on_delete=models.SET_NULL, null=True, blank=True, related_name="communication_conversations")
     provider_context = models.JSONField(default=dict, blank=True, null=True)

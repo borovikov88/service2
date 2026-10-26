@@ -303,6 +303,7 @@ class CrmAccess(CommercialModel):
     immutable_scope = ("organization_id", "user_id")
     organization = models.ForeignKey("pool_service.Organization", on_delete=models.PROTECT)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    resolve_contact_identity = models.BooleanField(default=False, editable=False)
     view_team_deals = models.BooleanField(default=False)
     edit_own_leads = models.BooleanField(default=False, editable=False)
     transition_own_leads = models.BooleanField(default=False, editable=False)

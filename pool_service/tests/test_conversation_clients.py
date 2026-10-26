@@ -11,6 +11,7 @@ from django.utils import timezone
 
 from pool_service.client_crm_models import ClientContact, ClientCRMProfile
 from pool_service.client_merge import merge_clients
+from pool_service.contact_identity_models import ContactIdentityReview, ContactObservation
 from pool_service.communication_avito import AvitoError, ingest_webhook
 from pool_service.communication_contact_data import extract_contacts
 from pool_service.communication_enrichment import chat_context, enrich_conversation, start_client_enrichment_worker
@@ -40,9 +41,9 @@ class Fixtures:
         notifications.start()
         self.addCleanup(notifications.stop)
 
-    def incoming(self, *, chat="chat-one", message="message-one", name="90001", author="90001", body="Здравствуйте", connection=None):
+    def incoming(self, *, chat="chat-one", message="message-one", name="90001", author="90001", body="Здравствуйте", connection=None, phone=""):
         return receive_message(connection=connection or self.connection, external_conversation_id=chat,
-            external_message_id=message, participant_name=name, participant_external_id=author, body=body)
+            external_message_id=message, participant_name=name, participant_external_id=author, participant_phone=phone, body=body)
 
     def provider_chat(self):
         return {"id": "chat-one", "users": [
@@ -62,10 +63,12 @@ class ConversationClientCaptureTests(Fixtures, TestCase):
         customer = conversation.client
         self.assertEqual(customer.name, "Тестовый Клиент")
         self.assertEqual(customer.organization_id, self.org.pk)
-        self.assertEqual(customer.phone, "+7 900 123 4567")
-        self.assertEqual(customer.email, "test@example.invalid")
+        self.assertFalse(customer.phone)
+        self.assertFalse(customer.email)
+        self.assertTrue(customer.crm_profile.is_preliminary)
         self.assertEqual(customer.crm_profile.source, "communications")
-        self.assertEqual(customer.crm_contacts.count(), 2)
+        self.assertEqual(customer.crm_contacts.count(), 0)
+        self.assertEqual(ContactObservation.objects.filter(origin="message", source_message_id=message.pk).count(), 2)
         self.assertEqual(conversation.contact_data["address"], "Тестовая улица, 10")
         self.assertEqual(conversation.contact_data["company"], "Test Company")
 
@@ -82,27 +85,31 @@ class ConversationClientCaptureTests(Fixtures, TestCase):
 
     def test_unique_phone_reuses_existing_client_without_overwriting_manual_fields(self):
         customer = Client.objects.create(organization=self.org, name="Manual customer", phone="89001234567", email="manual@example.invalid")
-        message, _ = self.incoming(body="Меня зовут Другое Имя. +7 900 123 45 67 other@example.invalid")
+        message, _ = self.incoming(phone="+79001234567", body="Меня зовут Другое Имя. +7 900 123 45 67 other@example.invalid")
         customer.refresh_from_db()
         self.assertEqual(message.conversation.client_id, customer.pk)
         self.assertEqual(customer.name, "Manual customer")
         self.assertEqual(customer.email, "manual@example.invalid")
         self.assertEqual(customer.phone, "89001234567")
-        self.assertTrue(customer.crm_contacts.filter(kind="email", value="other@example.invalid").exists())
+        self.assertFalse(customer.crm_contacts.filter(kind="email", value="other@example.invalid").exists())
+        self.assertTrue(ContactObservation.objects.filter(kind="email", value="other@example.invalid", origin="message").exists())
         self.assertEqual(Client.objects.count(), 1)
 
     def test_ambiguous_phone_does_not_pick_arbitrary_client(self):
         for name in ("Existing one", "Existing two"):
             Client.objects.create(organization=self.org, name=name, phone="89001234567")
-        message, _ = self.incoming(body="Мой телефон +7 900 123 45 67")
-        self.assertEqual(message.conversation.client.crm_profile.source, "communications")
-        self.assertEqual(Client.objects.count(), 3)
+        message, _ = self.incoming(phone="+79001234567", body="Мой телефон +7 900 123 45 67")
+        self.assertIsNone(message.conversation.client_id)
+        self.assertEqual(ContactIdentityReview.objects.count(), 1)
+        self.assertEqual(Client.objects.count(), 2)
 
-    def test_email_match_is_case_insensitive_within_this_org(self):
+    def test_message_only_email_is_a_suggestion_without_identity_matching(self):
         customer = Client.objects.create(organization=self.org, name="Existing email customer", email="TEST@EXAMPLE.INVALID")
         message, _ = self.incoming(body="Моя почта test@example.invalid")
-        self.assertEqual(message.conversation.client_id, customer.pk)
-        self.assertEqual(Client.objects.count(), 1)
+        self.assertNotEqual(message.conversation.client_id, customer.pk)
+        self.assertFalse(message.conversation.client.email)
+        self.assertEqual(Client.objects.count(), 2)
+        self.assertEqual(ContactObservation.objects.get(origin="message").value, "test@example.invalid")
 
     def test_duplicate_is_idempotent_and_old_message_does_not_restore_old_name(self):
         first, _ = self.incoming(body="Меня зовут Первое Имя. +79001234567")
@@ -111,11 +118,12 @@ class ConversationClientCaptureTests(Fixtures, TestCase):
         self.assertFalse(created)
         self.assertEqual(first.pk, duplicate.pk)
         self.assertEqual(Client.objects.count(), 1)
-        self.assertEqual(ClientContact.objects.count(), 1)
+        self.assertEqual(ClientContact.objects.count(), 0)
+        self.assertEqual(ContactObservation.objects.filter(origin="message").count(), 2)
         self.assertEqual(Client.objects.get().name, "Новое Имя")
 
     def test_human_edit_and_primary_contact_win_over_later_extraction(self):
-        first, _ = self.incoming(body="Меня зовут Первое Имя. +79001234567")
+        first, _ = self.incoming(phone="+79001234567", body="Меня зовут Первое Имя. +79001234567")
         customer = first.conversation.client
         customer.name = "Employee correction"
         customer.email = "correct@example.invalid"
@@ -123,7 +131,8 @@ class ConversationClientCaptureTests(Fixtures, TestCase):
         self.incoming(message="two", body="Меня зовут Новое Имя. +79007654321 next@example.invalid")
         customer.refresh_from_db()
         self.assertEqual((customer.name, customer.phone, customer.email), ("Employee correction", "+7 900 123 4567", "correct@example.invalid"))
-        self.assertEqual(customer.crm_contacts.count(), 3)
+        self.assertEqual(customer.crm_contacts.count(), 1)
+        self.assertEqual(ContactObservation.objects.filter(origin="message").count(), 3)
 
     def test_second_chat_can_fill_shared_client_name_and_respects_human_edit(self):
         first, _ = self.incoming()
@@ -312,8 +321,8 @@ class ConversationEnrichmentTests(Fixtures, TransactionTestCase):
         self.assertContains(page, "&lt;script&gt;bad()&lt;/script&gt;")
 
     def test_failure_keeps_card_and_history_uses_only_incoming(self):
-        conversation = Conversation.objects.create(organization=self.org, connection=self.connection, external_id="chat-one", participant_name="90001", participant_external_id="90001")
-        ConversationMessage.objects.create(conversation=conversation, direction="in", body="+79001234567")
+        first, _ = self.incoming(body="+79001234567")
+        conversation = first.conversation
         ConversationMessage.objects.create(conversation=conversation, direction="out", body="Меня зовут Employee. +79007654321")
         with patch("pool_service.communication_avito._json_request", side_effect=AvitoError("provider_http_403")) as request:
             with self.assertRaises(AvitoError):
@@ -321,12 +330,14 @@ class ConversationEnrichmentTests(Fixtures, TransactionTestCase):
             self.assertEqual(enrich_conversation(conversation.pk), "deferred")
             self.assertEqual(request.call_count, 1)
         conversation.refresh_from_db()
-        self.assertEqual(conversation.client.phone, "+7 900 123 4567")
+        self.assertFalse(conversation.client.phone)
+        self.assertTrue(ContactObservation.objects.filter(origin="message", value="9001234567").exists())
+        self.assertFalse(ContactObservation.objects.filter(origin="message", value="9007654321").exists())
         self.assertFalse(ClientContact.objects.filter(match_value="9007654321").exists())
 
     def test_legacy_dialog_resolves_existing_client_before_creating_new_card(self):
         customer = Client.objects.create(organization=self.org, name="Existing CRM client", phone="89001234567")
-        conversation = Conversation.objects.create(organization=self.org, connection=self.connection, external_id="chat-one", participant_name="90001")
+        conversation = Conversation.objects.create(organization=self.org, connection=self.connection, external_id="chat-one", participant_name="90001", provider_phone="+79001234567")
         ConversationMessage.objects.create(conversation=conversation, direction="in", body="Телефон +79001234567")
         with patch("pool_service.communication_avito._json_request", return_value=self.provider_chat()):
             enrich_conversation(conversation.pk)
@@ -336,12 +347,15 @@ class ConversationEnrichmentTests(Fixtures, TransactionTestCase):
         customer.refresh_from_db()
         self.assertEqual(customer.name, "Existing CRM client")
 
-    def test_legacy_chats_wait_for_stable_author_before_creating_duplicate_cards(self):
+    def test_legacy_chats_reuse_existing_card_only_after_stable_author_is_known(self):
+        known, _ = self.incoming(chat="known", message="known")
         first = Conversation.objects.create(organization=self.org, connection=self.connection, external_id="chat-one", participant_name="Unknown")
         second = Conversation.objects.create(organization=self.org, connection=self.connection, external_id="chat-two", participant_name="Unknown")
         enrich_conversation(first.pk, refresh_context=False)
         enrich_conversation(second.pk, refresh_context=False)
-        self.assertFalse(Client.objects.exists())
+        self.assertEqual(Client.objects.count(), 1)
+        self.assertIsNone(Conversation.objects.get(pk=first.pk).client_id)
+        self.assertIsNone(Conversation.objects.get(pk=second.pk).client_id)
         for conversation in (first, second):
             raw = self.provider_chat()
             raw["id"] = conversation.external_id
@@ -358,7 +372,9 @@ class ConversationEnrichmentTests(Fixtures, TransactionTestCase):
         with patch("pool_service.communication_avito._json_request", return_value=self.provider_chat()):
             call_command("enrich_communication_clients", ids=str(conversation.pk))
         conversation.refresh_from_db()
-        self.assertEqual(conversation.client.phone, "+7 900 123 4567")
+        self.assertIsNone(conversation.client_id)
+        self.assertFalse(Client.objects.exists())
+        self.assertTrue(ContactObservation.objects.filter(conversation=conversation, origin="message", value="9001234567").exists())
         self.assertTrue(conversation.contact_data["history_captured"])
 
     def test_replaying_old_chat_history_does_not_restore_old_shared_client_name(self):

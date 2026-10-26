@@ -1,6 +1,5 @@
 """Tenant-scoped CRM capture for incoming conversations, without model calls."""
 from django.db import transaction
-from django.db.models import Q
 
 from .client_crm_models import ClientContact, ClientCRMProfile
 from .client_phone_matching import clients_by_phones
@@ -22,39 +21,70 @@ def capture_client(conversation, *, body="", message_id=None, create=True):
     organization_id = conversation.organization_id
     if conversation.connection.channel.organization_id != organization_id:
         raise ValueError("conversation_organization_mismatch")
+    from .contact_identity import observe, queue_review, suggested_role
+    from .contact_identity_models import ContactIdentityReview, ContactObservation
+    from .communication_models import Conversation
+    if ContactObservation.objects.filter(conversation=conversation).exclude(
+            organization_id=organization_id, connection_id_snapshot=conversation.connection_id,
+            account_id_snapshot=str(conversation.connection.external_id), source_kind=conversation.connection.channel.kind,
+            conversation_external_id=conversation.external_id).exists():
+        raise ValueError("conversation_source_binding_changed")
     found = extract_contacts(body)
-    supplied_phone = normalize_phone(conversation.participant_phone)
-    if supplied_phone and supplied_phone not in found["phones"]:
-        found["phones"].insert(0, supplied_phone)
+    # Every text contact is a suggestion tied to its actual incoming event.
+    # Aggregated legacy bodies without a message ID cannot manufacture provenance.
+    if message_id:
+        for kind, values in (("phone", found["phones"]), ("email", found["emails"])):
+            for value in values:
+                observe(conversation, origin="message", kind=kind, value=value, message_id=message_id,
+                    role=suggested_role(body, value) if kind == "phone" else "unknown")
+    supplied_phone = normalize_phone(conversation.provider_phone)
+    if supplied_phone:
+        observe(conversation, origin="provider_phone", kind="phone", value=supplied_phone)
+    if conversation.participant_external_id:
+        observe(conversation, origin="provider_identity", kind="identity", value=conversation.participant_external_id)
     previous = dict(conversation.contact_data) if isinstance(conversation.contact_data, dict) else {}
     client = None
     if conversation.client_id:
         client = Client.objects.select_for_update().get(pk=conversation.client_id)
         if client.organization_id != organization_id:
             raise ValueError("conversation_client_organization_mismatch")
-    elif conversation.participant_external_id and conversation.connection.channel.kind == "avito":
-        from .communication_models import Conversation
-        ids = list(Conversation.objects.filter(
-            organization_id=organization_id, connection__channel__organization_id=organization_id,
-            connection__channel__kind="avito", participant_external_id=conversation.participant_external_id,
-            client__organization_id=organization_id,
-        ).exclude(client__isnull=True).values_list("client_id", flat=True).distinct()[:2])
-        if len(ids) == 1:
-            client = active_clients(Client.objects.select_for_update().filter(pk=ids[0])).first()
-    if client is None and not conversation.client_id:
+    else:
+        # Pending clarification remains durable even if later matching changes;
+        # enrichment/replay may not silently decide it or create a duplicate.
+        review = ContactIdentityReview.objects.select_for_update().filter(conversation=conversation).first()
+        if review:
+            return None
         ids = set()
-        if found["phones"]:
+        reason = "provider_identity"
+        if conversation.participant_external_id and conversation.connection.channel.kind == "avito":
+            from django.db.models import Q
+            sources = Conversation.objects.filter(organization_id=organization_id,
+                connection_id=conversation.connection_id, participant_external_id=conversation.participant_external_id,
+            ).filter(Q(contactobservation__isnull=True) | Q(contactobservation__origin="provider_identity",
+                contactobservation__account_id_snapshot=str(conversation.connection.external_id)))
+            ids.update(active_clients(Client.objects.filter(organization_id=organization_id,
+                communication_conversations__pk__in=sources.values("pk"),
+            )).values_list("pk", flat=True).distinct()[:51])
+            # A pending source with this author blocks parallel provisional cards
+            # in another chat; retain a local clarification for the local source.
+            pending = ContactIdentityReview.objects.filter(
+                organization_id=organization_id, state="pending",
+                account_id_snapshot=str(conversation.connection.external_id),
+                conversation__connection_id=conversation.connection_id,
+                conversation__participant_external_id=conversation.participant_external_id,
+            ).first()
+            if pending:
+                queue_review(conversation, pending.candidate_ids, pending.reason,
+                    candidates_truncated=pending.candidates_truncated)
+                return None
+        if not ids and supplied_phone:
+            reason = "provider_phone"
             organization = Organization.objects.get(pk=organization_id)
-            matches = clients_by_phones(organization, found["phones"], limit=2)
+            matches = clients_by_phones(organization, [supplied_phone], limit=51)
             ids.update(item.pk for values in matches.values() for item in values)
-        if not ids and found["emails"]:
-            ids.update(active_clients(Client.objects.filter(organization_id=organization_id)).filter(
-                crm_contacts__kind="email", crm_contacts__match_value__in=found["emails"],
-            ).values_list("pk", flat=True).distinct()[:2])
-            email_filter = Q(pk__in=[])
-            for email in found["emails"]:
-                email_filter |= Q(email__iexact=email)
-            ids.update(active_clients(Client.objects.filter(organization_id=organization_id)).filter(email_filter).values_list("pk", flat=True)[:2])
+        if len(ids) > 1:
+            queue_review(conversation, ids, reason)
+            return None
         if len(ids) == 1:
             client = Client.objects.select_for_update().get(pk=ids.pop())
     created = client is None
@@ -63,7 +93,7 @@ def capture_client(conversation, *, body="", message_id=None, create=True):
     if created:
         name = found.get("name") or _usable_name(conversation.participant_name) or f"Клиент · {conversation.connection.channel.get_kind_display()}"
         client = Client.objects.create(organization_id=organization_id, client_type="private", name=name)
-        ClientCRMProfile.objects.create(client=client, source=ClientCRMProfile.SOURCE_COMMUNICATIONS,
+        ClientCRMProfile.objects.create(client=client, source=ClientCRMProfile.SOURCE_COMMUNICATIONS, is_preliminary=True,
             communication_data={"applied_name": name, "name_source": "message" if found.get("name") else "provider",
                 "name_message_id": message_id if found.get("name") and message_id else 0})
     conversation.client = client
@@ -90,30 +120,20 @@ def capture_client(conversation, *, body="", message_id=None, create=True):
             if name_source == "message" and message_id:
                 profile.communication_data["name_message_id"] = message_id
             profile.save(update_fields=["communication_data", "updated_at"])
-    for kind, values, field in (("phone", found["phones"], "phone"), ("email", found["emails"], "email")):
-        saved = list(previous.get(field + "s", [])) if isinstance(previous.get(field + "s"), list) else []
-        for key in values:
-            value = phone_value(key) if kind == "phone" else key
-            if key not in saved:
-                saved.append(key)
-            contact = ClientContact.objects.filter(client=client, kind=kind, match_value=key).first()
-            source = "communications:" + conversation.connection.channel.kind
-            if contact is None:
-                contact, _ = ClientContact.objects.get_or_create(client=client, kind=kind, value=value, defaults={
-                    "match_value": key, "label": conversation.connection.channel.get_kind_display(),
-                    "sources": [source], "source_reference": f"conversation:{conversation.uuid}",
-                    "is_primary": not getattr(client, field),
-                })
-                if not contact.match_value:
-                    contact.match_value = key
-                    contact.save(update_fields=["match_value", "updated_at"])
-            elif source not in (contact.sources or []):
-                contact.sources = list(contact.sources or []) + [source]
-                contact.save(update_fields=["sources", "updated_at"])
-            if not getattr(client, field) and len(value) <= Client._meta.get_field(field).max_length:
-                setattr(client, field, value)
-                changed.append(field)
-        previous[field + "s"] = saved[:30]
+    # Only a real provider phone may enter the existing identity contacts.
+    # Provider-supplied is still not a human confirmation of ownership.
+    if supplied_phone:
+        value = phone_value(supplied_phone)
+        contact = ClientContact.objects.filter(client=client, kind="phone", match_value=supplied_phone).first()
+        if contact is None:
+            ClientContact.objects.get_or_create(client=client, kind="phone", value=value, defaults={
+                "match_value": supplied_phone, "label": conversation.connection.channel.get_kind_display(),
+                "sources": ["communications:" + conversation.connection.channel.kind],
+                "source_reference": f"conversation:{conversation.uuid}", "is_primary": created and not client.phone,
+            })
+        if created and not client.phone and len(value) <= Client._meta.get_field("phone").max_length:
+            client.phone = value
+            changed.append("phone")
     for field in ("name", "address", "company"):
         if found.get(field):
             previous[field] = found[field]
@@ -122,8 +142,6 @@ def capture_client(conversation, *, body="", message_id=None, create=True):
                 previous["evidence"] = {**evidence, field: message_id}
     if changed:
         client.save(update_fields=list(set(changed)))
-    if not conversation.participant_phone and client.phone:
-        conversation.participant_phone = client.phone
     conversation.contact_data = previous
-    conversation.save(update_fields=["client", "participant_phone", "contact_data", "updated_at"])
+    conversation.save(update_fields=["client", "contact_data", "updated_at"])
     return client
