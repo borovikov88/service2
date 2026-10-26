@@ -37,7 +37,7 @@ from pool_service.communication_models import (
     AvitoCredential, ChannelConnection, CommunicationChannel, Conversation, ConversationMessage,
 )
 from pool_service import avito_workspace, avito_status_monitor, avito_audit, avito_source_audit, avito_autoload_report, avito_autoload_auto, avito_advance, avito_tariff_reminder
-from pool_service import avito_promotion_observations, avito_tariff_subscription
+from pool_service import avito_promotion_observations, avito_tariff_subscription, avito_period_statistics
 from pool_service.communication_services import conversation_capability, organization_access
 from pool_service.communication_views import _avito_subscription_token
 
@@ -312,6 +312,7 @@ def avito_dashboard(request):
         "expanded_item_id": expanded_item_id,
         "detail_in_items": detail_in_items,
         "local_analytics": local_analytics,
+        "period_reports": avito_period_statistics.display(selected["connection"] if selected else None, request.user),
         "stats_defaults": _statistics_defaults(),
         "accounts": accounts,
         "connected_count": len(accounts),
@@ -482,6 +483,15 @@ def avito_refresh_data(request, connection_id):
         except ValueError as error:
             messages.error(request, str(error))
         return redirect(destination + "#avito-tariff")
+    if section == "statistics" and connection.pk == 4 and str(connection.external_id) == "446312402":
+        try:
+            result = avito_period_statistics.refresh(connection, request.user,
+                start=form.cleaned_data["stats_date_from"], end=form.cleaned_data["stats_date_to"],
+                grouping=form.cleaned_data["grouping"] or "totals", offset=form.cleaned_data["offset"] or 0)
+        except AvitoError:
+            result = {"status": "warning", "detail": "Параметры или привязка периодного запроса не подтверждены; прежний отчёт сохранён."}
+        (messages.success if result["status"] == "ok" else messages.warning)(request, result["detail"])
+        return redirect(destination)
     targets = avito_workspace.BASIC_SECTIONS if section == "all" else (section,)
     page = form.cleaned_data["page"] or 1
     status = form.cleaned_data["status"]
