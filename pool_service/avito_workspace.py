@@ -298,33 +298,137 @@ def statistics_for_display(data):
     return result
 
 
+STATISTICS_INVALID_REASONS = frozenset({
+    "result_missing", "result_type", "grouping_missing_with_explicit_zero_total",
+    "groupings_type", "groupings_limit", "totals_multiple_groups", "group_type",
+    "metrics_type", "id_type", "id_duplicate", "metric_type", "metric_slug_type",
+    "metric_duplicate", "total_type",
+})
+STATISTICS_DIAGNOSTIC_REASONS = {
+    "provider_data_invalid": STATISTICS_INVALID_REASONS,
+    "statistics_fields_unavailable": frozenset({"groupings_absent", "groupings_and_total_absent"}),
+    "statistics_provider_error": frozenset({"provider_error_reported"}),
+}
+
+
+def statistics_reason_allowed(code, reason):
+    return (type(code) is str and type(reason) is str
+        and reason in STATISTICS_DIAGNOSTIC_REASONS.get(code, ()))
+
+
+STATISTICS_GROUPINGS_KINDS = frozenset({
+    "missing", "null", "empty_object", "object", "empty_list", "list",
+    "string", "integer", "number", "bool", "other",
+})
+STATISTICS_TOTAL_KINDS = frozenset({
+    "missing", "null", "zero_integer", "positive_integer", "negative_integer",
+    "string", "bool", "number", "other",
+})
+STATISTICS_SHAPE_KEYS = frozenset({
+    "groupings_kind", "data_total_count_kind", "provider_error_present",
+})
+
+
+def statistics_shape_metadata(value):
+    """Closed structural labels only; arbitrary provider/settings data is discarded."""
+    if (type(value) is not dict or set(value) != STATISTICS_SHAPE_KEYS
+            or type(value["groupings_kind"]) is not str
+            or value["groupings_kind"] not in STATISTICS_GROUPINGS_KINDS
+            or type(value["data_total_count_kind"]) is not str
+            or value["data_total_count_kind"] not in STATISTICS_TOTAL_KINDS
+            or type(value["provider_error_present"]) is not bool):
+        return None
+    return {key: value[key] for key in ("groupings_kind", "data_total_count_kind", "provider_error_present")}
+
+
+def _statistics_response_shape(response):
+    """Inspect fixed JSON slots without retaining values, lengths or arbitrary keys."""
+    missing = object()
+    result = response.get("result") if type(response) is dict else None
+    groups = result.get("groupings", missing) if type(result) is dict else missing
+    total = result.get("dataTotalCount", missing) if type(result) is dict else missing
+    def kind(value, *, count=False):
+        if value is missing:
+            return "missing"
+        if value is None:
+            return "null"
+        if type(value) is bool:
+            return "bool"
+        if type(value) is int:
+            return ("zero_integer" if value == 0 else "positive_integer" if value > 0
+                    else "negative_integer") if count else "integer"
+        if type(value) is float:
+            return "number"
+        if type(value) is str:
+            return "string"
+        if not count and type(value) is dict:
+            return "object" if value else "empty_object"
+        if not count and type(value) is list:
+            return "list" if value else "empty_list"
+        return "other"
+    containers = [item for item in (response, result) if type(item) is dict]
+    # Match the existing truthy error/errors predicate; never export their contents.
+    return {"groupings_kind": kind(groups), "data_total_count_kind": kind(total, count=True),
+        "provider_error_present": any(bool(item.get(key)) for item in containers for key in ("error", "errors"))}
+
+
+def _statistics_data_invalid(reason, response, *, code="provider_data_invalid"):
+    # Fixed classifications only: optional omission is not a schema/type failure.
+    error = AvitoError(code)
+    error.statistics_reason = reason
+    error.statistics_shape = _statistics_response_shape(response)
+    raise error
+
+
 def statistics_data(response, *, start, end, grouping, offset):
-    result = response.get("result")
-    groups = result.get("groupings") if isinstance(result, dict) else None
-    if not isinstance(groups, list) or len(groups) > PAGE_SIZE:
-        raise AvitoError("provider_data_invalid")
+    result = response.get("result") if isinstance(response, dict) else None
+    containers = [value for value in (response, result) if isinstance(value, dict)]
+    if any(container.get(key) for container in containers for key in ("error", "errors")):
+        _statistics_data_invalid("provider_error_reported", response, code="statistics_provider_error")
+    if not isinstance(response, dict):
+        _statistics_data_invalid("result_type", response)
+    if "result" not in response:
+        _statistics_data_invalid("result_missing", response)
+    if not isinstance(result, dict):
+        _statistics_data_invalid("result_type", response)
+    # Own-profile Ads export makes these response properties optional. Validate
+    # present fields independently; absence never supplies an empty list or zero.
+    if "dataTotalCount" in result and _count(result["dataTotalCount"]) is None:
+        _statistics_data_invalid("total_type", response)
+    if "groupings" not in result:
+        _statistics_data_invalid("groupings_absent" if "dataTotalCount" in result else
+            "groupings_and_total_absent", response, code="statistics_fields_unavailable")
+    groups = result["groupings"]
+    if not isinstance(groups, list):
+        _statistics_data_invalid("groupings_type", response)
+    if len(groups) > PAGE_SIZE:
+        _statistics_data_invalid("groupings_limit", response)
     rows = []
     labels = [{"slug": slug, "label": label, "unit": "₽" if unit == "kopeks" else unit} for slug, label, unit in METRICS]
     seen = set()
     if grouping == "totals" and len(groups) > 1:
-        raise AvitoError("provider_data_invalid")
+        _statistics_data_invalid("totals_multiple_groups", response)
     for group in groups:
-        if not isinstance(group, dict) or not isinstance(group.get("metrics"), list):
-            raise AvitoError("provider_data_invalid")
+        if not isinstance(group, dict):
+            _statistics_data_invalid("group_type", response)
+        if not isinstance(group.get("metrics"), list):
+            _statistics_data_invalid("metrics_type", response)
         group = dict(group)
         if grouping == "totals" and "id" not in group:
             group["id"] = 0
         if type(group.get("id")) is not int:
-            raise AvitoError("provider_data_invalid")
+            _statistics_data_invalid("id_type", response)
         if group["id"] in seen:
-            raise AvitoError("provider_data_invalid")
+            _statistics_data_invalid("id_duplicate", response)
         seen.add(group["id"])
         values = {}
         for item in group["metrics"]:
-            if not isinstance(item, dict) or not isinstance(item.get("slug"), str):
-                raise AvitoError("provider_data_invalid")
+            if not isinstance(item, dict):
+                _statistics_data_invalid("metric_type", response)
+            if not isinstance(item.get("slug"), str):
+                _statistics_data_invalid("metric_slug_type", response)
             if item["slug"] in values:
-                raise AvitoError("provider_data_invalid")
+                _statistics_data_invalid("metric_duplicate", response)
             values[item["slug"]] = item.get("value")
         metrics = []
         for slug, label, unit in METRICS:
@@ -342,7 +446,10 @@ def statistics_data(response, *, start, end, grouping, offset):
     return statistics_for_display({"rows": rows, "metric_labels": labels, "date_from": start, "date_to": end,
             "grouping": grouping, "offset": offset, "limit": PAGE_SIZE, "total": total,
             "has_previous": offset > 0,
-            "has_next": offset + PAGE_SIZE < total if total is not None else len(rows) == PAGE_SIZE,
+            "has_next": offset + PAGE_SIZE < total if total is not None else None,
+            "pagination_state": "known_total" if total is not None else "unknown_total",
+            "empty_result_confirmed": not rows and total == 0,
+            "response_contract": "own_profile_ads",
             "source_timestamp": _text(result.get("timestamp"), 80)})
 
 

@@ -6,6 +6,36 @@ on:
     paths:
       - "pool_service/models.py"
       - "pool_service/avito_*.py"
+      - "pool_service/contact_identity*.py"
+      - "pool_service/communication_clients.py"
+      - "pool_service/communication_enrichment.py"
+      - "pool_service/communication_models.py"
+      - "pool_service/client_crm_models.py"
+      - "pool_service/tests/test_contact_identity*.py"
+      - "pool_service/crm_inbox_models.py"
+      - "pool_service/services/crm_inbox.py"
+      - "pool_service/management/commands/crm_inbox.py"
+      - "pool_service/tests/test_crm_inbox*.py"
+      - "pool_service/communication_avito.py"
+      - "pool_service/crm_source_*.py"
+      - "pool_service/crm_commercial_*.py"
+      - "pool_service/client_merge.py"
+      - "pool_service/tests/test_client_merge.py"
+      - "pool_service/tests/test_conversation_clients.py"
+      - "pool_service/services/crm_commercial_*.py"
+      - "pool_service/management/commands/bootstrap_crm_commercial.py"
+      - "pool_service/tests/test_crm_commercial_*.py"
+      - "pool_service/tests/test_crm_live_*.py"
+      - "pool_service/crm_live_views.py"
+      - "pool_service/crm_pilot_views.py"
+      - "pool_service/services/crm_pilot_activation.py"
+      - "pool_service/services/crm_approved_access.py"
+      - "pool_service/management/commands/provision_approved_crm_access.py"
+      - "pool_service/tests/test_crm_approved_access.py"
+      - "pool_service/services/crm_deal_task_schedule.py"
+      - "pool_service/task_waiting_guards.py"
+      - "pool_service/services/crm_permissions.py"
+      - "pool_service/tests/test_crm_source_orders.py"
       - "pool_service/tests/test_avito*.py"
       - "pool_service/management/commands/monitor_avito_statuses.py"
       - "pool_service/management/commands/configure_avito_services_workplace.py"
@@ -36,6 +66,11 @@ on:
       - "pool_service/tests/test_odata_payroll_drafts.py"
       - "pool_service/management/commands/sync_onec_finance.py"
       - ".github/workflows/management-finance-mysql.yml"
+      - ".github/workflows/ci-deploy.yml"
+      - ".github/scripts/crm_pilot_db_backup_remote.sh"
+      - ".github/tests/test_crm_pilot_db_backup.py"
+      - "scripts/crm_pilot_db_backup.py"
+      - "scripts/crm_pilot_db_backup_receipt.py"
   workflow_dispatch:
 
 permissions:
@@ -81,6 +116,15 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
+      - name: Verify restricted native CRM backup and disposable restore
+        timeout-minutes: 6
+        env:
+          SERVICE2_CRM_BACKUP_MYSQL_INTEGRATION: "1"
+        run: |
+          command -v mysqldump >/dev/null || command -v mariadb-dump >/dev/null
+          command -v mysql >/dev/null || command -v mariadb >/dev/null
+          python -m unittest discover -s .github/tests -p test_crm_pilot_db_backup.py -k NativeMySQLTests -v
+
       - name: Verify MySQL model and migration state
         run: |
           python manage.py check
@@ -101,8 +145,30 @@ jobs:
             pool_service.tests_communications.CommunicationsTests.test_megafon_account_sync_auto_matches_employee_and_backfills_calls \
             pool_service.tests_communications.CommunicationsTests.test_megafon_accounts_repairs_legacy_api_endpoint_without_redirect \
             pool_service.tests.test_avito_daily_statistics \
+            pool_service.tests.test_avito_period_statistics \
             pool_service.tests.test_avito_decision_report \
+            pool_service.tests.test_avito_improvement_proposals \
+            pool_service.tests.test_avito_experiment_baseline \
+            pool_service.tests.test_avito_owner_review \
+            pool_service.tests.test_avito_tariff_subscription \
             pool_service.tests.test_avito_crm_coverage \
+            pool_service.tests.test_avito_crm_attribution \
+            pool_service.tests.test_crm_source_orders \
+            pool_service.tests.test_client_merge \
+            pool_service.tests.test_conversation_clients \
+            pool_service.tests.test_contact_identity \
+            pool_service.tests.test_contact_identity_migrations \
+            pool_service.tests.test_crm_inbox \
+            pool_service.tests.test_crm_inbox_migrations \
+            pool_service.tests.test_crm_commercial_foundation \
+            pool_service.tests.test_crm_commercial_commands \
+            pool_service.tests.test_crm_commercial_migrations \
+            pool_service.tests.test_crm_live_pilot_commands \
+            pool_service.tests.test_crm_live_pilot_migrations \
+            pool_service.tests.test_crm_live_views \
+            pool_service.tests.test_crm_approved_access \
+            pool_service.tests.test_crm_org_scope \
+            pool_service.tests.test_task_read_privacy \
             pool_service.tests.test_avito_promotion_observations \
             pool_service.tests.test_avito_workspace \
             pool_service.tests.test_avito_outbox \

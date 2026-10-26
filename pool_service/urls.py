@@ -80,6 +80,7 @@ from .views import (
     push_unsubscribe,
 )
 from . import views
+from . import crm_live_views, crm_pilot_views
 from .estimate_views import estimate_page, estimate_api, estimate_print, estimate_document
 from .client_crm_views import client_detail, client_merge_index, client_merge_search, client_onec_import
 from .client_crm_ui import client_edit
@@ -243,6 +244,7 @@ from .communication_views import (
     communication_telephony_set_active,
 )
 from .avito_daily_statistics_views import control as avito_daily_statistics_control
+from .avito_crm_attribution_views import attribution as avito_crm_attribution, request_lookup as avito_crm_request_lookup
 from .avito_management import avito_dashboard, avito_check_api, avito_refresh_data, avito_configure_monitor, avito_download_report, avito_configure_autoload_auto
 from .communication_api import (
     avito_webhook,
@@ -254,6 +256,7 @@ from .communication_api import (
     website_request_create,
 )
 
+from .avito_improvement_views import service_improvement_proposals
 from .avito_services_feed import services_feed, services_feed_edit, services_feed_download, services_feed_publish, services_feed_public, services_feed_version_public
 from .avito_services_media import services_image_upload, services_image_preview, services_image_public, services_media_probe
 from .avito_services_media_livecheck import services_media_livecheck, services_media_filecheck
@@ -268,6 +271,7 @@ urlpatterns = [
     path("api/communications/avito/services-feed/<uuid:public_key>/versions/<int:version_id>.xml", services_feed_version_public, name="avito_services_feed_version_public"),
     path("api/communications/avito/services-feed/<uuid:public_key>/feed.xml", services_feed_public, name="avito_services_feed_public"),
     path("api/communications/avito/services-feed/<uuid:public_key>/feed.xlsx", services_feed_public, {"output_format": "xlsx"}, name="avito_services_feed_public_xlsx"),
+    path("avito/<int:connection_id>/services-feed/improvements/", service_improvement_proposals, name="avito_service_improvement_proposals"),
     path("avito/<int:connection_id>/services-feed/publish/", services_feed_publish, name="avito_services_feed_publish"),
     path("estimates/", estimate_page, name="pool_estimate_page"),
     path("estimates/api/", estimate_api, name="pool_estimate_api"),
@@ -278,6 +282,8 @@ urlpatterns = [
     path("avito/<int:connection_id>/services-feed/draft.xlsx", services_feed_download, name="avito_services_feed_download"),
     path("avito/", avito_dashboard, name="avito_dashboard"),
     path("avito/<int:connection_id>/statistics-daily/", avito_daily_statistics_control, name="avito_daily_statistics_control"),
+    path("avito/<int:connection_id>/attribution/", avito_crm_attribution, name="avito_crm_attribution"),
+    path("avito/<int:connection_id>/attribution/requests/", avito_crm_request_lookup, name="avito_crm_request_lookup"),
     path("avito/<int:connection_id>/autoload-auto/", avito_configure_autoload_auto, name="avito_configure_autoload_auto"),
     path("avito/<int:connection_id>/autoload-report.csv", avito_download_report, name="avito_download_report"),
     path("avito/<int:connection_id>/monitor/", avito_configure_monitor, name="avito_configure_monitor"),
@@ -403,6 +409,12 @@ urlpatterns = [
     path("clients/merge/", client_merge_index, name="client_merge_index"),
     path("clients/merge/search/", client_merge_search, name="client_merge_search"),
     path("crm/", crm_index, name="crm_index"),
+    path("crm/workspace/", crm_live_views.workspace, name="crm_live_workspace"),
+    path("crm/workspace/start/", crm_pilot_views.start, name="crm_live_start"),
+    path("crm/workspace/data/", crm_live_views.data, name="crm_live_data"),
+    path("crm/workspace/clients/", crm_live_views.clients, name="crm_live_clients"),
+    path("crm/workspace/commands/", crm_live_views.command, name="crm_live_command"),
+    path("crm/workspace/deals/<int:deal_id>/", crm_live_views.detail, name="crm_live_detail"),
     path("crm/tasks/", crm_tasks, name="crm_tasks"),
     path("crm/tasks/bulk/", crm_tasks_bulk_update, name="crm_tasks_bulk_update"),
     path("crm/photos/<int:photo_id>/", crm_issue_photo_download, name="crm_issue_photo_download"),

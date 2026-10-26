@@ -12,6 +12,7 @@ from pool_service.models import (
     ServiceTaskChange,
 )
 from pool_service.services.task_archive import archive_task, restore_task
+from pool_service.services.crm_permissions import can_sync_task_crm
 from pool_service.services.notifications import notify_task_assignment, notify_users
 
 
@@ -145,10 +146,19 @@ def ensure_crm_for_supply_task(task):
     return item
 
 
-def sync_crm_item_for_task(task):
+def sync_crm_item_for_task(task, user=None):
     if not task.crm_item_id:
         return None
     crm_item = task.crm_item
+    if not can_sync_task_crm(task, user):
+        return crm_item
+    payload = task.payload_json if isinstance(task.payload_json, dict) else {}
+    # CRM membership is not permission to publish call-derived task text.
+    # Block even before a call becomes private; there is no provenance on
+    # copied CRM fields to revoke them later. Malformed/mismatched source IDs
+    # must not turn a call-backed task into a publishable legacy supply task.
+    if "source_call_id" in payload or payload.get("source") == "call_analysis":
+        return crm_item
     update_fields = []
 
     if task.task_type == ServiceTask.TYPE_SUPPLY_REQUEST and task.water_reading_id:
@@ -182,6 +192,8 @@ def sync_task_with_crm_item(task):
     if not task or not task.crm_item_id:
         return task
     crm_item = task.crm_item
+    if crm_item.organization_id != task.organization_id:
+        return task
     if crm_item.direction == CrmItem.DIRECTION_SERVICE:
         if crm_item.stage == CrmItem.STAGE_SERVICE_DONE:
             archive_task(task, ServiceTask.ARCHIVE_REASON_COMPLETED, crm_item.responsible or task.completed_by)

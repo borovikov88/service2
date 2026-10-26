@@ -8,7 +8,7 @@ from django.db.models import Q
 from django.urls import reverse
 from django.utils import timezone
 
-from pool_service.models import Organization, OrganizationAccess, ServiceTask
+from pool_service.models import Employee, Organization, OrganizationAccess, ServiceTask
 from pool_service.services.notifications import notify_users
 from pool_service.services.push_notifications import send_push_to_users
 from pool_service.services.task_feedback import state_for, waiting_control
@@ -87,10 +87,19 @@ def _locked_users_with_access(task, user_ids, *, roles=None):
     if roles is not None:
         access_qs = access_qs.filter(role__in=roles)
     allowed = set(access_qs.values_list("user_id", flat=True))
+    # Delivery uses the same fresh staff lifecycle boundary as task reads.
+    # Lock current employee rows after users and org access, in one batch.
+    employees = list(Employee.objects.select_for_update().filter(
+        organization_id=task.organization_id, user_id__in=allowed,
+    ).order_by("pk"))
+    unavailable = {
+        employee.user_id for employee in employees
+        if not employee.is_active or employee.employment_status == Employee.STATUS_DISMISSED
+    }
     return [
         locked_users[user_id]
         for user_id in ordered_ids
-        if user_id in locked_users and user_id in allowed
+        if user_id in locked_users and user_id in allowed and user_id not in unavailable
     ]
 
 
@@ -106,11 +115,7 @@ def _task_recipients(task):
             .first()
         )
         if primary and primary.is_active:
-            allowed = OrganizationAccess.objects.select_for_update().filter(
-                organization_id=task.organization_id,
-                user_id=primary.id,
-            ).exists()
-            return [primary] if allowed else []
+            return _locked_users_with_access(task, [primary.id])
 
     participant_ids = list(
         task.responsibles.order_by("id").values_list("id", flat=True)

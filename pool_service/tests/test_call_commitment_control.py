@@ -6,8 +6,10 @@ from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
-from pool_service.models import Client, Notification, Organization, OrganizationAccess, ServiceTask
-from pool_service.services.call_commitment_control import process_call_commitment_controls
+from pool_service.models import Client, Employee, Notification, Organization, OrganizationAccess, ServiceTask
+from pool_service.services.call_commitment_control import (
+    _control_key, _deliver_control_push, _effective_deadline, process_call_commitment_controls,
+)
 
 
 BARNAUL = ZoneInfo("Asia/Barnaul")
@@ -237,6 +239,34 @@ class CallCommitmentControlTests(TestCase):
                 dedupe_key__startswith=f"call_control:{task.id}:",
             ).exists()
         )
+
+
+    @patch("pool_service.services.call_commitment_control.send_push_to_users")
+    def test_control_delivery_rechecks_employee_for_all_recipient_branches(self, send_push):
+        for branch in ("primary", "participant", "owner", "admin"):
+            task = self._task()
+            target = self.manager if branch in {"primary", "participant"} else self.owner
+            if branch == "participant":
+                task.primary_responsible = None
+                task.save(update_fields=["primary_responsible"])
+            OrganizationAccess.objects.filter(user=self.owner, organization=self.organization).update(
+                role="admin" if branch == "admin" else "owner")
+            employee, _ = Employee.objects.get_or_create(organization=self.organization, user=target,
+                defaults={"display_name": "Synthetic control recipient"})
+            key = _control_key(task, _effective_deadline(task, task.payload_json))
+            escalation = branch in {"owner", "admin"}
+            for changes in ({"is_active": False}, {"is_active": True, "employment_status": Employee.STATUS_DISMISSED}):
+                with self.subTest(branch=branch, changes=changes):
+                    Employee.objects.filter(pk=employee.pk).update(is_active=True, employment_status=Employee.STATUS_EMPLOYED)
+                    send_push.reset_mock()
+                    _deliver_control_push(task.pk, key, escalation=escalation)
+                    send_push.assert_called_once()
+                    Employee.objects.filter(pk=employee.pk).update(**changes)
+                    send_push.reset_mock()
+                    _deliver_control_push(task.pk, key, escalation=escalation)
+                    send_push.assert_not_called()
+            Employee.objects.filter(pk=employee.pk).delete()
+
 
 
 class CallRecordingSyncControlIntegrationTests(TestCase):

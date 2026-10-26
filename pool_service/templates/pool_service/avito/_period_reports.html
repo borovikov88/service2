@@ -1,0 +1,42 @@
+{% load tz %}
+{% if period_reports.state == 'available' or period_reports.state == 'empty' %}
+<section class="avito-panel mb-4" aria-labelledby="avito-period-reports-heading">
+  <div class="avito-panel__header"><div>
+    <div class="avito-kicker mb-1">Источник: прямой запрос статистики Авито</div>
+    <h2 class="avito-panel__title" id="avito-period-reports-heading">Сохранённые отчёты за период</h2>
+  </div></div>
+  <div class="avito-panel__body">
+    <p class="small text-muted">Эти отчёты получены отдельными запросами за указанные даты источника. Часовой пояс источника неизвестен. Полнота страниц периодного отчёта не означает полноту суточной истории и не создаёт суточные строки. Расходы разных видов показаны отдельно; контакты не равны уникальным клиентам, заказам или оплатам.</p>
+    {% if period_reports.latest_attempt %}
+      <div class="small mb-3">Последняя попытка: {{ period_reports.latest_attempt.date_from }}–{{ period_reports.latest_attempt.date_to }} · {{ period_reports.latest_attempt.grouping }} · {{ period_reports.latest_attempt.status }}{% if period_reports.latest_attempt.code %} · {{ period_reports.latest_attempt.code }}{% endif %}.
+        {% timezone "Asia/Novosibirsk" %}Проверка: {{ period_reports.latest_attempt.checked_at_display|date:"d.m.Y H:i:s" }}{% endtimezone %}
+        <span class="text-muted">При неудаче или неподтверждённой полноте сохранённые отчёты ниже сохраняют свои прежние периоды и время.</span>
+      </div>
+    {% endif %}
+    {% for pair in period_reports.comparisons %}
+      <div class="mb-3">
+        <strong>{{ pair.current.date_from }}–{{ pair.current.date_to }} / {{ pair.previous.date_from }}–{{ pair.previous.date_to }}</strong>
+        <div class="small">Страницы обоих отчётов получены. Состав ID {% if pair.same_ids %}совпадает{% else %}различается: изменение не рассчитывается{% endif %}; {{ pair.current.group_count }}/{{ pair.previous.group_count }} групп. Это не проверка активности на каждый день периода.</div>
+        <div class="table-responsive"><table class="table table-sm">
+          <thead><tr><th>Показатель</th><th>Текущий период</th><th>Предыдущий</th><th>Разница</th></tr></thead><tbody>
+          {% for metric in pair.metrics %}{% if metric.slug == 'impressions' or metric.slug == 'views' or metric.slug == 'contacts' or metric.slug == 'spending' or metric.slug == 'ctr' or metric.slug == 'conversion' or metric.slug == 'cpl_cash' %}
+            <tr><th scope="row">{{ metric.label }}</th><td>{% if metric.current != None %}{{ metric.current }} {{ metric.unit }}{% else %}Неизвестно{% endif %}</td><td>{% if metric.previous != None %}{{ metric.previous }} {{ metric.unit }}{% else %}Неизвестно{% endif %}</td><td>{% if metric.delta != None %}{{ metric.delta }} {% if metric.unit == '%' %}п.п.{% else %}{{ metric.unit }}{% endif %}{% else %}Не рассчитано{% endif %}</td></tr>
+          {% endif %}{% endfor %}</tbody>
+        </table></div>
+        <p class="small text-muted">CTR и конверсия — отношения сумм известного одинакового набора; стоимость обращения — денежные расходы / контакты. При неизвестных входах или неположительном знаменателе значение неизвестно. При малой выборке или других одновременных изменениях устойчивость и причинность разницы не подтверждены.</p>
+      </div>
+    {% endfor %}
+    {% for report in period_reports.reports %}
+      <details class="mb-2">
+        <summary>{{ report.date_from }}–{{ report.date_to }} · {{ report.grouping }} · {{ report.group_count }} групп · страницы получены</summary>
+        {% timezone "Asia/Novosibirsk" %}<div class="small mt-2">Получено: {{ report.received_at_display|date:"d.m.Y H:i:s" }} · GMT+7</div>{% endtimezone %}
+        <div class="small">ID групп: {{ report.ids|join:", "|default:"нет" }}. Единица денежных сумм — ₽. Полнота страниц и доступность каждого показателя проверяются отдельно. Единовременный снимок провайдера для всех страниц не подтверждён.</div>
+        {% if report.confirmed_empty %}<p class="small">Авито явно подтвердил отсутствие групп. Это не подменяет отсутствующие показатели ожидаемых объявлений нулями.</p>{% endif %}
+        <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Показатель</th><th>Сумма/отношение по возвращённым группам</th></tr></thead><tbody>
+        {% for metric in report.metrics %}<tr><th scope="row">{{ metric.label }}</th><td>{% if metric.value != None %}{{ metric.value }} {{ metric.unit }}{% else %}Неизвестно{% endif %}</td></tr>{% endfor %}
+        </tbody></table></div>
+      </details>
+    {% empty %}<div class="small">Подтверждённых сохранённых периодов пока нет. Получите отчёт формой ниже; прежняя сохранённая страница сохраняет собственную подпись.</div>{% endfor %}
+  </div>
+</section>
+{% endif %}

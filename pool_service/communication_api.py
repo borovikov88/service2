@@ -625,6 +625,7 @@ def megafon_webhook(request, public_id):
         return _error("invalid_duration")
     if duration_seconds < 0 or duration_seconds > 7 * 24 * 60 * 60:
         return _error("invalid_duration")
+    has_provider_start = bool(str(data.get("start") or "").strip())
     try:
         started_at = _megafon_started_at(data.get("start"))
     except ValueError as exc:
@@ -640,6 +641,18 @@ def megafon_webhook(request, public_id):
     )
 
     with transaction.atomic():
+        # Revalidate the authenticated account under the shared capture lock order.
+        authenticated = (connection.channel_id, connection.channel.organization_id, connection.external_id, connection.api_token_hash, connection.channel.kind)
+        locked_connection = ChannelConnection.objects.select_for_update().select_related("channel__organization").get(pk=connection.pk)
+        current = (locked_connection.channel_id, locked_connection.channel.organization_id, locked_connection.external_id, locked_connection.api_token_hash, locked_connection.channel.kind)
+        if current != authenticated or not locked_connection.is_active or not locked_connection.channel.is_active:
+            raise ValueError("communication_connection_binding_changed")
+        connection = locked_connection
+        from .models import Organization
+        Organization.objects.select_for_update().get(pk=connection.channel.organization_id)
+        telephony = TelephonyConnection.objects.select_for_update().get(pk=telephony.pk)
+        if not telephony.is_active or telephony.organization_id != connection.channel.organization_id or telephony.external_id != connection.external_id:
+            raise ValueError("telephony_connection_binding_changed")
         existing_call = (
             PhoneCall.objects.select_for_update()
             .select_related("employee", "employee_profile", "client")
@@ -733,7 +746,7 @@ def megafon_webhook(request, public_id):
                 "contact_name": effective_contact_name,
                 "phone_number": canonical_phone_value(phone),
                 "direction": direction,
-                "started_at": started_at,
+                "started_at": started_at if has_provider_start or not existing_call else existing_call.started_at,
                 "duration_seconds": duration_seconds,
                 "result": result,
                 "recording_ref": (
@@ -742,6 +755,17 @@ def megafon_webhook(request, public_id):
                 ),
             },
         )
+        from .services.crm_inbox import capture_source, initialize_source, source_scope
+        if created:
+            initialize_source(phone_call, source_scope("call", phone_call, connection, telephony),
+                occurred_at=started_at if has_provider_start else None, origin="live")
+        elif phone_call.intake_scope:
+            if phone_call.intake_scope != source_scope("call", phone_call, connection, telephony):
+                raise ValueError("inbox_source_binding_changed")
+            if has_provider_start:
+                phone_call.intake_occurred_at = started_at
+        phone_call.save(update_fields=["intake_scope", "intake_cutover_at", "intake_occurred_at", "intake_received_at", "intake_origin", "intake_historical", "intake_revision_historical"])
+        capture_source("call", phone_call)
         _remember_megafon_recording_host(telephony, recording_ref)
         settings_data = dict(connection.settings or {})
         settings_data["megafon_last_received_at"] = timezone.now().isoformat()

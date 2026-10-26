@@ -1,0 +1,40 @@
+{% load tz %}
+{% if tariff_subscription_state.allowed %}
+<div class="border-bottom pb-3 mb-3">
+  <h3 class="h6 mb-2">Подписка услуг · отдельный источник API</h3>
+  <p class="small mb-1" role="status">{{ tariff_subscription_state.state_label }}</p>
+  <p class="small text-muted mb-1">Контракт метода подтверждён по экспорту Авито Promo {{ tariff_subscription_state.source_checked_on }}. Агентский доступ проверяется отдельно: {{ tariff_subscription_state.access_state }}.</p>
+  {% if tariff_subscription_state.last_attempt_at %}
+    <p class="small text-muted mb-1">Последняя попытка: {% timezone "Asia/Barnaul" %}{{ tariff_subscription_state.last_attempt_at|date:"d.m.Y H:i:s" }}{% endtimezone %} · Барнаул. Это не время успешного получения.</p>
+  {% endif %}
+  {% if tariff_subscription_state.last_success_at %}
+    <p class="small mb-1">Сохранённое наблюдение: {{ tariff_subscription_state.observed_state_label }}{% if tariff_subscription_state.level %}; уровень {{ tariff_subscription_state.level }}{% endif %}.</p>
+    <p class="small text-muted mb-1">Успешное получение: {% timezone "Asia/Barnaul" %}{{ tariff_subscription_state.last_success_at|date:"d.m.Y H:i:s" }}{% endtimezone %} · Барнаул. Источник: {{ tariff_subscription_state.source }} · services.</p>
+    {% if tariff_subscription_state.stale %}<p class="small text-warning mb-1">Сохранённые данные устарели; текущая активность не подтверждена.</p>{% endif %}
+    {% if tariff_subscription_state.expires_at %}
+      <p class="small mb-1">Дата API: {% timezone "Asia/Barnaul" %}{{ tariff_subscription_state.expires_at|date:"d.m.Y H:i:s" }}{% endtimezone %} · Барнаул; получена из expiredTo RFC3339 со смещением.</p>
+    {% elif tariff_subscription_state.expiry_state == "date_unconfirmed" %}
+      <p class="small text-muted mb-1">В старом снимке дата не подтверждена. Новое получение требуется отдельно.</p>
+    {% else %}<p class="small text-muted mb-1">Дата окончания отсутствует в ответе. Это не означает окончания тарифа.</p>{% endif %}
+  {% endif %}
+  {% if tariff_subscription_state.manual_date_present %}
+    <p class="small mb-1">Ручная дата: {{ tariff_subscription_state.manual_date|date:"d.m.Y" }}. {{ tariff_subscription_state.manual_source }}{% if tariff_subscription_state.manual_confirmed_at_display %}; подтверждена {{ tariff_subscription_state.manual_confirmed_at_display }} · Барнаул{% endif %}.</p>
+    {% if tariff_subscription_state.dates_comparable %}
+      <p class="small {% if tariff_subscription_state.dates_conflict %}text-warning{% else %}text-muted{% endif %} mb-1">{% if tariff_subscription_state.dates_conflict %}Даты API и ручного источника различаются. Сверьте оба источника; ручная дата не заменена.{% else %}Календарные даты API и ручного источника совпадают по времени Барнаула. Ручное подтверждение сохранено отдельно.{% endif %}</p>
+    {% else %}<p class="small text-muted mb-1">Сравнение дат пока не подтверждено; ручная дата не изменена.</p>{% endif %}
+  {% endif %}
+  {% if tariff_subscription_state.code == "tariff_pages_incomplete" %}
+    <p class="small text-muted mb-1">Получено страниц: {{ tariff_subscription_state.pages_received }}. Полный состав клиентов и подписка ещё не подтверждены. Следующее чтение — после паузы.</p>
+  {% endif %}
+  <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" class="mt-2" data-avito-submit>
+    {% include 'pool_service/avito/_refresh_fields.html' %}<input type="hidden" name="section" value="tariff_api_refresh">
+    <button type="submit" class="btn btn-sm btn-outline-secondary">{% if tariff_subscription_state.code == "tariff_pages_incomplete" %}Продолжить чтение тарифа{% else %}Проверить доступ и получить тариф{% endif %}</button>
+  </form>
+  <details class="avito-help mt-2"><summary>Контракт, доступ и вопрос Авито</summary>
+    <p class="small mt-2 mb-1"><code>{{ tariff_subscription_state.method }}</code> — read-only метод Авито Promo для агентства. Авторизация client_credentials, чтение чатов, баланс и автозагрузка сами по себе не подтверждают агентские права или срок тарифа.</p>
+    <p class="small text-muted mb-1">Один запрос страницы за минуту; безопасный предел — три страницы. Создание агентства, приглашения, переводы, расширение доступа и платные операции этим чтением не выполняются. API-дата не записывается в ручной календарь автоматически.</p>
+    <p class="small mb-1"><a href="{{ tariff_subscription_state.documentation_url }}" target="_blank" rel="noopener noreferrer">Официальный каталог API Авито · Авито Promo</a></p>
+    {% if tariff_subscription_state.code %}<p class="small mb-0">{{ tariff_subscription_state.support_draft }}</p>{% endif %}
+  </details>
+</div>
+{% endif %}

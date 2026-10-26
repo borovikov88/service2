@@ -36,4 +36,26 @@ class Command(BaseCommand):
             except Exception:
                 result["daily_statistics"] = {"state": "blocked", "code": "statistics_setup_unavailable",
                     "connection_id": 4, "account_id": "446312402"}
+            from pool_service.avito_period_statistics import prepare_owner_periods_once
+            result["period_statistics"] = prepare_owner_periods_once()
+            from pool_service.avito_experiment_baseline import setup_once as water_baseline_setup
+            result["water_experiment_baseline"] = water_baseline_setup()
+            from pool_service.crm_source_links import setup_evidence as crm_source_evidence
+            try:
+                result["crm_source_links"] = crm_source_evidence()
+            except Exception:
+                result["crm_source_links"] = {"state": "blocked", "code": "crm_source_evidence_unavailable",
+                    "connection_id": 4, "account_id": "446312402"}
+            from pool_service.avito_improvement_proposals import setup_owner_cycle_once
+            result["improvement_projects"] = setup_owner_cycle_once()
+            from pool_service.avito_owner_review import safe_owner_review_receipt
+            result["owner_review"] = safe_owner_review_receipt()
+            from pool_service.avito_comparable_subsets import safe_setup_evidence as comparable_subset_evidence
+            result["comparable_subsets"] = comparable_subset_evidence()
+            from pool_service import avito_tariff_subscription
+            try:
+                result["tariff_subscription"] = avito_tariff_subscription.probe_once()
+            except Exception:
+                result["tariff_subscription"] = {"state": "blocked", "code": "tariff_scope_changed",
+                    "connection_id": 4, "account_id": "446312402", "probe_state": "unconfirmed", "request_performed": None}
         self.stdout.write("AVITO_SERVICES_SETUP " + json.dumps(result, sort_keys=True))

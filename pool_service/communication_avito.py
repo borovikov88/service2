@@ -37,6 +37,7 @@ class AvitoInboundMessage:
     author_id: str
     body: str
     participant_name: str
+    occurred_at: object = None
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,11 @@ class AvitoSyncResult:
     messages_created: int
     messages_existing: int
     messages_skipped: int
+
+
+def _provider_timestamp(value):
+    from .services.crm_inbox import provider_timestamp
+    return provider_timestamp(value)
 
 
 def parse_webhook(payload, account_id):
@@ -79,6 +85,7 @@ def parse_webhook(payload, account_id):
         author_id=identifiers[2],
         body=str(body)[:10000],
         participant_name=str(value.get("author_name") or value["author_id"])[:255],
+        occurred_at=_provider_timestamp(value.get("created")),
     )
 
 
@@ -97,6 +104,7 @@ def ingest_webhook(connection, payload):
         body=incoming.body,
         external_message_id=incoming.message_id,
         participant_external_id=incoming.author_id,
+        occurred_at=incoming.occurred_at,
     )
 
 
@@ -318,10 +326,12 @@ def sync_recent_messages(connection, *, chat_limit=20, messages_per_chat=50, max
                 skipped += 1
                 continue
             created_ts = item.get("created")
-            if isinstance(created_ts, (int, float)) and int(created_ts) < cutoff:
+            occurred = _provider_timestamp(created_ts)
+            if occurred is not None and occurred.timestamp() < cutoff:
                 continue
             recent_messages.append(item)
-        recent_messages.sort(key=lambda item: item.get("created") or 0)
+        recent_messages.sort(key=lambda item: (_provider_timestamp(item.get("created")).timestamp()
+            if _provider_timestamp(item.get("created")) else 0))
 
         for item in recent_messages:
             checked += 1
@@ -346,6 +356,8 @@ def sync_recent_messages(connection, *, chat_limit=20, messages_per_chat=50, max
                 external_message_id=message_id,
                 participant_external_id=str(author_id or context.get("participant", {}).get("id") or "")[:255],
                 provider_context=context,
+                occurred_at=_provider_timestamp(item.get("created")),
+                intake_origin="recovery",
             )
             if was_created:
                 created += 1

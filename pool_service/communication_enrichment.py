@@ -80,7 +80,7 @@ def _snapshot(conversation):
     credential = getattr(connection, "avito_credential", None)
     credential_snapshot = (credential.client_id_encrypted, credential.client_secret_encrypted) if credential else None
     return (conversation.connection_id, conversation.organization_id, conversation.external_id, conversation.client_id,
-            conversation.participant_external_id, connection.channel_id, connection.channel.organization_id,
+            conversation.participant_external_id, conversation.provider_phone, connection.channel_id, connection.channel.organization_id,
             str(connection.external_id), connection.api_token_hash, connection.channel.kind,
             connection.is_active, connection.channel.is_active, conversation.context_attempted_at, credential_snapshot)
 
@@ -100,7 +100,7 @@ def _lock(conversation_id):
 
 def _capture_history_locked(conversation, history):
     for message in reversed(history):
-        capture_client(conversation, body=message.body, message_id=message.pk)
+        capture_client(conversation, body=message.body, message_id=message.pk, create=False)
     conversation.contact_data["history_captured"] = True
     conversation.save(update_fields=["contact_data"])
 
@@ -117,10 +117,9 @@ def enrich_conversation(conversation_id, *, load_history=True, claim_time=None, 
         history = []
         if needs_history:
             history = list(conversation.messages.filter(direction="in").order_by("-created_at", "-pk")[:100])
-        identity_body = "\n".join(message.body for message in history)[:10000] if not conversation.client_id else ""
-        unknown_avito = conversation.connection.channel.kind == "avito" and not conversation.participant_external_id
-        customer = capture_client(conversation, body=identity_body, create=not unknown_avito or bool(conversation.client_id))
-        if customer and needs_history:
+        # Historical text has event-level suggestion provenance only.
+        capture_client(conversation, create=False)
+        if needs_history:
             _capture_history_locked(conversation, history)
         if not refresh_context or conversation.connection.channel.kind != "avito":
             return "captured"
@@ -150,9 +149,8 @@ def enrich_conversation(conversation_id, *, load_history=True, claim_time=None, 
         if _snapshot(current) != snapshot:
             return "binding_changed"
         apply_chat_context_locked(current, context)
-        customer = capture_client(current, body=identity_body,
-            create=bool(current.client_id or current.participant_external_id))
-        if customer and needs_history:
+        capture_client(current, create=False)
+        if needs_history:
             _capture_history_locked(current, history)
     return "enriched"
 

@@ -46,8 +46,9 @@ def consistency_guard(value):
 OUTCOMES = {"baseline", "success", "failed", "skipped", "not_run"}
 
 
-def safe_code(value):
+def safe_code(value, *, check=None):
     return value if isinstance(value, str) and (value in CODES or
+        check == "statistics_daily" and value in {"provider_data_invalid", "statistics_fields_unavailable", "statistics_provider_error"} or
         re.fullmatch(r"provider_http_[1-5][0-9]{2}", value)) else "check_error_unclassified"
 
 
@@ -80,8 +81,8 @@ def record(connection_id, check, outcome, *, run_id, exception=False, deferred=F
         return
     # Codes are drawn from scoped state, never from exception strings.
     state = _saved(connection, check)
-    code = (reason if reason is not None and reason in CODES else "worker_check_exception" if exception else "budget_or_batch_deferred" if deferred
-            else (safe_code(state["code"]) or "worker_result_unknown") if outcome == "failed"
+    code = (reason if reason is not None and safe_code(reason, check=check) == reason else "worker_check_exception" if exception else "budget_or_batch_deferred" if deferred
+            else (safe_code(state["code"], check=check) or "worker_result_unknown") if outcome == "failed"
             else ("dependency_failed" if check == "publication_correlation" else "workspace_busy") if outcome == "skipped" else "")
     with transaction.atomic():
         heartbeat = AvitoSchedulerHeartbeat.objects.select_for_update().filter(
@@ -138,7 +139,7 @@ def _saved(connection, check):
     else:
         from .avito_tariff_reminder import _allowed
     valid = bool(state and _allowed(connection, state))
-    code = safe_code(state.get("last_publication_error_code" if check == "publication_correlation" else "last_error_code", ""))
+    code = safe_code(state.get("last_publication_error_code" if check == "publication_correlation" else "last_error_code", ""), check=check)
     if check == "tariff" and state.get("last_error_detail"):
         code = "tariff_notification_preferences_disabled"
     return {"configured": bool(state), "enabled": state.get("enabled") is True,
@@ -172,6 +173,7 @@ def checks(connection, *, only_check=None):
             and heartbeat.started_at <= when(row["checked_at"]) <= heartbeat.finished_at), None)
         current_code = saved["code"]
         state = ("disabled" if not saved["enabled"] else "blocked" if saved["scope_valid"] is False
+            else "partial" if key == "statistics_daily" and current_code in {"statistics_fields_unavailable", "statistics_total_unavailable"}
             else "failed" if current_code else "pending" if not saved["success_at"] else
             "due" if saved["next_due_at"] and saved["next_due_at"] <= timezone.now() else "ok")
         output.append({"check": key, "label": label, "state": state, **saved,
@@ -179,7 +181,7 @@ def checks(connection, *, only_check=None):
             "success_at": saved["success_at"].isoformat() if saved["success_at"] else None,
             "next_due_at": saved["next_due_at"].isoformat() if saved["next_due_at"] else None,
             "last_worker_outcome": match["outcome"] if match else None,
-            "last_worker_code": safe_code(match["code"]) if match else None,
+            "last_worker_code": safe_code(match["code"], check=key) if match else None,
             "last_worker_checked_at": match["checked_at"] if match else None,
             "consistency_guard": saved.get("consistency_guard"),
             "consistency_guard_label": CONSISTENCY_GUARDS.get(saved.get("consistency_guard"), ""),
@@ -217,9 +219,11 @@ def scoped_scheduler_display(connection, check, scheduler):
         state, message = "disabled", "Проверка выключена или ещё не настроена."
     elif row["scope_valid"] is False:
         state, message = "blocked", "Настройки или права подключения требуют повторного подтверждения."
+    elif row["state"] == "partial":
+        state, message = "partial", "Ответ не содержит достаточных данных: полнота не подтверждена (" + safe_code(row["code"], check=check) + ")."
     elif fresh and row["last_worker_outcome"] == "failed":
         failed, state = True, "failed"
-        message = "Проверка завершилась ошибкой (" + safe_code(row["last_worker_code"]) + ")."
+        message = "Проверка завершилась ошибкой (" + safe_code(row["last_worker_code"], check=check) + ")."
     elif fresh and row["last_worker_outcome"] in {"baseline", "success"}:
         state, message = "success", "Успешная проверка подтверждена."
     elif fresh and row["last_worker_outcome"] in {"skipped", "not_run"}:

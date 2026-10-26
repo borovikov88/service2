@@ -68,7 +68,10 @@ jobs:
           python-version: "3.13"
           cache: pip
       - name: Check reuse policy regressions
-        run: python -m unittest discover -s .github/tests -p test_reuse_pr_tests.py -v
+        run: |
+          python -m unittest discover -s .github/tests -p test_reuse_pr_tests.py -v
+          python -m unittest discover -s .github/tests -p test_crm_pilot_db_backup.py -v
+          python -m unittest discover -s .github/tests -p test_crm_approved_access.py -v
       - name: Verify equivalent successful PR tests
         id: reuse
         run: python .github/scripts/reuse_pr_tests.py
@@ -90,7 +93,7 @@ jobs:
             .github/workflows/development-codex.yml .github/workflows/codex-plan-connection.yml \
             .github/workflows/production-health.yml .github/workflows/avito-readonly-audit.yml .github/workflows/call-recordings-sync.yml \
             .github/workflows/employee-identity-sync.yml .github/workflows/avito-status-monitor.yml \
-            .github/workflows/avito-outbox-readonly.yml
+            .github/workflows/avito-outbox-readonly.yml .github/workflows/management-finance-mysql.yml
       - name: Verify Avito monitor scheduling and deployment locks
         if: steps.reuse.outputs.verified != 'true'
         run: python -m unittest discover -s .github/tests -p 'test_avito*py' -v
@@ -99,6 +102,7 @@ jobs:
         run: |
           node --test tools/aqualine22-calculator/tests/engine.test.mjs
           node --test pool_service/tests/estimate_state.test.mjs pool_service/tests/estimate_parameters.test.mjs pool_service/tests/estimate_numbers.test.mjs
+          node --test pool_service/tests/crm_live_operations.test.cjs
           python -m unittest discover -s .github/tests -p test_aqualine22_publication.py -v
       - name: Install dependencies
         if: steps.reuse.outputs.verified != 'true'
@@ -470,6 +474,68 @@ jobs:
           if [[ "$audit_exit" != 0 ]]; then
             echo "AVITO_READONLY_AUDIT_UNAVAILABLE transport_or_command_failed (deployment health checked separately)"
           fi
+
+
+      - name: Create verified private CRM pilot database backup
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[crm-pilot-db-backup-20261026]')
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          backup_temp="$(mktemp -d "$RUNNER_TEMP/crm-pilot-backup.XXXXXX")"
+          trap 'rm -rf -- "$backup_temp"' EXIT
+          PORT="${DEPLOY_PORT:-22}"
+          printf -v REMOTE_COMMAND 'bash -s -- %q %q' "$GITHUB_SHA" "$DEPLOY_APP_PATH"
+          backup_exit=0
+          ssh -i ~/.ssh/service2_deploy \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
+            -o StrictHostKeyChecking=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND" \
+            < .github/scripts/crm_pilot_db_backup_remote.sh \
+            >"$backup_temp/stdout" 2>"$backup_temp/stderr" || backup_exit=$?
+          if [[ "$backup_exit" != 0 ]]; then
+            python3 scripts/crm_pilot_db_backup_receipt.py --failure \
+              "$backup_temp/stdout" "$backup_temp/stderr" "$backup_exit" || exit 2
+            exit 2
+          fi
+          python3 scripts/crm_pilot_db_backup_receipt.py "$backup_temp/stdout" "$GITHUB_SHA"
+
+      - name: Enable the explicitly approved CRM access once
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[crm-aqualine-managers-20261026]')
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          access_temp="$(mktemp -d "$RUNNER_TEMP/crm-approved-access.XXXXXX")"
+          trap 'rm -rf -- "$access_temp"' EXIT
+          PORT="${DEPLOY_PORT:-22}"
+          [[ "$PORT" =~ ^[0-9]+$ ]]
+          printf -v REMOTE_COMMAND 'bash -s -- %q %q %q %q' \
+            "$GITHUB_SHA" "$DEPLOY_APP_PATH" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+          access_exit=0
+          ssh -i ~/.ssh/service2_deploy \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
+            -o StrictHostKeyChecking=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND" \
+            < .github/scripts/crm_approved_access_remote.sh \
+            >"$access_temp/stdout" 2>"$access_temp/stderr" || access_exit=$?
+          if [[ "$access_exit" != 0 ]]; then
+            python3 scripts/crm_approved_access_receipt.py --failure "$access_temp/stderr"
+            exit 2
+          fi
+          python3 scripts/crm_approved_access_receipt.py "$access_temp/stdout" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
 
   calculator:
     name: Publish calculator to the verified informational website

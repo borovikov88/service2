@@ -1,0 +1,13 @@
+{% extends 'pool_service/base.html' %}
+{% block title %}Сделки — выбор организации{% endblock %}
+{% block content %}
+<section class="card card-soft p-4 mx-auto" style="max-width:760px;">
+  <h1 class="h4 mb-3">Сделки: выберите организацию</h1>
+  <p>Откройте сделки или настройте работу со своими сделками в выбранной организации.</p>
+  <div class="list-group">
+    {% for option in entry_options %}
+    <a class="list-group-item list-group-item-action" href="{{ option.url }}">{{ option.organization.name }}</a>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

@@ -3,7 +3,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from pool_service.models import Client, Notification, Organization, OrganizationAccess, Pool, Profile, WaterReading
+from pool_service.models import Client, Notification, Organization, OrganizationAccess, Pool, Profile, ServiceTask, WaterReading
 from pool_service.services.notifications import notify_reading_out_of_range
 
 
@@ -168,12 +168,18 @@ class NotificationDisplayFormattingTests(TestCase):
         self.pool = Pool.objects.create(client=self.pool_client, address="ул. Шумакова, 78", organization=self.org)
 
     def test_notifications_page_strips_legacy_task_prefix(self):
+        task = ServiceTask.objects.create(
+            organization=self.org,
+            title="Заявка Школа № 137: реагент",
+            start_date=timezone.localdate(),
+            created_by=self.user,
+        )
         Notification.objects.create(
             user=self.user,
             title="Новая заявка",
             message='Вас добавили участником в задачу "Заявка Школа № 137: реагент"',
             kind="task_assignment",
-            action_url="/tasks/123/",
+            action_url=reverse("task_edit", kwargs={"task_id": task.pk}),
             organization=self.org,
         )
 

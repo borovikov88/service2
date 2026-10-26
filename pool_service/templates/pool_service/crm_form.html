@@ -101,6 +101,7 @@
 
     <form method="post" novalidate>
       {% csrf_token %}
+    {% if crm_org_id %}<input type="hidden" name="org_id" value="{{ crm_org_id }}">{% endif %}
       {% for name, value in return_context_fields %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
 
       <div class="crm-form-grid row g-3">
@@ -116,7 +117,7 @@
       </div>
 
       <div class="crm-form-actions d-flex flex-wrap gap-2 mt-3">
-        <a href="{% if item %}{{ return_url }}{% else %}{% url 'crm_list' direction=direction %}{% endif %}" class="btn btn-outline-secondary">Отмена</a>
+        <a href="{% if item %}{{ return_url }}{% else %}{{ crm_list_url }}{% endif %}" class="btn btn-outline-secondary">Отмена</a>
         <button type="submit" class="btn btn-primary">Сохранить</button>
       </div>
 

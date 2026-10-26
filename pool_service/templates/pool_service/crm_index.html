@@ -1,4 +1,5 @@
 {% extends 'pool_service/base.html' %}
+{% load crm_live %}
 
 {% block title %}CRM{% endblock %}
 
@@ -50,6 +51,24 @@
 
 {% block content %}
 <div class="crm-index-grid crm-index-primary row g-4">
+    {% crm_workspace_entry as workspace_url %}
+    {% if workspace_url %}
+        <div class="col-12 col-md-6 col-xl-3">
+            <a href="{{ workspace_url }}" class="text-decoration-none">
+                <div class="crm-index-card card card-soft p-4 h-100">
+                    <div class="d-flex align-items-center gap-3 mb-2">
+                        <span class="crm-index-card__icon d-inline-flex align-items-center justify-content-center bg-primary-subtle text-primary rounded-3" style="width:44px;height:44px;">
+                            <i class="bi bi-kanban fs-4"></i>
+                        </span>
+                        <div>
+                            <div class="fw-semibold">Сделки</div>
+                            <div class="text-muted small">Воронки, канбан и следующие действия</div>
+                        </div>
+                    </div>
+                </div>
+            </a>
+        </div>
+    {% endif %}
     {% for card in primary_cards %}
         <div class="col-12 col-md-6 col-xl-3">
             <a href="{{ card.url }}" class="text-decoration-none">

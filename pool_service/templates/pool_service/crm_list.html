@@ -660,6 +660,7 @@
 
 <div class="card ui-toolbar-card p-4 mb-4">
     <form method="get" class="ui-toolbar-grid" id="crm-toolbar-form">
+        {% if crm_org_id %}<input type="hidden" name="org_id" value="{{ crm_org_id }}">{% endif %}
         {% if current_sort %}
             <input type="hidden" name="sort" value="{{ current_sort }}">
             <input type="hidden" name="dir" value="{{ current_dir }}">
@@ -715,7 +716,7 @@
                 </div>
             </details>
             <button type="submit" class="ui-pill-btn ui-pill-btn--primary">Найти</button>
-            <a href="{% url 'crm_list' direction=direction %}" class="ui-pill-btn">Сбросить</a>
+            <a href="{{ crm_list_url }}" class="ui-pill-btn">Сбросить</a>
         </div>
     </form>
 </div>
@@ -746,6 +747,7 @@
 
     <form method="post" action="{% url 'crm_bulk_update' direction=direction %}" id="crm-bulk-form">
         {% csrf_token %}
+    {% if crm_org_id %}<input type="hidden" name="org_id" value="{{ crm_org_id }}">{% endif %}
         <input type="hidden" name="return_query" value="{{ request.GET.urlencode }}">
         <input type="hidden" name="bulk_action" id="crm-bulk-action" value="">
         <div class="table-responsive px-4 pb-4">

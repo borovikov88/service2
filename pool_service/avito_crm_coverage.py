@@ -21,15 +21,12 @@ def _identifier(value):
     return None
 
 
-def coverage(connection, actor, now=None):
+def owned_ad_observations(connection, now=None):
+    """Stored owned-ad evidence, reusable without channel-administration rights."""
     now = now or timezone.now()
-    if (connection.pk != 4 or str(connection.external_id) != '446312402'
-            or not connection.is_active or not connection.channel.is_active
-            or connection.channel.kind != 'avito'
-            or organization_access(actor, connection.channel.organization) is None
-            or not conversation_capability(actor, 'can_view_conversations', connection.channel.organization)
-            or not conversation_capability(actor, 'can_manage_channels', connection.channel.organization)):
-        return None
+    if (connection.pk != 4 or str(connection.external_id) != "446312402"
+            or connection.channel.kind != "avito" or not connection.is_active or not connection.channel.is_active):
+        return {}
     feed = AvitoServicesFeed.objects.filter(connection=connection).first()
     known = {}
     if feed and feed.enabled and bound(feed, connection):
@@ -47,6 +44,19 @@ def coverage(connection, actor, now=None):
                     and (row.get('id'), row.get('avito_id')) in pairs
                     and row.get('status') in {'active', 'old', 'removed', 'blocked', 'rejected'}):
                 known[row['avito_id']] = checked
+    return known
+
+
+def coverage(connection, actor, now=None):
+    now = now or timezone.now()
+    if (connection.pk != 4 or str(connection.external_id) != '446312402'
+            or not connection.is_active or not connection.channel.is_active
+            or connection.channel.kind != 'avito'
+            or organization_access(actor, connection.channel.organization) is None
+            or not conversation_capability(actor, 'can_view_conversations', connection.channel.organization)
+            or not conversation_capability(actor, 'can_manage_channels', connection.channel.organization)):
+        return None
+    known = owned_ad_observations(connection, now)
     query = Conversation.objects.filter(connection=connection,
         organization_id=connection.channel.organization_id)
     total = query.count()
@@ -81,7 +91,10 @@ def coverage(connection, actor, now=None):
             if client_confirmed:
                 bucket['linked_client_dialogs'] += 1
                 bucket['client_ids'].add(row['client_id'])
+    from .crm_source_links import coverage as source_link_coverage
+    association = source_link_coverage(actor, connection)
     return {
+        "association": association,
         'source': 'stored_provider_context.item.id_and_owned_ad_observation',
         'period': 'all_existing_service2_dialogs', 'checked_at': now,
         'total_dialogs': total, 'inspected_dialogs': len(rows), 'complete': total <= LIMIT,

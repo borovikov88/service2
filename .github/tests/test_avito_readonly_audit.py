@@ -50,5 +50,32 @@ class AvitoReadonlyWorkflowTests(unittest.TestCase):
             output = self.render(value)
             self.assertEqual(output.strip(), "AVITO_READONLY_AUDIT_UNAVAILABLE receipt_invalid")
 
+
+    def test_saved_statistics_child_is_projected_twice_and_private_keys_never_reach_logs(self):
+        child = {"schema_version": 1, "state": "blocked", "code": "statistics_binding_changed",
+            "client_uuid": "PRIVATE", "raw": {"title": "PRIVATE"}}
+        value = {"schema_version": 1, "status": "partial", "checked_at": "2026-10-26T01:00:00+07:00",
+            "source": {"error": "source_unavailable"}, "connections": [{"connection_id": 4,
+                "account_id": "446312402", "items": [], "autoload_report": {"error": "audit_report_unavailable"},
+                "statistics_source_evidence": child}]}
+        projected = RECEIPT.normalize(value)
+        self.assertEqual(projected, RECEIPT.normalize(projected))
+        output = self.render(RECEIPT.FRAME + json.dumps(projected))
+        self.assertIn('"statistics_source_evidence"', output)
+        self.assertIn('"state": "blocked"', output)
+        self.assertNotIn("PRIVATE", output)
+        self.assertNotIn("client_uuid", output)
+
+    def test_malformed_statistics_child_does_not_erase_existing_receipt_or_echo_payload(self):
+        value = {"schema_version": 1, "status": "partial", "checked_at": "2026-10-26T01:00:00+07:00",
+            "source": {"error": "source_unavailable"}, "connections": [{"connection_id": 4,
+                "account_id": "446312402", "items": [], "autoload_report": {"error": "audit_report_unavailable"},
+                "statistics_source_evidence": {"error": "PRIVATE provider payload"}}]}
+        output = self.render(RECEIPT.FRAME + json.dumps(value))
+        self.assertIn("AVITO_READONLY_AUDIT_RESULT", output)
+        self.assertIn("audit_statistics_source_evidence_unavailable", output)
+        self.assertIn("audit_report_unavailable", output)
+        self.assertNotIn("PRIVATE", output)
+
 if __name__ == "__main__":
     unittest.main()

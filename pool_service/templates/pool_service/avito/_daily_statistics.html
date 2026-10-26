@@ -28,6 +28,38 @@
 
     {% include 'pool_service/avito/_decision_report.html' with report=daily.decision_report only %}
 
+    {% if daily.gap_diagnostics.state == 'observed' %}
+    <details class="mt-3">
+      <summary>Почему не хватает данных: объявление {{ daily.gap_diagnostics.avito_id }}</summary>
+      <p class="small mt-2">Точный период дат источника: {{ daily.gap_diagnostics.from }}–{{ daily.gap_diagnostics.to }}. Завершённые запросы: {{ daily.gap_diagnostics.completed_dates }}/{{ daily.gap_diagnostics.expected_dates }} дат. Часовой пояс Авито не подтверждён. Все страницы не означают наличие всех объявлений или показателей.</p>
+      <p class="small text-muted">Штатный запрос получает все элементы аккаунта с группировкой item, без фильтра по ID объявления. Известный набор из опубликованного снимка — ожидание для диагностики, а не отдельный запрос этого объявления. Ни отсутствие строки, ни отсутствующий показатель не считаются нулём.</p>
+      <p class="small text-muted">Последняя попытка: {{ daily.gap_diagnostics.last_attempt.state }} · {% timezone "Asia/Barnaul" %}{{ daily.gap_diagnostics.last_attempt.finished_at|date:"d.m.Y H:i:s"|default:"время не подтверждено" }} · Барнаул{% endtimezone %} · этап {{ daily.gap_diagnostics.last_attempt.phase }}{% if daily.gap_diagnostics.last_attempt.exception_class %} · {{ daily.gap_diagnostics.last_attempt.exception_class }}{% endif %}{% if daily.gap_diagnostics.last_attempt.error_code %} · код {{ daily.gap_diagnostics.last_attempt.error_code }}{% endif %}. {% if daily.gap_diagnostics.last_attempt.state == 'historical_unknown' %}Точный этап прежней попытки не сохранялся.{% if daily.gap_diagnostics.last_attempt.error_code %} Причину прежней ошибки восстановить по общему коду нельзя.{% endif %}{% endif %}</p>
+      {% if daily.gap_diagnostics.last_attempt.statistics_reason %}<div class="small text-muted">Причина проверки структуры: {{ daily.gap_diagnostics.last_attempt.statistics_reason }}.</div>{% endif %}
+      {% if daily.gap_diagnostics.last_attempt.response_shape_explanation %}
+      <p class="small mt-2" data-avito-statistics-shape-explanation><strong>Сбор №{{ daily.gap_diagnostics.last_attempt.run_id }} · дата источника {{ daily.gap_diagnostics.last_attempt.source_date }}.</strong> {{ daily.gap_diagnostics.last_attempt.response_shape_explanation }}</p>
+      {% endif %}
+      <div class="table-responsive"><table class="table table-sm">
+        <thead><tr><th>Дата источника</th><th>Запрос и страницы</th><th>Строка и показатели</th><th>Объяснение</th></tr></thead>
+        <tbody>{% for item in daily.gap_diagnostics.dates %}<tr>
+          <td>{{ item.date }}</td>
+          <td>{% if item.latest_complete_run_id %}Сбор №{{ item.latest_complete_run_id }} · {{ item.date_from }}–{{ item.date_to }} · item.
+            <div class="small text-muted">{% timezone "Asia/Barnaul" %}Завершение: {{ item.completed_at|date:"d.m.Y H:i:s"|default:"не подтверждено" }} · Барнаул{% endtimezone %}.</div>
+            <div class="small">Получено {{ item.received_rows }} из {{ item.expected_total }} строк аккаунта. Смещения: {% for page in item.pages %}{{ page.offset }}{% if not forloop.last %}, {% endif %}{% empty %}не подтверждены{% endfor %}.</div>
+            {% else %}Завершённого сбора нет.{% endif %}
+            {% if item.latest_attempt_run_id %}<div class="small text-muted">Последняя попытка №{{ item.latest_attempt_run_id }}: {{ item.latest_attempt_state }}{% if item.latest_attempt_error_code %} · {{ item.latest_attempt_error_code }}{% endif %}.</div>{% endif %}
+          </td>
+          <td>{% if item.pages_complete %}В известном наборе: {{ item.expected_manifest_member|yesno:"да,нет,неизвестно" }}. Строка Авито: {{ item.provider_row_present|yesno:"есть,нет,неизвестно" }}.
+            <div class="small">Запись Service2: {{ item.stored_row_present|yesno:"есть,нет" }}; совпадает со сбором: {{ item.stored_row_consistent|yesno:"да,нет" }}. Известно показателей: {{ item.known_metric_count }}.</div>
+            <details class="small"><summary>Коды показателей</summary>Неизвестны: {{ item.missing_metric_codes|join:", "|default:"нет" }}. Известные нули: {{ item.zero_metric_codes|join:", "|default:"нет" }}.</details>
+            {% else %}Показатели неизвестны.{% endif %}
+          </td>
+          <td>{{ item.explanation }}</td>
+        </tr>{% endfor %}</tbody>
+      </table></div>
+    </details>
+    {% endif %}
+
+
     <details class="mt-3">
       <summary>Запрошенные сравнения по полным дням Барнаула</summary>
       <p class="small mt-2">Недоступны до подтверждения часового пояса источника либо появления почасовых данных. Текущий день исключён; отсутствующие значения не заменяются нулями.</p>
@@ -96,6 +128,7 @@
 
     {% if daily.crm %}
     <details class="mt-3"><summary>Покрытие связи с существующей CRM</summary>
+      <a class="btn btn-sm btn-outline-primary my-2" href="{% url 'avito_crm_attribution' connection.pk %}">Оценить обращения и подтвердить заявки</a>
       <p class="small mt-2">Все существующие диалоги Service2, отдельно от периода статистики Авито. Проверено {{ daily.crm.inspected_dialogs }}/{{ daily.crm.total_dialogs }}{% if not daily.crm.complete %}; охват неполный{% endif %}.</p>
       <dl class="small">
         <dt>Диалоги с подтверждённым ID объявления</dt><dd>{{ daily.crm.ad_source_confirmed_dialogs }}</dd>
@@ -104,7 +137,12 @@
         <dt>Различных карточек клиентов</dt><dd>{{ daily.crm.distinct_client_cards }}</dd>
         <dt>Подтверждённые цепочки объявление → диалог → клиент</dt><dd>{{ daily.crm.ad_dialog_client_chains }}</dd>
         <dt>Объявление → звонок</dt><dd>Нет подтверждённого идентификатора для связи.</dd>
-        <dt>Диалог/звонок → лид → заказ → оплата</dt><dd>Прямые связи не подтверждены; количество и выручка неизвестны.</dd>
+        {% if daily.crm.association %}
+        <dt>Подтверждённые источники → существующие заявки</dt><dd>{{ daily.crm.association.linked_dialogs }} диалогов; {{ daily.crm.association.linked_calls }} звонков с ручным подтверждением Авито; {{ daily.crm.association.distinct_requests }} различных заявок.</dd>
+        <dt>Источник звонка не подтверждён</dt><dd>{{ daily.crm.association.candidate_calls_unknown }} вручную разобранных кандидатов. Они не включены в обращения Авито.</dd>
+        <dt>Без подтверждённой заявки</dt><dd>{{ daily.crm.association.unknown_requests }}</dd>
+        {% else %}<dt>Диалог/звонок → заявка</dt><dd>Связи не подтверждены.</dd>{% endif %}
+        <dt>Заказ → оплата → выручка</dt><dd>Неизвестны. Ручная ссылка на наблюдаемый плановый документ 1С не является оплатой или причинной атрибуцией рекламы.</dd>
       </dl>
       <p class="small text-muted">Источник — сохранённый provider_context.item.id и проверка принадлежности объявления за последние 24 часа. Client FK используется только при доступе к карточке той же организации. Совпадение телефона или названия не создаёт связь с лидом, заказом или оплатой. Карточки клиентов не равны уникальным людям из счётчиков Авито.</p>
     </details>

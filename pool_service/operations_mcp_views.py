@@ -25,6 +25,7 @@ from pool_service.communication_models import CallAnalysis, PhoneCall
 from pool_service.services.call_privacy import is_private_call, private_source_task_ids, task_source_is_private
 from pool_service.models import (
     Client,
+    Employee,
     FinanceMcpAuditEvent,
     Notification,
     Organization,
@@ -315,6 +316,15 @@ def _locked_task_recipient(task, user_id):
     """Lock and re-read a task recipient before any private notification."""
     user = _locked_staff_user(task.organization, user_id)
     if not user:
+        return None
+    # Keep delivery authority current after HR deactivation too. Existing
+    # order remains organization/task -> user -> org access, then employee;
+    # identity binding already locks org access before its employee row.
+    employees = list(Employee.objects.select_for_update().filter(
+        organization_id=task.organization_id, user_id=user.id,
+    ).order_by("pk"))
+    if any(not employee.is_active or employee.employment_status == Employee.STATUS_DISMISSED
+           for employee in employees):
         return None
     if (
         task.primary_responsible_id != user.id
