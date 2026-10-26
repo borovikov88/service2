@@ -116,6 +116,24 @@ class AvitoMcpTests(TestCase):
         shared = self.client.get(reverse("finance_mcp_authorization_server_metadata"))
         self.assertIn(AVITO_READ_SCOPE, shared.json()["scopes_supported"])
 
+    def test_only_exact_avito_transport_and_discovery_paths_reach_bearer_auth(self):
+        metadata = self.client.get(reverse("avito_mcp_protected_resource_metadata"))
+        self.assertEqual(metadata.status_code, 200)
+        self.assertNotIn("Location", metadata)
+        self.assertEqual(metadata.json()["resource"], RESOURCE)
+        challenged = self._call()
+        self.assertEqual(challenged.status_code, 200)
+        self.assertNotIn("Location", challenged)
+        result = challenged.json()["result"]
+        self.assertTrue(result["isError"])
+        self.assertIn("mcp/www_authenticate", result["_meta"])
+        for adjacent in ("/mcp/avito-evil", "/mcp/avito/child",
+                         "/.well-known/oauth-protected-resource/mcp/avito-extra"):
+            with self.subTest(path=adjacent):
+                denied = self.client.get(adjacent)
+                self.assertEqual(denied.status_code, 302)
+                self.assertEqual(denied["Location"], "/accounts/login/")
+
     def test_finance_operations_and_wrong_scope_tokens_cannot_read_avito(self):
         for resource, scopes, raw in (
             (ISSUER+"/mcp/finance", ["finance.read"], "synthetic-finance"),
