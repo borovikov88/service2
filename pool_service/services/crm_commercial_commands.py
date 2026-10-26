@@ -1,5 +1,7 @@
 """Authorized commercial commands; HTTP adapters never write the models directly."""
 from datetime import datetime, timezone as datetime_timezone
+from decimal import Decimal, InvalidOperation
+import re
 import hashlib
 import json
 from zoneinfo import ZoneInfo
@@ -22,10 +24,13 @@ class CommercialConflict(ValidationError):
     """The key was reused or the caller's subject revision is stale."""
 
 
+CARD_FIELDS = {"work_subject", "specialization", "fulfillment_kind", "object_kind", "pool_id", "client_object_id",
+    "planned_object_name", "planned_object_address", "amount", "currency", "amount_basis", "expected_decision_at"}
+
 COMMANDS = {
     "lead.edit": (CrmLead, "assignee_id", "edit_own_leads", {"title", "need"}),
     "lead.transition": (CrmLead, "assignee_id", "transition_own_leads", {"status", "reason", "follow_up_at"}),
-    "deal.edit": (CrmDeal, "manager_id", "edit_own_deals", {"title"}),
+    "deal.edit": (CrmDeal, "manager_id", "edit_own_deals", {"title"} | CARD_FIELDS),
     "deal.transition": (CrmDeal, "manager_id", "transition_own_deals", {"stage_id", "reason"}),
 }
 # Explicit technical bounds, independent of editable labels/positions. No tender
@@ -55,7 +60,22 @@ def _normalize(command_type, changes):
     for key, value in normalized.items():
         if key == "stage_id":
             _positive_id(value)
-        elif key == "follow_up_at":
+        elif key in {"pool_id", "client_object_id"}:
+            if value is not None:
+                _positive_id(value)
+        elif key == "amount":
+            if value is not None:
+                if type(value) not in (str, Decimal) or (type(value) is str and len(value) > 40):
+                    raise ValidationError("Сумму укажите десятичной строкой.")
+                try:
+                    amount = Decimal(value)
+                except InvalidOperation as exc:
+                    raise ValidationError("Некорректная сумма.") from exc
+                if (not amount.is_finite() or amount < 0 or amount >= Decimal("10000000000000000")
+                        or amount.as_tuple().exponent < -2):
+                    raise ValidationError("Сумма должна быть неотрицательной, до 16 цифр и 2 знаков после запятой.")
+                normalized[key] = format(abs(amount) if amount.is_zero() else amount, ".2f")
+        elif key in {"follow_up_at", "expected_decision_at"}:
             if value is not None:
                 if isinstance(value, str):
                     try:
@@ -72,9 +92,11 @@ def _normalize(command_type, changes):
             raise ValidationError("CRM text must be a string.")
         else:
             normalized[key] = value.strip()
-            limit = {"title": 255, "need": 10000, "reason": 500}.get(key, 16)
+            limit = {"title": 255, "need": 10000, "reason": 500, "work_subject": 2000, "specialization": 40, "fulfillment_kind": 24, "planned_object_name": 255, "planned_object_address": 500, "amount_basis": 24, "currency": 3}.get(key, 16)
             if len(normalized[key]) > limit or (key == "title" and not normalized[key]):
                 raise ValidationError("CRM text is empty or too long.")
+    if "currency" in normalized and normalized["currency"] and not re.fullmatch(r"[A-Z]{3}", normalized["currency"]):
+        raise ValidationError("Валюта — три заглавные латинские буквы.")
     if command_type.endswith(".transition"):
         normalized.setdefault("reason", "")
     if command_type == "lead.transition":
@@ -106,7 +128,37 @@ def _authorize(using, actor_id, organization, capability):
     return actor
 
 
-def _apply(subject, command_type, changes, using):
+def _card_value(key, value):
+    if key == "amount" and value is not None:
+        return format(Decimal(value), ".2f")
+    if key == "expected_decision_at" and value is not None:
+        return value.astimezone(datetime_timezone.utc).isoformat()
+    return value
+
+
+def _set_card_fields(subject, changes, diff):
+    changed = False
+    for key, value in changes.items():
+        old = _card_value(key, getattr(subject, key))
+        if old == value:
+            continue
+        changed = True
+        if key == "amount" and value is not None:
+            setattr(subject, key, Decimal(value))
+        elif key == "expected_decision_at" and value is not None:
+            setattr(subject, key, parse_datetime(value))
+        else:
+            setattr(subject, key, value)
+        if key in {"title", "work_subject", "specialization"}:
+            diff[key + "_changed"] = {"before": False, "after": True}
+        elif key in {"planned_object_name", "planned_object_address"}:
+            diff["planned_object_changed"] = {"before": False, "after": True}
+        else:
+            diff[key] = {"before": old, "after": value}
+    return changed
+
+
+def _apply(subject, command_type, changes, using, actor=None):
     before = subject.revision
     diff = {"revision": {"before": before, "after": before + 1}}
     reason = changes.get("reason", "")
@@ -153,14 +205,18 @@ def _apply(subject, command_type, changes, using):
             diff["stage_id"] = {"before": subject.stage_id, "after": target.pk}
             subject.stage = target
     if command_type.endswith(".edit"):
-        changed = False
-        for key, value in changes.items():
-            if getattr(subject, key) != value:
-                changed = True
-                setattr(subject, key, value)
-                diff[f"{key}_changed"] = {"before": False, "after": True}
+        changed = _set_card_fields(subject, changes, diff) if isinstance(subject, CrmDeal) else False
+        if isinstance(subject, CrmLead):
+            for key, value in changes.items():
+                if getattr(subject, key) != value:
+                    changed = True
+                    setattr(subject, key, value)
+                    diff[f"{key}_changed"] = {"before": False, "after": True}
         if not changed:
             raise ValidationError("The command has no changes.")
+    if isinstance(subject, CrmDeal):
+        from .crm_deal_objects import validate_deal_object
+        validate_deal_object(using, actor, subject)
     subject.revision += 1
     subject.save(using=using)
     return diff, reason
@@ -193,7 +249,7 @@ def execute_commercial_command(*, actor, organization, operation_key, command_ty
             organization = Organization.objects.using(using).select_for_update().get(pk=organization_id)
         except Organization.DoesNotExist as exc:
             raise PermissionDenied("Organization unavailable.") from exc
-        _authorize(using, actor_id, organization, capability)
+        actor = _authorize(using, actor_id, organization, capability)
         try:
             subject = model.objects.using(using).select_for_update().get(pk=subject_id, organization_id=organization_id)
         except model.DoesNotExist as exc:
@@ -209,8 +265,15 @@ def execute_commercial_command(*, actor, organization, operation_key, command_ty
             client = Client.objects.using(using).select_for_update().get(pk=subject.client_id)
             if client.organization_id != organization_id:
                 raise ValidationError("CRM client scope is inconsistent.")
+            if isinstance(subject, CrmDeal):
+                from pool_service.client_queries import active_clients
+                if not active_clients(Client.objects.using(using)).filter(pk=client.pk).exists():
+                    raise PermissionDenied("Deal client is no longer an active CRM identity.")
         # Revalidate tenant links before returning even a saved result.
         subject.full_clean()
+        if isinstance(subject, CrmDeal):
+            from .crm_deal_objects import validate_deal_object
+            validate_deal_object(using, actor, subject)
         previous = CrmCommand.objects.using(using).select_for_update().filter(
             organization_id=organization_id, operation_key=operation_key).first()
         if previous:
@@ -219,7 +282,7 @@ def execute_commercial_command(*, actor, organization, operation_key, command_ty
             return dict(previous.result)
         if subject.revision != expected_revision:
             raise CommercialConflict("CRM revision changed; reload the card.")
-        diff, reason = _apply(subject, command_type, changes, using)
+        diff, reason = _apply(subject, command_type, changes, using, actor)
         command = CrmCommand.objects.using(using).create(
             organization=organization, operation_key=operation_key, command_type=command_type,
             payload_hash=digest, actor_id=actor_id)
@@ -294,10 +357,14 @@ def _owned_deal(using, actor_id, organization_id, subject_id):
     if not deal:
         raise PermissionDenied("Only the actor's own CRM cards may be changed.")
     if deal.client_id:
-        client = Client.objects.using(using).select_for_update().filter(pk=deal.client_id).first()
+        from pool_service.client_queries import active_clients
+        client = active_clients(Client.objects.using(using).select_for_update()).filter(pk=deal.client_id).first()
         if not client or client.organization_id != organization_id:
             raise ValidationError("CRM client scope is inconsistent.")
     deal.full_clean()
+    from .crm_deal_objects import validate_deal_object
+    from django.contrib.auth import get_user_model
+    validate_deal_object(using, get_user_model().objects.using(using).get(pk=actor_id), deal)
     return deal
 
 
@@ -360,16 +427,21 @@ def _record_pilot_command(using, *, actor, deal, operation_key, digest, command_
     return dict(command.result)
 
 
-def create_commercial_deal(*, actor, organization, operation_key, client_id, pipeline_id, title, next_action):
+def create_commercial_deal(*, actor, organization, operation_key, client_id, pipeline_id, title, next_action, card_fields=None):
     """Create an own preparatory deal and its first real task, or replay it."""
     from pool_service.client_queries import active_clients
     _positive_id(client_id)
     _positive_id(pipeline_id)
     title = _normalize("deal.edit", {"title": title})["title"]
     values = _next_action_values(next_action)
+    if card_fields is None:
+        card_fields = {}
+    if type(card_fields) is not dict or not card_fields.keys() <= CARD_FIELDS:
+        raise ValidationError("Некорректные поля карточки сделки.")
+    card_fields = _normalize("deal.edit", card_fields) if card_fields else {}
     actor_id, organization_id, digest = _pilot_payload(actor=actor, organization=organization,
         operation_key=operation_key, command_type="deal.create", client_id=client_id,
-        pipeline_id=pipeline_id, title=title, next_action=values)
+        pipeline_id=pipeline_id, title=title, next_action=values, **({"card_fields": card_fields} if card_fields else {}))
     using = router.db_for_write(CrmCommand)
     with transaction.atomic(using=using):
         organization = _locked_organization(using, organization_id)
@@ -388,9 +460,12 @@ def create_commercial_deal(*, actor, organization, operation_key, client_id, pip
             pipeline=pipeline, code=order[0] if order else "", is_active=True).first()
         if not pipeline.is_active or not stage:
             raise ValidationError("Начальный этап этой воронки недоступен.")
-        deal = CrmDeal.objects.using(using).create(
-            organization=organization, pipeline=pipeline, stage=stage,
+        deal = CrmDeal(organization=organization, pipeline=pipeline, stage=stage,
             client=client, manager=actor, title=title, revision=1)
+        _set_card_fields(deal, card_fields, {})
+        from .crm_deal_objects import validate_deal_object
+        validate_deal_object(using, actor, deal)
+        deal.save(using=using)
         task, link = _new_next_task(using, actor, deal, values)
         CrmDealNextAction.objects.using(using).create(organization=organization, deal=deal, task_link=link)
         return _record_pilot_command(using, actor=actor, deal=deal, operation_key=operation_key,
@@ -464,3 +539,76 @@ def set_deal_next_action(*, actor, organization, operation_key, subject_id, expe
         deal.save(using=using)
         return _record_pilot_command(using, actor=actor, deal=deal, operation_key=operation_key,
             digest=digest, command_type="deal.next_action", task=task, before=before)
+
+
+def close_commercial_deal_negative(*, actor, organization, operation_key, subject_id,
+                                   expected_revision, outcome, reason, expected_task_version):
+    """Explicit negative outcome, gated by existing crm_close, with atomic reminder cancellation."""
+    from pool_service.services.task_feedback import version_for
+    _positive_id(subject_id)
+    if type(expected_revision) is not int or expected_revision < 0:
+        raise ValidationError("Некорректная версия сделки.")
+    if type(outcome) is not str or outcome not in {"lost", "cancelled"}:
+        raise ValidationError("Выберите отказ или отмену.")
+    if type(reason) is not str or not reason.strip() or len(reason.strip()) > 500:
+        raise ValidationError("Укажите причину отказа или отмены, до 500 символов.")
+    reason = reason.strip()
+    if expected_task_version is not None and (type(expected_task_version) is not str
+            or not re.fullmatch(r"[0-9a-f]{64}", expected_task_version)):
+        raise ValidationError("Некорректная версия следующего действия.")
+    actor_id, organization_id, digest = _pilot_payload(actor=actor, organization=organization,
+        operation_key=operation_key, command_type="deal.close_negative", subject_id=subject_id,
+        expected_revision=expected_revision, outcome=outcome, reason=reason, expected_task_version=expected_task_version)
+    using = router.db_for_write(CrmCommand)
+    with transaction.atomic(using=using):
+        organization = _locked_organization(using, organization_id)
+        previous = _previous_pilot_command(using, organization_id, operation_key)
+        pointer = CrmDealNextAction.objects.using(using).select_for_update().filter(
+            deal_id=subject_id, organization_id=organization_id).first()
+        tasks = _locked_pilot_tasks(using, pointer=pointer, previous=previous)
+        actor = _authorize(using, actor_id, organization, ("transition_own_deals", "manage_own_next_action"))
+        if not organization.crm_close:
+            raise PermissionDenied("Закрытие сделок в этой организации пока недоступно.")
+        deal = _owned_deal(using, actor_id, organization_id, subject_id)
+        task = tasks.get(pointer.task_link.task_id) if pointer else None
+        if pointer:
+            pointer.full_clean()
+            _validate_task_link(using, actor, deal, task)
+        if previous:
+            if previous.actor_id != actor_id or previous.command_type != "deal.close_negative" or previous.payload_hash != digest:
+                raise CommercialConflict("Operation key was used with different content.")
+            if previous.result.get("task_id"):
+                _validate_task_link(using, actor, deal, tasks.get(previous.result["task_id"]))
+            return dict(previous.result)
+        if deal.revision != expected_revision:
+            raise CommercialConflict("CRM revision changed; reload the card.")
+        if deal.is_archived or deal.outcome != "open" or deal.stage.code not in PREPARATORY_STAGES.get(deal.pipeline.code, ()):
+            raise ValidationError("Отказ и отмена доступны только на подготовительных этапах открытой сделки.")
+        if (task and version_for(task) != expected_task_version) or (not task and expected_task_version is not None):
+            raise CommercialConflict("Следующее действие уже изменено. Обновите карточку.")
+        terminal = task and (task.is_archived or task.completed_at or task.status in {ServiceTask.STATUS_DONE, ServiceTask.STATUS_CANCELLED})
+        if task and not terminal:
+            if not task.is_editable or task.status == ServiceTask.STATUS_WAITING:
+                raise ValidationError("Сначала снимите ожидание или ограничение в карточке задачи.")
+            task.status = ServiceTask.STATUS_CANCELLED
+            task.is_archived, task.archived_at, task.archived_by = True, timezone.now(), actor
+            task.archived_reason = ServiceTask.ARCHIVE_REASON_MANUAL
+            task.save(using=using, update_fields=["status", "is_archived", "archived_at", "archived_by", "archived_reason", "updated_at"])
+            ServiceTaskChange.objects.using(using).create(task=task, changed_by=actor,
+                action=ServiceTaskChange.ACTION_UPDATED, field_name="crm_deal_negative_close")
+        before = deal.revision
+        deal.outcome, deal.close_reason, deal.closed_at = outcome, reason, timezone.now()
+        deal.revision += 1
+        deal.save(using=using)
+        command = CrmCommand.objects.using(using).create(organization=organization, operation_key=operation_key,
+            actor=actor, command_type="deal.close_negative", payload_hash=digest)
+        event = CrmEvent.objects.using(using).create(organization=organization, deal=deal, command=command,
+            actor=actor, event_type="deal.close_negative", reason=reason,
+            safe_diff={"revision": {"before": before, "after": deal.revision},
+                "outcome": {"before": "open", "after": outcome},
+                "closed_at": {"before": None, "after": deal.closed_at.isoformat()}})
+        command.result = {"deal_id": deal.pk, "revision": deal.revision, "event_id": event.pk}
+        if task:
+            command.result["task_id"] = task.pk
+        command.save(using=using, update_fields=["result"])
+        return dict(command.result)

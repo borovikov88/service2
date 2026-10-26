@@ -78,7 +78,7 @@ class AuthRedirectMiddleware:
         if not request.user.is_authenticated:
             path = request.path
             if path in {
-                "/crm/workspace/data/", "/crm/workspace/clients/", "/crm/workspace/commands/",
+                "/crm/workspace/data/", "/crm/workspace/clients/", "/crm/workspace/commands/", "/crm/workspace/objects/",
             } or path.startswith("/crm/workspace/deals/") or (
                 path.startswith("/crm/workspace/leads/") and path != "/crm/workspace/leads/"
             ):
