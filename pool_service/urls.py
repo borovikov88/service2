@@ -413,6 +413,7 @@ urlpatterns = [
     path("crm/workspace/start/", crm_pilot_views.start, name="crm_live_start"),
     path("crm/workspace/data/", crm_live_views.data, name="crm_live_data"),
     path("crm/workspace/clients/", crm_live_views.clients, name="crm_live_clients"),
+    path("crm/workspace/objects/", crm_live_views.objects, name="crm_live_objects"),
     path("crm/workspace/commands/", crm_live_views.command, name="crm_live_command"),
     path("crm/workspace/deals/<int:deal_id>/", crm_live_views.detail, name="crm_live_detail"),
     path("crm/workspace/leads/", crm_lead_views.workspace, name="crm_live_leads"),

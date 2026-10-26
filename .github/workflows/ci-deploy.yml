@@ -113,6 +113,19 @@ jobs:
         run: |
           python manage.py check --settings=service_site.test_settings
           python manage.py makemigrations --check --dry-run --settings=service_site.test_settings
+      - name: Chromium commercial card acceptance
+        if: steps.reuse.outputs.verified != 'true'
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          set -euo pipefail
+          browser_dir="$(mktemp -d "$RUNNER_TEMP/service2-crm-browser.XXXXXX")"
+          trap 'rm -rf -- "$browser_dir"' EXIT
+          npm install --prefix "$browser_dir" --ignore-scripts --no-audit --no-fund --package-lock=false playwright@1.62.1
+          export NODE_PATH="$browser_dir/node_modules"
+          export PLAYWRIGHT_BROWSERS_PATH="$browser_dir/browsers"
+          node "$browser_dir/node_modules/playwright/cli.js" install --with-deps chromium
+          CRM_CARD_BROWSER_TEST=1 python manage.py test pool_service.tests.test_crm_commercial_card_browser --settings=service_site.test_settings --verbosity 1
       - name: Run test suite
         if: steps.reuse.outputs.verified != 'true'
         run: python manage.py test --settings=service_site.test_settings --verbosity 1

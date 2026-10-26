@@ -221,6 +221,12 @@ class CrmDeal(CommercialModel):
     client = models.ForeignKey("pool_service.Client", null=True, blank=True, on_delete=models.PROTECT)
     manager = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT)
     title = models.CharField(max_length=255)
+    work_subject = models.CharField(max_length=2000, blank=True)
+    object_kind = models.CharField(max_length=16, choices=[("none", "Не выбран"), ("pool", "Обслуживаемый объект"), ("client_object", "Объект клиента"), ("planned", "Планируемый объект")], default="none")
+    pool = models.ForeignKey("pool_service.Pool", null=True, blank=True, on_delete=models.PROTECT, related_name="commercial_deals")
+    client_object = models.ForeignKey("pool_service.ClientOwnedObject", null=True, blank=True, on_delete=models.PROTECT, related_name="commercial_deals")
+    planned_object_name = models.CharField(max_length=255, blank=True)
+    planned_object_address = models.CharField(max_length=500, blank=True)
     specialization = models.CharField(max_length=40, blank=True)
     fulfillment_kind = models.CharField(max_length=24, choices=[("unknown", "Неизвестен"), ("construction", "Строительство"), ("service", "Обслуживание"), ("retail", "Поставка"), ("mixed", "Смешанный")], default="unknown")
     amount = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
@@ -241,6 +247,12 @@ class CrmDeal(CommercialModel):
     class Meta:
         base_manager_name = "objects"
         constraints = [
+            models.CheckConstraint(condition=(
+                Q(object_kind="none", pool__isnull=True, client_object__isnull=True, planned_object_name="", planned_object_address="")
+                | Q(object_kind="pool", pool__isnull=False, client_object__isnull=True, planned_object_name="", planned_object_address="")
+                | Q(object_kind="client_object", pool__isnull=True, client_object__isnull=False, planned_object_name="", planned_object_address="")
+                | (Q(object_kind="planned", pool__isnull=True, client_object__isnull=True) & ~Q(planned_object_name=""))
+            ), name="crm_deal_object_shape"),
             models.CheckConstraint(condition=Q(outcome__in=["open", "won", "lost", "cancelled", "unknown"]), name="crm_deal_outcome"),
             models.CheckConstraint(condition=~Q(outcome="unknown") | Q(data_quality="legacy_review"), name="crm_deal_unknown_quality"),
             models.CheckConstraint(condition=Q(data_quality__in=["native", "legacy_review"]), name="crm_deal_quality"),
@@ -248,6 +260,23 @@ class CrmDeal(CommercialModel):
             models.CheckConstraint(condition=(Q(amount__isnull=True, amount_basis="unknown") | (Q(amount__isnull=False, amount__gte=0, amount_basis__in=["indicative", "agreed"]) & ~Q(currency=""))), name="crm_deal_amount_shape"),
         ]
         indexes = [models.Index(fields=["organization", "pipeline", "is_archived"], name="crm_deal_board_idx")]
+
+
+    def clean(self):
+        super().clean()
+        using = self._state.db or router.db_for_write(type(self), instance=self)
+        if self.object_kind == "planned" and not self.planned_object_name.strip():
+            raise ValidationError({"planned_object_name": "Planned object needs a name."})
+        if self.pool_id:
+            from pool_service.models import Pool
+            if not self.client_id or not Pool.objects.using(using).filter(pk=self.pool_id,
+                    organization_id=self.organization_id, client_id=self.client_id).exists():
+                raise ValidationError({"pool": "Deal object must belong to this client and organization."})
+        if self.client_object_id:
+            from pool_service.client_crm_models import ClientOwnedObject
+            if not self.client_id or not ClientOwnedObject.objects.using(using).filter(pk=self.client_object_id,
+                    client_id=self.client_id, client__organization_id=self.organization_id).exists():
+                raise ValidationError({"client_object": "Deal object must belong to this client and organization."})
 
 
 class CrmDealTaskLink(CommercialModel):
@@ -366,17 +395,49 @@ class CrmEvent(CommercialModel):
 
     def clean(self):
         super().clean()
-        allowed = {"stage_id", "pipeline_id", "manager_id", "assignee_id", "revision", "is_archived", "status", "title_changed", "need_changed", "next_action_changed"}
+        allowed = {"work_subject_changed", "planned_object_changed", "object_kind", "pool_id", "client_object_id", "specialization_changed", "fulfillment_kind", "amount", "currency", "amount_basis", "expected_decision_at", "outcome", "closed_at", "stage_id", "pipeline_id", "manager_id", "assignee_id", "revision", "is_archived", "status", "title_changed", "need_changed", "next_action_changed"}
         if not isinstance(self.safe_diff, dict) or not self.safe_diff.keys() <= allowed:
             raise ValidationError("Event diff accepts only structural CRM fields.")
         for field, change in self.safe_diff.items():
             if not isinstance(change, dict) or set(change) != {"before", "after"}:
                 raise ValidationError("Event change requires before and after.")
+            enums = {
+                "object_kind": {"none", "pool", "client_object", "planned"},
+                "fulfillment_kind": {"unknown", "construction", "service", "retail", "mixed"},
+                "amount_basis": {"unknown", "indicative", "agreed"},
+                "outcome": {"open", "won", "lost", "cancelled", "unknown"},
+            }
+            if field in {"pool_id", "client_object_id"}:
+                if any(value is not None and (type(value) is not int or value <= 0) for value in change.values()):
+                    raise ValidationError("Object history values must be positive IDs or NULL.")
+                continue
+            if field in enums:
+                if any(type(value) is not str or value not in enums[field] for value in change.values()):
+                    raise ValidationError("Event value must be a known CRM enum.")
+                continue
+            if field in {"amount", "currency", "expected_decision_at", "closed_at"}:
+                import re
+                from django.utils.dateparse import parse_datetime
+                for value in change.values():
+                    if field == "currency":
+                        valid = type(value) is str and (value == "" or re.fullmatch(r"[A-Z]{3}", value))
+                    elif value is None:
+                        valid = True
+                    elif field == "amount":
+                        valid = type(value) is str and re.fullmatch(r"(?:0|[1-9][0-9]{0,15})\.[0-9]{2}", value)
+                    else:
+                        try:
+                            valid = type(value) is str and parse_datetime(value) is not None and timezone.is_aware(parse_datetime(value))
+                        except ValueError:
+                            valid = False
+                    if not valid:
+                        raise ValidationError("Event value must be canonical commercial data.")
+                continue
             if field == "status":
                 if any(type(value) is not str or value not in {"new", "working", "qualifying", "waiting", "deferred", "closed"} for value in change.values()):
                     raise ValidationError("Event status must be a known lead state.")
                 continue
-            if field in {"title_changed", "need_changed", "next_action_changed"} and any(type(value) is not bool for value in change.values()):
+            if field in {"title_changed", "need_changed", "next_action_changed", "work_subject_changed", "planned_object_changed", "specialization_changed"} and any(type(value) is not bool for value in change.values()):
                 raise ValidationError("Content markers must be booleans.")
             if any(value is not None and type(value) not in (int, bool) for value in change.values()):
                 raise ValidationError("Event values must be IDs, revisions or booleans.")

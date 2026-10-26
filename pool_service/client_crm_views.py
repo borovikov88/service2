@@ -5,6 +5,7 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django import forms
 from django.db.models import Count, Q
+from django.db.models.deletion import ProtectedError
 from django.http import HttpResponseForbidden, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -184,8 +185,12 @@ def client_detail(request, client_id):
                 object_id = int(request.POST.get("object_id") or 0)
             except (TypeError, ValueError):
                 object_id = 0
-            ClientOwnedObject.objects.filter(client=client, pk=object_id).delete()
-            messages.success(request, "Объект клиента удалён.")
+            try:
+                ClientOwnedObject.objects.filter(client=client, pk=object_id).delete()
+            except ProtectedError:
+                messages.error(request, "Объект используется в сделке и сохранён для её истории.")
+            else:
+                messages.success(request, "Объект клиента удалён.")
             return redirect(card_url(client.id, "objects"))
 
         if action == "add_company_link":
