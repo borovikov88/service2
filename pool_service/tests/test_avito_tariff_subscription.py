@@ -300,8 +300,11 @@ class TariffSubscriptionTests(TestCase):
             self.connection.settings = metadata
             self.connection.save(update_fields=["settings"])
             self._clients_page_mock.side_effect = superseded
-            with self.subTest(replace_lease=replace_lease), self.assertRaisesMessage(tariff.SubscriptionError, "tariff_scope_changed"):
-                tariff.refresh(self.connection, self.owner)
+            with self.subTest(replace_lease=replace_lease):
+                result = tariff.refresh(self.connection, self.owner)
+                self.assertEqual(result["code"], "tariff_scope_changed")
+                self.assertTrue(result["request_performed"])
+                self.assertTrue(result["detail"])
 
     def test_fresh_binding_and_rights_are_checked_again_after_http(self):
         def changed(*_args):
@@ -310,8 +313,10 @@ class TariffSubscriptionTests(TestCase):
             credential.save(update_fields=["client_secret_encrypted"])
             return self.response()
         self._clients_page_mock.side_effect = changed
-        with self.assertRaisesMessage(tariff.SubscriptionError, "tariff_scope_changed"):
-            tariff.refresh(self.connection, self.owner)
+        result = tariff.refresh(self.connection, self.owner)
+        self.assertEqual(result["code"], "tariff_scope_changed")
+        self.assertTrue(result["request_performed"])
+        self.assertTrue(result["detail"])
         self.assertIsNone(tariff.display_state(self.connection, self.owner)["last_success_at"])
         self._clients_page_mock.side_effect = lambda *_: (User.objects.filter(pk=self.owner.pk).update(is_active=False), self.response())[1]
         with self.assertRaises(PermissionDenied):
@@ -430,6 +435,24 @@ class TariffSubscriptionTests(TestCase):
         url = reverse("avito_refresh_data", args=[4])
         self.assertEqual(strict.post(url, {"section": "tariff_api_refresh"}).status_code, 403)
 
+    def test_authorized_post_success_and_read_scope_conflict_redirect_without_500(self):
+        self.client.force_login(self.owner)
+        url = reverse("avito_refresh_data", args=[4])
+        self.success()
+        response = self.client.post(url, {"section": "tariff_api_refresh"})
+        self.assertEqual(response.status_code, 302)
+        before = copy.deepcopy(self.saved()[tariff.KEY])
+        self.assertEqual(before["data"]["state"], "active")
+        def changed_binding(*_args):
+            AvitoCredential.objects.filter(pk=self.credential.pk).update(client_secret_encrypted="changed-during-ui-read")
+            return self.response()
+        self._clients_page_mock.side_effect = changed_binding
+        response = self.client.post(url, {"section": "tariff_api_refresh"})
+        self.assertEqual(response.status_code, 302)
+        after = self.saved()[tariff.KEY]
+        self.assertEqual(after["last_success_at"], before["last_success_at"])
+        self.assertIsNone(tariff.display_state(self.connection, self.owner)["last_success_at"])
+
     def test_record_observation_rejects_wrong_binding_contract_and_inconsistent_state(self):
         current, binding = tariff._scope(4, self.owner)
         for observation, source in ((replace(self.normalized(), is_active=None), binding),
@@ -438,8 +461,9 @@ class TariffSubscriptionTests(TestCase):
             with self.assertRaises(tariff.SubscriptionError):
                 tariff.record_observation(current, self.owner, observation, source)
         with patch.object(tariff, "CONTRACT_STATUS", "unverified"):
-            with self.assertRaisesMessage(tariff.SubscriptionError, "method_contract_unavailable"):
-                tariff.refresh(self.connection, self.owner)
+            result = tariff.refresh(self.connection, self.owner)
+            self.assertEqual(result["code"], "method_contract_unavailable")
+            self.assertFalse(result["request_performed"])
         self._clients_page_mock.assert_not_called()
 
 

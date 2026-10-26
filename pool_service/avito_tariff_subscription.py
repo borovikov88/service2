@@ -45,6 +45,7 @@ ZONE = ZoneInfo("Asia/Barnaul")
 ERRORS = {
     "method_contract_unavailable": "Контракт метода ещё не подтверждён; запрос не выполнялся.",
     "access_unverified": "Формат метода подтверждён; агентский доступ подключения ещё не проверен.",
+    "already_attempted": "Ограниченная проверка уже выполнялась для текущего подключения и контракта.",
     "tariff_scope_changed": "Подключение, ключи или права изменились; прежний результат скрыт.",
     "tariff_pages_incomplete": "Получена часть страниц; подписка пока не подтверждена. Продолжите чтение после паузы.",
     "tariff_reader_limit": "Список превышает безопасный предел чтения; полнота и подписка не подтверждены.",
@@ -380,7 +381,7 @@ def _clients_page(token, offset):
         timeout=8, ambiguous_transport=True)
 
 
-def refresh(connection, actor, *, once=False):
+def _refresh(connection, actor, *, once=False):
     """Read one documented page; HTTP runs outside the reserve/commit transactions."""
     if CONTRACT_STATUS != "verified":
         raise SubscriptionError("method_contract_unavailable")
@@ -416,12 +417,16 @@ def refresh(connection, actor, *, once=False):
         code = _code(exc)
     now = timezone.now()
     if not code and next_progress["offset"] == next_progress["total"]:
-        observation = normalize_services_subscription(
-            [next_progress["target_subscription"]] if next_progress["target_matches"] else [],
-            account_id=ACCOUNT, account_matches=next_progress["target_matches"], pages_complete=True, fetched_at=now)
-        saved = record_observation(current, actor, observation, binding, expected_lease=lease,
-            value_extra={"pages_received": next_progress["pages"], "pagination_complete": True,
-                "target_matches": next_progress["target_matches"]})
+        try:
+            observation = normalize_services_subscription(
+                [next_progress["target_subscription"]] if next_progress["target_matches"] else [],
+                account_id=ACCOUNT, account_matches=next_progress["target_matches"], pages_complete=True, fetched_at=now)
+            saved = record_observation(current, actor, observation, binding, expected_lease=lease,
+                value_extra={"pages_received": next_progress["pages"], "pagination_complete": True,
+                    "target_matches": next_progress["target_matches"]})
+        except SubscriptionError as exc:
+            exc.request_performed = performed
+            raise
         return {"code": "", "request_performed": True, "state": saved["data"]["state"]}
     if not code:
         code = "tariff_pages_incomplete"
@@ -429,7 +434,9 @@ def refresh(connection, actor, *, once=False):
         latest, latest_binding = _scope(current.pk, actor, lock=True)
         value = _saved(latest)
         if latest_binding != binding or value.get("binding") != binding or not _lease_matches(value, lease, now):
-            raise SubscriptionError("tariff_scope_changed")
+            error = SubscriptionError("tariff_scope_changed")
+            error.request_performed = performed
+            raise error
         value.update(last_attempt_at=now.isoformat(), last_attempt_code=code, last_attempt_phase=phase,
             request_performed=performed, lease=None, lease_until=None)
         if confirmed:
@@ -448,6 +455,22 @@ def refresh(connection, actor, *, once=False):
             value.update(progress=None, pagination_complete=False)
         _write(latest, value)
     return {"code": code, "detail": ERRORS[code], "request_performed": performed}
+
+
+def refresh(connection, actor, *, once=False):
+    """Stable UI/operation contract; expected read conflicts never become 500.
+
+    PermissionDenied intentionally propagates to the normal authorization boundary.
+    """
+    try:
+        result = _refresh(connection, actor, once=once)
+    except SubscriptionError as exc:
+        code = _code(exc)
+        result = {"code": code, "request_performed": getattr(exc, "request_performed", False) is True}
+    if "detail" not in result:
+        result["detail"] = (ERRORS.get(result["code"], ERRORS["tariff_read_failed"])
+            if result["code"] else "Чтение агентского списка завершено. Статус выбранной подписки показан отдельно.")
+    return result
 
 
 def display_state(connection, actor):
@@ -547,6 +570,11 @@ def probe_once():
     current = _connection(4)
     actor = _actor(current)
     result = refresh(current, actor, once=True)
+    if result["code"] == "tariff_scope_changed":
+        return {"state": "blocked", "code": "tariff_scope_changed", "connection_id": 4,
+            "account_id": ACCOUNT, "contract_status": CONTRACT_STATUS,
+            "probe_state": "attempted", "request_performed": result.get("request_performed") is True,
+            "manual_date_changed": False}
     receipt = setup_evidence(actor)
     receipt.update(probe_state="already_attempted" if result["code"] == "already_attempted" else "attempted",
                    request_performed=result.get("request_performed") is True)
