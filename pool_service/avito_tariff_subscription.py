@@ -99,6 +99,10 @@ def _expiry(value):
     result = _time(canonical)
     if result is None:
         raise SubscriptionError("tariff_data_invalid")
+    try:
+        result.astimezone(ZONE)
+    except (ValueError, OverflowError):
+        raise SubscriptionError("tariff_data_invalid") from None
     return result
 
 
@@ -327,7 +331,8 @@ def record_observation(connection, actor, observation, source_binding, *, expect
     """Store a normalized complete target snapshot after fresh scope checks."""
     if CONTRACT_STATUS != "verified":
         raise SubscriptionError("method_contract_unavailable")
-    if not isinstance(observation, SubscriptionObservation):
+    if (not isinstance(observation, SubscriptionObservation)
+            or observation.expiry_state not in {"absent", "present"}):
         raise SubscriptionError("tariff_data_invalid")
     with transaction.atomic():
         current, binding = _scope(connection.pk, actor, lock=True)

@@ -124,7 +124,7 @@ class TariffSubscriptionTests(TestCase):
             self.assertEqual(observed.expires_at.astimezone(tariff.ZONE).hour, 19)
         self.assertEqual(self.normalized().expiry_state, "absent")
         for stamp in (None, "", "2031-03-04", "2031-03-04T12:34:56", "2031-03-04T12:34:56-00:00",
-                      "2031-99-04T12:34:56Z", [], {"PRIVATE": True}):
+                      "2031-99-04T12:34:56Z", "9999-12-31T23:59:59-23:59", [], {"PRIVATE": True}):
             with self.subTest(stamp=stamp), self.assertRaisesMessage(tariff.SubscriptionError, "tariff_data_invalid"):
                 self.normalized([self.subscription(expiredTo=stamp)])
 
@@ -425,6 +425,7 @@ class TariffSubscriptionTests(TestCase):
     def test_record_observation_rejects_wrong_binding_contract_and_inconsistent_state(self):
         current, binding = tariff._scope(4, self.owner)
         for observation, source in ((replace(self.normalized(), is_active=None), binding),
+                (replace(self.normalized(), expiry_state="date_unconfirmed"), binding),
                 (self.normalized(), {**binding, "organization_id": self.other_org.pk})):
             with self.assertRaises(tariff.SubscriptionError):
                 tariff.record_observation(current, self.owner, observation, source)
