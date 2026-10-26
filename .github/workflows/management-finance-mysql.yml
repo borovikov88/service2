@@ -205,4 +205,5 @@ jobs:
             pool_service.tests.test_avito_autoload_report \
             pool_service.tests.test_avito_readonly_audit \
             pool_service.tests.test_avito_placement_continuity \
+            pool_service.tests.test_avito_mcp \
             --verbosity 2
