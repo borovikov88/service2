@@ -1,5 +1,6 @@
 /* Dedicated CI local-only browser fixture; no external accounts or services. */
 const assert = require('node:assert/strict');
+const {readFileSync} = require('node:fs');
 const {chromium} = require('playwright');
 
 (async () => {
@@ -11,8 +12,16 @@ const {chromium} = require('playwright');
   try {
     const context = await browser.newContext({viewport: {width: 1440, height: 1000}, serviceWorkers: "block"});
     await context.addCookies([{name: fixture.sessionCookieName, value: fixture.sessionCookie, url: fixture.base}]);
-    // Reject any unexpected external dependency rather than contacting a provider.
-    await context.route('**/*', (route) => new URL(route.request().url()).origin === fixture.base ? route.continue() : route.abort());
+    // Serve the shared base's exact Bootstrap URL from the pinned npm package.
+    // Every other non-local request stays blocked; no CDN is contacted.
+    const bootstrapURL = 'https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js';
+    assert.equal(require('bootstrap/package.json').version, '5.2.3');
+    const bootstrapBundle = readFileSync(require.resolve('bootstrap/dist/js/bootstrap.bundle.min.js'), 'utf8');
+    await context.route('**/*', (route) => {
+      const url = route.request().url();
+      if (url === bootstrapURL) return route.fulfill({status: 200, contentType: 'application/javascript', body: bootstrapBundle});
+      return new URL(url).origin === fixture.base ? route.continue() : route.abort();
+    });
     const page = await context.newPage();
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
@@ -29,7 +38,13 @@ const {chromium} = require('playwright');
         && document.querySelector('[data-command-form="edit"] button[type="submit"]')?.disabled === false, result.deal.revision);
       return result;
     };
+    const bootstrapResponsePromise = page.waitForResponse((response) => response.url() === bootstrapURL);
     await page.goto(fixture.base + fixture.workspace);
+    const bootstrapResponse = await bootstrapResponsePromise;
+    assert.equal(bootstrapResponse.status(), 200);
+    assert.match(bootstrapResponse.headers()['content-type'], /application\/javascript/);
+    assert.equal(await bootstrapResponse.text(), bootstrapBundle);
+    assert.equal(await page.evaluate(() => window.bootstrap?.Tooltip?.VERSION), '5.2.3');
     await page.locator('#crm-live-create').click();
     const create = page.locator('[data-command-form="create"]');
     await create.locator('[name="title"]').fill('Browser synthetic card');
@@ -93,6 +108,7 @@ const {chromium} = require('playwright');
     assert.ok(color && color !== 'rgba(0, 0, 0, 0)');
     await page.locator('[data-command-form="edit"] button[type="submit"]').scrollIntoViewIfNeeded();
     assert.ok(await page.locator('[data-command-form="edit"] button[type="submit"]').isVisible());
+    assert.equal(await page.evaluate(() => window.bootstrap?.Tooltip?.VERSION), '5.2.3');
     assert.deepEqual(errors, []);
     await context.close();
   } finally {

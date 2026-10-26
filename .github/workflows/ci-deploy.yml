@@ -124,7 +124,7 @@ jobs:
           export PLAYWRIGHT_BROWSERS_PATH="$browser_dir/browsers"
           printf 'CRM_CARD_BROWSER_DIR=%s\nNODE_PATH=%s\nPLAYWRIGHT_BROWSERS_PATH=%s\n' \
             "$browser_dir" "$NODE_PATH" "$PLAYWRIGHT_BROWSERS_PATH" >> "$GITHUB_ENV"
-          npm install --prefix "$browser_dir" --ignore-scripts --no-audit --no-fund --package-lock=false playwright@1.62.1
+          npm install --prefix "$browser_dir" --ignore-scripts --no-audit --no-fund --package-lock=false playwright@1.62.1 bootstrap@5.2.3
           node "$browser_dir/node_modules/playwright/cli.js" install --with-deps chromium
       - name: Chromium commercial card acceptance
         if: steps.reuse.outputs.verified != 'true'
