@@ -23,7 +23,8 @@ HELPER_REASONS = frozenset(("unspecified", "lock_directory_path", "lock_director
                           "native_missing", "native_version_size", "native_version_unsupported",
                           "native_help_size", "private_path", "private_parent_type", "private_parent_mode",
                           "private_owner_type", "private_mode", "client_engine", "client_database",
-                          "client_credentials", "client_options", "client_mirror", "client_port", "app_path"))
+                          "client_credentials", "client_options", "client_mirror", "client_port", "app_path",
+                          "database_timeout", "heartbeat_session", "heartbeat_autocommit", "heartbeat_wait_timeout"))
 REMOTE_ERRORS = {"arguments": {"invalid_count", "invalid_sha", "invalid_path"},
                  "path": {"not_directory", "change_failed", "noncanonical_checkout"},
                  "git": {"toplevel_failed", "toplevel_mismatch", "diff_failed"},

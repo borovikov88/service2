@@ -38,7 +38,8 @@ REASONS = frozenset(("unspecified", "lock_directory_path", "lock_directory_owner
                      "native_missing", "native_version_size", "native_version_unsupported",
                      "native_help_size", "private_path", "private_parent_type", "private_parent_mode",
                      "private_owner_type", "private_mode", "client_engine", "client_database",
-                     "client_credentials", "client_options", "client_mirror", "client_port", "app_path"))
+                     "client_credentials", "client_options", "client_mirror", "client_port", "app_path",
+                     "database_timeout", "heartbeat_session", "heartbeat_autocommit", "heartbeat_wait_timeout"))
 
 
 class Blocked(Exception):
@@ -75,8 +76,22 @@ def safe_failure(error):
     code = getattr(error, "returncode", None)
     code = code if type(code) is int and -127 <= code <= 255 else 0
     reason = error.reason if isinstance(error, Blocked) else "unspecified"
-    os_errno = getattr(error, "errno", None) if isinstance(error, OSError) else None
-    os_errno = os_errno if type(os_errno) is int and 1 <= os_errno <= 133 else 0
+    # Django chains its driver error; PyMySQL chains the original socket error.
+    # Inspect bounded types/numbers only, never exception messages or arguments.
+    os_errno = 0
+    cause = error
+    seen = set()
+    for _ in range(8):
+        if cause is None or id(cause) in seen:
+            break
+        seen.add(id(cause))
+        if isinstance(cause, OSError):
+            number = cause.errno
+            if not os_errno and type(number) is int and 1 <= number <= 133:
+                os_errno = number
+            if category == "database_error" and isinstance(cause, TimeoutError):
+                reason = "database_timeout"
+        cause = cause.__cause__ if cause.__cause__ is not None else cause.__context__
     database_code = error.args[0] if category == "database_error" and error.args else None
     database_code = database_code if type(database_code) is int and 1000 <= database_code <= 2999 else 0
     return ("phase=" + (PHASE if PHASE in PHASES else "initial") + " error=" + category +
@@ -272,7 +287,53 @@ class CappedWriter:
         return self.stream.flush()
 
 
-def dump_to_gzip(command, destination, expected, deadline):
+class MetadataHeartbeat:
+    """Keep the original metadata-lock transaction alive; never reconnect it."""
+    def __init__(self, connection):
+        self.connection = connection
+        self.raw = connection.connection
+        require(self.raw is not None, "heartbeat_session")
+        self.socket = self.raw._sock
+        self.session_id = self.raw.thread_id()
+        require(type(self.session_id) is int and self.session_id > 0, "heartbeat_session")
+        wait_timeout = self.verify()
+        # Query the actual session policy; allow at least three opportunities
+        # per idle window, including MySQL's minimum one-second wait_timeout.
+        self.interval = min(5.0, wait_timeout / 3)
+        self.next_at = time.monotonic() + self.interval
+
+    def identity(self):
+        require(self.connection.connection is self.raw and self.socket is not None
+                and self.raw._sock is self.socket and self.raw.thread_id() == self.session_id,
+                "heartbeat_session")
+        require(self.connection.autocommit is False and self.raw.get_autocommit() is False,
+                "heartbeat_autocommit")
+
+    def verify(self):
+        self.identity()
+        # PyMySQL 1.1.2 defaults reconnect=True. Reconnection loses our locks.
+        self.raw.ping(reconnect=False)
+        self.identity()
+        with self.raw.cursor() as cursor:
+            cursor.execute("SELECT CONNECTION_ID(), @@SESSION.autocommit, @@SESSION.wait_timeout")
+            row = cursor.fetchone()
+        self.identity()
+        require(isinstance(row, (tuple, list)) and len(row) == 3, "heartbeat_session")
+        require(type(row[0]) is int and row[0] == self.session_id, "heartbeat_session")
+        require(type(row[1]) is int and row[1] == 0, "heartbeat_autocommit")
+        require(type(row[2]) is int and 1 <= row[2] <= 31536000, "heartbeat_wait_timeout")
+        return row[2]
+
+    def tick(self, force=False):
+        if force or time.monotonic() >= self.next_at:
+            self.verify()
+            self.next_at = time.monotonic() + self.interval
+
+    def seconds_until_due(self):
+        return max(0, self.next_at - time.monotonic())
+
+
+def dump_to_gzip(command, destination, expected, deadline, heartbeat=None):
     coverage = DumpCoverage(expected)
     # Never forward inherited app secrets or MYSQL_PWD/MYSQL_* configuration.
     child_env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
@@ -287,7 +348,13 @@ def dump_to_gzip(command, destination, expected, deadline):
                 with gzip.GzipFile(fileobj=CappedWriter(output), mode="wb", filename="", mtime=0) as compressed:
                     while True:
                         require(time.monotonic() < deadline)
-                        if not selector.select(timeout=min(1, max(0, deadline - time.monotonic()))):
+                        if heartbeat is not None:
+                            heartbeat.tick()
+                        require(time.monotonic() < deadline)
+                        wait = min(1, max(0, deadline - time.monotonic()))
+                        if heartbeat is not None:
+                            wait = min(wait, heartbeat.seconds_until_due())
+                        if not selector.select(timeout=wait):
                             continue
                         chunk = os.read(process.stdout.fileno(), 65536)
                         if not chunk:
@@ -301,6 +368,9 @@ def dump_to_gzip(command, destination, expected, deadline):
         returncode = process.wait(timeout=max(0.01, deadline - time.monotonic()))
         if returncode != 0:
             raise NativeFailure(returncode)
+        if heartbeat is not None:
+            heartbeat.tick(force=True)
+        require(time.monotonic() < deadline)
         coverage.finish()
         return coverage.raw_bytes
     finally:
@@ -369,6 +439,7 @@ def backup(app, expected):
     receipt_path = destination / (basename + ".receipt.json")
     receipt_partial = destination / (basename + ".receipt.json.partial")
     published = False
+    primary_error = None
     try:
         phase("schema_before")
         before = schema_snapshot(connection)
@@ -381,6 +452,7 @@ def backup(app, expected):
                 cursor.execute("SELECT 1 FROM `" + name + "` LIMIT 0")
         phase("schema_locked")
         require(schema_snapshot(connection) == before)
+        heartbeat = MetadataHeartbeat(connection)
         phase("options_file")
         with tempfile.TemporaryDirectory(prefix=".client-", dir=destination) as temp:
             options_path = Path(temp) / "client.cnf"
@@ -393,9 +465,11 @@ def backup(app, expected):
                        "--skip-routines", "--skip-events", "--default-character-set=utf8mb4",
                        "--", str(config["NAME"])]
             phase("dump_stream")
-            raw_bytes = dump_to_gzip(command, partial, before, time.monotonic() + MAX_SECONDS - 30)
+            raw_bytes = dump_to_gzip(command, partial, before, time.monotonic() + MAX_SECONDS - 30,
+                                     heartbeat=heartbeat)
         phase("schema_after")
         require(schema_snapshot(connection) == before)
+        heartbeat.verify()
         phase("gzip_verify")
         digest = verify_gzip(partial, raw_bytes)
         phase("checkout_after")
@@ -422,16 +496,26 @@ def backup(app, expected):
             os.close(directory_fd)
         published = True
         return receipt
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        try:
-            connection.rollback()
-        finally:
+        # A lost socket can make rollback fail again with InterfaceError(0),
+        # masking the original database code/cause. Attempt all cleanup, retain
+        # the primary failure, and still fail if cleanup alone fails on success.
+        cleanup_error = None
+        actions = [connection.rollback, connection.close]
+        if not published:
+            actions.extend(lambda path=path: path.unlink(missing_ok=True)
+                           for path in (partial, final, receipt_partial, receipt_path))
+        for action in actions:
             try:
-                connection.close()
-            finally:
-                if not published:
-                    for path in (partial, final, receipt_partial, receipt_path):
-                        path.unlink(missing_ok=True)
+                action()
+            except BaseException as error:
+                if cleanup_error is None:
+                    cleanup_error = error
+        if primary_error is None and cleanup_error is not None:
+            raise cleanup_error
 
 
 def main():

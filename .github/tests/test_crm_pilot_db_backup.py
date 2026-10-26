@@ -122,6 +122,26 @@ class PrivateBackupTests(unittest.TestCase):
         self.assertEqual(R.HELPER_PHASES, B.PHASES)
         self.assertEqual(R.HELPER_REASONS, B.REASONS)
 
+    def test_bounded_exception_chain_distinguishes_timeout_without_private_text(self):
+        database_error = type('OperationalError', (Exception,), {})
+        for socket_error, reason, number in ((TimeoutError('PRIVATE'), 'database_timeout', 0),
+                                              (ConnectionResetError(104, 'PRIVATE'), 'unspecified', 104)):
+            driver = database_error(2013, 'PRIVATE SQL')
+            driver.__context__ = socket_error
+            error = database_error(2013, 'PRIVATE wrapper')
+            error.__cause__ = driver
+            diagnostic = B.safe_failure(error)
+            self.assertIn('error=database_error ', diagnostic)
+            self.assertTrue(diagnostic.endswith('reason=' + reason + ' os_errno=' + str(number) + ' database_code=2013'))
+            self.assertNotIn('PRIVATE', diagnostic)
+            self.assertIn('source=helper', R.failure(b'', (R.HELPER_PREFIX.decode() + diagnostic).encode(), '2'))
+        driver.__context__ = error  # Cycles and long chains remain bounded.
+        self.assertLess(len(B.safe_failure(error)), 200)
+        deep = TimeoutError('PRIVATE')
+        for _ in range(8):
+            wrapper = database_error(2013, 'PRIVATE'); wrapper.__cause__ = deep; deep = wrapper
+        self.assertIn('reason=unspecified ', B.safe_failure(deep))
+
     def test_dirty_checkout_and_head_mismatch_block(self):
         for outputs in ([b'b' * 40 + b'\n'], [SHA.encode() + b'\n', b'/synthetic\n', b'dirty'],
                         [SHA.encode() + b'\n', b'/synthetic\n', b'', b'untracked.py']):
@@ -200,15 +220,20 @@ class PrivateBackupTests(unittest.TestCase):
                 self.assertIsNotNone(children[0].poll())
                 if cap: self.assertLessEqual((Path(temp) / 'dump').stat().st_size, 1)
 
-    def run_backup(self, drift=False, missing=False):
+    def run_backup(self, drift=False, missing=False, primary_error=None, rollback_error=None,
+                   close_error=None, unlink_failure=False, heartbeat_error=None):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp); app = root / 'app'; app.mkdir(mode=0o700)
             (root / 'tmp').mkdir(mode=0o700)
             from unittest.mock import MagicMock
             connection = MagicMock(); connection.settings_dict = config()
+            connection.rollback.side_effect = rollback_error
+            connection.close.side_effect = close_error
+            heartbeat = MagicMock()
+            heartbeat.tick.side_effect = heartbeat_error
             fake = types.ModuleType('django.db'); fake.connections = {'default': connection}
             captured = []
-            def dump(command, path, expected, deadline):
+            def dump(command, path, expected, deadline, heartbeat=None):
                 captured.append(command)
                 options_path = Path(command[1].split('=', 1)[1])
                 self.assertEqual(stat.S_IMODE(options_path.stat().st_mode), 0o600)
@@ -218,9 +243,38 @@ class PrivateBackupTests(unittest.TestCase):
                 self.assertIn('--skip-lock-tables', command)
                 fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
                 with os.fdopen(fd, 'wb') as output: output.write(gzip.compress(SQL))
+                heartbeat.tick()
                 return len(SQL)
-            snapshots = [SCHEMA, SCHEMA, {} if drift else SCHEMA]
-            with patch.object(B, 'check_checkout'), patch.object(B, 'native_options', return_value=['--no-tablespaces']), patch.object(B.shutil, 'which', return_value=None if missing else '/usr/bin/mysqldump'), patch.dict(sys.modules, {'django.db': fake}), patch.object(B, 'schema_snapshot', side_effect=snapshots), patch.object(B, 'dump_to_gzip', side_effect=dump):
+            snapshots = [SCHEMA, SCHEMA, primary_error if primary_error is not None else ({} if drift else SCHEMA)]
+            real_unlink = Path.unlink
+            unlinked = []
+            def unlink(path, *args, **kwargs):
+                unlinked.append(path)
+                if unlink_failure and len(unlinked) == 1:
+                    raise OSError(13, 'PRIVATE cleanup path')
+                return real_unlink(path, *args, **kwargs)
+            with patch.object(B, 'check_checkout'), patch.object(B, 'MetadataHeartbeat', return_value=heartbeat), patch.object(B, 'native_options', return_value=['--no-tablespaces']), patch.object(B.shutil, 'which', return_value=None if missing else '/usr/bin/mysqldump'), patch.dict(sys.modules, {'django.db': fake}), patch.object(B, 'schema_snapshot', side_effect=snapshots), patch.object(B, 'dump_to_gzip', side_effect=dump), patch.object(Path, 'unlink', unlink):
+                original = primary_error if primary_error is not None else heartbeat_error
+                if original is not None or rollback_error is not None or close_error is not None:
+                    expected_error = original if original is not None else (
+                        rollback_error if rollback_error is not None else close_error)
+                    with self.assertRaises(type(expected_error)) as caught:
+                        B.backup(app, SHA)
+                    self.assertIs(caught.exception, expected_error)
+                    connection.rollback.assert_called_once()
+                    connection.close.assert_called_once()
+                    destination = root / 'tmp' / 'service2-crm-backups'
+                    if original is not None:
+                        self.assertEqual(B.PHASE, 'dump_stream' if heartbeat_error is not None else 'schema_after')
+                        expected_paths = {'.sql.gz.partial', '.sql.gz', '.receipt.json.partial', '.receipt.json'}
+                        self.assertEqual({suffix for suffix in expected_paths
+                                          if any(str(path).endswith(suffix) for path in unlinked)}, expected_paths)
+                        if not unlink_failure:
+                            self.assertEqual(list(destination.iterdir()), [])
+                    else:
+                        # A previously published private archive/receipt is retained.
+                        self.assertEqual(len(list(destination.iterdir())), 2)
+                    return
                 if missing or drift:
                     with self.assertRaises(B.Blocked): B.backup(app, SHA)
                     if not missing: self.assertEqual(list((root / 'tmp' / 'service2-crm-backups').iterdir()), [])
@@ -238,6 +292,83 @@ class PrivateBackupTests(unittest.TestCase):
     def test_complete_backup_and_private_receipt(self): self.run_backup()
     def test_schema_drift_removes_partial_and_receipt(self): self.run_backup(drift=True)
     def test_missing_native_dump_fails_before_settings(self): self.run_backup(missing=True)
+
+    def test_primary_failure_survives_rollback_close_and_unlink_errors(self):
+        database_error = type('OperationalError', (Exception,), {})
+        primary = database_error(2013, 'PRIVATE original query')
+        primary.__context__ = TimeoutError('PRIVATE socket')
+        for unlink_failure in (False, True):
+            self.run_backup(primary_error=primary,
+                            rollback_error=type('InterfaceError', (Exception,), {})(0, 'PRIVATE rollback'),
+                            close_error=OSError(13, 'PRIVATE close'), unlink_failure=unlink_failure)
+            self.assertTrue(B.safe_failure(primary).endswith('reason=database_timeout os_errno=0 database_code=2013'))
+
+    def test_success_cleanup_failure_still_fails_and_retains_published_files(self):
+        for rollback_error, close_error in ((OSError(13, 'PRIVATE rollback'), OSError(13, 'PRIVATE close')),
+                                            (None, OSError(13, 'PRIVATE close'))):
+            try:
+                raise ValueError('unrelated caller exception')
+            except ValueError:
+                self.run_backup(rollback_error=rollback_error, close_error=close_error)
+
+    def test_heartbeat_failure_cannot_publish_backup_or_receipt(self):
+        for error in (B.Blocked('heartbeat_session'), type('OperationalError', (Exception,), {})(2013, 'PRIVATE')):
+            self.run_backup(heartbeat_error=error)
+
+
+class HeartbeatTests(unittest.TestCase):
+    def connection(self):
+        from unittest.mock import MagicMock
+        raw = MagicMock()
+        raw._sock = object()
+        raw.thread_id.return_value = 123
+        raw.get_autocommit.return_value = False
+        raw.cursor.return_value.__enter__.return_value.fetchone.return_value = (123, 0, 2)
+        return types.SimpleNamespace(connection=raw, autocommit=False)
+
+    def test_actual_session_idle_policy_and_explicit_no_reconnect(self):
+        for idle, interval in ((1, 1 / 3), (2, 2 / 3), (30, 5)):
+            connection = self.connection()
+            connection.connection.cursor.return_value.__enter__.return_value.fetchone.return_value = (123, 0, idle)
+            heartbeat = B.MetadataHeartbeat(connection)
+            self.assertEqual(heartbeat.interval, interval)
+            heartbeat.tick(force=True)
+            self.assertEqual(connection.connection.ping.call_args.kwargs, {'reconnect': False})
+            connection.connection.connect.assert_not_called()
+
+    def test_loss_reconnection_session_or_transaction_changes_fail_closed(self):
+        def replace_raw(connection, raw): connection.connection = self.connection().connection
+        def replace_socket(connection, raw): raw._sock = object()
+        def replace_id(connection, raw): raw.thread_id.return_value = 456
+        def wrapper_autocommit(connection, raw): connection.autocommit = True
+        def raw_autocommit(connection, raw): raw.get_autocommit.return_value = True
+        def server_id(connection, raw): raw.cursor.return_value.__enter__.return_value.fetchone.return_value = (456, 0, 2)
+        def server_autocommit(connection, raw): raw.cursor.return_value.__enter__.return_value.fetchone.return_value = (123, 1, 2)
+        for mutate in (replace_raw, replace_socket, replace_id, wrapper_autocommit, raw_autocommit, server_id, server_autocommit):
+            connection = self.connection(); raw = connection.connection
+            heartbeat = B.MetadataHeartbeat(connection)
+            raw.ping.side_effect = lambda **kwargs: mutate(connection, raw)
+            with self.subTest(change=mutate.__name__), self.assertRaises(B.Blocked):
+                heartbeat.tick(force=True)
+            raw.connect.assert_not_called()
+
+    def test_heartbeat_failure_terminates_and_reaps_native_child(self):
+        connection = self.connection()
+        heartbeat = B.MetadataHeartbeat(connection)
+        heartbeat.interval = 0.02; heartbeat.next_at = time.monotonic() + 0.02
+        error = type('OperationalError', (Exception,), {})(2013, 'PRIVATE')
+        connection.connection.ping.side_effect = error
+        real_popen = subprocess.Popen; children = []
+        def spawn(*args, **kwargs):
+            child = real_popen(*args, **kwargs); children.append(child); return child
+        with tempfile.TemporaryDirectory() as temp, patch.object(B.subprocess, 'Popen', side_effect=spawn):
+            with self.assertRaises(type(error)) as caught:
+                B.dump_to_gzip([sys.executable, '-c', 'import time; time.sleep(30)'],
+                               Path(temp) / 'dump', SCHEMA, time.monotonic() + 5, heartbeat)
+            self.assertIs(caught.exception, error)
+            self.assertIsNotNone(children[0].poll())
+        connection.connection.connect.assert_not_called()
+
 
 
 class ReceiptWorkflowTests(unittest.TestCase):
@@ -375,6 +506,132 @@ class ReceiptWorkflowTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('SERVICE2_CRM_BACKUP_MYSQL_INTEGRATION') == '1',
                      'requires isolated CI MySQL service, never production')
 class NativeMySQLTests(unittest.TestCase):
+    def test_original_metadata_session_survives_short_idle_limit_and_slow_native_stream(self):
+        import pymysql
+        self.assertEqual(os.environ.get('DB_NAME'), 'service2_test')
+        settings = {'host': os.environ['DB_HOST'], 'port': int(os.environ['DB_PORT']),
+                    'user': os.environ['DB_USER'], 'password': os.environ['DB_PASSWORD'],
+                    'charset': 'utf8mb4', 'connect_timeout': 10, 'read_timeout': 10, 'write_timeout': 10}
+        admin = pymysql.connect(**settings, autocommit=True)
+        database = 'crm_heartbeat_' + secrets.token_hex(5)
+        raw = idle = None
+        try:
+            with admin.cursor() as cursor:
+                cursor.execute('CREATE DATABASE `' + database + '` CHARACTER SET utf8mb4')
+                cursor.execute('CREATE TABLE `' + database + '`.`synthetic` (id int PRIMARY KEY) ENGINE=InnoDB')
+                cursor.execute('INSERT INTO `' + database + '`.`synthetic` VALUES (1)')
+            raw = pymysql.connect(**settings, database=database, autocommit=False)
+            idle = pymysql.connect(**settings, database=database, autocommit=True)
+            for connection in (raw, idle):
+                with connection.cursor() as cursor:
+                    cursor.execute('SET SESSION wait_timeout=2')
+            with raw.cursor() as cursor:
+                cursor.execute('SELECT 1 FROM `synthetic` LIMIT 0')
+                cursor.execute('SELECT CONNECTION_ID()')
+                original_id = cursor.fetchone()[0]
+            expected = B.schema_snapshot(raw)
+            wrapper = types.SimpleNamespace(connection=raw, autocommit=False)
+            heartbeat = B.MetadataHeartbeat(wrapper)
+            self.assertEqual(heartbeat.session_id, original_id)
+            self.assertEqual(heartbeat.interval, 2 / 3)
+            with tempfile.TemporaryDirectory(prefix='crm-heartbeat-ci-') as temp:
+                root = Path(temp)
+                options = root / 'client.cnf'
+                options.write_text(B.client_options(config() | {'NAME': database, 'HOST': settings['host'],
+                                                               'PORT': str(settings['port']), 'USER': settings['user'],
+                                                               'PASSWORD': settings['password']}))
+                options.chmod(0o600)
+                native = B.shutil.which('mysqldump') or B.shutil.which('mariadb-dump')
+                self.assertIsNotNone(native, 'CI native dump client required')
+                native_command = [native, '--defaults-file=' + str(options), *B.native_options(native),
+                                  '--single-transaction', '--quick', '--skip-lock-tables', '--skip-add-locks',
+                                  '--comments', '--dump-date', '--create-options', '--skip-triggers',
+                                  '--skip-routines', '--skip-events', '--default-character-set=utf8mb4', '--', database]
+                # Real native SQL, split by a delay longer than the control
+                # session's idle limit. No application data or production DB.
+                slow = ('import os, subprocess, sys, time; '
+                        'p=subprocess.run(sys.argv[1:], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL); '
+                        'data=p.stdout; midpoint=len(data)//2; os.write(1,data[:midpoint]); '
+                        'time.sleep(3.5); os.write(1,data[midpoint:]); sys.exit(p.returncode)')
+                destination = root / 'dump.partial'
+                started = time.monotonic()
+                with patch.object(raw, 'connect', side_effect=AssertionError('reconnect forbidden')):
+                    count = B.dump_to_gzip([sys.executable, '-c', slow, *native_command], destination,
+                                           expected, time.monotonic() + 20, heartbeat)
+                self.assertGreaterEqual(time.monotonic() - started, 3.5)
+                self.assertEqual(len(B.verify_gzip(destination, count)), 64)
+                self.assertIs(wrapper.connection, raw)
+                with raw.cursor() as cursor:
+                    cursor.execute('SELECT CONNECTION_ID(), @@SESSION.autocommit')
+                    self.assertEqual(cursor.fetchone(), (original_id, 0))
+                # The unmaintained control actually expires under this policy.
+                with self.assertRaises(pymysql.err.OperationalError):
+                    idle.ping(reconnect=False)
+                # A competing DDL proves the original transaction's table
+                # metadata lock is still held after the long native stream.
+                with admin.cursor() as cursor:
+                    cursor.execute('SET SESSION lock_wait_timeout=1')
+                    with self.assertRaises(pymysql.err.OperationalError) as blocked:
+                        cursor.execute('ALTER TABLE `' + database + '`.`synthetic` ADD COLUMN extra int')
+                    self.assertEqual(blocked.exception.args[0], 1205)
+                raw.rollback()
+                with admin.cursor() as cursor:
+                    cursor.execute('ALTER TABLE `' + database + '`.`synthetic` ADD COLUMN extra int')
+                # An externally killed original session must abort/reap the
+                # stream rather than invoking PyMySQL's reconnect path.
+                with admin.cursor() as cursor:
+                    cursor.execute('KILL CONNECTION %s', (original_id,))
+                heartbeat.next_at = 0
+                real_popen = subprocess.Popen; children = []
+                def spawn(*args, **kwargs):
+                    child = real_popen(*args, **kwargs); children.append(child); return child
+                with patch.object(raw, 'connect', side_effect=AssertionError('reconnect forbidden')), patch.object(B.subprocess, 'Popen', side_effect=spawn):
+                    with self.assertRaises(pymysql.err.OperationalError):
+                        B.dump_to_gzip([sys.executable, '-c', 'import time; time.sleep(30)'],
+                                       root / 'lost.partial', expected, time.monotonic() + 5, heartbeat)
+                self.assertIsNotNone(children[0].poll())
+                self.assertEqual(list(root.glob('*.receipt.json')), [])
+        finally:
+            for connection in (raw, idle):
+                if connection is not None:
+                    connection.close()
+            with admin.cursor() as cursor:
+                cursor.execute('DROP DATABASE IF EXISTS `' + database + '`')
+            admin.close()
+
+    def test_pinned_driver_lost_socket_error_is_preserved_through_cleanup(self):
+        try:
+            import pymysql
+            from django.db.utils import DatabaseErrorWrapper, OperationalError
+        except ImportError:
+            self.skipTest('requires installed pinned Django/PyMySQL, no database access')
+        from unittest.mock import MagicMock
+        raw = pymysql.connections.Connection(defer_connect=True)
+        raw._sock = MagicMock()
+        raw._rfile = MagicMock()
+        raw._rfile.read.side_effect = TimeoutError('PRIVATE socket timeout')
+        wrapper = types.SimpleNamespace(Database=pymysql, errors_occurred=False)
+        try:
+            with DatabaseErrorWrapper(wrapper):
+                raw._read_bytes(1)
+        except OperationalError as primary:
+            self.assertEqual(primary.args[0], 2013)
+            self.assertIsNone(raw._sock)
+            try:
+                with DatabaseErrorWrapper(wrapper):
+                    raw.rollback()
+            except Exception as secondary:
+                self.assertEqual(type(secondary).__name__, 'InterfaceError')
+                self.assertEqual(secondary.args[0], 0)
+                PrivateBackupTests.run_backup(self, primary_error=primary, rollback_error=secondary)
+                self.assertTrue(B.safe_failure(primary).endswith('reason=database_timeout os_errno=0 database_code=2013'))
+            else:
+                self.fail('lost socket must fail rollback')
+        else:
+            self.fail('synthetic socket timeout must produce original driver failure')
+        finally:
+            raw.close()
+
     def test_restricted_native_backup_and_disposable_restore(self):
         import pymysql
         self.assertEqual(os.environ.get('DB_NAME'), 'service2_test')
