@@ -247,8 +247,8 @@ class NativeMySQLTests(unittest.TestCase):
             with admin.cursor() as cursor:
                 cursor.execute('CREATE DATABASE `' + database + '` CHARACTER SET utf8mb4')
                 cursor.execute('CREATE DATABASE `' + restored + '` CHARACTER SET utf8mb4')
-                cursor.execute('CREATE USER %s@\'%\' IDENTIFIED BY %s', (user, password))
-                cursor.execute('GRANT SELECT, SHOW VIEW ON `' + database + '`.* TO %s@\'%\'', (user,))
+                cursor.execute('CREATE USER %s@%s IDENTIFIED BY %s', (user, '%', password))
+                cursor.execute('GRANT SELECT, SHOW VIEW ON `' + database + '`.* TO %s@%s', (user, '%'))
                 cursor.execute('CREATE TABLE `' + database + '`.`synthetic` (id int PRIMARY KEY AUTO_INCREMENT, '
                                'label varchar(100), payload blob) ENGINE=InnoDB')
                 cursor.execute('INSERT INTO `' + database + '`.`synthetic` (label, payload) VALUES (%s, %s)',
@@ -297,7 +297,7 @@ class NativeMySQLTests(unittest.TestCase):
                     self.assertEqual(cursor.fetchall(), ((1, 'Тест CRM Ω', b'\x00\xff\n\r\x1a'),))
         finally:
             with admin.cursor() as cursor:
-                cursor.execute('DROP USER IF EXISTS %s@\'%\'', (user,))
+                cursor.execute('DROP USER IF EXISTS %s@%s', (user, '%'))
                 cursor.execute('DROP DATABASE IF EXISTS `' + database + '`')
                 cursor.execute('DROP DATABASE IF EXISTS `' + restored + '`')
             admin.close()
