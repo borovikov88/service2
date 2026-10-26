@@ -32,14 +32,23 @@ PHASES = frozenset(("initial", "lock", "checkout", "native_tool", "settings", "c
                    "private_directory", "schema_before", "metadata_lock", "schema_locked",
                    "options_file", "dump_stream", "schema_after", "gzip_verify", "checkout_after", "publish"))
 PHASE = "initial"
+REASONS = frozenset(("unspecified", "lock_directory_path", "lock_directory_owner_mode",
+                     "lock_file_owner_type", "lock_file_mode", "lock_file_replaced",
+                     "checkout_head", "checkout_path", "checkout_dirty", "checkout_untracked",
+                     "native_missing", "native_version_size", "native_version_unsupported",
+                     "native_help_size", "private_path", "private_parent_type", "private_parent_mode",
+                     "private_owner_type", "private_mode", "client_engine", "client_database",
+                     "client_credentials", "client_options", "client_mirror", "client_port", "app_path"))
 
 
 class Blocked(Exception):
-    pass
+    def __init__(self, reason="unspecified"):
+        self.reason = reason if type(reason) is str and reason in REASONS else "unspecified"
 
 
 class NativeFailure(Blocked):
     def __init__(self, returncode):
+        super().__init__()
         self.returncode = returncode
 
 
@@ -65,12 +74,19 @@ def safe_failure(error):
         category = "database_error"
     code = getattr(error, "returncode", None)
     code = code if type(code) is int and -127 <= code <= 255 else 0
-    return "phase=" + (PHASE if PHASE in PHASES else "initial") + " error=" + category + " native_exit=" + str(code)
+    reason = error.reason if isinstance(error, Blocked) else "unspecified"
+    os_errno = getattr(error, "errno", None) if isinstance(error, OSError) else None
+    os_errno = os_errno if type(os_errno) is int and 1 <= os_errno <= 133 else 0
+    database_code = error.args[0] if category == "database_error" and error.args else None
+    database_code = database_code if type(database_code) is int and 1000 <= database_code <= 2999 else 0
+    return ("phase=" + (PHASE if PHASE in PHASES else "initial") + " error=" + category +
+            " native_exit=" + str(code) + " reason=" + reason + " os_errno=" + str(os_errno) +
+            " database_code=" + str(database_code))
 
 
-def require(condition):
+def require(condition, reason="unspecified"):
     if not condition:
-        raise Blocked()
+        raise Blocked(reason)
 
 
 def now():
@@ -79,45 +95,47 @@ def now():
 
 def private_dir(path, create=False):
     """Require every path component real, owner-controlled, with private leaf."""
-    require(path.is_absolute() and path.resolve() == path)
+    require(path.is_absolute() and path.resolve() == path, "private_path")
     for parent in (path, *path.parents):
         if parent.exists():
             info = parent.lstat()
-            require(stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode))
+            require(stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode), "private_parent_type")
             # Shared /tmp is permitted only as an ancestor, never as our leaf.
-            require(not (info.st_mode & 0o022) or bool(info.st_mode & stat.S_ISVTX))
+            require(not (info.st_mode & 0o022) or bool(info.st_mode & stat.S_ISVTX), "private_parent_mode")
     if create:
         path.mkdir(mode=0o700, exist_ok=True)
     info = path.lstat()
-    require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid())
-    require(stat.S_IMODE(info.st_mode) == 0o700)
+    require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid(), "private_owner_type")
+    require(stat.S_IMODE(info.st_mode) == 0o700, "private_mode")
 
 
 def check_checkout(app, expected):
     def git(*args):
         return subprocess.check_output(["git", *args], cwd=app, stderr=subprocess.DEVNULL,
                                        timeout=15, env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
-    require(git("rev-parse", "HEAD").decode().strip() == expected)
-    require(git("rev-parse", "--show-toplevel").decode().strip() == str(app))
-    require(not git("diff", "HEAD", "--", *APP_PATHS))
+    require(git("rev-parse", "HEAD").decode().strip() == expected, "checkout_head")
+    require(git("rev-parse", "--show-toplevel").decode().strip() == str(app), "checkout_path")
+    require(not git("diff", "HEAD", "--", *APP_PATHS), "checkout_dirty")
     # Untracked application code can alter Django imports, so it also blocks.
-    require(not git("ls-files", "--others", "--exclude-standard", "--", *APP_PATHS))
+    require(not git("ls-files", "--others", "--exclude-standard", "--", *APP_PATHS), "checkout_untracked")
 
 
 @contextlib.contextmanager
 def deployment_lock(app):
     temporary = app.parent / "tmp"
-    require(temporary.resolve() == temporary)
+    require(temporary.resolve() == temporary, "lock_directory_path")
     info = temporary.stat()
-    require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o022)
+    require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o022,
+            "lock_directory_owner_mode")
     path = temporary / "service2-deploy.lock"
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
         info = os.fstat(fd)
-        require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1)
-        require(not info.st_mode & 0o022)
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1,
+                "lock_file_owner_type")
+        require(not info.st_mode & 0o022, "lock_file_mode")
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        require((info.st_dev, info.st_ino) == (path.stat().st_dev, path.stat().st_ino))
+        require((info.st_dev, info.st_ino) == (path.stat().st_dev, path.stat().st_ino), "lock_file_replaced")
         yield
     finally:
         os.close(fd)
@@ -130,11 +148,11 @@ def option_value(value):
 
 
 def client_options(config):
-    require(config.get("ENGINE") == "django.db.backends.mysql")
-    require(config.get("NAME") and IDENTIFIER.fullmatch(str(config["NAME"])))
-    require(config.get("USER") and config.get("PASSWORD"))
-    require(set(config.get("OPTIONS", {})) <= {"init_command"})
-    require(not config.get("TEST", {}).get("MIRROR"))
+    require(config.get("ENGINE") == "django.db.backends.mysql", "client_engine")
+    require(config.get("NAME") and IDENTIFIER.fullmatch(str(config["NAME"])), "client_database")
+    require(config.get("USER") and config.get("PASSWORD"), "client_credentials")
+    require(set(config.get("OPTIONS", {})) <= {"init_command"}, "client_options")
+    require(not config.get("TEST", {}).get("MIRROR"), "client_mirror")
     lines = ["[client]", "user=" + option_value(config["USER"]),
              "password=" + option_value(config["PASSWORD"]), "default-character-set=utf8mb4"]
     host = str(config.get("HOST") or "localhost")
@@ -144,7 +162,7 @@ def client_options(config):
     lines.append(("socket=" if host.startswith("/") else "host=") + option_value(host))
     if config.get("PORT"):
         port = str(config["PORT"])
-        require(port.isdigit() and 1 <= int(port) <= 65535)
+        require(port.isdigit() and 1 <= int(port) <= 65535, "client_port")
         lines.append("port=" + port)
     return "\n".join(lines) + "\n"
 
@@ -308,15 +326,15 @@ def native_options(executable):
     version = subprocess.check_output([executable, "--no-defaults", "--version"],
                                       stderr=subprocess.DEVNULL, timeout=5,
                                       env={"PATH": "/usr/bin:/bin", "MYSQL_TEST_LOGIN_FILE": "/dev/null"})
-    require(len(version) <= 4096)
+    require(len(version) <= 4096, "native_version_size")
     # MariaDB has no Oracle GTID_PURGED option. All extra option files are off.
     if b"MariaDB" in version:
         return ["--no-tablespaces"]
-    require(b"mysqldump" in version and re.search(rb"\bVer\s+[0-9]+\.", version))
+    require(b"mysqldump" in version and re.search(rb"\bVer\s+[0-9]+\.", version), "native_version_unsupported")
     help_text = subprocess.check_output([executable, "--no-defaults", "--help"],
                                         stderr=subprocess.DEVNULL, timeout=5,
                                         env={"PATH": "/usr/bin:/bin", "MYSQL_TEST_LOGIN_FILE": "/dev/null"})
-    require(len(help_text) <= 1024 * 1024)
+    require(len(help_text) <= 1024 * 1024, "native_help_size")
     # Oracle 8.0 lacks this option; MYSQL_TEST_LOGIN_FILE=/dev/null isolates
     # login configuration on every supported client, independent of this flag.
     login_flag = ["--no-login-paths"] if b"--no-login-paths" in help_text else []
@@ -328,7 +346,7 @@ def backup(app, expected):
     check_checkout(app, expected)
     phase("native_tool")
     executable = shutil.which("mysqldump") or shutil.which("mariadb-dump")
-    require(executable is not None)
+    require(executable is not None, "native_missing")
     tool_options = native_options(executable)
     phase("settings")
     sys.path.insert(0, str(app))
@@ -424,7 +442,7 @@ def main():
         require(re.fullmatch(r"[0-9a-f]{40}", args.expected_sha))
         os.umask(0o077)
         app = Path.cwd()
-        require(app.resolve() == app and (app / "manage.py").is_file())
+        require(app.resolve() == app and (app / "manage.py").is_file(), "app_path")
         def interrupted(signum, frame):
             raise Blocked()
         for signum in (signal.SIGALRM, signal.SIGTERM, signal.SIGINT, signal.SIGHUP):

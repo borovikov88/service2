@@ -1,5 +1,6 @@
 """Synthetic offline proof of fail-closed private DB-backup prerequisites."""
 import gzip
+import errno
 import importlib.util
 import json
 import os
@@ -99,10 +100,27 @@ class PrivateBackupTests(unittest.TestCase):
                       ValueError('PRIVATE payload'), B.NativeFailure(2)):
             with patch.object(B, 'PHASE', 'dump_stream'):
                 code = B.safe_failure(error)
-                self.assertRegex(code, r'^phase=dump_stream error=[a-z_]+ native_exit=[0-9]+$')
+                self.assertRegex(code, r'^phase=dump_stream error=[a-z_]+ native_exit=[0-9]+'
+                                 r' reason=[a-z_]+ os_errno=[0-9]+ database_code=[0-9]+$')
                 self.assertNotIn('PRIVATE', code)
         with patch.object(B, 'PHASE', 'PRIVATE injected'):
             self.assertTrue(B.safe_failure(ValueError('PRIVATE')).startswith('phase=initial '))
+
+    def test_numeric_diagnostics_and_fixed_guard_reasons_are_bounded(self):
+        database_error = type('OperationalError', (Exception,), {})
+        cases = [(BlockingIOError(errno.EAGAIN, 'PRIVATE'), 'os_errno=11 database_code=0'),
+                 (OSError(999999, 'PRIVATE'), 'os_errno=0 database_code=0'),
+                 (database_error(1045, 'PRIVATE'), 'os_errno=0 database_code=1045'),
+                 (database_error('PRIVATE', 'PRIVATE'), 'os_errno=0 database_code=0'),
+                 (database_error(True, 'PRIVATE'), 'os_errno=0 database_code=0'),
+                 (database_error(999999, 'PRIVATE'), 'os_errno=0 database_code=0')]
+        for error, suffix in cases:
+            self.assertTrue(B.safe_failure(error).endswith(suffix))
+            self.assertNotIn('PRIVATE', B.safe_failure(error))
+        self.assertIn('reason=lock_file_mode ', B.safe_failure(B.Blocked('lock_file_mode')))
+        self.assertIn('reason=unspecified ', B.safe_failure(B.Blocked('PRIVATE')))
+        self.assertEqual(R.HELPER_PHASES, B.PHASES)
+        self.assertEqual(R.HELPER_REASONS, B.REASONS)
 
     def test_dirty_checkout_and_head_mismatch_block(self):
         for outputs in ([b'b' * 40 + b'\n'], [SHA.encode() + b'\n', b'/synthetic\n', b'dirty'],
@@ -223,6 +241,109 @@ class PrivateBackupTests(unittest.TestCase):
 
 
 class ReceiptWorkflowTests(unittest.TestCase):
+    def helper_failure(self, error=None):
+        with patch.object(B, 'PHASE', 'lock'):
+            return (R.HELPER_PREFIX.decode() + B.safe_failure(error or BlockingIOError(errno.EAGAIN, 'PRIVATE'))).encode()
+
+    def test_failure_relay_reconstructs_only_allowlisted_tokens(self):
+        line = self.helper_failure()
+        text = R.failure(b'PRIVATE stdout', b'PRIVATE error\n' + line + b'\n', '2')
+        self.assertEqual(text, 'CRM_PILOT_DB_BACKUP_FAILURE_V1 source=helper ssh_exit=2 phase=lock '
+                         'error=os_error native_exit=0 reason=unspecified os_errno=11 database_code=0')
+        for phase, errors in R.REMOTE_ERRORS.items():
+            for error in errors:
+                raw = ('CRM_PILOT_DB_BACKUP_REMOTE_BLOCKED phase=' + phase + ' error=' + error).encode()
+                self.assertEqual(R.failure(b'', raw, '2'),
+                                 'CRM_PILOT_DB_BACKUP_FAILURE_V1 source=remote ssh_exit=2 phase=' + phase + ' error=' + error)
+        self.assertEqual(R.failure(b'', b'PRIVATE SSH ERROR', '255'),
+                         'CRM_PILOT_DB_BACKUP_TRANSPORT_BLOCKED ssh_exit=255 diagnostic=absent')
+
+    def test_hostile_ambiguous_malformed_and_oversized_failure_output_stays_closed(self):
+        line = self.helper_failure()
+        candidates = [(b'', line + b'\n' + line, '2'), (line, b'', '2'),
+                      (b'', line + b' PRIVATE', '2'), (b'', line.replace(b'phase=lock', b'phase=PRIVATE'), '2'),
+                      (b'', line.replace(b'error=os_error', b'error=PRIVATE'), '2'),
+                      (b'', line.replace(b'reason=unspecified', b'reason=PRIVATE'), '2'),
+                      (b'', line.replace(b'native_exit=0', b'native_exit=256'), '2'),
+                      (b'', line.replace(b'native_exit=0', b'native_exit=-128'), '2'),
+                      (b'', line.replace(b'os_errno=11', b'os_errno=134'), '2'),
+                      (b'', line.replace(b'os_errno=11', b'os_errno=011'), '2'),
+                      (b'', line.replace(b'database_code=0', b'database_code=3000'), '2'),
+                      (b'', b'\x1b[31m' + line, '2'), (b'', b'\xff PRIVATE', '2'),
+                      (b'', line + b'\x00PRIVATE', '2'), (b'x' * 16385, line, '2'),
+                      (b'', line + b'\n' + b'x' * 16385, '2'),
+                      ((R.PREFIX + json.dumps(receipt())).encode(), line, '2'),
+                      (b'', line, '0'), (b'', line, '-1'), (b'', line, '256'), (b'', line, '02'),
+                      (b'', line, 'PRIVATE'),
+                      (b'', b'CRM_PILOT_DB_BACKUP_REMOTE_BLOCKED phase=main error=invalid_sha', '2')]
+        for stdout, stderr, code in candidates:
+            with self.subTest(code=code, stderr=stderr[:50]):
+                safe = R.failure(stdout, stderr, code)
+                self.assertRegex(safe, r'^CRM_PILOT_DB_BACKUP_TRANSPORT_BLOCKED ssh_exit=[0-9]{1,3} diagnostic=[a-z_]+$')
+                self.assertNotIn('PRIVATE', safe)
+                self.assertLess(len(safe), 140)
+
+    def test_failure_cli_always_fails_and_never_prints_raw_captures(self):
+        with tempfile.TemporaryDirectory() as temp:
+            stdout, stderr = Path(temp) / 'stdout', Path(temp) / 'stderr'
+            stdout.write_bytes(b'PRIVATE')
+            stderr.write_bytes(self.helper_failure())
+            for args in ([str(stdout), str(stderr), '2'], [str(stdout), str(stderr), '0'],
+                         [str(stdout), str(stderr), '2', 'PRIVATE'], [str(stdout), str(stderr) + '-missing', '2']):
+                result = subprocess.run([sys.executable, str(ROOT / 'scripts/crm_pilot_db_backup_receipt.py'),
+                                         '--failure', *args], capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stderr, '')
+                self.assertNotIn('PRIVATE', result.stdout)
+                self.assertLess(len(result.stdout), 300)
+                self.assertNotIn(R.PREFIX, result.stdout)
+
+    def test_remote_guards_suppress_raw_errors_and_preserve_helper_result(self):
+        remote = ROOT / '.github/scripts/crm_pilot_db_backup_remote.sh'
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); app = root / 'app'; app.mkdir(); (app / '.git').mkdir()
+            (root / 'tmp').mkdir(); (root / 'venv' / 'bin').mkdir(parents=True)
+            (root / 'venv' / 'bin' / 'python').symlink_to(sys.executable)
+            (app / 'scripts').mkdir()
+            helper = app / 'scripts/crm_pilot_db_backup.py'
+            helper.write_text('import sys\nprint(' + repr(self.helper_failure().decode()) + ', file=sys.stderr)\nsys.exit(2)\n')
+            bin_dir = root / 'bin'; bin_dir.mkdir()
+            git = bin_dir / 'git'
+            git.write_text('#!/usr/bin/env bash\n'
+                           'if [[ "$*" == "$FAIL_GIT" ]]; then echo "PRIVATE git failure" >&2; exit 1; fi\n'
+                           'case "$*" in\n'
+                           '"rev-parse --show-toplevel") pwd -P ;;\n'
+                           '"rev-parse HEAD") printf "%s\\n" "$TEST_SHA" ;;\n'
+                           '"config --get remote.origin.url") echo git@github.com:borovikov88/service2.git ;;\n'
+                           '"ls-remote --exit-code origin refs/heads/main") printf "%s refs/heads/main\\n" "$TEST_SHA" ;;\n'
+                           'esac\n')
+            git.chmod(0o700)
+            cases = [([], '', 'arguments', 'invalid_count'),
+                     (['PRIVATE', str(app)], '', 'arguments', 'invalid_sha'),
+                     ([SHA, 'PRIVATE'], '', 'arguments', 'invalid_path'),
+                     ([SHA, str(root / 'missing')], '', 'path', 'not_directory'),
+                     ([SHA, str(app)], 'rev-parse --show-toplevel', 'git', 'toplevel_failed'),
+                     ([SHA, str(app)], 'rev-parse HEAD', 'head', 'read_failed'),
+                     ([SHA, str(app)], 'config --get remote.origin.url', 'origin', 'read_failed'),
+                     ([SHA, str(app)], 'ls-remote --exit-code origin refs/heads/main', 'main', 'lookup_failed')]
+            for args, fail_git, phase, error in cases:
+                result = subprocess.run(['bash', str(remote), *args], capture_output=True, text=True,
+                                        env={**os.environ, 'PATH': str(bin_dir) + ':' + os.environ['PATH'],
+                                             'FAIL_GIT': fail_git, 'TEST_SHA': SHA})
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stdout, '')
+                self.assertEqual(result.stderr, 'CRM_PILOT_DB_BACKUP_REMOTE_BLOCKED phase=' + phase + ' error=' + error + '\n')
+            env = {**os.environ, 'PATH': str(bin_dir) + ':' + os.environ['PATH'], 'FAIL_GIT': '', 'TEST_SHA': SHA}
+            result = subprocess.run(['bash', str(remote), SHA, str(app)], capture_output=True, env=env)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stderr, self.helper_failure() + b'\n')
+            self.assertIn('source=helper', R.failure(result.stdout, result.stderr, str(result.returncode)))
+            helper.write_text('print("SYNTHETIC success")\n')
+            result = subprocess.run(['bash', str(remote), SHA, str(app)], capture_output=True, env=env)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, b'SYNTHETIC success\n')
+            self.assertEqual(result.stderr, b'')
+
     def test_receipt_allowlist_cannot_claim_restore_or_leak_extra_fields(self):
         value = receipt()
         self.assertEqual(R.normalize(R.PREFIX + json.dumps(value), SHA), value)
@@ -240,6 +361,8 @@ class ReceiptWorkflowTests(unittest.TestCase):
         self.assertIn("contains(github.event.head_commit.message, '[crm-pilot-db-backup-20261026]')", step)
         for guard in ('StrictHostKeyChecking=yes', 'IdentitiesOnly=yes', 'PasswordAuthentication=no', '"$GITHUB_SHA"', '2>"$backup_temp/stderr"'):
             self.assertIn(guard, step)
+        self.assertIn('scripts/crm_pilot_db_backup_receipt.py --failure', step)
+        self.assertIn('"$backup_temp/stdout" "$backup_temp/stderr" "$backup_exit" || exit 2', step)
         self.assertLess(workflow.index('Verify deployed site health'), workflow.index('Create verified private CRM pilot database backup'))
         self.assertIn('python -m unittest discover -s .github/tests -p test_crm_pilot_db_backup.py -v', workflow)
         remote = (ROOT / '.github/scripts/crm_pilot_db_backup_remote.sh').read_text()
@@ -295,13 +418,9 @@ class NativeMySQLTests(unittest.TestCase):
                 probe = subprocess.run([native_dump, '--no-defaults', '--help'], capture_output=True,
                                        timeout=10, env={'PATH': '/usr/bin:/bin', 'MYSQL_TEST_LOGIN_FILE': '/dev/null'})
                 supports_no_login = b'no-login-paths' in probe.stdout
-                # Extract only a fixed vocabulary; never echo raw stderr/help/settings/SQL.
-                allowed = '|'.join(sorted(B.PHASES))
-                diagnostic = re.search(r'CRM_PILOT_DB_BACKUP_BLOCKED phase=(' + allowed +
-                                       r') error=(guard_failed|unexpected|native_failed|subprocess_timeout|'
-                                       r'subprocess_failed|import_failed|os_error|database_error) native_exit=(-?[0-9]{1,3})\b',
-                                       result.stderr)
-                code = diagnostic.group(0) if diagnostic else 'no_allowlisted_diagnostic'
+                # Use the production bounded allowlist, never raw stderr/help/settings/SQL.
+                code = (R.failure(result.stdout.encode(), result.stderr.encode(), str(result.returncode))
+                        if result.returncode else 'no_failure')
                 self.assertEqual(result.returncode, 0, 'native backup failed; ' + code +
                                  '; supports_no_login_paths=' + str(supports_no_login).lower())
                 proof = R.normalize(result.stdout, sha)
