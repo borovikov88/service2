@@ -1250,6 +1250,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
             "client-sync.yml",
             "employee-identity-sync.yml",
             "ci-deploy.yml",
+            "crm-intake.yml",
             "direct-pr-review.yml",
             "finance-sync.yml",
             "hosting-connection-check.yml",
@@ -1282,6 +1283,17 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
                         self.assertNotIn(forbidden, text)
                 elif workflow.name == "avito-status-monitor.yml":
                     expected_triggers = ["workflow_dispatch"]
+                elif workflow.name == "crm-intake.yml":
+                    expected_triggers = ["schedule", "workflow_dispatch"]
+                    self.assertIn("contents: read", text)
+                    self.assertIn("environment: production", text)
+                    self.assertIn("github.ref == 'refs/heads/main'", text)
+                    self.assertIn("crm_intake_worker_remote.sh", text)
+                    for forbidden in ("openai/codex-action", "codex exec", "OPENAI_API_KEY",
+                                      "CHATGPT_AUTH_JSON", "GITHUB_DEVELOPMENT_TOKEN",
+                                      "contents: write", "pull-requests: write", "actions: write",
+                                      "manage.py migrate", "collectstatic", "restart.txt"):
+                        self.assertNotIn(forbidden, text)
                 elif workflow.name in {"call-recordings-sync.yml", "client-sync.yml", "employee-identity-sync.yml"}:
                     expected_triggers = ["schedule", "workflow_dispatch"]
                 elif workflow.name == "ci-deploy.yml":

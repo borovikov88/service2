@@ -80,7 +80,7 @@ from .views import (
     push_unsubscribe,
 )
 from . import views
-from . import crm_live_views, crm_pilot_views
+from . import crm_live_views, crm_pilot_views, crm_lead_views
 from .estimate_views import estimate_page, estimate_api, estimate_print, estimate_document
 from .client_crm_views import client_detail, client_merge_index, client_merge_search, client_onec_import
 from .client_crm_ui import client_edit
@@ -415,6 +415,12 @@ urlpatterns = [
     path("crm/workspace/clients/", crm_live_views.clients, name="crm_live_clients"),
     path("crm/workspace/commands/", crm_live_views.command, name="crm_live_command"),
     path("crm/workspace/deals/<int:deal_id>/", crm_live_views.detail, name="crm_live_detail"),
+    path("crm/workspace/leads/", crm_lead_views.workspace, name="crm_live_leads"),
+    path("crm/workspace/leads/data/", crm_lead_views.data, name="crm_live_lead_data"),
+    path("crm/workspace/leads/clients/", crm_lead_views.clients, name="crm_live_lead_clients"),
+    path("crm/workspace/leads/targets/", crm_lead_views.targets, name="crm_live_lead_targets"),
+    path("crm/workspace/leads/commands/", crm_lead_views.command, name="crm_live_lead_command"),
+    path("crm/workspace/leads/<int:lead_id>/", crm_lead_views.detail, name="crm_live_lead_detail"),
     path("crm/tasks/", crm_tasks, name="crm_tasks"),
     path("crm/tasks/bulk/", crm_tasks_bulk_update, name="crm_tasks_bulk_update"),
     path("crm/photos/<int:photo_id>/", crm_issue_photo_download, name="crm_issue_photo_download"),

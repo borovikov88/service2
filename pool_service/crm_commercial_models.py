@@ -144,6 +144,7 @@ class CrmStage(CommercialModel):
 
 
 class CrmLead(CommercialModel):
+    immutable_scope = ("organization_id", "origin_lead_id")
     organization = models.ForeignKey("pool_service.Organization", on_delete=models.PROTECT)
     kind = models.CharField(max_length=12, choices=[("client", "Клиент"), ("tender", "Тендер")], default="client")
     client = models.ForeignKey("pool_service.Client", null=True, blank=True, on_delete=models.PROTECT)
@@ -162,6 +163,17 @@ class CrmLead(CommercialModel):
     budget_min = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
     budget_max = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
     currency = models.CharField(max_length=3, blank=True)
+    direction = models.CharField(max_length=24, blank=True, choices=[("", "Не уточнено"), ("construction", "Строительство"), ("service", "Обслуживание"), ("retail", "Розница"), ("tender", "Торги")])
+    specialization = models.CharField(max_length=40, blank=True)
+    location = models.CharField(max_length=255, blank=True)
+    desired_at = models.DateTimeField(null=True, blank=True)
+    next_task = models.ForeignKey("pool_service.ServiceTask", null=True, blank=True, on_delete=models.PROTECT, related_name="current_commercial_leads")
+    origin_lead = models.ForeignKey("self", null=True, blank=True, on_delete=models.PROTECT, related_name="derived_needs")
+    duplicate_of = models.ForeignKey("self", null=True, blank=True, on_delete=models.PROTECT, related_name="duplicate_leads")
+    linked_deal = models.ForeignKey("pool_service.CrmDeal", null=True, blank=True, on_delete=models.PROTECT, related_name="resolved_leads")
+    intake_reason = models.CharField(max_length=40, blank=True)
+    last_activity_at = models.DateTimeField(null=True, blank=True)
+    needs_review = models.BooleanField(default=False)
     revision = models.PositiveIntegerField(default=0)
     is_archived = models.BooleanField(default=False)
 
@@ -178,6 +190,28 @@ class CrmLead(CommercialModel):
             models.CheckConstraint(condition=(Q(budget_min__isnull=True) | Q(budget_min__gte=0)) & (Q(budget_max__isnull=True) | Q(budget_max__gte=0)), name="crm_lead_budget_nonnegative"),
         ]
         indexes = [models.Index(fields=["organization", "status", "is_archived"], name="crm_lead_queue_idx")]
+
+
+    def clean(self):
+        super().clean()
+        using = self._state.db or router.db_for_write(type(self), instance=self)
+        if self.origin_lead_id:
+            origin = type(self).objects.using(using).filter(pk=self.origin_lead_id).first()
+            if not origin or origin.organization_id != self.organization_id or origin.pk == self.pk or origin.origin_lead_id:
+                raise ValidationError("Origin must be a canonical source lead in this organization.")
+        if self.duplicate_of_id:
+            target = type(self).objects.using(using).filter(pk=self.duplicate_of_id).first()
+            if not target or target.organization_id != self.organization_id or target.pk == self.pk:
+                raise ValidationError("Duplicate target must be another lead in this organization.")
+        if self.linked_deal_id:
+            if not CrmDeal.objects.using(using).filter(pk=self.linked_deal_id, organization_id=self.organization_id).exists():
+                raise ValidationError("Linked deal belongs to another organization.")
+        if self.next_task_id:
+            from pool_service.models import ServiceTask
+            task = ServiceTask.objects.using(using).filter(pk=self.next_task_id).first()
+            if (not task or task.organization_id != self.organization_id or not self.pk
+                    or not CrmLeadTaskLink.objects.using(using).filter(lead_id=self.pk, task_id=task.pk, organization_id=self.organization_id).exists()):
+                raise ValidationError("Lead next action requires its own validated task link.")
 
 
 class CrmDeal(CommercialModel):
@@ -242,6 +276,8 @@ class CrmDealTaskLink(CommercialModel):
                 or task.water_reading_id or task.pool_id
                 or task.task_type != ServiceTask.TYPE_CRM_FOLLOWUP):
             raise ValidationError("The task must belong to this deal's client and organization, without a legacy CRM link.")
+        if CrmLeadTaskLink.objects.using(using).filter(task_id=self.task_id).exists():
+            raise ValidationError("A deal task cannot also be a lead task.")
 
 
 class CrmDealNextAction(CommercialModel):
@@ -283,9 +319,14 @@ class CrmCommand(CommercialModel):
 
     def clean(self):
         super().clean()
-        if not isinstance(self.result, dict) or not self.result.keys() <= {"lead_id", "deal_id", "event_id", "revision", "task_id"}:
+        if not isinstance(self.result, dict) or not self.result.keys() <= {"lead_id", "deal_id", "event_id", "revision", "task_id", "deal_ids", "previous_lead_id"}:
             raise ValidationError("Command result accepts only structural CRM identifiers.")
-        if any(type(value) is not int or value < 0 for value in self.result.values()):
+        if "deal_ids" in self.result and (type(self.result["deal_ids"]) is not list
+                or not 1 <= len(self.result["deal_ids"]) <= 10
+                or any(type(value) is not int or value <= 0 for value in self.result["deal_ids"])
+                or len(set(self.result["deal_ids"])) != len(self.result["deal_ids"])):
+            raise ValidationError("Deal results require a bounded unique list of identifiers.")
+        if any(type(value) is not int or value < 0 for key, value in self.result.items() if key != "deal_ids"):
             raise ValidationError("Command result values must be nonnegative integer identifiers.")
 
 
@@ -355,6 +396,10 @@ class CrmAccess(CommercialModel):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     resolve_contact_identity = models.BooleanField(default=False, editable=False)
     view_team_deals = models.BooleanField(default=False)
+    view_leads = models.BooleanField(default=False, editable=False)
+    create_own_leads = models.BooleanField(default=False, editable=False)
+    take_leads = models.BooleanField(default=False, editable=False)
+    qualify_own_leads = models.BooleanField(default=False, editable=False)
     edit_own_leads = models.BooleanField(default=False, editable=False)
     transition_own_leads = models.BooleanField(default=False, editable=False)
     edit_own_deals = models.BooleanField(default=False, editable=False)
@@ -365,3 +410,89 @@ class CrmAccess(CommercialModel):
     class Meta:
         base_manager_name = "objects"
         constraints = [models.UniqueConstraint(fields=["organization", "user"], name="crm_access_org_user")]
+
+
+class LeadEvidenceQuerySet(CommercialQuerySet):
+    def delete(self):
+        raise ValidationError("Lead provenance cannot be deleted.")
+
+
+class LeadEvidenceModel(CommercialModel):
+    objects = LeadEvidenceQuerySet.as_manager()
+
+    class Meta:
+        abstract = True
+        base_manager_name = "objects"
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Lead provenance cannot be deleted.")
+
+
+class CrmLeadTaskLink(LeadEvidenceModel):
+    """Retained lead task provenance; tasks use their existing privacy/lifecycle."""
+    immutable_scope = ("organization_id", "lead_id", "task_id", "created_by_id")
+    organization = models.ForeignKey("pool_service.Organization", on_delete=models.PROTECT)
+    lead = models.ForeignKey(CrmLead, on_delete=models.PROTECT, related_name="task_links")
+    task = models.OneToOneField("pool_service.ServiceTask", on_delete=models.PROTECT, related_name="commercial_lead_link")
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    def clean(self):
+        super().clean()
+        from pool_service.models import ServiceTask
+        using = self._state.db or router.db_for_write(type(self), instance=self)
+        task = ServiceTask.objects.using(using).filter(pk=self.task_id).first()
+        if (not task or task.organization_id != self.organization_id or task.crm_item_id
+                or task.water_reading_id or task.pool_id or task.task_type != ServiceTask.TYPE_CRM_FOLLOWUP):
+            raise ValidationError("Lead tasks must be independent CRM follow-ups in this organization.")
+        if CrmDealTaskLink.objects.using(using).filter(task_id=self.task_id).exists():
+            raise ValidationError("A lead task cannot be a deal task.")
+
+
+class CrmLeadSource(LeadEvidenceModel):
+    immutable_scope = ("organization_id", "inbox_id", "lead_id")
+    organization = models.ForeignKey("pool_service.Organization", on_delete=models.PROTECT)
+    inbox = models.OneToOneField("pool_service.CrmInboxEvent", on_delete=models.PROTECT, related_name="lead_source")
+    lead = models.ForeignKey(CrmLead, on_delete=models.PROTECT, related_name="sources")
+    created_at = models.DateTimeField(default=timezone.now)
+
+    def clean(self):
+        super().clean()
+        from pool_service.crm_inbox_models import CrmInboxEvent
+        using = self._state.db or router.db_for_write(type(self), instance=self)
+        if not CrmInboxEvent.objects.using(using).filter(pk=self.inbox_id, organization_id=self.organization_id).exists():
+            raise ValidationError("Lead inbox evidence belongs to another organization.")
+
+
+class CrmLeadThread(LeadEvidenceModel):
+    immutable_scope = ("organization_id", "context_key")
+    organization = models.ForeignKey("pool_service.Organization", on_delete=models.PROTECT)
+    context_key = models.CharField(max_length=64, validators=[RegexValidator(r"^[0-9a-f]{64}\Z", "Expected scoped context hash.")])
+    lead = models.ForeignKey(CrmLead, on_delete=models.PROTECT, related_name="threads")
+
+    class Meta:
+        base_manager_name = "objects"
+        constraints = [models.UniqueConstraint(fields=["organization", "context_key"], name="crm_lead_thread_context")]
+
+
+class CrmLeadDealLink(LeadEvidenceModel):
+    immutable_scope = ("organization_id", "lead_id", "deal_id", "command_id", "kind")
+    organization = models.ForeignKey("pool_service.Organization", on_delete=models.PROTECT)
+    lead = models.ForeignKey(CrmLead, on_delete=models.PROTECT, related_name="deal_links")
+    deal = models.ForeignKey(CrmDeal, on_delete=models.PROTECT, related_name="lead_links")
+    command = models.ForeignKey(CrmCommand, on_delete=models.PROTECT, related_name="lead_deal_links")
+    kind = models.CharField(max_length=16, choices=[("qualification", "Квалификация"), ("additional", "Дополнительная"), ("existing", "Существующая")])
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        base_manager_name = "objects"
+        constraints = [models.UniqueConstraint(fields=["lead", "deal"], name="crm_lead_deal_once")]
+
+
+class CrmIntakeActivation(CommercialModel):
+    """Independent new-intake cutoff; never reuses the commercial pilot marker."""
+    immutable_scope = ("organization_id", "starts_at")
+    organization = models.OneToOneField("pool_service.Organization", on_delete=models.PROTECT, related_name="crm_intake_activation")
+    starts_at = models.DateTimeField(default=timezone.now)
+    last_run_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.CharField(max_length=40, blank=True)

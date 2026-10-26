@@ -198,6 +198,8 @@ def execute_commercial_command(*, actor, organization, operation_key, command_ty
             subject = model.objects.using(using).select_for_update().get(pk=subject_id, organization_id=organization_id)
         except model.DoesNotExist as exc:
             raise PermissionDenied("CRM subject unavailable.") from exc
+        if isinstance(subject, CrmLead) and (subject.next_task_id or subject.sources.exists() or subject.threads.exists()):
+            raise ValidationError("Use execute_lead_command for intake leads.")
         if getattr(subject, ownership) != actor_id:
             raise PermissionDenied("Only the actor's own CRM cards may be changed.")
         # Lock a current legacy client link as well. This does not turn legacy

@@ -130,6 +130,11 @@ def _selected_client(request, organization):
 
 def _filtered_calls(request, source_kind, organization, view_all):
     queryset = PhoneCall.objects.filter(organization=organization, source_kind=source_kind)
+    selected_call = request.GET.get("call_id")
+    if selected_call is not None:
+        if not selected_call.isascii() or not selected_call.isdigit() or len(selected_call) > 18 or int(selected_call) < 1:
+            raise ValueError("Некорректный звонок.")
+        queryset = queryset.filter(pk=int(selected_call))
     if source_kind == PhoneCall.SOURCE_TELEPHONY and not view_all:
         queryset = queryset.filter(Q(employee=request.user) | Q(peer_employee=request.user))
     selected = _selected_client(request, organization)
@@ -205,7 +210,10 @@ def _decorate_calls(rows, request, organization, source_kind):
 
 
 def _call_screen(request, source_kind):
-    organization, view_all = _scope(request.user, source_kind)
+    selected_access = legacy._selected_access(request)
+    if not selected_access:
+        raise PermissionDenied
+    organization, view_all = _scope(request.user, source_kind, selected_access.organization)
     if source_kind == PhoneCall.SOURCE_UPLOADED:
         legacy._wake_uploaded_audio_worker_if_needed(organization, include_fresh_pending=True)
     elif internal_call_sync_due(organization):

@@ -56,8 +56,30 @@ from pool_service.models import Client, Notification, OrganizationAccess
 
 
 
+def _selected_access(request):
+    """Preserve an explicit CRM source organization without changing memberships."""
+    selected = request.GET.getlist("org_id")
+    if not selected:
+        return organization_access(request.user)
+    if len(selected) != 1 or not selected[0].isascii() or not selected[0].isdigit() or len(selected[0]) > 18:
+        raise PermissionDenied
+    access = OrganizationAccess.objects.select_related("organization").filter(
+        user=request.user, organization_id=int(selected[0]),
+    ).first()
+    if not access:
+        raise PermissionDenied
+    return access
+
+
+def _conversation_location(request, conversation):
+    url = f"/communications/?conversation={conversation.uuid}"
+    if request.GET.get("org_id"):
+        url += f"&org_id={conversation.organization_id}"
+    return url
+
+
 def _context(request, capability):
-    access = organization_access(request.user)
+    access = _selected_access(request)
     if not access or not conversation_capability(request.user, capability, access.organization):
         raise PermissionDenied
     return access.organization
@@ -173,7 +195,7 @@ def conversations(request):
     requested = ([selected.pk] if selected else []) + [item.pk for item in items if not item.client_id][:19]
     transaction.on_commit(lambda: start_client_enrichment_worker(requested))
     return render(request, "pool_service/communications/conversations.html", {
-        "active_tab": "communications", "conversations": items, "selected": selected,
+        "active_tab": "communications", "conversations": items, "selected": selected, "communication_org_id": organization.pk,
         **conversation_context(selected, organization, request.user, include_outbox=False),
         "avito_crm_url": crm_source_navigation(request.user, organization),
         "can_reply": conversation_capability(request.user, "can_reply_conversations", organization),
@@ -226,21 +248,21 @@ def conversation_reply(request, conversation_uuid):
     conversation.connection = connection
     if not connection.is_active or not channel.is_active:
         messages.error(request, "Канал или подключение отключено. Отправка ответа недоступна.")
-        return redirect(f"/communications/?conversation={conversation.uuid}")
+        return redirect(_conversation_location(request, conversation))
     body = request.POST.get("body", "").strip()
     files = request.FILES.getlist("attachments")
     if len(body) > 10000:
         messages.error(request, "Сообщение не должно превышать 10 000 символов.")
-        return redirect(f"/communications/?conversation={conversation.uuid}")
+        return redirect(_conversation_location(request, conversation))
     if files and conversation.connection.channel.kind == CommunicationChannel.KIND_AVITO:
         messages.error(request, "Отправка фото и файлов в Авито пока не подключена.")
-        return redirect(f"/communications/?conversation={conversation.uuid}")
+        return redirect(_conversation_location(request, conversation))
     if len(files) > 10 or sum(upload.size for upload in files) > 25 * 1024 * 1024:
         messages.error(request, "Можно приложить до 10 файлов общим размером не более 25 МБ.")
-        return redirect(f"/communications/?conversation={conversation.uuid}")
+        return redirect(_conversation_location(request, conversation))
     if any(upload.size > 10 * 1024 * 1024 for upload in files):
         messages.error(request, "Размер одного файла не должен превышать 10 МБ.")
-        return redirect(f"/communications/?conversation={conversation.uuid}")
+        return redirect(_conversation_location(request, conversation))
     if not body and not files:
         messages.error(request, "Введите сообщение или добавьте файл.")
         return redirect("communications_conversations")
@@ -254,11 +276,11 @@ def conversation_reply(request, conversation_uuid):
                 width, height = dimensions
                 if width > 12000 or height > 12000 or width * height > 25_000_000:
                     messages.error(request, f"Изображение {uploaded.name} имеет слишком большое разрешение.")
-                    return redirect(f"/communications/?conversation={conversation.uuid}")
+                    return redirect(_conversation_location(request, conversation))
                 uploaded.seek(0)
             except Exception:
                 messages.error(request, f"Файл {uploaded.name} не является корректным изображением.")
-                return redirect(f"/communications/?conversation={conversation.uuid}")
+                return redirect(_conversation_location(request, conversation))
     message = ConversationMessage.objects.create(
         conversation=conversation,
         direction="out",
@@ -281,7 +303,7 @@ def conversation_reply(request, conversation_uuid):
     # The callback executes after the outermost commit, never under row locks.
     if register_reply_intent(message):
         transaction.on_commit(lambda: dispatch_committed_reply(connection.pk, message.pk))
-    return redirect(f"/communications/?conversation={conversation.uuid}")
+    return redirect(_conversation_location(request, conversation))
 
 
 @login_required
@@ -302,7 +324,7 @@ def conversation_take(request, conversation_uuid):
         action_url__contains=str(conversation.uuid),
         is_resolved=False,
     ).exclude(user=request.user).update(is_resolved=True, resolved_at=timezone.now())
-    return redirect(f"/communications/?conversation={conversation.uuid}")
+    return redirect(_conversation_location(request, conversation))
 
 
 @login_required
@@ -329,7 +351,7 @@ def conversation_update(request, conversation_uuid):
             raise PermissionDenied
         conversation.status = status
         conversation.save(update_fields=["status", "updated_at"])
-    return redirect(f"/communications/?conversation={conversation.uuid}")
+    return redirect(_conversation_location(request, conversation))
 
 
 @login_required
