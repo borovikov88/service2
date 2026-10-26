@@ -113,6 +113,8 @@ jobs:
             pool_service.tests.test_avito_daily_statistics \
             pool_service.tests.test_avito_decision_report \
             pool_service.tests.test_avito_improvement_proposals \
+            pool_service.tests.test_avito_owner_review \
+            pool_service.tests.test_avito_tariff_subscription \
             pool_service.tests.test_avito_crm_coverage \
             pool_service.tests.test_avito_crm_attribution \
             pool_service.tests.test_crm_source_orders \

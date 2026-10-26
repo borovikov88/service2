@@ -11,12 +11,12 @@ from zoneinfo import ZoneInfo
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
-from django.db.models import F
+from django.db.models import F, Max
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from .communication_models import ChannelConnection
-from .communication_avito import AvitoError, access_token, authorized_account_id
+from .communication_avito import AvitoError, AvitoRetryableError, access_token, authorized_account_id
 from .avito_statistics_models import AvitoStatisticsRun, AvitoDailyStatistic
 from .avito_services_workplace_setup import _binding
 from .avito_status_monitor import subscriber_allowed
@@ -44,7 +44,24 @@ ERRORS = {
     'statistics_unavailable': 'Не удалось получить статистику. Сохранённые факты не заменены.',
     'statistics_incomplete': 'Сбор следующей страницы ещё не завершён.',
     'provider_cooldown': 'Действует общее ограничение частоты статистики Авито.',
+    'provider_unavailable': 'Запрос к Авито не завершён из-за транспортного сбоя. Причина глубже не сохранена.',
+    'provider_response_too_large': 'Ответ Авито превысил допустимый размер.',
+    'provider_invalid_json': 'Ответ Авито не является допустимым JSON.',
+    'provider_invalid_response': 'Ответ Авито не соответствует ожидаемому объекту.',
+    'provider_data_invalid': 'Статистика Авито не прошла проверку структуры.',
 }
+
+
+def _error_code(value):
+    # Only exact internal/provider codes; never stringify an arbitrary exception.
+    return value if isinstance(value, str) and (value in ERRORS or
+        re.fullmatch(r'provider_http_[1-5][0-9]{2}', value)) else 'statistics_unavailable'
+
+
+def _exception_class(exc):
+    allowed = (avito_workspace.AvitoCooldownError, AvitoRetryableError, AvitoError,
+               ValueError, TypeError, KeyError, RuntimeError, InvalidOperation)
+    return type(exc).__name__ if type(exc) in allowed else 'unexpected_exception'
 
 
 def _date(value):
@@ -180,8 +197,20 @@ def _choose_day(connection, now):
         connection=connection, account_id=ACCOUNT,
         organization_id_at_collection=connection.channel.organization_id, state='success', pagination_complete=True,
         day__range=(latest - timedelta(days=BACKFILL_DAYS-1), latest)).values_list('day', flat=True))
-    return next((latest - timedelta(days=n) for n in range(BACKFILL_DAYS)
-                 if latest - timedelta(days=n) not in completed), None)
+    missing = [latest-timedelta(days=n) for n in range(BACKFILL_DAYS)
+               if latest-timedelta(days=n) not in completed]
+    if not missing:
+        return None
+    # New dates get their first attempt before any retry. Once all have been
+    # tried, retry the least recently created attempt sequence, independent of
+    # clock ties/drift. A failed date must not starve another missing date.
+    attempts = dict(AvitoStatisticsRun.objects.filter(
+        connection=connection, account_id=ACCOUNT,
+        organization_id_at_collection=connection.channel.organization_id,
+        source='avito_stats_v2_items', binding_digest=_stamp(connection),
+        day__in=missing).values('day').annotate(last_run=Max('pk'))
+        .values_list('day', 'last_run'))
+    return min(missing, key=lambda day: (attempts.get(day, 0), -day.toordinal()))
 
 
 def _reserve(connection_id):
@@ -253,14 +282,19 @@ def collect_next(connection_id=4):
         return 'skipped'
     connection, state, run, lease = reserved
     error, page, retry_at = '', None, None
+    phase, exception_class, attempt_started_at = 'authorization', '', timezone.now()
+    statistics_reason, statistics_shape = '', None
     try:
         token = access_token(connection)
         if authorized_account_id(connection) != ACCOUNT:
             raise AvitoError('statistics_binding_changed')
+        phase = 'fetch_statistics'
         page = avito_workspace.fetch_statistics(token, ACCOUNT, start=run.day.isoformat(),
             end=run.day.isoformat(), grouping='item', offset=run.next_offset)
+        phase = 'verify_account'
         if authorized_account_id(connection) != ACCOUNT:
             raise AvitoError('statistics_binding_changed')
+        phase = 'validate_response'
         rows = [_normalized(row) for row in page['rows']]
         total = page.get('total')
         if total is not None and (type(total) is not int or not 0 <= total <= MAX_ROWS):
@@ -275,9 +309,15 @@ def collect_next(connection_id=4):
             raise AvitoError('statistics_data_invalid')
     except avito_workspace.AvitoCooldownError as exc:
         error, retry_at = 'provider_cooldown', exc.retry_at
+        exception_class = _exception_class(exc)
     except Exception as exc:
-        code = str(exc)
-        error = code if code in ERRORS or re.fullmatch(r'provider_http_[1-5][0-9]{2}', code) else 'statistics_unavailable'
+        code = exc.args[0] if isinstance(exc, AvitoError) and len(exc.args) == 1 else None
+        error, exception_class = _error_code(code), _exception_class(exc)
+        reason = vars(exc).get('statistics_reason') if isinstance(exc, AvitoError) else None
+        if (error == 'provider_data_invalid' and isinstance(reason, str)
+                and reason in avito_workspace.STATISTICS_INVALID_REASONS):
+            statistics_reason = reason
+            statistics_shape = avito_workspace.statistics_shape_metadata(vars(exc).get('statistics_shape'))
     with transaction.atomic():
         current = ChannelConnection.objects.select_for_update().select_related('channel').get(pk=connection_id)
         metadata, active, now = dict(current.settings), _state(current), timezone.now()
@@ -348,6 +388,16 @@ def collect_next(connection_id=4):
             else:
                 active.update(next_due_at=(now+timedelta(minutes=1)).isoformat())
                 status = 'skipped'
+        active['last_attempt'] = {
+            'run_id': locked.pk, 'source_date': locked.day.isoformat(),
+            'offset': run.next_offset, 'phase': phase if error else 'pagination',
+            'exception_class': exception_class, 'error_code': active.get('last_error_code', ''),
+            'started_at': attempt_started_at.isoformat(), 'finished_at': now.isoformat(),
+            'outcome': status}
+        if statistics_reason:
+            active['last_attempt']['statistics_reason'] = statistics_reason
+        if statistics_shape is not None:
+            active['last_attempt']['statistics_shape'] = statistics_shape
         locked.save()
         metadata[KEY] = active
         current.settings = metadata
@@ -538,12 +588,14 @@ def source_period_evidence(connection, now=None):
                     and comparison['metrics'] and all(item['comparable'] for item in comparison['metrics']))})
         from .avito_decision_report import build, evidence
         decision = evidence(build(rows, day_runs, now))
+        from .avito_statistics_gaps import evidence as gap_evidence
+        gaps = gap_evidence(current, now)
         return {'schema_version': 1, 'state': 'observed', 'source': 'avito_stats_v2_items',
             'cutoff': cutoff.isoformat(), 'provider_timezone': 'unknown',
             'barnaul_calendar_confirmed': False, 'completed_dates': len(day_runs),
             'expected_dates': BACKFILL_DAYS,
             'comparison_rule': 'all_requested_metrics_known', 'periods': windows,
-            'decision_report': decision}
+            'decision_report': decision, 'gap_diagnostics': gaps}
 
 
 def display(connection, actor, now=None):
@@ -567,6 +619,8 @@ def display(connection, actor, now=None):
         'windows': [{'label': label, 'from': start, 'to': end} for label, start, end in requested_windows(now)],
         'rows': [], 'groups': [], 'changes': [], 'total_cells': len(rows),
         'provider_periods': source_periods(rows, completed_days, now, day_runs=day_runs)}
+    from .avito_statistics_gaps import evidence as gap_evidence, display as gap_display
+    output['gap_diagnostics'] = gap_display(gap_evidence(connection, now))
     output['provider_comparisons'] = source_comparisons(output['provider_periods'])
     from .avito_decision_report import build as build_decision_report
     output['decision_report'] = build_decision_report(rows, day_runs, now)

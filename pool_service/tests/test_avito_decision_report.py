@@ -236,3 +236,256 @@ class DecisionEvidencePermissionsTests(TestCase):
         for bad in ([], ['bad'], [True], ['0'], ['1']*21):
             with self.assertRaises(ValueError):
                 report.decision_evidence(self.connection, self.owner, bad, NOW)
+
+
+
+class ComparableSubsetTests(SimpleTestCase):
+    def subset(self, rows, runs, pair=1):
+        result = report.build(rows, runs, NOW)
+        selected = result['comparable_subsets'][pair]
+        return result, selected, {item['key']: item for item in selected['metrics']}
+
+    def test_omitted_ad_leaves_full_account_unknown_but_known_subset_comparable_per_metric(self):
+        rows, runs = facts()
+        for row in rows:
+            row.metrics['commission'] = None
+            if row.avito_id == '12':
+                row.provider_row_present = False
+        result, pair, metrics = self.subset(rows, runs)
+        self.assertIsNone(result['account_current']['metric_values']['views'])
+        self.assertEqual(metrics['views']['included_ids'], ['11'])
+        self.assertEqual(metrics['views']['excluded_ids'], ['12'])
+        self.assertEqual((metrics['views']['current'], metrics['views']['previous'],
+                          metrics['views']['delta']), ('140', '140', '0'))
+        self.assertTrue(metrics['views']['available'])
+        self.assertTrue(metrics['contacts']['available'])
+        self.assertTrue(metrics['spending']['available'])
+        self.assertEqual(metrics['commission']['included_ids'], [])
+        self.assertIsNone(metrics['commission']['current'])
+        self.assertEqual((pair['current_from'].isoformat(), pair['previous_from'].isoformat()),
+                         ('2026-10-17', '2026-10-10'))
+        self.assertEqual((metrics['views']['current_cells'], metrics['views']['previous_cells']), (7, 7))
+        self.assertFalse(pair['barnaul_calendar_confirmed'])
+
+    def test_metric_inputs_define_their_own_same_cohort_not_a_shared_contact_or_commission_gate(self):
+        rows, runs = facts()
+        for row in rows:
+            row.metrics['commission'] = None
+            if row.avito_id == '12':
+                row.metrics['spending'] = '900.00'
+        rows[1].metrics['contacts'] = None
+        _, _, metrics = self.subset(rows, runs)
+        self.assertEqual(metrics['views']['included_ids'], ['11', '12'])
+        self.assertEqual(metrics['spending']['included_ids'], ['11', '12'])
+        self.assertEqual(metrics['ctr']['included_ids'], ['11', '12'])
+        self.assertEqual(metrics['contacts']['included_ids'], ['11'])
+        self.assertEqual(metrics['conversion']['included_ids'], ['11'])
+        self.assertEqual(metrics['cpl_cash']['included_ids'], ['11'])
+        self.assertEqual(metrics['cpl_cash']['current'], '50.00')
+        self.assertEqual(metrics['spending']['current'], '7000.00')
+        self.assertEqual(metrics['cpl_cash']['unit'], '₽/контакт')
+
+    def test_ratios_use_weighted_sums_of_same_ids_and_keep_zero_inputs(self):
+        rows, runs = facts()
+        for row in rows:
+            if row.avito_id == '12':
+                row.metrics.update(impressions='1000',
+                    views='900' if row.day >= daily.collection_cutoff(NOW)-timedelta(days=6) else '100')
+        _, _, metrics = self.subset(rows, runs)
+        self.assertEqual(metrics['ctr']['current'], '83.64')
+        self.assertEqual(metrics['ctr']['previous'], '10.91')
+        self.assertEqual(metrics['ctr']['delta'], '72.73')
+        self.assertEqual(metrics['ctr']['delta_unit'], 'п.п.')
+        # An ad with zero denominator can still contribute known zero inputs
+        # to an aggregate ratio with a positive total denominator.
+        for row in rows:
+            if row.avito_id == '12':
+                row.metrics.update(impressions='0', views='0', contacts='0', spending='0.00')
+        _, _, metrics = self.subset(rows, runs)
+        self.assertEqual(metrics['ctr']['included_ids'], ['11', '12'])
+        self.assertEqual(metrics['ctr']['current'], '20.00')
+        self.assertEqual(metrics['cpl_cash']['current'], '50.00')
+
+    def test_zero_is_known_but_zero_denominators_and_low_volume_do_not_create_a_trend(self):
+        rows, runs = facts()
+        for row in rows:
+            row.metrics.update(impressions='0', views='0', contacts='0', spending='0.00')
+        _, _, metrics = self.subset(rows, runs)
+        self.assertEqual(metrics['views']['included_ids'], ['11', '12'])
+        self.assertEqual(metrics['views']['current'], '0')
+        self.assertEqual(metrics['views']['delta'], '0')
+        self.assertIsNone(metrics['views']['relative_change'])
+        for key in ('ctr', 'conversion', 'cpl_cash'):
+            self.assertIsNone(metrics[key]['current'])
+            self.assertIsNone(metrics[key]['delta'])
+            self.assertFalse(metrics[key]['available'])
+        self.assertTrue(all(item['low_or_unknown_volume'] for item in metrics.values()))
+
+    def test_changing_account_manifest_keeps_only_exact_same_known_ids_across_both_periods(self):
+        rows, runs = facts()
+        boundary = daily.collection_cutoff(NOW)-timedelta(days=6)
+        for day, run in runs.items():
+            if day < boundary:
+                run.dimensions.pop('12')
+                run.staged_rows = [{'id': '11'}]
+        rows = [row for row in rows if row.avito_id != '12' or row.day >= boundary]
+        _, pair, metrics = self.subset(rows, runs)
+        self.assertTrue(pair['source_cohort_changed'])
+        self.assertEqual(metrics['views']['included_ids'], ['11'])
+        self.assertEqual(metrics['views']['excluded_ids'], ['12'])
+        self.assertEqual(metrics['views']['current'], metrics['views']['previous'])
+
+    def test_missing_date_stale_fact_and_duplicate_never_enter_comparable_subset(self):
+        rows, runs = facts()
+        runs.pop(daily.collection_cutoff(NOW)-timedelta(days=10))
+        _, pair, metrics = self.subset(rows, runs)
+        self.assertFalse(pair['known_cohort_complete'])
+        self.assertEqual(pair['previous_completed_dates'], 6)
+        self.assertEqual(metrics['views']['included_ids'], [])
+        self.assertIsNone(metrics['views']['delta'])
+        for damaged in ('stale', 'duplicate'):
+            rows, runs = facts()
+            if damaged == 'stale':
+                rows[1].source_run_id = 999
+            else:
+                rows.append(deepcopy(rows[1]))
+            _, _, metrics = self.subset(rows, runs)
+            self.assertEqual(metrics['views']['included_ids'], ['11'])
+            self.assertEqual(metrics['views']['excluded_ids'], ['12'])
+
+    @patch('pool_service.avito_workspace.fetch_statistics', side_effect=AssertionError('No API in subset'))
+    def test_day_pair_bounds_and_private_ui_explicitly_label_partial_result(self, fetch):
+        rows, runs = facts()
+        rows[0].title = '<script>PRIVATE</script>'
+        for row in rows:
+            if row.avito_id == '12':
+                row.provider_row_present = False
+        result, pair, metrics = self.subset(rows, runs, pair=0)
+        self.assertEqual((pair['current_from'].isoformat(), pair['current_to'].isoformat(),
+                          pair['previous_from'].isoformat(), pair['previous_to'].isoformat()),
+                         ('2026-10-23', '2026-10-23', '2026-10-22', '2026-10-22'))
+        self.assertEqual(metrics['views']['current'], '20')
+        content = render_to_string('pool_service/avito/_decision_report.html', {'report': result})
+        self.assertIn('Сопоставимая часть аккаунта', content)
+        self.assertIn('не полный итог аккаунта', content)
+        self.assertIn('Включено 1/2 известных ID', content)
+        self.assertNotIn('<script>PRIVATE</script>', content)
+        fetch.assert_not_called()
+
+    def test_closed_subset_evidence_excludes_amounts_titles_and_rejects_wrong_scope(self):
+        from pool_service.avito_comparable_subsets import evidence
+        rows, runs = facts()
+        rows[0].title = 'PRIVATE'
+        rows[0].metrics['spending'] = '1234567.89'
+        result = report.build(rows, runs, NOW)
+        saved = evidence(result['comparable_subsets'], connection_id=4, account_id=daily.ACCOUNT)
+        self.assertEqual(set(saved), {'schema_version', 'state', 'connection_id', 'account_id',
+            'source', 'provider_timezone', 'barnaul_calendar_confirmed', 'pairs'})
+        self.assertEqual(len(saved['pairs']), 2)
+        for pair in saved['pairs']:
+            self.assertEqual(set(pair), {'key', 'current_from', 'current_to', 'previous_from',
+                'previous_to', 'current_completed_dates', 'current_dates',
+                'previous_completed_dates', 'previous_dates', 'known_cohort_complete',
+                'source_cohort_changed', 'truncated', 'metrics'})
+            for item in pair['metrics']:
+                self.assertEqual(set(item), {'key', 'included_ids', 'excluded_ids', 'included_ads',
+                    'excluded_ads', 'excluded_ids_truncated', 'available', 'low_or_unknown_volume'})
+        for private in ('PRIVATE', '1234567.89', 'current_received_at', 'delta', 'title', 'city', 'commission_value'):
+            self.assertNotIn(private, str(saved))
+        self.assertEqual(evidence(result['comparable_subsets'], connection_id=1,
+            account_id=daily.ACCOUNT)['state'], 'blocked')
+        self.assertEqual(evidence(result['comparable_subsets'], connection_id=4,
+            account_id='other-account')['state'], 'blocked')
+
+
+
+class ComparableSubsetSetupTests(TestCase):
+    def setUp(self):
+        DecisionEvidencePermissionsTests.setUp(self)
+
+    def test_setup_receipt_is_scoped_db_only_and_exports_no_values(self):
+        from pool_service.avito_comparable_subsets import safe_setup_evidence
+        with patch('pool_service.avito_services_workplace_setup._actor', return_value=self.owner), \
+                patch.object(daily, '_allowed', return_value=True), \
+                patch.object(daily, '_source_history',
+                    return_value=(daily.collection_cutoff(NOW), self.rows, self.runs)), \
+                patch('pool_service.avito_workspace.fetch_statistics') as fetch:
+            result = safe_setup_evidence(NOW)
+        self.assertEqual(result['state'], 'observed')
+        self.assertEqual(result['connection_id'], 4)
+        self.assertEqual(result['account_id'], daily.ACCOUNT)
+        self.assertEqual(len(result['pairs']), 2)
+        for private in ('Synthetic service', '100.00', '700.00', 'current_received_at',
+                        'delta', 'title', 'city'):
+            self.assertNotIn(private, str(result))
+        fetch.assert_not_called()
+
+    def test_setup_denies_other_org_manager_or_missing_actor_before_history(self):
+        from pool_service.avito_comparable_subsets import safe_setup_evidence
+        with patch.object(daily, '_allowed', return_value=True), \
+                patch.object(daily, '_source_history') as history:
+            for actor in (self.foreign, self.manager, None):
+                with patch('pool_service.avito_services_workplace_setup._actor', return_value=actor):
+                    result = safe_setup_evidence(NOW)
+                    self.assertEqual(result, {'schema_version': 1, 'state': 'unavailable',
+                                              'code': 'statistics_subset_unavailable'})
+        history.assert_not_called()
+        ChannelConnection.objects.filter(pk=4).update(external_id='foreign-account')
+        with patch.object(daily, '_source_history') as history:
+            self.assertEqual(safe_setup_evidence(NOW)['state'], 'unavailable')
+        history.assert_not_called()
+
+    def test_setup_discards_result_after_credential_stamp_or_actor_rights_change(self):
+        from pool_service.avito_comparable_subsets import safe_setup_evidence
+        with patch('pool_service.avito_services_workplace_setup._actor', return_value=self.owner), \
+                patch.object(daily, '_allowed', return_value=True), \
+                patch.object(daily, '_stamp', side_effect=['initial-binding', 'changed-binding']), \
+                patch.object(daily, '_source_history',
+                    return_value=(daily.collection_cutoff(NOW), self.rows, self.runs)):
+            self.assertEqual(safe_setup_evidence(NOW)['state'], 'unavailable')
+        def revoked(*args, **kwargs):
+            User.objects.filter(pk=self.owner.pk).update(is_active=False)
+            return daily.collection_cutoff(NOW), self.rows, self.runs
+        with patch('pool_service.avito_services_workplace_setup._actor', return_value=self.owner), \
+                patch.object(daily, '_allowed', return_value=True), \
+                patch.object(daily, '_source_history', side_effect=revoked):
+            result = safe_setup_evidence(NOW)
+        self.assertEqual(result['state'], 'unavailable')
+        self.assertNotIn('pairs', result)
+
+    def test_setup_discards_result_after_organization_move_and_sanitizes_failure(self):
+        from pool_service.avito_comparable_subsets import safe_setup_evidence
+        def moved(*args, **kwargs):
+            CommunicationChannel.objects.filter(pk=self.connection.channel_id).update(
+                organization=self.foreign_org)
+            return daily.collection_cutoff(NOW), self.rows, self.runs
+        with patch('pool_service.avito_services_workplace_setup._actor', return_value=self.owner), \
+                patch.object(daily, '_allowed', return_value=True), \
+                patch.object(daily, '_source_history', side_effect=moved):
+            self.assertEqual(safe_setup_evidence(NOW)['state'], 'unavailable')
+        CommunicationChannel.objects.filter(pk=self.connection.channel_id).update(organization=self.org)
+        with patch('pool_service.avito_services_workplace_setup._actor',
+                side_effect=RuntimeError('PRIVATE authorization payload')):
+            result = safe_setup_evidence(NOW)
+        self.assertEqual(result, {'schema_version': 1, 'state': 'unavailable',
+                                 'code': 'statistics_subset_unavailable'})
+        self.assertNotIn('PRIVATE', str(result))
+
+
+    def test_setup_captures_one_clock_before_history_and_build_across_local_midnight(self):
+        from pool_service.avito_comparable_subsets import safe_setup_evidence
+        before = datetime(2026, 10, 25, 16, 59, 59, tzinfo=dt_timezone.utc)
+        after = before+timedelta(seconds=2)
+        observed = []
+        def history(connection, now=None):
+            observed.append(now or daily.timezone.now())
+            return daily.collection_cutoff(observed[-1]), self.rows, self.runs
+        with patch('pool_service.avito_services_workplace_setup._actor', return_value=self.owner), \
+                patch.object(daily, '_allowed', return_value=True), \
+                patch.object(daily, '_source_history', side_effect=history), \
+                patch.object(daily.timezone, 'now', side_effect=[before, after]) as clock:
+            result = safe_setup_evidence()
+        self.assertEqual(result['state'], 'observed')
+        self.assertEqual(observed, [before])
+        self.assertEqual(result['pairs'][0]['current_to'], '2026-10-23')
+        self.assertEqual(clock.call_count, 1)

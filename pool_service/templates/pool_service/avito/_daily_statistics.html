@@ -28,6 +28,38 @@
 
     {% include 'pool_service/avito/_decision_report.html' with report=daily.decision_report only %}
 
+    {% if daily.gap_diagnostics.state == 'observed' %}
+    <details class="mt-3">
+      <summary>Почему не хватает данных: объявление {{ daily.gap_diagnostics.avito_id }}</summary>
+      <p class="small mt-2">Точный период дат источника: {{ daily.gap_diagnostics.from }}–{{ daily.gap_diagnostics.to }}. Завершённые запросы: {{ daily.gap_diagnostics.completed_dates }}/{{ daily.gap_diagnostics.expected_dates }} дат. Часовой пояс Авито не подтверждён. Все страницы не означают наличие всех объявлений или показателей.</p>
+      <p class="small text-muted">Штатный запрос получает все элементы аккаунта с группировкой item, без фильтра по ID объявления. Известный набор из опубликованного снимка — ожидание для диагностики, а не отдельный запрос этого объявления. Ни отсутствие строки, ни отсутствующий показатель не считаются нулём.</p>
+      <p class="small text-muted">Последняя попытка: {{ daily.gap_diagnostics.last_attempt.state }} · {% timezone "Asia/Barnaul" %}{{ daily.gap_diagnostics.last_attempt.finished_at|date:"d.m.Y H:i:s"|default:"время не подтверждено" }} · Барнаул{% endtimezone %} · этап {{ daily.gap_diagnostics.last_attempt.phase }}{% if daily.gap_diagnostics.last_attempt.exception_class %} · {{ daily.gap_diagnostics.last_attempt.exception_class }}{% endif %}{% if daily.gap_diagnostics.last_attempt.error_code %} · код {{ daily.gap_diagnostics.last_attempt.error_code }}{% endif %}. {% if daily.gap_diagnostics.last_attempt.state == 'historical_unknown' %}Точный этап прежней попытки не сохранялся.{% if daily.gap_diagnostics.last_attempt.error_code %} Причину прежней ошибки восстановить по общему коду нельзя.{% endif %}{% endif %}</p>
+      {% if daily.gap_diagnostics.last_attempt.statistics_reason %}<div class="small text-muted">Причина проверки структуры: {{ daily.gap_diagnostics.last_attempt.statistics_reason }}.</div>{% endif %}
+      {% if daily.gap_diagnostics.last_attempt.response_shape_explanation %}
+      <p class="small mt-2" data-avito-statistics-shape-explanation><strong>Сбор №{{ daily.gap_diagnostics.last_attempt.run_id }} · дата источника {{ daily.gap_diagnostics.last_attempt.source_date }}.</strong> {{ daily.gap_diagnostics.last_attempt.response_shape_explanation }}</p>
+      {% endif %}
+      <div class="table-responsive"><table class="table table-sm">
+        <thead><tr><th>Дата источника</th><th>Запрос и страницы</th><th>Строка и показатели</th><th>Объяснение</th></tr></thead>
+        <tbody>{% for item in daily.gap_diagnostics.dates %}<tr>
+          <td>{{ item.date }}</td>
+          <td>{% if item.latest_complete_run_id %}Сбор №{{ item.latest_complete_run_id }} · {{ item.date_from }}–{{ item.date_to }} · item.
+            <div class="small text-muted">{% timezone "Asia/Barnaul" %}Завершение: {{ item.completed_at|date:"d.m.Y H:i:s"|default:"не подтверждено" }} · Барнаул{% endtimezone %}.</div>
+            <div class="small">Получено {{ item.received_rows }} из {{ item.expected_total }} строк аккаунта. Смещения: {% for page in item.pages %}{{ page.offset }}{% if not forloop.last %}, {% endif %}{% empty %}не подтверждены{% endfor %}.</div>
+            {% else %}Завершённого сбора нет.{% endif %}
+            {% if item.latest_attempt_run_id %}<div class="small text-muted">Последняя попытка №{{ item.latest_attempt_run_id }}: {{ item.latest_attempt_state }}{% if item.latest_attempt_error_code %} · {{ item.latest_attempt_error_code }}{% endif %}.</div>{% endif %}
+          </td>
+          <td>{% if item.pages_complete %}В известном наборе: {{ item.expected_manifest_member|yesno:"да,нет,неизвестно" }}. Строка Авито: {{ item.provider_row_present|yesno:"есть,нет,неизвестно" }}.
+            <div class="small">Запись Service2: {{ item.stored_row_present|yesno:"есть,нет" }}; совпадает со сбором: {{ item.stored_row_consistent|yesno:"да,нет" }}. Известно показателей: {{ item.known_metric_count }}.</div>
+            <details class="small"><summary>Коды показателей</summary>Неизвестны: {{ item.missing_metric_codes|join:", "|default:"нет" }}. Известные нули: {{ item.zero_metric_codes|join:", "|default:"нет" }}.</details>
+            {% else %}Показатели неизвестны.{% endif %}
+          </td>
+          <td>{{ item.explanation }}</td>
+        </tr>{% endfor %}</tbody>
+      </table></div>
+    </details>
+    {% endif %}
+
+
     <details class="mt-3">
       <summary>Запрошенные сравнения по полным дням Барнаула</summary>
       <p class="small mt-2">Недоступны до подтверждения часового пояса источника либо появления почасовых данных. Текущий день исключён; отсутствующие значения не заменяются нулями.</p>

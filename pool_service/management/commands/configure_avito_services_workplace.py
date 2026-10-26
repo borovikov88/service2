@@ -44,4 +44,15 @@ class Command(BaseCommand):
                     "connection_id": 4, "account_id": "446312402"}
             from pool_service.avito_improvement_proposals import setup_owner_cycle_once
             result["improvement_projects"] = setup_owner_cycle_once()
+            from pool_service.avito_owner_review import safe_owner_review_receipt
+            result["owner_review"] = safe_owner_review_receipt()
+            from pool_service.avito_comparable_subsets import safe_setup_evidence as comparable_subset_evidence
+            result["comparable_subsets"] = comparable_subset_evidence()
+            from pool_service import avito_tariff_subscription
+            from pool_service.avito_services_workplace_setup import _actor, _connection
+            try:
+                result["tariff_subscription"] = avito_tariff_subscription.setup_evidence(_actor(_connection(4)))
+            except Exception:
+                result["tariff_subscription"] = {"state": "blocked", "code": "tariff_scope_changed",
+                    "connection_id": 4, "account_id": "446312402", "request_performed": False}
         self.stdout.write("AVITO_SERVICES_SETUP " + json.dumps(result, sort_keys=True))
