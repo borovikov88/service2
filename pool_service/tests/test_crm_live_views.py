@@ -6,7 +6,7 @@ import uuid
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
-from django.test import Client as HttpClient, TestCase
+from django.test import Client as HttpClient, RequestFactory, TestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -266,3 +266,194 @@ class PilotActivationTests(TestCase):
         self.org.refresh_from_db()
         self.assertFalse(self.org.crm_v2_read or self.org.crm_v2_write)
         self.assertFalse(CrmAccess.objects.exists() or CrmPipeline.objects.exists())
+
+
+class ColdWorkspaceEntryTests(TestCase):
+    """Entry discovery is separate from current, scoped API/activation authority."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name="Cold synthetic organization",
+            plan_type=Organization.PLAN_COMPANY_PAID, paid_until=timezone.now() + timedelta(days=30))
+        self.user = get_user_model().objects.create_user("cold-owner")
+        self.role = OrganizationAccess.objects.create(organization=self.org, user=self.user, role="owner")
+        self.client.force_login(self.user)
+        self.workspace = reverse("crm_live_workspace")
+        self.start = reverse("crm_live_start")
+        self.scope = "?org_id=" + str(self.org.pk)
+
+    def assert_no_activation(self):
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.crm_v2_read or self.org.crm_v2_write)
+        self.assertFalse(CrmAccess.objects.exists() or CrmPipeline.objects.exists())
+        self.assertFalse(DataAuditLog.objects.filter(entity_type="crm_pilot_activation").exists())
+
+    def assert_three_navigation_links(self, response, url):
+        # These are the actual base's desktop sidebar, top dropdown and mobile menu.
+        for css_class in ("desktop-sidebar__sublink", "ui-dropdown__item", "mobile-submenu__item"):
+            self.assertContains(response, 'href="' + url + '" class="' + css_class)
+
+    def test_cold_owner_visible_navigation_direct_entry_csrf_post_and_idempotence(self):
+        overview = self.client.get(reverse("crm_index"))
+        self.assert_three_navigation_links(overview, self.start + self.scope)
+        self.assertContains(overview, reverse("crm_list", kwargs={"direction": "sales"}))
+        csrf = HttpClient(enforce_csrf_checks=True)
+        csrf.force_login(self.user)
+        response = csrf.get(self.workspace, follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.redirect_chain, [(self.start + self.scope, 302)])
+        self.assertContains(response, 'action="' + self.start + self.scope + '"')
+        self.assertContains(response, 'name="csrfmiddlewaretoken"')
+        self.assertContains(response, "Включить рабочую CRM для меня")
+        self.assert_three_navigation_links(response, self.start + self.scope)
+        self.assert_no_activation()
+        for name in ("crm_live_data", "crm_live_clients"):
+            self.assertEqual(csrf.get(reverse(name) + self.scope).status_code, 403)
+        self.assertEqual(self.client.post(reverse("crm_live_command") + self.scope, "{}", content_type="application/json").status_code, 403)
+        self.assertEqual(csrf.post(reverse("crm_live_command") + self.scope, "{}", content_type="application/json").status_code, 403)
+        self.assertEqual(csrf.post(self.start + self.scope, {"action": "activate_self"}).status_code, 403)
+        self.assert_no_activation()
+        token = csrf.cookies["csrftoken"].value
+        for _ in range(2):
+            response = csrf.post(self.start + self.scope, {"action": "activate_self", "csrfmiddlewaretoken": token})
+            self.assertRedirects(response, self.workspace + self.scope)
+        self.assertEqual(CrmAccess.objects.count(), 1)
+        self.assertEqual(CrmPipeline.objects.count(), 4)
+        self.assertEqual(DataAuditLog.objects.filter(entity_type="crm_pilot_activation").count(), 1)
+        self.assertEqual(csrf.get(reverse("crm_live_data") + self.scope).status_code, 200)
+        self.assert_three_navigation_links(csrf.get(self.workspace + self.scope), self.workspace + self.scope)
+
+    def test_start_without_scope_is_usable_but_post_requires_explicit_scope(self):
+        self.assertRedirects(self.client.get(self.start), self.start + self.scope)
+        self.assertEqual(self.client.post(self.start, {"action": "activate_self"}).status_code, 403)
+        self.assertEqual(self.client.post(self.start, {"action": "activate_self", "org_id": self.org.pk}).status_code, 403)
+        self.assert_no_activation()
+
+    def test_multiple_eligible_organizations_require_choice_and_skip_ineligible_first(self):
+        self.role.role = "admin"
+        self.role.save(update_fields=["role"])
+        owner_org = Organization.objects.create(name="Second eligible owner", plan_type=Organization.PLAN_COMPANY_PAID,
+            paid_until=timezone.now() + timedelta(days=30))
+        reader_org = Organization.objects.create(name="Third eligible reader", crm_v2_read=True,
+            plan_type=Organization.PLAN_COMPANY_PAID, paid_until=timezone.now() + timedelta(days=30))
+        OrganizationAccess.objects.create(organization=owner_org, user=self.user, role="owner")
+        OrganizationAccess.objects.create(organization=reader_org, user=self.user, role="manager")
+        for path in (self.workspace, self.start):
+            response = self.client.get(path)
+            self.assertContains(response, "Сделки: выберите организацию")
+            self.assertContains(response, owner_org.name)
+            self.assertContains(response, reader_org.name)
+            self.assertNotContains(response, self.org.name)
+            self.assertContains(response, self.start + "?org_id=" + str(owner_org.pk))
+            self.assertContains(response, self.workspace + "?org_id=" + str(reader_org.pk))
+            self.assert_three_navigation_links(response, self.workspace)
+        self.assertEqual(self.client.get(self.workspace + "?org_id=" + str(reader_org.pk)).status_code, 200)
+        self.assertEqual(self.client.get(self.workspace + self.scope).status_code, 403)
+        self.assert_no_activation()
+        self.assertRedirects(self.client.post(self.start + "?org_id=" + str(owner_org.pk), {"action": "activate_self"}),
+            self.workspace + "?org_id=" + str(owner_org.pk))
+        self.org.refresh_from_db()
+        reader_org.refresh_from_db()
+        self.assertFalse(self.org.crm_v2_read or self.org.crm_v2_write or reader_org.crm_v2_write)
+        self.assertEqual(CrmAccess.objects.get().organization_id, owner_org.pk)
+
+    def test_enabled_reader_skips_inaccessible_first_org_without_activation(self):
+        self.role.role = "admin"
+        self.role.save(update_fields=["role"])
+        reader_org = Organization.objects.create(name="Enabled read scope", crm_v2_read=True,
+            plan_type=Organization.PLAN_COMPANY_PAID, paid_until=timezone.now() + timedelta(days=30))
+        OrganizationAccess.objects.create(organization=reader_org, user=self.user, role="manager")
+        scoped = self.workspace + "?org_id=" + str(reader_org.pk)
+        self.assertRedirects(self.client.get(self.workspace), scoped)
+        self.assertRedirects(self.client.get(self.start), scoped)
+        response = self.client.get(scoped)
+        self.assertEqual(response.status_code, 200)
+        self.assert_three_navigation_links(response, scoped)
+        self.assert_no_activation()
+
+    def test_explicit_malformed_duplicate_foreign_or_ineligible_scope_never_falls_back(self):
+        foreign = Organization.objects.create(name="Foreign private entry")
+        for query in ("?org_id=", "?org_id=0", "?org_id=-1", "?org_id=invalid", "?org_id=１２", "?org_id=" + "9" * 19,
+                "?org_id=" + str(foreign.pk), "?org_id=999999", self.scope + "&org_id=" + str(self.org.pk)):
+            for path in (self.workspace, self.start):
+                self.assertEqual(self.client.get(path + query).status_code, 403, path + query)
+            self.assertEqual(self.client.post(self.start + query, {"action": "activate_self"}).status_code, 403)
+        self.assert_no_activation()
+
+    def test_explicit_read_grant_navigation_is_independent_of_legacy_menu_flag(self):
+        from pool_service.crm_live_views import workspace
+
+        self.role.role = "accountant"
+        self.role.save(update_fields=["role"])
+        self.org.crm_v2_read = True
+        self.org.save(update_fields=["crm_v2_read"])
+        CrmAccess.objects.create(organization=self.org, user=self.user, view_team_deals=True)
+        # Isolate the shared template from the separate accountant-only routing middleware.
+        # That middleware's existing redirects are outside the CRM entry policy.
+        request = RequestFactory().get(self.workspace + self.scope)
+        request.user = self.user
+        request.session = {}
+        response = workspace(request)
+        self.assertEqual(response.status_code, 200)
+        self.assert_three_navigation_links(response, self.workspace + self.scope)
+        self.assertNotContains(response, reverse("crm_tasks"))
+        self.assertEqual(self.client.post(self.start + self.scope, {"action": "activate_self"}).status_code, 403)
+
+    def test_admin_superuser_and_hr_denials_have_no_entry_or_activation_bypass(self):
+        self.role.role = "admin"
+        self.role.save(update_fields=["role"])
+        self.user.is_superuser = True
+        self.user.save(update_fields=["is_superuser"])
+        for path in (self.workspace, self.start, self.workspace + self.scope, self.start + self.scope):
+            self.assertEqual(self.client.get(path).status_code, 403)
+        self.assertNotContains(self.client.get(reverse("crm_index")), self.start + self.scope)
+        self.assertEqual(self.client.post(self.start + self.scope, {"action": "activate_self"}).status_code, 403)
+        self.role.role = "owner"
+        self.role.save(update_fields=["role"])
+        employee = Employee.objects.create(organization=self.org, user=self.user, display_name="Synthetic former owner")
+        for fields in ({"is_active": False}, {"is_active": True, "employment_status": Employee.STATUS_DISMISSED}):
+            for field, value in fields.items():
+                setattr(employee, field, value)
+            employee.save()
+            for path in (self.workspace, self.start, self.workspace + self.scope, self.start + self.scope):
+                self.assertEqual(self.client.get(path).status_code, 403)
+            self.assertEqual(self.client.post(self.start + self.scope, {"action": "activate_self"}).status_code, 403)
+            self.assertNotContains(self.client.get(reverse("crm_index")), self.start + self.scope)
+        self.assert_no_activation()
+
+    def test_navigation_is_constant_query_advisory_only_and_revocation_is_fresh(self):
+        from pool_service.crm_live_views import workspace
+        from pool_service.crm_pilot_views import start
+        from pool_service.templatetags.crm_live import crm_workspace_entry
+
+        request = RequestFactory().get(self.workspace)
+        request.user = self.user
+        with self.assertNumQueries(2):
+            self.assertEqual(crm_workspace_entry({"request": request}), self.start + self.scope)
+        with self.assertNumQueries(0):
+            for _ in range(4):
+                self.assertEqual(crm_workspace_entry({"request": request}), self.start + self.scope)
+        other_org = Organization.objects.create(name="Additional eligible choice")
+        OrganizationAccess.objects.create(organization=other_org, user=self.user, role="owner")
+        other_request = RequestFactory().get(self.workspace)
+        other_request.user = self.user
+        with self.assertNumQueries(2):
+            self.assertEqual(crm_workspace_entry({"request": other_request}), self.workspace)
+        scoped_request = RequestFactory().get(self.workspace + self.scope)
+        scoped_request.user = self.user
+        self.assertEqual(crm_workspace_entry({"request": scoped_request}), self.start + self.scope)
+        self.role.delete()
+        with self.assertRaises(PermissionDenied):
+            workspace(scoped_request)
+        with self.assertRaises(PermissionDenied):
+            start(scoped_request)
+        # A still-authenticated, previously loaded user object cannot bypass a fresh DB check.
+        OrganizationAccess.objects.create(organization=self.org, user=self.user, role="owner")
+        get_user_model().objects.filter(pk=self.user.pk).update(is_active=False)
+        with self.assertRaises(PermissionDenied):
+            workspace(scoped_request)
+        with self.assertRaises(PermissionDenied):
+            start(scoped_request)
+        fresh_request = RequestFactory().get(self.workspace)
+        fresh_request.user = self.user
+        self.assertEqual(crm_workspace_entry({"request": fresh_request}), "")
+        self.assert_no_activation()

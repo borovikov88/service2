@@ -13,7 +13,7 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db.models import F, Q
 from django.http import Http404, JsonResponse
-from django.shortcuts import get_object_or_404, render
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.cache import never_cache
@@ -216,7 +216,16 @@ def _api(view):
 @ensure_csrf_cookie
 @require_GET
 def workspace(request):
-    organization = _organization(request)
+    # HTML entry can offer explicit owner setup; API authorization stays strict.
+    from .crm_pilot_views import choose_entry, entry_for, explicit_organization
+    organization = explicit_organization(request)
+    if organization is None:
+        return choose_entry(request)
+    entry = entry_for(request, organization)
+    if not entry:
+        raise PermissionDenied
+    if entry.startswith(reverse("crm_live_start") + "?"):
+        return redirect(entry)
     from .views import _crm_redirect_if_access_blocked
     blocked = _crm_redirect_if_access_blocked(request, organization)
     if blocked:
