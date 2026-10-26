@@ -80,7 +80,7 @@ from .views import (
     push_unsubscribe,
 )
 from . import views
-from . import crm_live_views, crm_pilot_views, crm_lead_views
+from . import crm_live_views, crm_pilot_views, crm_lead_views, crm_object_need_views
 from .estimate_views import estimate_page, estimate_api, estimate_print, estimate_document
 from .client_crm_views import client_detail, client_merge_index, client_merge_search, client_onec_import
 from .client_crm_ui import client_edit
@@ -409,6 +409,10 @@ urlpatterns = [
     path("clients/merge/", client_merge_index, name="client_merge_index"),
     path("clients/merge/search/", client_merge_search, name="client_merge_search"),
     path("crm/", crm_index, name="crm_index"),
+    path("crm/workspace/needs/", crm_object_need_views.workspace, name="crm_object_needs"),
+    path("crm/workspace/needs/data/", crm_object_need_views.data, name="crm_object_need_data"),
+    path("crm/workspace/needs/review/", crm_object_need_views.review, name="crm_object_need_review"),
+    path("crm/workspace/needs/<int:task_id>/", crm_object_need_views.detail, name="crm_object_need_detail"),
     path("crm/workspace/", crm_live_views.workspace, name="crm_live_workspace"),
     path("crm/workspace/start/", crm_pilot_views.start, name="crm_live_start"),
     path("crm/workspace/data/", crm_live_views.data, name="crm_live_data"),
