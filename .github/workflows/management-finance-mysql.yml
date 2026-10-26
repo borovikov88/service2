@@ -25,6 +25,12 @@ on:
       - "pool_service/services/crm_commercial_*.py"
       - "pool_service/management/commands/bootstrap_crm_commercial.py"
       - "pool_service/tests/test_crm_commercial_*.py"
+      - "pool_service/tests/test_crm_live_*.py"
+      - "pool_service/crm_live_views.py"
+      - "pool_service/crm_pilot_views.py"
+      - "pool_service/services/crm_pilot_activation.py"
+      - "pool_service/services/crm_deal_task_schedule.py"
+      - "pool_service/task_waiting_guards.py"
       - "pool_service/services/crm_permissions.py"
       - "pool_service/tests/test_crm_source_orders.py"
       - "pool_service/tests/test_avito*.py"
@@ -125,6 +131,7 @@ jobs:
             pool_service.tests.test_avito_period_statistics \
             pool_service.tests.test_avito_decision_report \
             pool_service.tests.test_avito_improvement_proposals \
+            pool_service.tests.test_avito_experiment_baseline \
             pool_service.tests.test_avito_owner_review \
             pool_service.tests.test_avito_tariff_subscription \
             pool_service.tests.test_avito_crm_coverage \
@@ -139,6 +146,9 @@ jobs:
             pool_service.tests.test_crm_commercial_foundation \
             pool_service.tests.test_crm_commercial_commands \
             pool_service.tests.test_crm_commercial_migrations \
+            pool_service.tests.test_crm_live_pilot_commands \
+            pool_service.tests.test_crm_live_pilot_migrations \
+            pool_service.tests.test_crm_live_views \
             pool_service.tests.test_crm_org_scope \
             pool_service.tests.test_task_read_privacy \
             pool_service.tests.test_avito_promotion_observations \

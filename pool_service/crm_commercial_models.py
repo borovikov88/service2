@@ -216,6 +216,56 @@ class CrmDeal(CommercialModel):
         indexes = [models.Index(fields=["organization", "pipeline", "is_archived"], name="crm_deal_board_idx")]
 
 
+class CrmDealTaskLink(CommercialModel):
+    """Typed provenance; the existing task remains the source of its content."""
+    immutable_scope = ("organization_id", "deal_id", "task_id", "created_by_id")
+    organization = models.ForeignKey("pool_service.Organization", on_delete=models.PROTECT)
+    deal = models.ForeignKey(CrmDeal, on_delete=models.PROTECT, related_name="task_links")
+    task = models.OneToOneField("pool_service.ServiceTask", on_delete=models.PROTECT,
+                               related_name="commercial_deal_link")
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        base_manager_name = "objects"
+
+    def clean(self):
+        super().clean()
+        if not self.task_id or not self.deal_id:
+            return
+        from pool_service.models import ServiceTask
+        using = self._state.db or router.db_for_write(type(self), instance=self)
+        task = ServiceTask.objects.using(using).filter(pk=self.task_id).first()
+        deal = CrmDeal.objects.using(using).filter(pk=self.deal_id).first()
+        if (not task or not deal or task.organization_id != self.organization_id
+                or task.client_id != deal.client_id or task.crm_item_id
+                or task.water_reading_id or task.pool_id
+                or task.task_type != ServiceTask.TYPE_CRM_FOLLOWUP):
+            raise ValidationError("The task must belong to this deal's client and organization, without a legacy CRM link.")
+
+
+class CrmDealNextAction(CommercialModel):
+    """One primary pointer, with completed/replaced task links retained."""
+    immutable_scope = ("organization_id", "deal_id")
+    organization = models.ForeignKey("pool_service.Organization", on_delete=models.PROTECT)
+    deal = models.OneToOneField(CrmDeal, on_delete=models.PROTECT, related_name="next_action")
+    task_link = models.OneToOneField(CrmDealTaskLink, on_delete=models.PROTECT,
+                                    related_name="primary_for")
+
+    class Meta:
+        base_manager_name = "objects"
+
+    def clean(self):
+        super().clean()
+        if not self.task_link_id:
+            return
+        using = self._state.db or router.db_for_write(type(self), instance=self)
+        link = CrmDealTaskLink.objects.using(using).filter(pk=self.task_link_id).first()
+        if not link or link.organization_id != self.organization_id or link.deal_id != self.deal_id:
+            raise ValidationError("The primary task link must belong to this deal.")
+        link.full_clean()
+
+
 class CrmCommand(CommercialModel):
     immutable_scope = ("organization_id", "operation_key", "command_type", "payload_hash", "actor_id")
     organization = models.ForeignKey("pool_service.Organization", on_delete=models.PROTECT)
@@ -233,7 +283,7 @@ class CrmCommand(CommercialModel):
 
     def clean(self):
         super().clean()
-        if not isinstance(self.result, dict) or not self.result.keys() <= {"lead_id", "deal_id", "event_id", "revision"}:
+        if not isinstance(self.result, dict) or not self.result.keys() <= {"lead_id", "deal_id", "event_id", "revision", "task_id"}:
             raise ValidationError("Command result accepts only structural CRM identifiers.")
         if any(type(value) is not int or value < 0 for value in self.result.values()):
             raise ValidationError("Command result values must be nonnegative integer identifiers.")
@@ -275,7 +325,7 @@ class CrmEvent(CommercialModel):
 
     def clean(self):
         super().clean()
-        allowed = {"stage_id", "pipeline_id", "manager_id", "assignee_id", "revision", "is_archived", "status", "title_changed", "need_changed"}
+        allowed = {"stage_id", "pipeline_id", "manager_id", "assignee_id", "revision", "is_archived", "status", "title_changed", "need_changed", "next_action_changed"}
         if not isinstance(self.safe_diff, dict) or not self.safe_diff.keys() <= allowed:
             raise ValidationError("Event diff accepts only structural CRM fields.")
         for field, change in self.safe_diff.items():
@@ -285,7 +335,7 @@ class CrmEvent(CommercialModel):
                 if any(type(value) is not str or value not in {"new", "working", "qualifying", "waiting", "deferred", "closed"} for value in change.values()):
                     raise ValidationError("Event status must be a known lead state.")
                 continue
-            if field in {"title_changed", "need_changed"} and any(type(value) is not bool for value in change.values()):
+            if field in {"title_changed", "need_changed", "next_action_changed"} and any(type(value) is not bool for value in change.values()):
                 raise ValidationError("Content markers must be booleans.")
             if any(value is not None and type(value) not in (int, bool) for value in change.values()):
                 raise ValidationError("Event values must be IDs, revisions or booleans.")
@@ -309,6 +359,8 @@ class CrmAccess(CommercialModel):
     transition_own_leads = models.BooleanField(default=False, editable=False)
     edit_own_deals = models.BooleanField(default=False, editable=False)
     transition_own_deals = models.BooleanField(default=False, editable=False)
+    create_own_deals = models.BooleanField(default=False, editable=False)
+    manage_own_next_action = models.BooleanField(default=False, editable=False)
 
     class Meta:
         base_manager_name = "objects"

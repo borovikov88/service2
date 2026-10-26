@@ -38,4 +38,5 @@ def can_write_commercial(user, organization):
     return CrmAccess.objects.filter(organization_id=organization.pk, user_id=user.pk).filter(
         Q(edit_own_leads=True) | Q(transition_own_leads=True)
         | Q(edit_own_deals=True) | Q(transition_own_deals=True)
+        | Q(create_own_deals=True) | Q(manage_own_next_action=True)
     ).exists()

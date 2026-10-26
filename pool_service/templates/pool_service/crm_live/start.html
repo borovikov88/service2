@@ -1,0 +1,16 @@
+{% extends 'pool_service/base.html' %}
+{% block title %}Сделки{% endblock %}
+{% block content %}
+<section class="card card-soft p-4 mx-auto" style="max-width:760px;">
+  <h1 class="h4 mb-3">Начать работу со сделками</h1>
+  <p>Организация: <strong>{{ organization.name }}</strong>.</p>
+  <p>Создавайте сделки для клиентов, планируйте следующие действия и переносите карточки между этапами в канбане.</p>
+  <p class="text-muted">Кнопка включит для вас создание и изменение собственных сделок. Менеджеры вашей организации смогут просматривать командные сделки; доступ к личным задачам проверяется отдельно.</p>
+  <form method="post">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="activate_self">
+    <button class="btn btn-primary" type="submit">Включить рабочую CRM для меня</button>
+    <a class="btn btn-link" href="{% url 'crm_index' %}?org_id={{ organization.pk }}">Вернуться в CRM</a>
+  </form>
+</section>
+{% endblock %}

@@ -1,0 +1,61 @@
+{% extends 'pool_service/base.html' %}
+{% load static %}
+
+{% block title %}CRM · {{ brand_name }}{% endblock %}
+
+{% block extra_head %}
+  <link rel="stylesheet" href="{% static 'pool_service/crm_live/workspace.css' %}?v=1">
+  <script src="{% static 'pool_service/crm_live/workspace.js' %}?v=1" defer></script>
+{% endblock %}
+
+{% block content %}
+<section class="crm-live" id="crm-live" aria-label="Рабочее пространство CRM">
+  <div class="crm-live-heading">
+    <div>
+      <div class="crm-live-eyebrow">Клиенты и сделки</div>
+      <h1>CRM</h1>
+      <p>Все договорённости и следующий шаг — в одной карточке.</p>
+    </div>
+    <button class="crm-live-button crm-live-button-primary" type="button" data-action="create" id="crm-live-create" hidden><span aria-hidden="true">＋</span> Новая сделка</button>
+  </div>
+
+  <div id="crm-live-operations" class="crm-live-operations" aria-live="polite" aria-atomic="false"></div>
+  <div id="crm-live-notice" class="crm-live-notice" role="status" hidden></div>
+
+  <nav class="crm-live-pipelines" id="crm-live-pipelines" aria-label="Направления CRM"></nav>
+
+  <div class="crm-live-toolbar">
+    <label class="crm-live-search"><span aria-hidden="true">⌕</span><input id="crm-live-search" type="search" placeholder="Сделка или клиент" aria-label="Поиск сделки или клиента" autocomplete="off"></label>
+    <label class="crm-live-owner"><span>Ответственный</span><select id="crm-live-owner"><option value="all">Все сделки</option><option value="me">Мои сделки</option></select></label>
+    <div class="crm-live-views" role="group" aria-label="Вид сделок">
+      <button type="button" data-view="kanban" aria-pressed="true"><span aria-hidden="true">▥</span> Канбан</button>
+      <button type="button" data-view="table" aria-pressed="false"><span aria-hidden="true">☷</span> Таблица</button>
+    </div>
+    <button type="button" class="crm-live-refresh" id="crm-live-refresh" aria-label="Обновить сделки" title="Обновить сделки">↻</button>
+  </div>
+
+  <div class="crm-live-results">
+    <div class="crm-live-attention" role="group" aria-label="Следующее действие">
+      <button type="button" data-attention="all" aria-pressed="true">Все <span id="crm-live-count-all">0</span></button>
+      <button type="button" data-attention="overdue" aria-pressed="false">Просрочено <span id="crm-live-count-overdue">0</span></button>
+      <button type="button" data-attention="missing" aria-pressed="false">Без следующего шага <span id="crm-live-count-missing">0</span></button>
+    </div>
+    <span id="crm-live-result-status" class="crm-live-muted" aria-live="polite"></span>
+  </div>
+
+  <div id="crm-live-content" aria-busy="false"></div>
+  <p class="crm-live-limit" id="crm-live-limit" hidden>Показана часть сделок. Уточните поиск, чтобы найти нужную.</p>
+  <p class="crm-live-help" id="crm-live-help">Перетащите карточку мышкой в другой этап или измените этап внутри карточки.</p>
+  <noscript><div class="crm-live-empty"><h2>Для работы CRM нужен JavaScript</h2><p>Включите JavaScript в браузере и обновите страницу.</p></div></noscript>
+
+  <dialog class="crm-live-dialog" id="crm-live-dialog" aria-labelledby="crm-live-dialog-title">
+    <header class="crm-live-dialog-header"><span id="crm-live-dialog-caption">Карточка сделки</span><button type="button" data-action="close" class="crm-live-close" aria-label="Закрыть карточку">×</button></header>
+    <div class="crm-live-dialog-inner">
+      <div class="crm-live-operations" id="crm-live-dialog-operations" aria-live="polite" aria-atomic="false"></div>
+      <div id="crm-live-dialog-content"></div>
+    </div>
+  </dialog>
+  <div class="crm-live-csrf" hidden>{% csrf_token %}</div>
+  {{ crm_bootstrap|json_script:'crm-live-bootstrap' }}
+</section>
+{% endblock %}

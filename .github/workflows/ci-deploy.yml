@@ -99,6 +99,7 @@ jobs:
         run: |
           node --test tools/aqualine22-calculator/tests/engine.test.mjs
           node --test pool_service/tests/estimate_state.test.mjs pool_service/tests/estimate_parameters.test.mjs pool_service/tests/estimate_numbers.test.mjs
+          node --test pool_service/tests/crm_live_operations.test.cjs
           python -m unittest discover -s .github/tests -p test_aqualine22_publication.py -v
       - name: Install dependencies
         if: steps.reuse.outputs.verified != 'true'
