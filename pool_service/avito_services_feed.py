@@ -434,7 +434,11 @@ def verify_inventory(connection, sheets):
     for row in rows:
         if time.monotonic() >= deadline:
             raise AvitoError('provider_check_limit')
-        detail = fetch_item_detail(token, account_id, row['AvitoId'])
+        if connection.pk == 4 and account_id == "446312402":
+            from .avito_readonly_audit import fetch_detail as throttled_detail
+            detail = throttled_detail(token, account_id, row['AvitoId'])
+        else:
+            detail = fetch_item_detail(token, account_id, row['AvitoId'])
         status = detail.get('status')
         if status not in labels:
             raise AvitoError('provider_data_invalid')
@@ -443,11 +447,18 @@ def verify_inventory(connection, sheets):
         if (status == 'active') != (row['AvitoId'] in active):
             raise ValueError('Статусы изменились во время проверки. Повторите проверку.')
         finish = _deadline(detail.get('finish_time'))
+        finish_evidence = None
+        if connection.pk == 4 and account_id == "446312402":
+            from .avito_placement_continuity import classify_finish
+            finish_evidence = classify_finish(detail.get('finish_time'))
+            finish = finish_evidence['finish_time']
         observed.append({'avito_id': row['AvitoId'], 'id': row['Id'], 'status': status,
             'status_label': labels[status], 'included': status == 'active',
             'exclusion_reason': '' if status == 'active' else 'Неактивное объявление не отправляется повторно без отдельной проверки активации.',
             'finish_time': finish, 'finish_time_source': 'avito_item_detail.finish_time' if finish else '',
             'source': 'avito_item_detail', 'checked_at': checked_at})
+        if finish_evidence is not None:
+            observed[-1]['finish_evidence'] = finish_evidence
     published = deepcopy(sheets)
     for sheet in published:
         sheet['rows'] = [row for row in sheet['rows'] if row['AvitoId'] in active]
@@ -575,31 +586,52 @@ def services_feed_publish(request, connection_id):
     return redirect('avito_services_feed', connection_id=connection_id)
 
 
-def _verify_publication(request, connection, feed):
-    """Explicit read-only provider check; it proves status, never text or file ingestion."""
-    from .communication_avito import AvitoError
-    if request.POST.get('revision') != str(feed.revision):
-        return HttpResponse('Данные изменились. Обновите страницу.', status=409)
-    try:
-        observed = verify_inventory(connection, feed.draft)['observations']
-    except (ValueError, AvitoError) as error:
-        return render(request, 'pool_service/avito/services_feed.html',
-                      _page_context(request, connection, feed, _safe_failure(error)), status=400)
+def verify_owned_observations(connection, actor, *, expected_revision, expected_guard=None):
+    """Existing status check shared by UI and protected operator; provider I/O outside atomic."""
+    from .avito_services_workplace_setup import _binding
+    connection, actor = _publication_connection(connection.pk, actor)
+    feed = AvitoServicesFeed.objects.get(connection=connection)
+    original_binding = _binding(connection)
+    original_draft = deepcopy(feed.draft)
+    if not bound(feed, connection) or str(expected_revision) != str(feed.revision):
+        raise PublicationConflict('Данные изменились. Обновите страницу.')
+    if expected_guard is not None and expected_guard(connection, feed) is not True:
+        raise PublicationConflict('Проверка уже выполняется или её область изменилась.')
+    observed = verify_inventory(connection, original_draft)['observations']
     with transaction.atomic():
-        ChannelConnection.objects.select_for_update().get(pk=connection.pk)
-        connection = connection_for(request, connection.pk)
+        current, actor = _publication_connection(connection.pk, actor, locked=True)
         locked = AvitoServicesFeed.objects.select_for_update().get(pk=feed.pk)
-        if (not bound(locked, connection) or locked.revision != feed.revision
-                or _older_observation(locked, observed)):
-            return HttpResponse('Данные изменились. Обновите страницу.', status=409)
+        if (not bound(locked, current) or _binding(current) != original_binding
+                or locked.revision != feed.revision or locked.draft != original_draft
+                or _older_observation(locked, observed)
+                or (expected_guard is not None and expected_guard(current, locked) is not True)):
+            raise PublicationConflict('Данные изменились. Обновите страницу.')
         ensure_baseline(locked)
         observed = annotate_reactivation(locked.latest_observations, observed)
         locked.latest_observations = observed
         locked.last_checked_at = timezone.now()
         locked.save(update_fields=['latest_observations', 'last_checked_at'])
-        record_version(locked, 'verify', locked.draft, locked.draft, actor=request.user,
-                       reason='Проверка статусов и известных сроков; содержание и загрузка файла не подтверждены',
-                       observations=observed)
+        event = record_version(locked, 'verify', locked.draft, locked.draft, actor=actor,
+            reason='Проверка статусов и известных сроков; содержание и загрузка файла не подтверждены',
+            observations=observed)
+    return {'state': 'verified', 'connection_id': current.pk,
+        'checked_at': locked.last_checked_at.isoformat(), 'history_event_id': event.pk,
+        'observed_count': len(observed),
+        'known_instants': sum(row.get('finish_time') is not None for row in observed),
+        'source_calendar_dates': sum(bool(row.get('finish_evidence', {}).get('source_finish_date')) for row in observed),
+        'draft_changed': False, 'published_changed': False, 'provider_write_performed': False}
+
+
+def _verify_publication(request, connection, feed):
+    """Explicit read-only provider check; it proves status, never text or file ingestion."""
+    from .communication_avito import AvitoError
+    try:
+        verify_owned_observations(connection, request.user, expected_revision=request.POST.get('revision'))
+    except PublicationConflict:
+        return HttpResponse('Данные изменились. Обновите страницу.', status=409)
+    except (ValueError, AvitoError) as error:
+        return render(request, 'pool_service/avito/services_feed.html',
+                      _page_context(request, connection, feed, _safe_failure(error)), status=400)
     return redirect('avito_services_feed', connection_id=connection.pk)
 
 

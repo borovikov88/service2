@@ -355,7 +355,7 @@ def services_coverage(feed, all_items, *, requested, checked, skipped):
 
 def services_placement_evidence(connection, token, account_id, feed, all_items):
     """Bounded fresh item reads; no provider mutation, local snapshot update or private fields."""
-    from .avito_placement_continuity import scope_matches, aware_time
+    from .avito_placement_continuity import scope_matches, classify_finish
     if not scope_matches(connection, feed) or account_id != SERVICES_ACCOUNT_ID:
         raise AvitoError("provider_account_mismatch")
     requested = [row for sheet in feed.draft for row in sheet["rows"]]
@@ -381,12 +381,11 @@ def services_placement_evidence(connection, token, account_id, feed, all_items):
                     and (item_id not in all_items
                          or all_items[item_id]["status"] != detail["status"])):
                 raise AvitoError("audit_placement_status_changed")
-            raw_finish = detail.get("finish_time")
-            finish = aware_time(raw_finish)
+            finish = classify_finish(detail.get("finish_time"))
             observed.append({"avito_id": item_id, "status": detail["status"],
                 "checked_at": timezone.now().isoformat(),
-                "finish_time": finish.isoformat() if finish else None,
-                "finish_state": "known" if finish else "not_returned" if raw_finish in ("", None) else "invalid",
+                "finish_time": finish["finish_time"], "finish_state": finish["finish_state"],
+                "source_finish_date": finish["source_finish_date"], "finish_shape": finish["shape"],
                 "identity_state": "matched" if detail.get("autoload_item_id") == row["Id"] else "not_returned"})
         except Exception as error:
             observed.append({"avito_id": item_id, "error": safe_error(error)})

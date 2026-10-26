@@ -1048,6 +1048,43 @@ def statistics_source_evidence(value):
 
 
 
+def placement_finish_metadata(row):
+    """Only closed shape/date evidence; historical rows without shape remain historical."""
+    raw = row.get("finish_shape")
+    if raw is None:
+        require(row.get("finish_state") in {"known", "not_returned", "invalid"})
+        return {}
+    require(isinstance(raw, dict) and raw.get("stage") == "reader_normalized")
+    kind, length, fmt = raw.get("value_type"), raw.get("length"), raw.get("format")
+    require(kind in {"null", "boolean", "string", "integer", "number", "array", "object", "other"})
+    require((type(length) is int and 0 <= length <= 51) if kind == "string" else length is None)
+    require(fmt in {"missing", "empty", "not_text", "invalid", "over_limit",
+                    "date_only", "naive_datetime", "unknown_offset_datetime", "aware_datetime"})
+    state, calendar = row.get("finish_state"), row.get("source_finish_date")
+    if calendar is not None:
+        require(isinstance(calendar, str) and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", calendar))
+        require(datetime.fromisoformat(calendar).date().isoformat() == calendar)
+    if state == "known":
+        require(kind == "string" and 1 <= length <= 50 and fmt == "aware_datetime" and calendar is None
+                and not re.search(r"-00(?::?00)?$", row.get("finish_time", "")))
+    elif state == "timezone_missing":
+        require(kind == "string" and 1 <= length <= 50 and fmt in {"naive_datetime", "unknown_offset_datetime"} and calendar is not None)
+    elif state == "calendar_date_only":
+        require(kind == "string" and length == 10 and fmt == "date_only" and calendar is not None)
+    elif state == "not_returned":
+        require((kind == "null" and fmt == "missing") or (kind == "string" and length == 0 and fmt == "empty"))
+        require(calendar is None)
+    elif state == "invalid_type":
+        require(kind not in {"null", "string"} and fmt == "not_text" and calendar is None)
+    elif state == "invalid_format":
+        require(kind == "string" and ((fmt == "invalid" and 1 <= length <= 50)
+                or (fmt == "over_limit" and length == 51)) and calendar is None)
+    else:
+        raise ValueError("invalid receipt")
+    return {"source_finish_date": calendar,
+        "finish_shape": {"stage": "reader_normalized", "value_type": kind, "length": length, "format": fmt}}
+
+
 def placement_evidence(value):
     require(isinstance(value, dict))
     if "error" in value:
@@ -1076,7 +1113,8 @@ def placement_evidence(value):
             rows.append({"avito_id": item_id, "error": code(row["error"])})
             continue
         require(row.get("status") in STATES
-                and row.get("finish_state") in {"known", "not_returned", "invalid"}
+                and row.get("finish_state") in {"known", "not_returned", "invalid", "timezone_missing",
+                    "calendar_date_only", "invalid_type", "invalid_format"}
                 and row.get("identity_state") in {"matched", "not_returned"})
         checked_at = release_timestamp(row.get("checked_at"))
         require(checked_at is not None)
@@ -1084,7 +1122,7 @@ def placement_evidence(value):
         require((finish is not None) == (row["finish_state"] == "known"))
         rows.append({"avito_id": item_id, "status": row["status"], "checked_at": checked_at,
             "finish_time": finish, "finish_state": row["finish_state"],
-            "identity_state": row["identity_state"]})
+            "identity_state": row["identity_state"]} | placement_finish_metadata(row))
     require(sum("error" not in row for row in rows) == checked
             and sum(row.get("finish_state") == "known" for row in rows) == known)
     return {"source": value["source"], "connection_id": 4, "account_id": "446312402",

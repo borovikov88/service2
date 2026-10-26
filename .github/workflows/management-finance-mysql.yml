@@ -136,6 +136,13 @@ jobs:
           python manage.py makemigrations --check --dry-run
           python manage.py migrate --plan
 
+      - name: Verify Avito date precision and read-only tools on MySQL
+        run: |
+          python manage.py test \
+            pool_service.tests.test_avito_placement_continuity \
+            pool_service.tests.test_avito_mcp \
+            --verbosity 2
+
       - name: Run management finance tests on MySQL
         run: |
           python manage.py test \
