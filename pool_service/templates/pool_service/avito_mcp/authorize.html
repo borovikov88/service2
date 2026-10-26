@@ -1,0 +1,20 @@
+{% extends "pool_service/base.html" %}
+{% block content %}
+{% include "pool_service/_admin_workspace_styles.html" %}
+<div class="admin-desktop admin-form">
+<main class="container py-4" style="max-width: 720px;">
+<section class="admin-card card shadow-sm"><div class="card-body p-4">
+<h1 class="h3 mb-3">Чтение Авито Услуг через ассистента</h1>
+<p><strong>{{ client.display_name }}</strong> запрашивает чтение сохранённых данных подключения «Услуги» №4, аккаунт Авито 446312402.</p>
+<p>Разрешение <code>{{ scope }}</code>: аванс, кошелёк и бонусы отдельно; статусы и известные сроки; отчёты загрузки; аналитика и диагностика с источником, временем и полнотой.</p>
+<p class="text-muted">Открытие инструмента не обновляет данные у Авито. Отсутствующие и неподтверждённые значения остаются неизвестными. Изменять объявления, XML, сообщения, тарифы, права, оплачивать услуги или читать другое подключение это разрешение не позволяет.</p>
+<ul>{% for item in organizations %}<li>{{ item.organization.name }}</li>{% endfor %}</ul>
+<form method="post" class="admin-actions d-flex gap-2 flex-wrap">
+{% csrf_token %}
+{% for key, value in oauth_params.items %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}
+<input type="hidden" name="consent_binding" value="{{ consent_binding }}">
+<button class="btn btn-primary" type="submit" name="decision" value="approve">Разрешить чтение Услуг №4</button>
+<button class="btn btn-outline-secondary" type="submit" name="decision" value="deny">Отказать</button>
+</form>
+</div></section></main></div>
+{% endblock %}

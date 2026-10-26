@@ -41,6 +41,7 @@ class OneCDiagnosticSharedOAuthTests(SimpleTestCase):
             "bearer_methods_supported": ["header"],
         })
 
+    @override_settings(ADVISOR_AVITO_MCP_ENABLED=False, ADVISOR_OPERATIONS_MCP_ENABLED=False)
     def test_root_authorization_metadata_advertises_both_resources_scopes(self):
         response = self.client.get(reverse("finance_mcp_authorization_server_metadata"))
         self.assertEqual(response.status_code, 200)

@@ -536,6 +536,8 @@ def avito_refresh_data(request, connection_id):
         locked.save(update_fields=["settings"])
 
     updates = {}
+    from pool_service.avito_mcp_reader import cache_binding, CACHE_SCOPE_KEY
+    assistant_cache_binding = cache_binding(connection)
     promotion_binding = None
     if section == "item_detail" and connection.pk == 4 and str(connection.external_id) == "446312402":
         try:
@@ -643,6 +645,11 @@ def avito_refresh_data(request, connection_id):
                             # The old payload keeps its original query, page and
                             # success time. A failed refresh never becomes zero.
                             update = {**previous, **update}
+                        if (key in {"balance", "advance", "autoload_report"} and update.get("status") == "ok"
+                                and assistant_cache_binding is not None
+                                and cache_binding(locked) == assistant_cache_binding
+                                and conversation_capability(request.user, "can_manage_channels", organization)):
+                            update[CACHE_SCOPE_KEY] = assistant_cache_binding
                         sections[key] = update
                     saved["sections"] = sections
                     metadata["avito_workspace"] = saved

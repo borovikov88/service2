@@ -465,7 +465,8 @@ class FinanceMcpTests(TestCase):
         self.assertEqual(audit.tool_name, "get_finance_data_status")
         self.assertEqual(audit.organization_ids, [self.organization.id])
 
-    @override_settings(ADVISOR_FINANCE_MCP_ENABLED=False)
+    @override_settings(ADVISOR_FINANCE_MCP_ENABLED=False, ADVISOR_AVITO_MCP_ENABLED=False,
+                       ADVISOR_ONEC_DIAGNOSTIC_MCP_ENABLED=False, ADVISOR_OPERATIONS_MCP_ENABLED=False)
     def test_disabled_finance_endpoints_are_not_cacheable(self):
         for response in (
             self.client.post(reverse("finance_mcp"), data=b"{}", content_type="application/json"),

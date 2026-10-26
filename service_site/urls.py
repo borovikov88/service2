@@ -17,6 +17,7 @@ from pool_service.finance_mcp_views import (
     finance_protected_resource_metadata,
 )
 from pool_service.onec_diagnostic_mcp_chatgpt import onec_diagnostic_mcp
+from pool_service.avito_mcp_views import avito_mcp, avito_protected_resource_metadata
 from pool_service.operations_mcp_views import (
     operations_mcp,
     operations_protected_resource_metadata,
@@ -51,6 +52,9 @@ urlpatterns = [
     path('oauth/finance/token', shared_oauth_token, name='finance_mcp_token'),
     path('mcp/1c', onec_diagnostic_mcp, name='onec_diagnostic_mcp'),
     path('mcp/operations', operations_mcp, name='operations_mcp'),
+    path('mcp/avito', avito_mcp, name='avito_mcp'),
+    path('.well-known/oauth-protected-resource/mcp/avito',
+         avito_protected_resource_metadata, name='avito_mcp_protected_resource_metadata'),
     path(
         '.well-known/oauth-protected-resource/mcp/operations',
         operations_protected_resource_metadata,
