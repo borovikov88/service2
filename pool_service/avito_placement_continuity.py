@@ -101,17 +101,25 @@ def continuity_context(connection, feed, rows, *, now=None):
         evidence = observation.get("finish_evidence") if valid else None
         evidence = evidence if isinstance(evidence, dict) else {}
         calendar = (source_calendar_date(evidence.get("source_finish_date"))
-            if evidence.get("source") == "avito_item_detail.finish_time"
+            if observation.get("finish_time") is None
+            and evidence.get("source") == "avito_item_detail.finish_time"
             and evidence.get("finish_state") in {"timezone_missing", "calendar_date_only"}
             and evidence.get("finish_time") is None else None)
-        days = (finish.astimezone(ZONE).date() - today).days if finish else None
+        # Compare source dates as calendar dates, without assigning them a timezone
+        # or treating them as a confirmed expiry instant.
+        finish_date = finish.astimezone(ZONE).date() if finish else calendar
+        days = (finish_date - today).days if finish_date is not None else None
         owner_withdrawn = row.get("archive_control", {}).get("owner_withdrawn") is True
         if owner_withdrawn:
             state, label = "owner_withdrawn", "Возврат запрещён владельцем"
         elif status == "active" and finish is not None and finish <= now:
             state, label = "refresh_required", "Сохранённый срок прошёл: обновите статус"
-        elif status == "active" and days is not None and days <= 7:
-            state, label = "due_soon", "Подготовить повторное размещение"
+        elif status == "active" and calendar is not None and days < 0:
+            state, label = "refresh_required", "Дата источника прошла: обновите статус; точный момент не подтверждён"
+        elif status == "active" and days is not None and 0 <= days <= 7:
+            state = "due_soon"
+            label = ("Близкая дата источника: подготовить повторное размещение" if calendar is not None
+                else "Подготовить повторное размещение")
         elif status == "active" and calendar is not None:
             state, label = "timezone_unknown", "Дата источника известна; часовой пояс и точный момент не подтверждены"
         elif status == "active":
@@ -133,7 +141,9 @@ def continuity_context(connection, feed, rows, *, now=None):
     return {"connection_id": 4, "account_id": "446312402", "rows": projected,
         "source": "service2_saved_owned_item_observations", "timezone": "Asia/Barnaul",
         "due_count": sum(row["state"] == "due_soon" for row in projected),
-        "unknown_count": sum(row["status"] is None or row["finish_time"] is None for row in projected),
+        "unknown_count": sum(row["status"] is None or
+            (row["finish_time"] is None and row["source_finish_date"] is None) for row in projected),
+        "calendar_only_count": sum(row["source_finish_date"] is not None for row in projected),
         "automatic_reactivation": False, "provider_request_performed": False}
 
 
