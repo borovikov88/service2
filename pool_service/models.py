@@ -866,12 +866,12 @@ class WaterReading(models.Model):
         if selected is not None and not set(selected).intersection({"required_materials", "pool", "pool_id"}):
             return super().save(*args, **kwargs)
         from pool_service.services.crm_object_needs import source_write_context, synchronize_source
-        with source_write_context(self) as (old, task):
+        with source_write_context(self) as (old, task, locked_org_id):
             result = super().save(*args, **kwargs)
             current = type(self).objects.select_related('pool__client', 'added_by').get(pk=self.pk)
             if hasattr(self, '_source_actor_id'):
                 current._source_actor_id = self._source_actor_id
-            synchronize_source(current, old=old, task=task)
+            synchronize_source(current, old=old, task=task, locked_org_id=locked_org_id)
             return result
 
     def __str__(self):
