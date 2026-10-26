@@ -226,7 +226,9 @@ def _page_context(request, connection, feed, error=''):
     if selected:
         selected.manual_photo_evidence = is_manual_photo_event(selected)
     manual_photo = manual_photo_context(connection, feed, publication['version'] if publication else None)
+    from .avito_placement_continuity import continuity_context
     return {
+        'placement_continuity': continuity_context(connection, feed, rows),
         'manual_photo': manual_photo,
         'connection': connection, 'feed': feed, 'rows': rows, 'error': error,
         'history': history, 'selected_version': selected, 'publication': publication,

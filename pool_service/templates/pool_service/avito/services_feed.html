@@ -30,6 +30,7 @@
 </form>
 </details>
 {% if feed %}
+{% include 'pool_service/avito/_placement_continuity.html' %}
 {% include 'pool_service/avito/_card_comparison_worksheet.html' %}
 <form method="post" action="{% url 'avito_services_feed_publish' connection.pk %}" class="card card-body my-3">{% csrf_token %}
 <input type="hidden" name="revision" value="{{ feed.revision }}">
@@ -75,7 +76,7 @@
 </details>{% endif %}
 {% else %}<p>Источник пока недоступен Авито.</p>{% endif %}
 <div class="table-responsive"><table class="table align-middle"><thead><tr><th>Объявление</th><th>Статус и срок в Авито</th><th></th></tr></thead><tbody>
-{% for row in rows %}<tr>
+{% for row in rows %}<tr id="placement-{{ row.AvitoId }}">
 <td>{{ row.Title }}<div class="small">Id {{ row.Id }} · AvitoId {{ row.AvitoId }}</div></td>
 <td>{% if row.observation %}{% if row.archive_control.code == 'provider_term_passed' %}{{ row.archive_control.label }}{% else %}{{ row.observation.status_label }}{% endif %}
 {% if not row.observation.included %}<div class="small">{{ row.observation.exclusion_reason }}</div>{% endif %}

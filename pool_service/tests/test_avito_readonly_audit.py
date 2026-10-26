@@ -633,7 +633,9 @@ class ScopedServicesReleaseAuditTests(TestCase):
                  patch.object(audit.avito_autoload_report, "fetch_report", return_value=report()), \
                  patch.object(audit.avito_status_monitor, "full_scan", return_value=(
                      {"101": {"status": "active"}, "102": {"status": "active"}}, 1)), \
-                 patch.object(audit, "fetch_detail") as detail, \
+                 patch.object(audit, "fetch_detail", side_effect=lambda token, account, item_id: {
+                     "status": "active", "autoload_item_id": {"101": "1_2_3", "102": "1_9_3"}[item_id],
+                     "finish_time": ""}) as detail, \
                  patch.object(audit, "raw_content_probe", return_value=(
                      "101", {"status": "active", "autoload_item_id": "1_2_3"}, release_raw_fields())), \
                  patch.object(audit, "_services_release_evidence", return_value=helpers), \
@@ -644,7 +646,8 @@ class ScopedServicesReleaseAuditTests(TestCase):
                      "source": "passenger_http", "checked": False, "cached": True,
                      "error": "storage_probe_not_run"}):
                 value = audit.collect_services(["7234733937"])
-            detail.assert_not_called()  # Foreign goods ID is never queried.
+            self.assertEqual(["101", "102"], [call.args[2] for call in detail.call_args_list])
+            # The bounded placement check reads owned feed rows, never the foreign requested goods ID.
             row = value["connections"][0]
             if final_account == "446312402":
                 self.assertEqual("awaiting_first", row["webhook_chain"]["state"])
