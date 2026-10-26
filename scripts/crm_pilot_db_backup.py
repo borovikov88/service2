@@ -28,8 +28,44 @@ IDENTIFIER = re.compile(r"[A-Za-z0-9_$]+\Z")
 APP_PATHS = (".github", "pool_service", "service_site", "manage.py", "scripts", "update.sh", "requirements.txt")
 
 
+PHASES = frozenset(("initial", "lock", "checkout", "native_tool", "settings", "client_options",
+                   "private_directory", "schema_before", "metadata_lock", "schema_locked",
+                   "options_file", "dump_stream", "schema_after", "gzip_verify", "checkout_after", "publish"))
+PHASE = "initial"
+
+
 class Blocked(Exception):
     pass
+
+
+class NativeFailure(Blocked):
+    def __init__(self, returncode):
+        self.returncode = returncode
+
+
+def phase(value):
+    global PHASE
+    PHASE = value
+
+
+def safe_failure(error):
+    """Closed diagnostic vocabulary; never stringify exceptions or native output."""
+    category = "guard_failed" if isinstance(error, Blocked) else "unexpected"
+    if isinstance(error, NativeFailure):
+        category = "native_failed"
+    elif isinstance(error, subprocess.TimeoutExpired):
+        category = "subprocess_timeout"
+    elif isinstance(error, subprocess.CalledProcessError):
+        category = "subprocess_failed"
+    elif isinstance(error, ImportError):
+        category = "import_failed"
+    elif isinstance(error, OSError):
+        category = "os_error"
+    elif type(error).__name__ in {"OperationalError", "ProgrammingError", "DatabaseError", "InterfaceError"}:
+        category = "database_error"
+    code = getattr(error, "returncode", None)
+    code = code if type(code) is int and -127 <= code <= 255 else 0
+    return "phase=" + (PHASE if PHASE in PHASES else "initial") + " error=" + category + " native_exit=" + str(code)
 
 
 def require(condition):
@@ -244,7 +280,9 @@ def dump_to_gzip(command, destination, expected, deadline):
                 output.flush()
                 require(output.tell() <= MAX_GZIP_BYTES)
                 os.fsync(output.fileno())
-        require(process.wait(timeout=max(0.01, deadline - time.monotonic())) == 0)
+        returncode = process.wait(timeout=max(0.01, deadline - time.monotonic()))
+        if returncode != 0:
+            raise NativeFailure(returncode)
         coverage.finish()
         return coverage.raw_bytes
     finally:
@@ -275,24 +313,36 @@ def native_options(executable):
     if b"MariaDB" in version:
         return ["--no-tablespaces"]
     require(b"mysqldump" in version and re.search(rb"\bVer\s+[0-9]+\.", version))
-    return ["--no-login-paths", "--no-tablespaces", "--set-gtid-purged=OFF"]
+    help_text = subprocess.check_output([executable, "--no-defaults", "--help"],
+                                        stderr=subprocess.DEVNULL, timeout=5,
+                                        env={"PATH": "/usr/bin:/bin", "MYSQL_TEST_LOGIN_FILE": "/dev/null"})
+    require(len(help_text) <= 1024 * 1024)
+    # Oracle 8.0 lacks this option; MYSQL_TEST_LOGIN_FILE=/dev/null isolates
+    # login configuration on every supported client, independent of this flag.
+    login_flag = ["--no-login-paths"] if b"--no-login-paths" in help_text else []
+    return [*login_flag, "--no-tablespaces", "--set-gtid-purged=OFF"]
 
 
 def backup(app, expected):
+    phase("checkout")
     check_checkout(app, expected)
+    phase("native_tool")
     executable = shutil.which("mysqldump") or shutil.which("mariadb-dump")
     require(executable is not None)
     tool_options = native_options(executable)
+    phase("settings")
     sys.path.insert(0, str(app))
     os.environ["DJANGO_SETTINGS_MODULE"] = "service_site.settings"
     # Import settings/backend without django.setup(): app startup hooks never run.
     from django.db import connections
     connection = connections["default"]
     config = connection.settings_dict
+    phase("client_options")
     options = client_options(config)
     connection.settings_dict["OPTIONS"] = {**config.get("OPTIONS", {}), "connect_timeout": 10,
                                            "read_timeout": 15, "write_timeout": 15}
     destination = app.parent / "tmp" / "service2-crm-backups"
+    phase("private_directory")
     private_dir(destination, create=True)
     started = now()
     basename = expected + "-" + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + os.urandom(8).hex()
@@ -302,14 +352,18 @@ def backup(app, expected):
     receipt_partial = destination / (basename + ".receipt.json.partial")
     published = False
     try:
+        phase("schema_before")
         before = schema_snapshot(connection)
         # Keep metadata locks on these existing tables for the dump duration.
         # InnoDB DML remains available; ALTER/DROP must wait for our rollback.
+        phase("metadata_lock")
         connection.set_autocommit(False)
         with connection.cursor() as cursor:
             for name in before:
                 cursor.execute("SELECT 1 FROM `" + name + "` LIMIT 0")
+        phase("schema_locked")
         require(schema_snapshot(connection) == before)
+        phase("options_file")
         with tempfile.TemporaryDirectory(prefix=".client-", dir=destination) as temp:
             options_path = Path(temp) / "client.cnf"
             fd = os.open(options_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -320,10 +374,15 @@ def backup(app, expected):
                        "--comments", "--dump-date", "--create-options", "--skip-triggers",
                        "--skip-routines", "--skip-events", "--default-character-set=utf8mb4",
                        "--", str(config["NAME"])]
+            phase("dump_stream")
             raw_bytes = dump_to_gzip(command, partial, before, time.monotonic() + MAX_SECONDS - 30)
+        phase("schema_after")
         require(schema_snapshot(connection) == before)
+        phase("gzip_verify")
         digest = verify_gzip(partial, raw_bytes)
+        phase("checkout_after")
         check_checkout(app, expected)
+        phase("publish")
         receipt = {"kind": "crm_pilot_db_backup", "schema_version": 1, "expected_sha": expected,
                    "table_count": len(before), "size_bytes": partial.stat().st_size,
                    "uncompressed_bytes": raw_bytes, "sha256": digest, "started_at": started,
@@ -371,15 +430,16 @@ def main():
         for signum in (signal.SIGALRM, signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
             signal.signal(signum, interrupted)
         signal.setitimer(signal.ITIMER_REAL, MAX_SECONDS)
+        phase("lock")
         with deployment_lock(app):
             # Settings import, SQL, streaming and verification stay under this lock.
             receipt = backup(app, args.expected_sha)
         signal.setitimer(signal.ITIMER_REAL, 0)
         print("CRM_PILOT_DB_BACKUP_V1 " + json.dumps(receipt, sort_keys=True))
         return 0
-    except BaseException:
+    except BaseException as error:
         signal.setitimer(signal.ITIMER_REAL, 0)
-        print("CRM_PILOT_DB_BACKUP_BLOCKED", file=sys.stderr)
+        print("CRM_PILOT_DB_BACKUP_BLOCKED " + safe_failure(error), file=sys.stderr)
         return 2
 
 
