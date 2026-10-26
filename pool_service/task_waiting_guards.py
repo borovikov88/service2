@@ -14,6 +14,7 @@ from django.views.decorators.csrf import csrf_protect
 
 from pool_service.models import ServiceTask
 from pool_service.services.crm_locking import locked_task_with_crm_graph
+from pool_service.services.crm_deal_task_schedule import task_schedule, synchronize_commercial_task_deadline
 from pool_service.services.task_feedback import has_access, waiting_control
 
 
@@ -49,13 +50,19 @@ def _waiting_conflict(request, task, *, as_json):
 def guarded_task_edit(request, task_id):
     from pool_service import views
 
+    task = None
+    before = None
     if request.method == "POST":
         task, denied = _locked_candidate(task_id, request.user)
         if denied is not None:
             return denied
         if task is not None and waiting_control(task)[0]:
             return _waiting_conflict(request, task, as_json=views._is_modal_request(request))
-    return views.task_edit(request, task_id)
+        before = task_schedule(task) if task else None
+    response = views.task_edit(request, task_id)
+    if response.status_code < 400:
+        synchronize_commercial_task_deadline(task, before)
+    return response
 
 
 @csrf_protect
@@ -64,6 +71,8 @@ def guarded_task_edit(request, task_id):
 def guarded_task_move(request):
     from pool_service import views
 
+    task = None
+    before = None
     if request.method == "POST":
         try:
             payload = json.loads(request.body.decode("utf-8")) if request.body else request.POST
@@ -86,4 +95,8 @@ def guarded_task_move(request):
             )
         if task is not None and waiting_control(task)[0]:
             return _waiting_conflict(request, task, as_json=True)
-    return views.task_move(request)
+        before = task_schedule(task) if task else None
+    response = views.task_move(request)
+    if response.status_code < 400:
+        synchronize_commercial_task_deadline(task, before)
+    return response

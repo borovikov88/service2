@@ -77,6 +77,14 @@ class AuthRedirectMiddleware:
         ]
         if not request.user.is_authenticated:
             path = request.path
+            if path in {
+                "/crm/workspace/data/", "/crm/workspace/clients/", "/crm/workspace/commands/",
+            } or path.startswith("/crm/workspace/deals/"):
+                response = JsonResponse({
+                    "error": "Войдите в сервис, затем повторите действие.", "code": "auth_required",
+                }, status=401)
+                response["Cache-Control"] = "private, no-store"
+                return response
             exact_allowed_paths = {
                 "/",
                 "/index/",

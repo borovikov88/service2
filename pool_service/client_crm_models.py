@@ -30,6 +30,7 @@ class ClientCRMProfile(models.Model):
         on_delete=models.CASCADE,
         related_name="crm_profile",
     )
+    is_preliminary = models.BooleanField(default=False, editable=False)
     legal_form = models.CharField(
         max_length=16,
         choices=LEGAL_FORM_CHOICES,

@@ -15,7 +15,7 @@ from django.utils import timezone
 from pool_service import operations_mcp_views as operations
 from pool_service.call_processing_models import CallPrivateNumber
 from pool_service.communication_models import PhoneCall, TelephonyConnection
-from pool_service.models import Notification, Organization, OrganizationAccess, Profile, ServiceTask
+from pool_service.models import Employee, Notification, Organization, OrganizationAccess, Profile, ServiceTask
 from pool_service.operations_models import OperationsPushQueue
 from pool_service.services.operations_push_queue import due_candidates, sync_queue
 
@@ -282,6 +282,29 @@ class OperationsPushRetryTests(TestCase):
             "blocked_private_source",
         )
         self.assertFalse(OperationsPushQueue.objects.filter(task_id=task.pk).exists())
+        push.assert_not_called()
+
+    @patch("pool_service.operations_mcp_views.send_push_to_users")
+    def test_queue_and_notification_retry_recheck_employee_lifecycle(self, push):
+        employee = Employee.objects.create(organization=self.organization, user=self.employee,
+            display_name="Synthetic delivery recipient")
+        for changes in ({"is_active": False}, {"is_active": True, "employment_status": Employee.STATUS_DISMISSED}):
+            with self.subTest(changes=changes):
+                task = self._task()
+                Employee.objects.filter(pk=employee.pk).update(**changes)
+                result = operations.process_pending_operations_pushes()
+                self.assertEqual(result["assignment_attempts"], 1)
+                self.assertEqual(result["delivered"], 0)
+                task.refresh_from_db()
+                self.assertEqual(task.payload_json[operations.ASSIGNMENT_DELIVERY_PAYLOAD_KEY]["push_delivery_result"],
+                    "blocked_not_authorized")
+                self._assert_pending(task, False)
+                notification_task = self._task(assignment=False, notifications=True)
+                self.assertEqual(operations._retry_employee_notification_push(notification_task.pk, "reminder"), 0)
+                notification_task.refresh_from_db()
+                self.assertEqual(notification_task.payload_json[operations.EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY]
+                    ["reminder"]["push_delivery_result"], "blocked_not_authorized")
+                self._assert_pending(notification_task, False)
         push.assert_not_called()
 
     def test_pending_selection_has_composite_index_and_no_task_json_scan(self):

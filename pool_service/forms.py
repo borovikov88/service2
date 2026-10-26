@@ -8,6 +8,7 @@ from django.utils import timezone
 from django.urls import reverse
 from pathlib import Path
 from .client_queries import active_clients
+from .services.crm_permissions import crm_staff_users, CRM_STAFF_ROLES
 from .phone_utils import canonical_phone_value, normalize_account_phone, normalize_phone as normalize_crm_phone
 from .client_crm_models import ClientContact
 from .models import (
@@ -1196,11 +1197,19 @@ class CrmItemForm(forms.ModelForm):
         if organization:
             self.fields["client"].queryset = active_clients(Client.objects.filter(organization=organization)).order_by("name")
             self.fields["pool"].queryset = Pool.objects.filter(
-                models.Q(organization=organization) | models.Q(client__organization=organization)
+                models.Q(organization=organization) | models.Q(organization__isnull=True, client__organization=organization),
+                client__organization=organization,
             ).order_by("client__name")
-            self.fields["responsible"].queryset = User.objects.filter(
-                organizationaccess__organization=organization
-            ).distinct().order_by("last_name", "first_name")
+            staff = crm_staff_users(organization)
+            # An unchanged historical assignment is retained, never offered on a new card.
+            if self.instance.pk and self.instance.responsible_id:
+                historical = User.objects.filter(
+                    pk=self.instance.responsible_id,
+                    organizationaccess__organization=organization,
+                    organizationaccess__role__in=CRM_STAFF_ROLES,
+                )
+                staff = User.objects.filter(models.Q(pk__in=staff.values("pk")) | models.Q(pk__in=historical.values("pk")))
+            self.fields["responsible"].queryset = staff.distinct().order_by("last_name", "first_name")
         else:
             self.fields["client"].queryset = Client.objects.none()
             self.fields["pool"].queryset = Pool.objects.none()
@@ -1210,6 +1219,13 @@ class CrmItemForm(forms.ModelForm):
             choices = self.fields["stage"].choices
             if choices:
                 self.initial["stage"] = choices[0][0]
+
+    def clean(self):
+        cleaned = super().clean()
+        client, pool = cleaned.get("client"), cleaned.get("pool")
+        if client and pool and pool.client_id != client.pk:
+            self.add_error("pool", "Объект не принадлежит выбранному клиенту.")
+        return cleaned
 
     def clean_stage(self):
         value = self.cleaned_data.get("stage")

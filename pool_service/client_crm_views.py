@@ -31,7 +31,9 @@ from .communication_models import CommunicationAccess, PhoneCall
 from .call_markers import annotate_missed_call_callbacks
 from .models import Client, CrmItem, OrganizationAccess, Pool, ServiceTask
 from .services.task_waiting_schedule import waiting_schedule_metadata
-from .services.call_privacy import private_source_task_ids, visible_calls_page
+from .services.crm_permissions import crm_items_for_user
+from .services.call_privacy import visible_calls_page
+from .services.task_read_permissions import readable_tasks
 
 
 IMPORT_ROLES = {"owner", "admin"}
@@ -315,12 +317,11 @@ def client_detail(request, client_id):
             | Q(primary_responsible=request.user)
             | Q(responsibles=request.user)
         ).distinct()
-    task_candidates = list(tasks_qs)
-    hidden_private_task_ids = private_source_task_ids(task_candidates)
-    visible_task_candidates = [
-        task for task in task_candidates
-        if task.pk not in hidden_private_task_ids
-    ]
+    visible_task_candidates = readable_tasks(
+        tasks_qs.filter(organization_id=client.organization_id),
+        request.user,
+        allow_preview=True,
+    )
     active_tasks_count = sum(
         not task.is_archived
         and task.status not in {
@@ -344,7 +345,7 @@ def client_detail(request, client_id):
         else:
             task.schedule_display = task.start_date.strftime("%d.%m.%Y")
 
-    crm_item_qs = CrmItem.objects.filter(
+    crm_item_qs = crm_items_for_user(request.user, client.organization).filter(
         Q(client=client) | Q(pool__client=client)
     ).exclude(
         is_archived=True,

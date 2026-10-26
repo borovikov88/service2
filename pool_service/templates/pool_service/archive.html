@@ -185,17 +185,18 @@
 </style>
 
 <div class="archive-toolbar">
-    <a href="{% url 'archive_list' %}" class="archive-chip {% if kind == 'all' %}is-active{% endif %}">Все {{ archive_total_count }}</a>
-    <a href="{% url 'archive_list' %}?kind=tasks" class="archive-chip {% if kind == 'tasks' %}is-active{% endif %}">Задачи {{ archive_task_count }}</a>
-    <a href="{% url 'archive_list' %}?kind=crm" class="archive-chip {% if kind == 'crm' %}is-active{% endif %}">CRM {{ archive_crm_count }}</a>
-    <a href="{% url 'archive_list' %}?kind=pools" class="archive-chip {% if kind == 'pools' %}is-active{% endif %}">Объекты {{ archive_pool_count }}</a>
-    <a href="{% url 'archive_list' %}?kind=readings" class="archive-chip {% if kind == 'readings' %}is-active{% endif %}">Записи {{ archive_reading_count }}</a>
-    <a href="{% url 'archive_list' %}{% if kind != 'all' %}?kind={{ kind }}&{% else %}?{% endif %}reason=completed" class="archive-chip {% if reason == 'completed' %}is-active{% endif %}">Выполненные</a>
-    <a href="{% url 'archive_list' %}{% if kind != 'all' %}?kind={{ kind }}&{% else %}?{% endif %}reason=deleted" class="archive-chip {% if reason == 'deleted' %}is-active{% endif %}">Удалённые</a>
+    <a href="{% url 'archive_list' %}{% if crm_org_id %}?org_id={{ crm_org_id }}{% endif %}" class="archive-chip {% if kind == 'all' %}is-active{% endif %}">Все {{ archive_total_count }}</a>
+    <a href="{% url 'archive_list' %}?kind=tasks{% if crm_org_id %}&org_id={{ crm_org_id }}{% endif %}" class="archive-chip {% if kind == 'tasks' %}is-active{% endif %}">Задачи {{ archive_task_count }}</a>
+    <a href="{% url 'archive_list' %}?kind=crm{% if crm_org_id %}&org_id={{ crm_org_id }}{% endif %}" class="archive-chip {% if kind == 'crm' %}is-active{% endif %}">CRM {{ archive_crm_count }}</a>
+    <a href="{% url 'archive_list' %}?kind=pools{% if crm_org_id %}&org_id={{ crm_org_id }}{% endif %}" class="archive-chip {% if kind == 'pools' %}is-active{% endif %}">Объекты {{ archive_pool_count }}</a>
+    <a href="{% url 'archive_list' %}?kind=readings{% if crm_org_id %}&org_id={{ crm_org_id }}{% endif %}" class="archive-chip {% if kind == 'readings' %}is-active{% endif %}">Записи {{ archive_reading_count }}</a>
+    <a href="{% url 'archive_list' %}{% if kind != 'all' %}?kind={{ kind }}&{% else %}?{% endif %}reason=completed{% if crm_org_id %}&org_id={{ crm_org_id }}{% endif %}" class="archive-chip {% if reason == 'completed' %}is-active{% endif %}">Выполненные</a>
+    <a href="{% url 'archive_list' %}{% if kind != 'all' %}?kind={{ kind }}&{% else %}?{% endif %}reason=deleted{% if crm_org_id %}&org_id={{ crm_org_id }}{% endif %}" class="archive-chip {% if reason == 'deleted' %}is-active{% endif %}">Удалённые</a>
 </div>
 
 <form method="post" action="{% url 'archive_bulk_update' %}" id="archive-bulk-form">
     {% csrf_token %}
+    {% if crm_org_id %}<input type="hidden" name="org_id" value="{{ crm_org_id }}">{% endif %}
     <input type="hidden" name="archive_action" id="archive-action" value="">
 
     <div class="archive-grid">

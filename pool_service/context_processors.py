@@ -370,11 +370,13 @@ def notifications_context(request):
 
     from pool_service.models import Notification
 
-    unread_count = Notification.objects.filter(
+    from pool_service.services.task_read_permissions import visible_task_notifications
+
+    unread_count = len(visible_task_notifications(Notification.objects.filter(
         user=user,
         is_read=False,
         is_resolved=False,
-    ).count()
+    ), user))
     return {"notifications_unread_count": unread_count}
 
 

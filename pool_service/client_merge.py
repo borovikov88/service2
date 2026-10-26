@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from .models import Client, ClientAccess, Organization
 from .client_crm_import import normalize_phone
+from .crm_commercial_models import CrmDeal, CrmLead
 from .client_crm_models import (
     ClientCRMProfile,
     ClientCompanyLink,
@@ -180,6 +181,10 @@ def _generic_relations(source, target):
         ClientCompanyLink,
         ClientImportCandidate,
         ClientAccess,
+        # These relations have a separate validated write contract. The source
+        # preflight in merge_clients() refuses existing links before any write.
+        CrmLead,
+        CrmDeal,
     }
     relations = list(Client._meta.related_objects)
     # Move objects first because some reward links validate that pool.client
@@ -262,6 +267,17 @@ def merge_clients(source_id, target_id, *, organization_id, actor=None):
     if source.user_id and target.user_id and source.user_id != target.user_id:
         raise ValueError(
             "У обеих карточек есть разные пользовательские аккаунты. Такое объединение нужно разобрать отдельно."
+        )
+
+    # Dormant commercial records cannot be reassigned by the generic bulk
+    # writer. Inspect every source link, including archived or inconsistent
+    # tenant links, before moving any legacy relation. Flags do not bypass this
+    # compatibility boundary. Target-only links are retained without changes.
+    if (CrmLead.objects.filter(client_id=source.pk).exists()
+            or CrmDeal.objects.filter(client_id=source.pk).exists()):
+        raise ValueError(
+            "Нельзя автоматически объединить клиента с коммерческими лидами или сделками CRM. "
+            "Для переноса этих связей требуется отдельная проверенная операция."
         )
 
     moved = _generic_relations(source, target)

@@ -1,11 +1,13 @@
 from django.utils import timezone
 
 from pool_service.models import CrmItem
+from pool_service.services.crm_permissions import require_crm_graph_scope
 from pool_service.services.task_archive import archive_task, restore_task
 from pool_service.services.task_generation import sync_task_with_crm_item
 
 
 def archive_crm_item(item, reason, user=None):
+    require_crm_graph_scope([item.pk])
     changed = []
     if not item.is_archived:
         item.is_archived = True
@@ -38,6 +40,7 @@ def archive_crm_item(item, reason, user=None):
 
 
 def restore_crm_item(item, user=None):
+    require_crm_graph_scope([item.pk])
     previous_reason = item.archived_reason
     changed = []
     if item.is_archived:
