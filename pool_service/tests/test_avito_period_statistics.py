@@ -104,6 +104,61 @@ class PeriodCacheTests(SimpleTestCase):
             periods._report(bad)
 
 
+    def test_per_ad_metrics_preserve_unknowns_and_use_confirmed_units(self):
+        data = page("2026-10-01", "2026-10-07", missing=("commission",))
+        data["rows"][0]["metrics"][next(i for i, item in enumerate(data["rows"][0]["metrics"])
+                                        if item["slug"] == "contacts")]["value"] = None
+        periods._merge(self.book, data, self.query, self.at)
+        report = self.book["reports"][0]
+        before = deepcopy(report)
+        ads = periods._ad_rows(report)
+        values = periods._metric_rows(periods._aggregate(report), report["rows"])
+        indexed = {item["slug"]: item for item in values}
+        self.assertEqual(indexed["views"]["known_groups"], 2)
+        self.assertEqual(indexed["contacts"]["known_groups"], 1)
+        self.assertEqual(indexed["commission"]["known_groups"], 0)
+        self.assertIsNone(indexed["commission"]["value"])
+        self.assertEqual(indexed["cpl_cash"]["unit"], "₽/контакт")
+        self.assertIsNone(ads[0]["metric_values"]["cpl_cash"])
+        self.assertEqual(ads[1]["metric_values"]["cpl_cash"], "6.00")
+        self.assertTrue(all(row["low_or_unknown_volume"] for row in ads))
+        self.assertEqual(report, before)
+
+    def test_ad_comparison_uses_exact_id_and_does_not_fill_missing_row_with_zero(self):
+        periods._merge(self.book, page("2026-10-01", "2026-10-07"), self.query, self.at)
+        current = {"ads": periods._ad_rows(self.book["reports"][0])}
+        other = deepcopy(self.book["reports"][0])
+        other["rows"][1]["id"] = "93"
+        previous = {"ads": periods._ad_rows(other)}
+        result = {row["avito_id"]: row for row in periods._ad_comparisons(current, previous)}
+        self.assertTrue(result["91"]["present_in_both"])
+        self.assertTrue(all(row["delta"] in ("0", "0.00") for row in result["91"]["metrics"]
+                            if row["delta"] is not None))
+        for identifier in ("92", "93"):
+            self.assertFalse(result[identifier]["present_in_both"])
+            self.assertTrue(all(row["delta"] is None for row in result[identifier]["metrics"]))
+
+    def test_recommendations_are_scoped_bounded_without_provider_or_paid_actions(self):
+        now = timezone.now()
+        data = page("2026-10-01", "2026-10-07", ids=(8346503274, 92))
+        periods._merge(self.book, data, self.query, now.isoformat())
+        report = self.book["reports"][0]
+        report = {**report, "ads": periods._ad_rows(report)}
+        report["ads"][1]["metric_values"]["views"] = None
+        with patch.object(periods.api, "fetch_statistics", side_effect=AssertionError("No API")) as fetch:
+            actions = periods._recommendations([report], now)
+        self.assertEqual([row["code"] for row in actions],
+                         ["review_title_project", "review_contact_quality", "inspect_period_metrics"])
+        self.assertTrue(all(row["avito_id"] in ("8346503274", "92") for row in actions))
+        self.assertTrue(all(row["causality_confirmed"] is False
+                            and row["paid_action_proposed"] is False for row in actions))
+        self.assertTrue(all(row["date_from"] == "2026-10-01" for row in actions))
+        self.assertEqual(periods._recommendations([report], now+timedelta(days=2)), [])
+        self.assertEqual(periods._recommendations([], now), [])
+        fetch.assert_not_called()
+
+
+
 class PeriodRefreshTests(TestCase):
     def setUp(self):
         AvitoManagementTests.setUp(self)
@@ -159,6 +214,23 @@ class PeriodRefreshTests(TestCase):
         comparison = periods.display(self.service, self.owner)["comparisons"][0]
         self.assertFalse(comparison["same_ids"])
         self.assertTrue(all(row["delta"] is None for row in comparison["metrics"]))
+
+
+    def test_display_renders_saved_ad_rows_and_coverage_without_another_provider_read(self):
+        self.refresh()
+        self.fetch.return_value = page(self.previous_start, self.previous_end, missing=("commission",))
+        periods.refresh(self.service, self.owner, start=self.previous_start, end=self.previous_end)
+        self.fetch.reset_mock()
+        view = periods.display(self.service, self.owner)
+        self.assertEqual(len(view["reports"][0]["ads"]), 2)
+        self.assertEqual(view["reports"][0]["page_count"], 1)
+        self.assertEqual(len(view["comparisons"][0]["ads"]), 2)
+        self.client.force_login(self.owner)
+        response = self.client.get(self.url + "?account=4")
+        self.assertContains(response, "Показатели каждого объявления")
+        self.assertContains(response, "Известные входы")
+        self.assertContains(response, "№91")
+        self.fetch.assert_not_called()
 
     def test_api_runs_outside_new_transactions_and_stale_lease_cannot_publish(self):
         baseline = len(database.atomic_blocks)
@@ -222,7 +294,7 @@ class PeriodRefreshTests(TestCase):
         self.assertIn("spending", receipt["reports"][0]["known_metrics"])
         self.assertEqual(set(receipt["reports"][0]), {
             "date_from", "date_to", "grouping", "received_at", "pages_complete",
-            "group_count", "ids", "known_metrics"})
+            "group_count", "ids", "known_metrics", "metric_coverage", "ad_metric_availability"})
         self.assertNotIn("PRIVATE", str(receipt))
         self.assertNotIn("metric_values", str(receipt))
 

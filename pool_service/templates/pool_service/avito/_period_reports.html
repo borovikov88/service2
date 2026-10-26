@@ -13,6 +13,17 @@
         <span class="text-muted">При неудаче или неподтверждённой полноте сохранённые отчёты ниже сохраняют свои прежние периоды и время.</span>
       </div>
     {% endif %}
+    {% if period_reports.recommendations %}
+    <h3 class="h6">До трёх следующих действий</h3>
+    <ol class="small">{% for action in period_reports.recommendations %}<li class="mb-2">
+      <strong>№{{ action.avito_id }} · {{ action.issue }}</strong>
+      <div>{{ action.reason }}</div><div>{{ action.next_step }}</div>
+      <div class="text-muted">Основание: {{ action.date_from }}–{{ action.date_to }} · даты источника.
+        {% timezone "Asia/Barnaul" %}Получено {{ action.received_at|date:"d.m.Y H:i:s" }} · Барнаул.{% endtimezone %}</div>
+      {% if action.url_name %}<a href="{% url action.url_name 4 %}">Открыть рабочий раздел</a>{% endif %}
+    </li>{% endfor %}</ol>
+    <p class="small text-muted">Покупка продвижения не предлагается автоматически. Качество, заказы и оплаты требуют подтверждённых связей CRM. Наличие города в заголовке не доказывает улучшение.</p>
+    {% endif %}
     {% for pair in period_reports.comparisons %}
       <div class="mb-3">
         <strong>{{ pair.current.date_from }}–{{ pair.current.date_to }} / {{ pair.previous.date_from }}–{{ pair.previous.date_to }}</strong>
@@ -23,18 +34,40 @@
             <tr><th scope="row">{{ metric.label }}</th><td>{% if metric.current != None %}{{ metric.current }} {{ metric.unit }}{% else %}Неизвестно{% endif %}</td><td>{% if metric.previous != None %}{{ metric.previous }} {{ metric.unit }}{% else %}Неизвестно{% endif %}</td><td>{% if metric.delta != None %}{{ metric.delta }} {% if metric.unit == '%' %}п.п.{% else %}{{ metric.unit }}{% endif %}{% else %}Не рассчитано{% endif %}</td></tr>
           {% endif %}{% endfor %}</tbody>
         </table></div>
+        <details class="small mb-2"><summary>Сравнение каждого объявления в этих двух периодах</summary>
+          <p class="text-muted mt-2">Сопоставляется один и тот же ID. Изменение состава аккаунта не мешает сравнению известной строки, но не подтверждает сравнимость всего аккаунта.</p>
+          {% for ad in pair.ads %}<details class="mb-2"><summary>№{{ ad.avito_id }} · {% if ad.present_in_both %}строка есть в обоих отчётах{% else %}одна строка неизвестна{% endif %}</summary>
+            {% if ad.low_or_unknown_volume %}<p class="text-muted mt-2">Малый или неизвестный объём. Разница описательная; устойчивость и причинность не установлены.</p>{% endif %}
+            <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Показатель</th><th>Текущий период</th><th>Предыдущий</th><th>Разница</th></tr></thead><tbody>
+            {% for metric in ad.metrics %}<tr><th scope="row">{{ metric.label }}</th>
+              <td>{% if metric.current != None %}{{ metric.current }} {{ metric.unit }}{% else %}Неизвестно{% endif %}</td>
+              <td>{% if metric.previous != None %}{{ metric.previous }} {{ metric.unit }}{% else %}Неизвестно{% endif %}</td>
+              <td>{% if metric.delta != None %}{{ metric.delta }} {% if metric.unit == '%' %}п.п.{% else %}{{ metric.unit }}{% endif %}{% else %}Не рассчитано{% endif %}</td>
+            </tr>{% endfor %}</tbody></table></div>
+          </details>{% endfor %}
+        </details>
         <p class="small text-muted">CTR и конверсия — отношения сумм известного одинакового набора; стоимость обращения — денежные расходы / контакты. При неизвестных входах или неположительном знаменателе значение неизвестно. При малой выборке или других одновременных изменениях устойчивость и причинность разницы не подтверждены.</p>
       </div>
     {% endfor %}
     {% for report in period_reports.reports %}
       <details class="mb-2">
-        <summary>{{ report.date_from }}–{{ report.date_to }} · {{ report.grouping }} · {{ report.group_count }} групп · страницы получены</summary>
+        <summary>{{ report.date_from }}–{{ report.date_to }} · {{ report.grouping }} · {{ report.group_count }} групп · {{ report.page_count }} стр. получено</summary>
         {% timezone "Asia/Novosibirsk" %}<div class="small mt-2">Получено: {{ report.received_at_display|date:"d.m.Y H:i:s" }} · GMT+7</div>{% endtimezone %}
         <div class="small">ID групп: {{ report.ids|join:", "|default:"нет" }}. Единица денежных сумм — ₽. Полнота страниц и доступность каждого показателя проверяются отдельно. Единовременный снимок провайдера для всех страниц не подтверждён.</div>
         {% if report.confirmed_empty %}<p class="small">Авито явно подтвердил отсутствие групп. Это не подменяет отсутствующие показатели ожидаемых объявлений нулями.</p>{% endif %}
-        <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Показатель</th><th>Сумма/отношение по возвращённым группам</th></tr></thead><tbody>
-        {% for metric in report.metrics %}<tr><th scope="row">{{ metric.label }}</th><td>{% if metric.value != None %}{{ metric.value }} {{ metric.unit }}{% else %}Неизвестно{% endif %}</td></tr>{% endfor %}
+        <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Показатель</th><th>Сумма/отношение по возвращённым группам</th><th>Известные входы</th></tr></thead><tbody>
+        {% for metric in report.metrics %}<tr><th scope="row">{{ metric.label }}</th><td>{% if metric.value != None %}{{ metric.value }} {{ metric.unit }}{% else %}Неизвестно{% endif %}</td><td>{{ metric.known_groups }}/{{ metric.expected_groups }} возвращённых строк</td></tr>{% endfor %}
         </tbody></table></div>
+        <details class="small"><summary>Показатели каждого объявления · {{ report.ads|length }}</summary>
+          <p class="text-muted mt-2">Это строки периода, не суточные факты. Неизвестная комиссия не считается нулём; денежные расходы, продвижение и allSpending не складываются как независимые суммы.</p>
+          {% for ad in report.ads %}<details class="mb-2"><summary>№{{ ad.avito_id }}{% if ad.low_or_unknown_volume %} · малый или неизвестный объём{% endif %}</summary>
+            <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Показатель</th><th>Значение</th><th>Известность входов</th></tr></thead><tbody>
+            {% for metric in ad.metrics %}<tr><th scope="row">{{ metric.label }}</th>
+              <td>{% if metric.value != None %}{{ metric.value }} {{ metric.unit }}{% else %}Неизвестно / не рассчитано{% endif %}</td>
+              <td>{{ metric.known_groups }}/{{ metric.expected_groups }} строк</td></tr>{% endfor %}
+            </tbody></table></div>
+          </details>{% endfor %}
+        </details>
       </details>
     {% empty %}<div class="small">Подтверждённых сохранённых периодов пока нет. Получите отчёт формой ниже; прежняя сохранённая страница сохраняет собственную подпись.</div>{% endfor %}
   </div>
