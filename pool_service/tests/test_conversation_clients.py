@@ -283,7 +283,8 @@ class ConversationEnrichmentTests(Fixtures, TransactionTestCase):
                 self.connection.is_active = True
                 self.connection.channel = self.channel
                 self.connection.save()
-                message, _ = self.incoming()
+                # Durable inbox identities outlive deleted source fixtures.
+                message, _ = self.incoming(chat=f"chat-{change}", message=f"message-{change}")
                 def response(*args, **kwargs):
                     if change == "account":
                         ChannelConnection.objects.filter(pk=self.connection.pk).update(external_id="changed")
@@ -295,7 +296,9 @@ class ConversationEnrichmentTests(Fixtures, TransactionTestCase):
                     else:
                         replacement = CommunicationChannel.objects.create(organization=self.org, kind="website", name="Rebound")
                         ChannelConnection.objects.filter(pk=self.connection.pk).update(channel=replacement)
-                    return self.provider_chat()
+                    raw = self.provider_chat()
+                    raw["id"] = message.conversation.external_id
+                    return raw
                 with patch("pool_service.communication_avito._json_request", side_effect=response):
                     try:
                         result = enrich_conversation(message.conversation_id)

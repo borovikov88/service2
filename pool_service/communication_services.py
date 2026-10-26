@@ -71,7 +71,12 @@ def optimize_message_image(attachment):
 
 
 @transaction.atomic
-def receive_message(*, connection, external_conversation_id, participant_name, body, external_message_id=None, participant_phone="", participant_external_id="", provider_context=None):
+def receive_message(*, connection, external_conversation_id, participant_name, body, external_message_id=None, participant_phone="", participant_external_id="", provider_context=None, occurred_at=None, intake_origin="live", historical=False):
+    from .services.crm_inbox import capture_source, initialize_source, source_scope
+    if intake_origin not in {"live", "recovery", "history"}:
+        raise ValueError("invalid_intake_origin")
+    if occurred_at is not None and timezone.is_naive(occurred_at):
+        raise ValueError("invalid_provider_time")
     if connection.pk:
         from .communication_models import ChannelConnection
         avito_workplace = connection.pk == 4 and connection.channel.kind == "avito"
@@ -104,6 +109,14 @@ def receive_message(*, connection, external_conversation_id, participant_name, b
     if participant_external_id and not conversation.participant_external_id:
         conversation.participant_external_id = str(participant_external_id)[:255]
         conversation.save(update_fields=["participant_external_id"])
+    # Even a contact-free conversation must retain its original account namespace.
+    from .crm_inbox_models import CrmInboxEvent
+    prior_scopes = CrmInboxEvent.objects.filter(source_type="message", connection_id_snapshot=connection.pk,
+        namespace=conversation.external_id, scope_verified=True).values_list(
+        "organization_id", "account_id_snapshot", "provider_kind").distinct()[:2]
+    expected_scope = (conversation.organization_id, str(connection.external_id), connection.channel.kind)
+    if any(scope != expected_scope for scope in prior_scopes):
+        raise ValueError("conversation_source_binding_changed")
     from .communication_clients import capture_client
     if provider_context:
         from .communication_enrichment import apply_chat_context_locked
@@ -113,11 +126,12 @@ def receive_message(*, connection, external_conversation_id, participant_name, b
             conversation=conversation, external_id=external_message_id
         ).first()
         if existing:
-            capture_client(conversation)
+            capture_client(conversation, create=False)
+            capture_source("message", existing)
             return existing, False
     try:
         with transaction.atomic():
-            message = ConversationMessage.objects.create(
+            message = ConversationMessage(
                 conversation=conversation,
                 external_id=external_message_id,
                 direction=ConversationMessage.DIRECTION_IN,
@@ -125,22 +139,30 @@ def receive_message(*, connection, external_conversation_id, participant_name, b
                 sender_name=participant_name,
                 delivery_status=ConversationMessage.DELIVERY_RECEIVED,
             )
+            initialize_source(message, source_scope("message", message, connection), occurred_at=occurred_at,
+                origin=intake_origin, historical=historical)
+            message.save()
+            capture_source("message", message)
     except IntegrityError:
         if external_message_id is None:
             raise
-        return ConversationMessage.objects.get(
-            conversation=conversation,
-            external_id=external_message_id,
-        ), False
+        existing = ConversationMessage.objects.get(conversation=conversation, external_id=external_message_id)
+        capture_client(conversation, create=False)
+        capture_source("message", existing)
+        return existing, False
     if participant_name and (not conversation.participant_name or not str(participant_name).isdigit() and participant_name != "Клиент Авито"):
         conversation.participant_name = participant_name
     conversation.participant_phone = participant_phone or conversation.participant_phone
     conversation.provider_phone = participant_phone or conversation.provider_phone
-    conversation.last_message_at = message.created_at
-    if conversation.status == Conversation.STATUS_DONE:
-        conversation.status = Conversation.STATUS_NEW
+    if not message.intake_historical:
+        candidate_time = occurred_at or message.created_at
+        conversation.last_message_at = max(conversation.last_message_at, candidate_time) if conversation.last_message_at else candidate_time
+        if conversation.status == Conversation.STATUS_DONE:
+            conversation.status = Conversation.STATUS_NEW
     conversation.save(update_fields=["participant_name", "participant_phone", "provider_phone", "last_message_at", "status", "updated_at"])
-    capture_client(conversation, body=body, message_id=message.pk)
+    capture_client(conversation, body=body, message_id=message.pk, create=not message.intake_historical)
+    if message.intake_historical:
+        return message, True
     if connection.channel.kind == "avito" and not provider_context:
         from .communication_enrichment import start_client_enrichment_worker
         transaction.on_commit(lambda: start_client_enrichment_worker([conversation.pk]))

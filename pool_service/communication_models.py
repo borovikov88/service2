@@ -299,6 +299,13 @@ class Conversation(models.Model):
 
 
 class ConversationMessage(models.Model):
+    # Intake provenance is content-free; null scope/receipt denotes legacy unknown.
+    intake_scope = models.JSONField(null=True, blank=True, editable=False)
+    intake_cutover_at = models.DateTimeField(null=True, blank=True, editable=False)
+    intake_occurred_at = models.DateTimeField(null=True, blank=True, editable=False)
+    intake_received_at = models.DateTimeField(null=True, blank=True, editable=False, db_index=True)
+    intake_origin = models.CharField(max_length=16, default="legacy", editable=False)
+    intake_historical = models.BooleanField(default=True, editable=False)
     DIRECTION_IN = "in"
     DIRECTION_OUT = "out"
     DIRECTION_INTERNAL = "internal"
@@ -484,6 +491,14 @@ class TelephonyEmployeeIdentity(models.Model):
 
 
 class PhoneCall(models.Model):
+    intake_revision_historical = models.BooleanField(default=True, editable=False)
+    # Intake provenance is content-free; null scope/receipt denotes legacy unknown.
+    intake_scope = models.JSONField(null=True, blank=True, editable=False)
+    intake_cutover_at = models.DateTimeField(null=True, blank=True, editable=False)
+    intake_occurred_at = models.DateTimeField(null=True, blank=True, editable=False)
+    intake_received_at = models.DateTimeField(null=True, blank=True, editable=False, db_index=True)
+    intake_origin = models.CharField(max_length=16, default="legacy", editable=False)
+    intake_historical = models.BooleanField(default=True, editable=False)
     SOURCE_TELEPHONY = "telephony"
     SOURCE_UPLOADED = "uploaded"
     SOURCE_CHOICES = [

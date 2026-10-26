@@ -12,6 +12,11 @@ on:
       - "pool_service/communication_models.py"
       - "pool_service/client_crm_models.py"
       - "pool_service/tests/test_contact_identity*.py"
+      - "pool_service/crm_inbox_models.py"
+      - "pool_service/services/crm_inbox.py"
+      - "pool_service/management/commands/crm_inbox.py"
+      - "pool_service/tests/test_crm_inbox*.py"
+      - "pool_service/communication_avito.py"
       - "pool_service/crm_source_*.py"
       - "pool_service/crm_commercial_*.py"
       - "pool_service/client_merge.py"
@@ -128,6 +133,8 @@ jobs:
             pool_service.tests.test_conversation_clients \
             pool_service.tests.test_contact_identity \
             pool_service.tests.test_contact_identity_migrations \
+            pool_service.tests.test_crm_inbox \
+            pool_service.tests.test_crm_inbox_migrations \
             pool_service.tests.test_crm_commercial_foundation \
             pool_service.tests.test_crm_commercial_commands \
             pool_service.tests.test_crm_commercial_migrations \
