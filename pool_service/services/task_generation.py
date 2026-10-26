@@ -102,7 +102,7 @@ def _supply_title(reading):
 
 def _crm_supply_title(reading):
     materials = (reading.required_materials or "").strip()
-    return f'Заявка: "{materials}"' if materials else _supply_title(reading)
+    return (f'Заявка: "{materials}"' if materials else _supply_title(reading))[:255]
 
 
 def _supply_description(reading):
@@ -207,35 +207,14 @@ def sync_task_with_crm_item(task):
     return task
 
 
-@transaction.atomic
 def create_supply_task_from_reading(reading):
+    from pool_service.services.crm_object_needs import ensure_source
+    return ensure_source(reading)
+
+
+def _create_supply_task_locked(reading):
+    """New task only; caller holds source mutex and proved no candidate exists."""
     materials = (reading.required_materials or "").strip()
-    if not materials:
-        return None
-    if not reading.pool_id or not getattr(reading.pool, "organization_id", None):
-        return None
-
-    existing = (
-        ServiceTask.objects.filter(
-            water_reading=reading,
-            task_type=ServiceTask.TYPE_SUPPLY_REQUEST,
-            is_archived=False,
-            status__in=[
-                ServiceTask.STATUS_NEW,
-                ServiceTask.STATUS_IN_PROGRESS,
-                ServiceTask.STATUS_WAITING,
-            ],
-        )
-        .prefetch_related("responsibles")
-        .first()
-    )
-    if existing:
-        if not existing.crm_item_id:
-            ensure_crm_for_supply_task(existing)
-        else:
-            sync_crm_item_for_task(existing)
-        return existing
-
     pool = reading.pool
     manager = resolve_default_manager(pool)
     manager_team = resolve_manager_team(pool)
@@ -283,7 +262,7 @@ def create_supply_task_from_reading(reading):
         manager_ids.add(manager.id)
     if responsibles:
         task.responsibles.set(responsibles)
-        notify_task_assignment(task, responsibles, added_by=reading.added_by)
+        notify_task_assignment(task, responsibles, added_by=reading.added_by, defer_push=True)
     admin_recipients = [
         user
         for user in admin_team
@@ -303,6 +282,8 @@ def create_supply_task_from_reading(reading):
             organization=task.organization,
             send_push=True,
             send_in_app=True,
+            defer_push=True,
+            push_source=('task', task.pk),
         )
 
     ServiceTaskChange.objects.create(

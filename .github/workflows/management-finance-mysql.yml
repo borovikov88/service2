@@ -25,6 +25,12 @@ on:
       - "pool_service/services/crm_commercial_*.py"
       - "pool_service/management/commands/bootstrap_crm_commercial.py"
       - "pool_service/tests/test_crm_commercial_*.py"
+      - "pool_service/tests/test_crm_object_need*.py"
+      - "pool_service/crm_object_need*.py"
+      - "pool_service/services/crm_object_needs.py"
+      - "pool_service/admin.py"
+      - "pool_service/services/task_generation.py"
+      - "pool_service/tests/test_supply_task_generation.py"
       - "pool_service/tests/test_crm_live_*.py"
       - "pool_service/crm_live_views.py"
       - "pool_service/crm_lead_views.py"
@@ -175,6 +181,9 @@ jobs:
             pool_service.tests.test_crm_commercial_foundation \
             pool_service.tests.test_crm_commercial_commands \
             pool_service.tests.test_crm_commercial_card \
+            pool_service.tests.test_crm_object_needs \
+            pool_service.tests.test_crm_object_need_concurrency \
+            pool_service.tests.test_crm_object_need_migrations \
             pool_service.tests.test_crm_commercial_card_migrations \
             pool_service.tests.test_crm_commercial_migrations \
             pool_service.tests.test_crm_live_pilot_commands \

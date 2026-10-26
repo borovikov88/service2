@@ -812,7 +812,26 @@ class PushSubscription(models.Model):
         return f"Push subscription {self.user_id}"
 
 
+class WaterReadingQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        if set(kwargs).intersection({'required_materials', 'pool', 'pool_id'}):
+            from django.core.exceptions import ValidationError
+            raise ValidationError('Source composition requires instance.save().')
+        return super().update(**kwargs)
+
+    def bulk_create(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+        raise ValidationError('Reading creation requires instance.save().')
+
+    def bulk_update(self, objs, fields, **kwargs):
+        if set(fields).intersection({'required_materials', 'pool', 'pool_id'}):
+            from django.core.exceptions import ValidationError
+            raise ValidationError('Source composition requires instance.save().')
+        return super().bulk_update(objs, fields, **kwargs)
+
+
 class WaterReading(models.Model):
+    objects = WaterReadingQuerySet.as_manager()
     uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     pool = models.ForeignKey(Pool, on_delete=models.CASCADE, related_name="waterreading")
     date = models.DateTimeField()
@@ -839,6 +858,21 @@ class WaterReading(models.Model):
         related_name="deleted_water_readings",
     )
     delete_reason = models.TextField(blank=True)
+
+    def save(self, *args, **kwargs):
+        # Soft-delete/restore writers can already hold task/CRM locks. They do
+        # not change composition and must not acquire the source org mutex.
+        selected = kwargs.get("update_fields")
+        if selected is not None and not set(selected).intersection({"required_materials", "pool", "pool_id"}):
+            return super().save(*args, **kwargs)
+        from pool_service.services.crm_object_needs import source_write_context, synchronize_source
+        with source_write_context(self) as (old, task):
+            result = super().save(*args, **kwargs)
+            current = type(self).objects.select_related('pool__client', 'added_by').get(pk=self.pk)
+            if hasattr(self, '_source_actor_id'):
+                current._source_actor_id = self._source_actor_id
+            synchronize_source(current, old=old, task=task)
+            return result
 
     def __str__(self):
         return f"{self.pool.address} - {self.date.strftime('%d.%m.%Y %H:%M')}"
@@ -3265,3 +3299,5 @@ from . import crm_commercial_models  # noqa: E402,F401
 from . import contact_identity_models  # noqa: E402,F401
 
 from . import crm_inbox_models  # noqa: E402,F401
+
+from . import crm_object_need_models  # noqa: E402,F401

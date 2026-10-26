@@ -348,7 +348,7 @@ class CrmCommand(CommercialModel):
 
     def clean(self):
         super().clean()
-        if not isinstance(self.result, dict) or not self.result.keys() <= {"lead_id", "deal_id", "event_id", "revision", "task_id", "deal_ids", "previous_lead_id"}:
+        if not isinstance(self.result, dict) or not self.result.keys() <= {"lead_id", "deal_id", "event_id", "revision", "task_id", "deal_ids", "previous_lead_id", "need_id", "review_id", "source_revision"}:
             raise ValidationError("Command result accepts only structural CRM identifiers.")
         if "deal_ids" in self.result and (type(self.result["deal_ids"]) is not list
                 or not 1 <= len(self.result["deal_ids"]) <= 10

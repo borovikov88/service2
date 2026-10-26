@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.urls import reverse
+from django.db import transaction
 
 from pool_service.models import ClientAccess, Notification, OrganizationAccess, OrganizationWaterNorms, Profile, WaterReading
 from pool_service.services.push_notifications import send_push_to_users
@@ -133,6 +134,8 @@ def notify_users(
     dedupe_key="",
     send_in_app=True,
     send_push=True,
+    defer_push=False,
+    push_source=None,
 ):
     active_users = []
     seen_user_ids = set()
@@ -177,13 +180,20 @@ def notify_users(
             if was_created:
                 created.append(obj)
         if user_send_push:
-            send_push_to_users(
-                [user],
-                title=title,
-                message=message,
-                action_url=action_url,
-                notification=obj,
-            )
+            if defer_push:
+                # Source callbacks capture identifiers only. Reconstruct text
+                # and reauthorize current recipient/source after outer commit.
+                if not push_source or push_source[0] not in {'task', 'reading'}:
+                    raise ValueError('Deferred source push requires a typed source locator.')
+                source_kind, source_id = push_source
+                def deliver(source_kind=source_kind, source_id=source_id, user_id=user.pk,
+                            notification_id=obj.pk if obj else None):
+                    from .reading_source_notifications import deliver_source_push
+                    deliver_source_push(source_kind, source_id, user_id, notification_id)
+                transaction.on_commit(deliver)
+            else:
+                send_push_to_users([user], title=title, message=message,
+                    action_url=action_url, notification=obj)
     return created
 
 
@@ -256,7 +266,7 @@ def notify_client_users(
     )
 
 
-def notify_reading_out_of_range(reading):
+def notify_reading_out_of_range(reading, *, defer_push=False):
     if getattr(reading, "pk", None):
         reading = (
             WaterReading.objects.select_related("pool__client", "pool__organization", "added_by")
@@ -328,6 +338,8 @@ def notify_reading_out_of_range(reading):
         dedupe_key=dedupe_key,
         send_in_app=send_in_app,
         send_push=send_push,
+        defer_push=defer_push,
+        push_source=('reading', reading.pk),
     )
     return created
 
@@ -377,6 +389,7 @@ def notify_task_assignment(
     *,
     added_by=None,
     send_push=True,
+    defer_push=False,
     dedupe_key="",
 ):
     title, message, action_url = task_assignment_notification_content(task)
@@ -399,4 +412,6 @@ def notify_task_assignment(
         organization=task.organization,
         dedupe_key=dedupe_key,
         send_push=send_push,
+        defer_push=defer_push,
+        push_source=('task', task.pk),
     )

@@ -23,6 +23,65 @@ class OrganizationAccessInline(admin.TabularInline):
 
 # Import/export for WaterReading
 class WaterReadingResource(resources.ModelResource):
+    def __init__(self, *args, source_actor=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.source_actor = source_actor
+        self.source_org_ids = None
+
+    def import_data(self, dataset, dry_run=False, raise_errors=False, use_transactions=None,
+                    collect_failed_rows=False, rollback_on_validation_errors=False, **kwargs):
+        # This resource alone requires all-or-nothing source batches, including
+        # validation errors and dry-run preview. Other importers are unchanged.
+        return super().import_data(dataset, dry_run=dry_run, raise_errors=raise_errors,
+            use_transactions=True, collect_failed_rows=collect_failed_rows,
+            rollback_on_validation_errors=True, **kwargs)
+
+    def before_import(self, dataset, **kwargs):
+        # Existing privileged batch writer: acquire every possible org mutex
+        # in one sorted set before any per-row task/source locks are held.
+        from django.db import transaction
+        if not transaction.get_connection().in_atomic_block:
+            return
+        def ids(column):
+            return {int(str(row.get(column))) for row in dataset.dict
+                if str(row.get(column, '')).isascii() and str(row.get(column, '')).isdigit()}
+        pool_ids = ids('pool')
+        pool_ids.update(WaterReading.objects.filter(pk__in=ids('id')).values_list('pool_id', flat=True))
+        self.source_org_ids = set(Pool.objects.filter(pk__in=pool_ids).values_list('organization_id', flat=True)) - {None}
+        list(Organization.objects.select_for_update().filter(pk__in=self.source_org_ids).order_by('pk'))
+        from pool_service.services.crm_object_needs import lock_source_graphs
+        reading_ids = ids('id')
+        graph = lock_source_graphs(reading_ids)
+        self.source_graph = {reading_id: [(task.pk, task.crm_item_id) for task in tasks] for reading_id, tasks in graph.items()}
+        locked_pools = list(Pool.objects.select_for_update().filter(pk__in=pool_ids).order_by('pk'))
+        if any(pool.organization_id and pool.organization_id not in self.source_org_ids for pool in locked_pools):
+            from django.core.exceptions import ValidationError
+            raise ValidationError('Source organization changed before import locks.')
+        list(Client.objects.select_for_update().filter(pk__in={pool.client_id for pool in locked_pools}).order_by('pk'))
+        locked_readings = list(WaterReading.objects.select_for_update().filter(pk__in=reading_ids).order_by('pk'))
+        if any(reading.pool_id not in pool_ids for reading in locked_readings):
+            from django.core.exceptions import ValidationError
+            raise ValidationError('Source pool changed before import locks.')
+        # Supported source writers share the org mutex. The Reading locks also
+        # block a later FK insertion; a pre-existing extra candidate fails closed.
+        current = {}
+        from .models import ServiceTask
+        for reading_id, task_id, item_id in ServiceTask.objects.filter(water_reading_id__in=reading_ids, task_type='supply_request').order_by('pk').values_list('water_reading_id', 'pk', 'crm_item_id'):
+            current.setdefault(reading_id, []).append((task_id, item_id))
+        if current != self.source_graph:
+            from django.core.exceptions import ValidationError
+            raise ValidationError('Source candidate graph changed before import locks.')
+
+    def before_save_instance(self, instance, row, **kwargs):
+        # Do not acquire an unplanned org lock out of sorted order if a pool
+        # was reparented after identifying the batch. Reject and roll back.
+        pool_org = Pool.objects.filter(pk=instance.pool_id).values_list('organization_id', flat=True).first()
+        old_org = WaterReading.objects.filter(pk=instance.pk).values_list('pool__organization_id', flat=True).first() if instance.pk else None
+        if self.source_org_ids is not None and any(org_id and org_id not in self.source_org_ids for org_id in (pool_org, old_org)):
+            from django.core.exceptions import ValidationError
+            raise ValidationError('Source organization changed during import; retry the whole batch.')
+        instance._source_actor_id = self.source_actor.pk if self.source_actor else None
+
     class Meta:
         model = WaterReading
 
@@ -30,6 +89,13 @@ class WaterReadingResource(resources.ModelResource):
 @admin.register(WaterReading)
 class WaterReadingAdmin(ImportExportModelAdmin):
     resource_class = WaterReadingResource
+
+    def get_import_resource_kwargs(self, request, **kwargs):
+        return {**super().get_import_resource_kwargs(request, **kwargs), 'source_actor': request.user}
+
+    def save_model(self, request, obj, form, change):
+        obj._source_actor_id = request.user.pk
+        super().save_model(request, obj, form, change)
 
 # Organization admin
 @admin.register(Organization)
