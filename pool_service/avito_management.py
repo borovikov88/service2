@@ -427,7 +427,9 @@ def _local_analytics(request, connection):
 
 def _workspace_failure(section, exc):
     if section == "autoload_report" and str(exc) in avito_autoload_report.ERRORS:
-        return {"status": "warning", "detail": avito_autoload_report.ERRORS[str(exc)], "code": str(exc)}
+        return {"status": "warning", "detail": avito_autoload_report.failure_detail(exc), "code": str(exc),
+                "consistency_guard": avito_autoload_report.consistency_guard(getattr(exc, "consistency_guard", None))
+                    if str(exc) == "autoload_report_changed" else None}
     if section == "source_audit":
         code = str(exc) if str(exc) in avito_source_audit.ERRORS else "source_unavailable"
         return {"status": "warning", "detail": avito_source_audit.failure_detail(code), "code": code}

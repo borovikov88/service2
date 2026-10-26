@@ -35,3 +35,12 @@ The receipt exposes only the fixed strategy `shop_xml_id_queries` or
 `provider_pages`, alongside existing sanitized results. Query strings, source
 URLs and extra identities are not logged. No provider/source/listing write,
 notification, credential, permission or deployment guard is changed.
+
+When the XML-ID query differs from the unfiltered probe, the failed read now
+reports only fixed field names and counts (at most 50 probe rows). It distinguishes
+missing identity pairs, status, placement end, feed name, section and messages;
+message ordering-only and timestamp-only differences are diagnostic subcounts.
+No field values, IDs, feed names or message bodies enter this diagnostic. Manual
+and scheduled reads use the same error presentation. Every mismatch still rejects
+the report and preserves the previous successful snapshot as stale; ordering or
+timestamp-only differences are not accepted as equivalent.
