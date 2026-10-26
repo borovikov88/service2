@@ -39,7 +39,7 @@ REASONS = frozenset(("unspecified", "lock_directory_path", "lock_directory_owner
                      "native_help_size", "private_path", "private_parent_type", "private_parent_mode",
                      "private_owner_type", "private_mode", "client_engine", "client_database",
                      "client_credentials", "client_options", "client_mirror", "client_port", "app_path",
-                     "database_timeout"))
+                     "database_timeout", "heartbeat_session", "heartbeat_autocommit", "heartbeat_wait_timeout"))
 
 
 class Blocked(Exception):
@@ -287,7 +287,53 @@ class CappedWriter:
         return self.stream.flush()
 
 
-def dump_to_gzip(command, destination, expected, deadline):
+class MetadataHeartbeat:
+    """Keep the original metadata-lock transaction alive; never reconnect it."""
+    def __init__(self, connection):
+        self.connection = connection
+        self.raw = connection.connection
+        require(self.raw is not None, "heartbeat_session")
+        self.socket = self.raw._sock
+        self.session_id = self.raw.thread_id()
+        require(type(self.session_id) is int and self.session_id > 0, "heartbeat_session")
+        wait_timeout = self.verify()
+        # Query the actual session policy; allow at least three opportunities
+        # per idle window, including MySQL's minimum one-second wait_timeout.
+        self.interval = min(5.0, wait_timeout / 3)
+        self.next_at = time.monotonic() + self.interval
+
+    def identity(self):
+        require(self.connection.connection is self.raw and self.socket is not None
+                and self.raw._sock is self.socket and self.raw.thread_id() == self.session_id,
+                "heartbeat_session")
+        require(self.connection.autocommit is False and self.raw.get_autocommit() is False,
+                "heartbeat_autocommit")
+
+    def verify(self):
+        self.identity()
+        # PyMySQL 1.1.2 defaults reconnect=True. Reconnection loses our locks.
+        self.raw.ping(reconnect=False)
+        self.identity()
+        with self.raw.cursor() as cursor:
+            cursor.execute("SELECT CONNECTION_ID(), @@SESSION.autocommit, @@SESSION.wait_timeout")
+            row = cursor.fetchone()
+        self.identity()
+        require(isinstance(row, (tuple, list)) and len(row) == 3, "heartbeat_session")
+        require(type(row[0]) is int and row[0] == self.session_id, "heartbeat_session")
+        require(type(row[1]) is int and row[1] == 0, "heartbeat_autocommit")
+        require(type(row[2]) is int and 1 <= row[2] <= 31536000, "heartbeat_wait_timeout")
+        return row[2]
+
+    def tick(self, force=False):
+        if force or time.monotonic() >= self.next_at:
+            self.verify()
+            self.next_at = time.monotonic() + self.interval
+
+    def seconds_until_due(self):
+        return max(0, self.next_at - time.monotonic())
+
+
+def dump_to_gzip(command, destination, expected, deadline, heartbeat=None):
     coverage = DumpCoverage(expected)
     # Never forward inherited app secrets or MYSQL_PWD/MYSQL_* configuration.
     child_env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
@@ -302,7 +348,13 @@ def dump_to_gzip(command, destination, expected, deadline):
                 with gzip.GzipFile(fileobj=CappedWriter(output), mode="wb", filename="", mtime=0) as compressed:
                     while True:
                         require(time.monotonic() < deadline)
-                        if not selector.select(timeout=min(1, max(0, deadline - time.monotonic()))):
+                        if heartbeat is not None:
+                            heartbeat.tick()
+                        require(time.monotonic() < deadline)
+                        wait = min(1, max(0, deadline - time.monotonic()))
+                        if heartbeat is not None:
+                            wait = min(wait, heartbeat.seconds_until_due())
+                        if not selector.select(timeout=wait):
                             continue
                         chunk = os.read(process.stdout.fileno(), 65536)
                         if not chunk:
@@ -316,6 +368,9 @@ def dump_to_gzip(command, destination, expected, deadline):
         returncode = process.wait(timeout=max(0.01, deadline - time.monotonic()))
         if returncode != 0:
             raise NativeFailure(returncode)
+        if heartbeat is not None:
+            heartbeat.tick(force=True)
+        require(time.monotonic() < deadline)
         coverage.finish()
         return coverage.raw_bytes
     finally:
@@ -397,6 +452,7 @@ def backup(app, expected):
                 cursor.execute("SELECT 1 FROM `" + name + "` LIMIT 0")
         phase("schema_locked")
         require(schema_snapshot(connection) == before)
+        heartbeat = MetadataHeartbeat(connection)
         phase("options_file")
         with tempfile.TemporaryDirectory(prefix=".client-", dir=destination) as temp:
             options_path = Path(temp) / "client.cnf"
@@ -409,9 +465,11 @@ def backup(app, expected):
                        "--skip-routines", "--skip-events", "--default-character-set=utf8mb4",
                        "--", str(config["NAME"])]
             phase("dump_stream")
-            raw_bytes = dump_to_gzip(command, partial, before, time.monotonic() + MAX_SECONDS - 30)
+            raw_bytes = dump_to_gzip(command, partial, before, time.monotonic() + MAX_SECONDS - 30,
+                                     heartbeat=heartbeat)
         phase("schema_after")
         require(schema_snapshot(connection) == before)
+        heartbeat.verify()
         phase("gzip_verify")
         digest = verify_gzip(partial, raw_bytes)
         phase("checkout_after")
