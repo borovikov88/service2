@@ -1,5 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import datetime, timedelta
 from threading import Barrier, Event
 from unittest.mock import patch
 
@@ -75,6 +75,14 @@ class CommercialCommandTests(CommandFixture, TestCase):
         for malformed_type in ([], {}):
             self.rejected(command_type=malformed_type)
         self.rejected(command_type="lead.transition", changes={"status": "waiting", "reason": "Check", "follow_up_at": "2026-99-26T10:00:00+00:00"})
+
+    def test_follow_up_utc_overflow_rejects_string_and_typed_boundaries_without_writes(self):
+        boundaries = ("9999-12-31T23:59:59-23:59", "0001-01-01T00:00:00+23:59")
+        for boundary in boundaries:
+            for value in (boundary, datetime.fromisoformat(boundary)):
+                with self.subTest(value=value):
+                    self.rejected(command_type="lead.transition", changes={
+                        "status": "waiting", "reason": "Check date", "follow_up_at": value})
 
     def test_fresh_account_membership_hr_flags_and_explicit_capabilities(self):
         mutations = [

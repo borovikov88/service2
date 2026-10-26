@@ -62,7 +62,10 @@ def _normalize(command_type, changes):
                         raise ValidationError("Invalid follow-up datetime.") from exc
                 if not isinstance(value, datetime) or timezone.is_naive(value):
                     raise ValidationError("Follow-up requires a timezone-aware datetime.")
-                normalized[key] = value.astimezone(datetime_timezone.utc).isoformat()
+                try:
+                    normalized[key] = value.astimezone(datetime_timezone.utc).isoformat()
+                except (OverflowError, ValueError) as exc:
+                    raise ValidationError("Follow-up datetime is outside the supported UTC range.") from exc
         elif type(value) is not str:
             raise ValidationError("CRM text must be a string.")
         else:
