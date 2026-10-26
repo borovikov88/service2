@@ -3,8 +3,9 @@ from copy import deepcopy
 from datetime import datetime, timezone as datetime_timezone
 from types import SimpleNamespace
 from unittest.mock import patch
+from django.template.loader import render_to_string
 from django.test import SimpleTestCase, TransactionTestCase
-from pool_service.avito_placement_continuity import continuity_context
+from pool_service.avito_placement_continuity import classify_finish, continuity_context
 from pool_service import avito_readonly_audit as audit
 from scripts import avito_readonly_receipt as receipt
 
@@ -26,6 +27,10 @@ def row(**delta):
         "finish_time_source": "avito_item_detail.finish_time"} | delta
     return {"Id": "synthetic", "AvitoId": "101", "observation": observation,
             "archive_control": {"owner_withdrawn": False}}
+
+
+def calendar_row(value, **delta):
+    return row(finish_time=None, finish_time_source="", finish_evidence=classify_finish(value), **delta)
 
 
 class PlacementContinuityTests(SimpleTestCase):
@@ -79,6 +84,101 @@ class PlacementContinuityTests(SimpleTestCase):
             result = continuity_context(connection, feed, [row(**delta)], now=NOW)
             self.assertIsNone(result["rows"][0]["status"])
             self.assertIsNone(result["rows"][0]["finish_time"])
+
+
+class CalendarDeadlineSummaryTests(SimpleTestCase):
+    def test_eleven_known_source_dates_include_eight_up_to_seven_days_without_claiming_instants(self):
+        connection, feed = scope()
+        now = datetime(2026, 10, 26, 13, 51, tzinfo=datetime_timezone.utc)
+        rows = [calendar_row(value, checked_at="2026-10-26T12:49:56Z") for value in
+            ["2026-10-30 12:34:56"] * 7 + ["2026-11-02"] + ["2026-11-18"] * 3]
+        for index, saved in enumerate(rows):
+            saved["Id"] = saved["observation"]["id"] = f"synthetic-{index}"
+            saved["AvitoId"] = saved["observation"]["avito_id"] = str(100 + index)
+        before = deepcopy(rows)
+        result = continuity_context(connection, feed, rows, now=now)
+        self.assertEqual(result["due_count"], 8)
+        self.assertEqual(result["unknown_count"], 0)
+        self.assertEqual(result["calendar_only_count"], 11)
+        self.assertEqual([item["days_remaining"] for item in result["rows"]], [4] * 7 + [7] + [23] * 3)
+        for item in result["rows"]:
+            self.assertIsNone(item["finish_time"])
+            self.assertIsNone(item["finish_source"])
+            self.assertFalse(item["can_reactivate"])
+            self.assertIsNone(item["additional_cost"])
+        self.assertFalse(result["provider_request_performed"])
+        self.assertFalse(result["automatic_reactivation"])
+        self.assertEqual(rows, before)
+        html = render_to_string("pool_service/avito/_placement_continuity.html", {"placement_continuity": result})
+        self.assertIn("от сегодня до +7 календарных дней включительно: 8", html)
+        self.assertIn("Статус или дата окончания неизвестны: 0", html)
+        self.assertIn("без подтверждённого часового пояса и точного момента: 11", html)
+        self.assertIn("Автоматическое восстановление заблокировано", html)
+
+    def test_calendar_boundaries_include_today_and_seven_days_but_request_refresh_after_date(self):
+        connection, feed = scope()
+        for value, days, state, due in (("2026-01-10", 8, "timezone_unknown", 0),
+                ("2026-01-09", 7, "due_soon", 1), ("2026-01-05", 3, "due_soon", 1),
+                ("2026-01-03", 1, "due_soon", 1), ("2026-01-02", 0, "due_soon", 1),
+                ("2026-01-01", -1, "refresh_required", 0)):
+            with self.subTest(value=value):
+                result = continuity_context(connection, feed, [calendar_row(value)], now=NOW)
+                self.assertEqual(result["rows"][0]["days_remaining"], days)
+                self.assertEqual(result["rows"][0]["state"], state)
+                self.assertEqual(result["rows"][0]["status"], "active")
+                self.assertEqual(result["due_count"], due)
+                self.assertEqual(result["unknown_count"], 0)
+
+    def test_aware_deadlines_keep_barnaul_calendar_and_exact_expiry_behavior(self):
+        connection, feed = scope()
+        for value, days, state, due in (("2026-01-09T17:00:00Z", 8, "active", 0),
+                ("2026-01-09T16:59:59Z", 7, "due_soon", 1),
+                ("2026-01-05T03:00:00Z", 3, "due_soon", 1),
+                ("2026-01-03T03:00:00Z", 1, "due_soon", 1),
+                ("2026-01-02T03:00:01Z", 0, "due_soon", 1),
+                ("2026-01-02T03:00:00Z", 0, "refresh_required", 0),
+                ("2026-01-01T03:00:00Z", -1, "refresh_required", 0)):
+            with self.subTest(value=value):
+                result = continuity_context(connection, feed, [row(finish_time=value)], now=NOW)
+                self.assertEqual(result["rows"][0]["days_remaining"], days)
+                self.assertEqual(result["rows"][0]["state"], state)
+                self.assertEqual(result["due_count"], due)
+                self.assertEqual(result["unknown_count"], 0)
+                self.assertEqual(result["calendar_only_count"], 0)
+
+    def test_unusable_dates_or_untrusted_observations_do_not_create_calendar_deadlines(self):
+        connection, feed = scope()
+        for value in (None, "", "invalid", "2026-02-30", "2026-02-30 12:00:00", True, {}):
+            with self.subTest(value=value):
+                result = continuity_context(connection, feed, [calendar_row(value)], now=NOW)
+                self.assertEqual(result["due_count"], 0)
+                self.assertEqual(result["unknown_count"], 1)
+                self.assertEqual(result["calendar_only_count"], 0)
+                self.assertIsNone(result["rows"][0]["days_remaining"])
+        saved = calendar_row("2026-01-06")
+        for delta in ({"source": "unbound_cache"}, {"status": "unknown"}, {"id": "other"},
+                {"finish_time": "invalid"}, {"finish_evidence": {"source": "foreign.finish_time",
+                    "finish_state": "calendar_date_only", "source_finish_date": "2026-01-06"}},
+                {"checked_at": "2026-01-03T03:00:00Z"}):
+            with self.subTest(delta=delta):
+                bad = deepcopy(saved)
+                bad["observation"].update(delta)
+                result = continuity_context(connection, feed, [bad], now=NOW)
+                self.assertEqual(result["due_count"], 0)
+                self.assertEqual(result["unknown_count"], 1)
+                self.assertEqual(result["calendar_only_count"], 0)
+
+    def test_calendar_dates_do_not_override_nonactive_status_or_owner_prohibition(self):
+        connection, feed = scope()
+        for status in ("old", "removed", "blocked", "rejected"):
+            result = continuity_context(connection, feed, [calendar_row("2026-01-06", status=status)], now=NOW)
+            self.assertEqual(result["due_count"], 0)
+            self.assertEqual(result["rows"][0]["status"], status)
+        saved = calendar_row("2026-01-06")
+        saved["archive_control"]["owner_withdrawn"] = True
+        result = continuity_context(connection, feed, [saved], now=NOW)
+        self.assertEqual(result["due_count"], 0)
+        self.assertEqual(result["rows"][0]["state"], "owner_withdrawn")
 
 
 class FreshPlacementEvidenceTests(SimpleTestCase):
@@ -205,17 +305,19 @@ class FinishTimeShapeTests(SimpleTestCase):
         self.assertEqual(result, receipt.placement_evidence(result))
         self.assertNotIn("12:34:56", str(result))
 
-    def test_editor_source_date_is_not_reinterpreted_as_barnaul_day_or_due_counter(self):
+    def test_editor_source_date_is_counted_without_inventing_an_expiry_instant(self):
         from pool_service.avito_placement_continuity import classify_finish
         connection, feed = scope()
         saved = row(finish_time=None, finish_time_source="")
         saved["observation"]["finish_evidence"] = classify_finish("2026-01-06 12:34:56")
         result = continuity_context(connection, feed, [saved], now=NOW)
-        self.assertEqual(result["rows"][0]["state"], "timezone_unknown")
+        self.assertEqual(result["rows"][0]["state"], "due_soon")
         self.assertEqual(result["rows"][0]["source_finish_date"].isoformat(), "2026-01-06")
-        self.assertIsNone(result["rows"][0]["days_remaining"])
-        self.assertEqual(result["due_count"], 0)
-        self.assertEqual(result["unknown_count"], 1)
+        self.assertIsNone(result["rows"][0]["finish_time"])
+        self.assertEqual(result["rows"][0]["days_remaining"], 4)
+        self.assertEqual(result["due_count"], 1)
+        self.assertEqual(result["unknown_count"], 0)
+        self.assertEqual(result["calendar_only_count"], 1)
 
     def test_receipt_rejects_incoherent_shape_and_unsafe_calendar_values(self):
         connection, feed = scope()
