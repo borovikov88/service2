@@ -29,6 +29,9 @@ on:
       - "pool_service/crm_live_views.py"
       - "pool_service/crm_pilot_views.py"
       - "pool_service/services/crm_pilot_activation.py"
+      - "pool_service/services/crm_approved_access.py"
+      - "pool_service/management/commands/provision_approved_crm_access.py"
+      - "pool_service/tests/test_crm_approved_access.py"
       - "pool_service/services/crm_deal_task_schedule.py"
       - "pool_service/task_waiting_guards.py"
       - "pool_service/services/crm_permissions.py"
@@ -163,6 +166,7 @@ jobs:
             pool_service.tests.test_crm_live_pilot_commands \
             pool_service.tests.test_crm_live_pilot_migrations \
             pool_service.tests.test_crm_live_views \
+            pool_service.tests.test_crm_approved_access \
             pool_service.tests.test_crm_org_scope \
             pool_service.tests.test_task_read_privacy \
             pool_service.tests.test_avito_promotion_observations \

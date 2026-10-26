@@ -71,6 +71,7 @@ jobs:
         run: |
           python -m unittest discover -s .github/tests -p test_reuse_pr_tests.py -v
           python -m unittest discover -s .github/tests -p test_crm_pilot_db_backup.py -v
+          python -m unittest discover -s .github/tests -p test_crm_approved_access.py -v
       - name: Verify equivalent successful PR tests
         id: reuse
         run: python .github/scripts/reuse_pr_tests.py
@@ -504,6 +505,37 @@ jobs:
             exit 2
           fi
           python3 scripts/crm_pilot_db_backup_receipt.py "$backup_temp/stdout" "$GITHUB_SHA"
+
+      - name: Enable the explicitly approved CRM access once
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[crm-aqualine-managers-20261026]')
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          access_temp="$(mktemp -d "$RUNNER_TEMP/crm-approved-access.XXXXXX")"
+          trap 'rm -rf -- "$access_temp"' EXIT
+          PORT="${DEPLOY_PORT:-22}"
+          [[ "$PORT" =~ ^[0-9]+$ ]]
+          printf -v REMOTE_COMMAND 'bash -s -- %q %q %q %q' \
+            "$GITHUB_SHA" "$DEPLOY_APP_PATH" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+          access_exit=0
+          ssh -i ~/.ssh/service2_deploy \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
+            -o StrictHostKeyChecking=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND" \
+            < .github/scripts/crm_approved_access_remote.sh \
+            >"$access_temp/stdout" 2>"$access_temp/stderr" || access_exit=$?
+          if [[ "$access_exit" != 0 ]]; then
+            python3 scripts/crm_approved_access_receipt.py --failure "$access_temp/stderr"
+            exit 2
+          fi
+          python3 scripts/crm_approved_access_receipt.py "$access_temp/stdout" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
 
   calculator:
     name: Publish calculator to the verified informational website
