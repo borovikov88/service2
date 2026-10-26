@@ -213,6 +213,9 @@ def _progress(value, now):
     if matches == 0 and target is not None:
         raise SubscriptionError("tariff_data_invalid")
     if matches == 1:
+        if (target is not None and (type(target) is not dict or set(target) not in (
+                {"category", "level", "isActive"}, {"category", "level", "isActive", "expiredTo"}))):
+            raise SubscriptionError("tariff_data_invalid")
         normalize_services_subscription([target], account_id=ACCOUNT, account_matches=1,
             pages_complete=True, fetched_at=now)
     return dict(raw, fingerprints=list(fingerprints))

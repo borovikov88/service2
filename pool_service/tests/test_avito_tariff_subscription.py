@@ -414,6 +414,14 @@ class TariffSubscriptionTests(TestCase):
         self.connection.save(update_fields=["settings"])
         self.assertEqual(tariff.refresh(self.connection, self.owner)["code"], "tariff_data_invalid")
         self._clients_page_mock.assert_not_called()
+        self.connection.settings = {tariff.KEY: {"binding": binding, "progress": {
+            "started_at": timezone.now().isoformat(), "offset": 100, "total": 101, "pages": 1,
+            "fingerprints": [f"{index:064x}" for index in range(100)], "target_matches": 1,
+            "target_subscription": {**self.subscription(), "PRIVATE": "must not be retained"}}}}
+        self.connection.save(update_fields=["settings"])
+        self.assertEqual(tariff.refresh(self.connection, self.owner)["code"], "tariff_data_invalid")
+        self._clients_page_mock.assert_not_called()
+        self.assertNotIn("PRIVATE", str(self.saved()[tariff.KEY]))
         self.credential.delete()
         self.assertEqual(tariff.refresh(self.connection, self.owner)["code"], "provider_credentials_missing")
         self._clients_page_mock.assert_not_called()
