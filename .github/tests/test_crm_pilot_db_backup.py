@@ -3,6 +3,7 @@ import gzip
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import stat
 import subprocess
@@ -93,6 +94,16 @@ class PrivateBackupTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(B.Blocked):
                 B.client_options(config() | changes)
 
+    def test_failure_diagnostics_never_include_private_exception_text(self):
+        for error in (B.Blocked('PRIVATE SQL'), OSError('PRIVATE path'), ImportError('PRIVATE secret'),
+                      ValueError('PRIVATE payload'), B.NativeFailure(2)):
+            with patch.object(B, 'PHASE', 'dump_stream'):
+                code = B.safe_failure(error)
+                self.assertRegex(code, r'^phase=dump_stream error=[a-z_]+ native_exit=[0-9]+$')
+                self.assertNotIn('PRIVATE', code)
+        with patch.object(B, 'PHASE', 'PRIVATE injected'):
+            self.assertTrue(B.safe_failure(ValueError('PRIVATE')).startswith('phase=initial '))
+
     def test_dirty_checkout_and_head_mismatch_block(self):
         for outputs in ([b'b' * 40 + b'\n'], [SHA.encode() + b'\n', b'/synthetic\n', b'dirty'],
                         [SHA.encode() + b'\n', b'/synthetic\n', b'', b'untracked.py']):
@@ -116,6 +127,14 @@ class PrivateBackupTests(unittest.TestCase):
                 options = B.native_options('/synthetic/mysqldump')
                 self.assertIn('--no-tablespaces', options)
                 self.assertEqual('--set-gtid-purged=OFF' in options, gtid)
+        for help_text, supported in ((b'Oracle MySQL 8.0 options, no login flag', False),
+                                     (b'Oracle MySQL 8.4 options: --no-login-paths', True)):
+            with patch.object(B.subprocess, 'check_output', side_effect=[
+                    b'mysqldump Ver 8.0.46 for Linux on x86_64 ((Ubuntu))', help_text]) as probe:
+                options = B.native_options('/synthetic/mysqldump')
+                self.assertEqual('--no-login-paths' in options, supported)
+                for call in probe.call_args_list:
+                    self.assertEqual(call.kwargs['env']['MYSQL_TEST_LOGIN_FILE'], '/dev/null')
 
     def test_private_directory_and_lock_reject_symlinks_and_contention(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -271,8 +290,20 @@ class NativeMySQLTests(unittest.TestCase):
                 result = subprocess.run([sys.executable, str(ROOT / 'scripts/crm_pilot_db_backup.py'),
                                          '--expected-sha', sha], cwd=app, capture_output=True, text=True, timeout=320,
                                          env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
-                # Suppress raw command output on assertion failures, including SQL/settings diagnostics.
-                self.assertEqual(result.returncode, 0, 'native backup failed; raw output suppressed')
+                # Probe only local client help, never connection settings or server data.
+                native_dump = B.shutil.which('mysqldump') or B.shutil.which('mariadb-dump')
+                probe = subprocess.run([native_dump, '--no-defaults', '--help'], capture_output=True,
+                                       timeout=10, env={'PATH': '/usr/bin:/bin', 'MYSQL_TEST_LOGIN_FILE': '/dev/null'})
+                supports_no_login = b'no-login-paths' in probe.stdout
+                # Extract only a fixed vocabulary; never echo raw stderr/help/settings/SQL.
+                allowed = '|'.join(sorted(B.PHASES))
+                diagnostic = re.search(r'CRM_PILOT_DB_BACKUP_BLOCKED phase=(' + allowed +
+                                       r') error=(guard_failed|unexpected|native_failed|subprocess_timeout|'
+                                       r'subprocess_failed|import_failed|os_error|database_error) native_exit=(-?[0-9]{1,3})\b',
+                                       result.stderr)
+                code = diagnostic.group(0) if diagnostic else 'no_allowlisted_diagnostic'
+                self.assertEqual(result.returncode, 0, 'native backup failed; ' + code +
+                                 '; supports_no_login_paths=' + str(supports_no_login).lower())
                 proof = R.normalize(result.stdout, sha)
                 self.assertTrue(proof['integrity_verified']); self.assertFalse(proof['restore_verified'])
                 archive = root / 'tmp' / 'service2-crm-backups' / proof['backup_file']
