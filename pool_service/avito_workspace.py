@@ -302,8 +302,18 @@ STATISTICS_INVALID_REASONS = frozenset({
     "result_missing", "result_type", "grouping_missing_with_explicit_zero_total",
     "groupings_type", "groupings_limit", "totals_multiple_groups", "group_type",
     "metrics_type", "id_type", "id_duplicate", "metric_type", "metric_slug_type",
-    "metric_duplicate",
+    "metric_duplicate", "total_type",
 })
+STATISTICS_DIAGNOSTIC_REASONS = {
+    "provider_data_invalid": STATISTICS_INVALID_REASONS,
+    "statistics_fields_unavailable": frozenset({"groupings_absent", "groupings_and_total_absent"}),
+    "statistics_provider_error": frozenset({"provider_error_reported"}),
+}
+
+
+def statistics_reason_allowed(code, reason):
+    return (type(code) is str and type(reason) is str
+        and reason in STATISTICS_DIAGNOSTIC_REASONS.get(code, ()))
 
 
 STATISTICS_GROUPINGS_KINDS = frozenset({
@@ -362,27 +372,35 @@ def _statistics_response_shape(response):
         "provider_error_present": any(bool(item.get(key)) for item in containers for key in ("error", "errors"))}
 
 
-def _statistics_data_invalid(reason, response):
-    # Same public exception/code; only a fixed structural reason may be retained.
-    error = AvitoError("provider_data_invalid")
+def _statistics_data_invalid(reason, response, *, code="provider_data_invalid"):
+    # Fixed classifications only: optional omission is not a schema/type failure.
+    error = AvitoError(code)
     error.statistics_reason = reason
     error.statistics_shape = _statistics_response_shape(response)
     raise error
 
 
 def statistics_data(response, *, start, end, grouping, offset):
-    result = response.get("result")
+    result = response.get("result") if isinstance(response, dict) else None
+    containers = [value for value in (response, result) if isinstance(value, dict)]
+    if any(container.get(key) for container in containers for key in ("error", "errors")):
+        _statistics_data_invalid("provider_error_reported", response, code="statistics_provider_error")
+    if not isinstance(response, dict):
+        _statistics_data_invalid("result_type", response)
     if "result" not in response:
         _statistics_data_invalid("result_missing", response)
     if not isinstance(result, dict):
         _statistics_data_invalid("result_type", response)
-    groups = result.get("groupings")
+    # Own-profile Ads export makes these response properties optional. Validate
+    # present fields independently; absence never supplies an empty list or zero.
+    if "dataTotalCount" in result and _count(result["dataTotalCount"]) is None:
+        _statistics_data_invalid("total_type", response)
+    if "groupings" not in result:
+        _statistics_data_invalid("groupings_absent" if "dataTotalCount" in result else
+            "groupings_and_total_absent", response, code="statistics_fields_unavailable")
+    groups = result["groupings"]
     if not isinstance(groups, list):
-        explicit_zero = type(result.get("dataTotalCount")) is int and result["dataTotalCount"] == 0
-        has_error = any(container.get(key) for container in (response, result)
-                        for key in ("error", "errors"))
-        _statistics_data_invalid("grouping_missing_with_explicit_zero_total"
-            if groups is None and explicit_zero and not has_error else "groupings_type", response)
+        _statistics_data_invalid("groupings_type", response)
     if len(groups) > PAGE_SIZE:
         _statistics_data_invalid("groupings_limit", response)
     rows = []
@@ -428,7 +446,10 @@ def statistics_data(response, *, start, end, grouping, offset):
     return statistics_for_display({"rows": rows, "metric_labels": labels, "date_from": start, "date_to": end,
             "grouping": grouping, "offset": offset, "limit": PAGE_SIZE, "total": total,
             "has_previous": offset > 0,
-            "has_next": offset + PAGE_SIZE < total if total is not None else len(rows) == PAGE_SIZE,
+            "has_next": offset + PAGE_SIZE < total if total is not None else None,
+            "pagination_state": "known_total" if total is not None else "unknown_total",
+            "empty_result_confirmed": not rows and total == 0,
+            "response_contract": "own_profile_ads",
             "source_timestamp": _text(result.get("timestamp"), 80)})
 
 

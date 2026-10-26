@@ -102,7 +102,7 @@ class DailyHistoryTests(TestCase):
             'groupings': [{'id': identifier, 'metrics': [
                 {'slug': key, 'value': value} for key, value in
                 ({'impressions': 100, 'views': 10, 'contacts': 1, 'spending': 12599} if metrics is None else metrics).items()
-            ]} for identifier in ids], 'dataTotalCount': total, 'timestamp': 'provider-clock'}},
+            ]} for identifier in ids], **({'dataTotalCount': total} if total is not None else {}), 'timestamp': 'provider-clock'}},
             start='2026-10-23', end='2026-10-23', grouping='item', offset=0)
 
     def retry(self):
@@ -164,7 +164,7 @@ class DailyHistoryTests(TestCase):
 
     def test_missing_total_never_marks_complete(self):
         with patch.object(avito_workspace, 'fetch_statistics', return_value=self.page(total=None)):
-            self.assertEqual(daily.collect_next(), 'failed')
+            self.assertEqual(daily.collect_next(), 'skipped')
         self.assertFalse(AvitoStatisticsRun.objects.get().pagination_complete)
         self.assertEqual(AvitoStatisticsRun.objects.get().state, 'partial')
         self.assertEqual(AvitoDailyStatistic.objects.count(), 0)
@@ -277,7 +277,7 @@ class DailyHistoryTests(TestCase):
         self.retry()
         with patch.object(daily, '_choose_day', return_value=run.day), \
                 patch.object(avito_workspace, 'fetch_statistics', return_value=self.page(total=None)):
-            self.assertEqual(daily.collect_next(), 'failed')
+            self.assertEqual(daily.collect_next(), 'skipped')
         self.assertEqual(list(AvitoDailyStatistic.objects.values('avito_id', 'metrics', 'source_run_id')), original)
 
 
@@ -784,7 +784,7 @@ class DailyHistoryTests(TestCase):
         self.connection.refresh_from_db()
         attempt = self.connection.settings[daily.KEY]['last_attempt']
         self.assertEqual(attempt['error_code'], 'provider_data_invalid')
-        self.assertEqual(attempt['statistics_reason'], 'grouping_missing_with_explicit_zero_total')
+        self.assertEqual(attempt['statistics_reason'], 'groupings_type')
         self.assertEqual(attempt['statistics_shape'], {'groupings_kind': 'null',
             'data_total_count_kind': 'zero_integer', 'provider_error_present': False})
         self.assertEqual(attempt['exception_class'], 'AvitoError')
@@ -793,7 +793,7 @@ class DailyHistoryTests(TestCase):
         self.assertFalse(AvitoDailyStatistic.objects.exists())
         evidence = self.gap_evidence()
         self.assertEqual(evidence['last_attempt']['statistics_reason'],
-                         'grouping_missing_with_explicit_zero_total')
+                         'groupings_type')
         self.assertEqual(evidence['last_attempt']['statistics_shape'], attempt['statistics_shape'])
         self.assertNotIn('PRIVATE', str(self.connection.settings))
         self.assertNotIn('PRIVATE', str(evidence))
@@ -909,14 +909,15 @@ class DailyHistoryTests(TestCase):
             return avito_workspace.statistics_data({'result': {'unobserved_key': 'PRIVATE'}},
                 start='2026-10-23', end='2026-10-23', grouping='item', offset=0)
         with patch.object(avito_workspace, 'fetch_statistics', side_effect=rejected):
-            self.assertEqual(daily.collect_next(), 'failed')
+            self.assertEqual(daily.collect_next(), 'skipped')
         self.connection.refresh_from_db()
         with patch.object(avito_workspace, 'fetch_statistics') as fetch:
             state = daily.display(self.connection, self.owner, self.now)
         fetch.assert_not_called()
         attempt = state['gap_diagnostics']['last_attempt']
         self.assertEqual(attempt['source_date'], '2026-10-23')
-        self.assertEqual(attempt['statistics_reason'], 'groupings_type')
+        self.assertEqual(attempt['statistics_reason'], 'groupings_and_total_absent')
+        self.assertEqual(attempt['error_code'], 'statistics_fields_unavailable')
         self.assertEqual(attempt['statistics_shape'], {'groupings_kind': 'missing',
             'data_total_count_kind': 'missing', 'provider_error_present': False})
         message = attempt['response_shape_explanation']
@@ -931,7 +932,7 @@ class DailyHistoryTests(TestCase):
             {'daily': state, 'connection': self.connection})
         self.assertIn('data-avito-statistics-shape-explanation', html)
         self.assertIn('дата источника 2026-10-23', html)
-        self.assertIn('Причина проверки структуры: groupings_type', html)
+        self.assertIn('Причина проверки структуры: groupings_and_total_absent', html)
         section = html.split('Почему не хватает данных:')[0]
         opening_details = section.rsplit('<details', 1)[1].split('>', 1)[0]
         self.assertNotIn(' open', opening_details)
@@ -971,6 +972,62 @@ class DailyHistoryTests(TestCase):
             changed = deepcopy(baseline)
             changed[field] = value
             self.assertEqual(gaps.display(changed)['last_attempt']['response_shape_explanation'], '')
+
+
+    def test_optional_omission_is_partial_and_observer_records_the_actual_read_without_rewriting_history(self):
+        from unittest.mock import Mock
+        historical = AvitoStatisticsRun.objects.create(connection=self.connection, account_id=daily.ACCOUNT,
+            organization_id_at_collection=self.org.pk, day=self.now.date()-timedelta(days=1),
+            binding_digest=daily._stamp(self.connection), state='failed',
+            error_code='provider_data_invalid', pagination_complete=False)
+        def absent(*args, **kwargs):
+            return avito_workspace.statistics_data({'result': {'PRIVATE': 'PRIVATE'}},
+                start='2026-10-23', end='2026-10-23', grouping='item', offset=0)
+        observer = Mock()
+        with patch.object(avito_workspace, 'fetch_statistics', side_effect=absent) as fetch:
+            summary = daily.scan_due(deadline=daily.time.monotonic()+60, observer=observer)
+        self.assertEqual(summary, {'success': 0, 'failed': 0, 'skipped': 1})
+        observer.assert_called_once_with(4, 'statistics_daily', 'skipped', reason='statistics_fields_unavailable')
+        fetch.assert_called_once()
+        run = AvitoStatisticsRun.objects.exclude(pk=historical.pk).get()
+        self.assertEqual(run.state, 'partial')
+        self.assertFalse(run.pagination_complete)
+        self.assertEqual(run.error_code, 'statistics_fields_unavailable')
+        self.assertFalse(AvitoDailyStatistic.objects.exists())
+        historical.refresh_from_db()
+        self.assertEqual((historical.state, historical.error_code), ('failed', 'provider_data_invalid'))
+        self.connection.refresh_from_db()
+        latest = self.connection.settings[daily.KEY]['last_attempt']
+        self.assertEqual((latest['outcome'], latest['error_code'], latest['statistics_reason']),
+            ('skipped', 'statistics_fields_unavailable', 'groupings_and_total_absent'))
+        self.assertNotIn('PRIVATE', str(latest))
+        self.assertEqual(self.gap_evidence()['last_attempt']['state'], 'observed')
+        self.goods.refresh_from_db()
+        self.assertEqual(self.goods.settings, {'preserve': 'goods sentinel'})
+
+    def test_unknown_total_partial_reason_is_not_workspace_busy_or_server_failure(self):
+        from unittest.mock import Mock
+        observer = Mock()
+        with patch.object(avito_workspace, 'fetch_statistics', return_value=self.page(total=None)):
+            result = daily.scan_due(deadline=daily.time.monotonic()+60, observer=observer)
+        self.assertEqual(result['failed'], 0)
+        observer.assert_called_once_with(4, 'statistics_daily', 'skipped', reason='statistics_total_unavailable')
+        self.assertEqual(AvitoStatisticsRun.objects.get().state, 'partial')
+        self.assertFalse(AvitoDailyStatistic.objects.exists())
+
+    def test_incomplete_callback_is_not_emitted_after_scope_or_lease_loss(self):
+        from unittest.mock import Mock
+        def changed(*args, **kwargs):
+            current = ChannelConnection.objects.get(pk=4)
+            current.settings[daily.KEY]['lease'] = 'another-worker'
+            current.save(update_fields=['settings'])
+            return avito_workspace.statistics_data({'result': {}},
+                start='2026-10-23', end='2026-10-23', grouping='item', offset=0)
+        observer = Mock()
+        with patch.object(avito_workspace, 'fetch_statistics', side_effect=changed):
+            self.assertEqual(daily.collect_next(observer=observer), 'failed')
+        observer.assert_not_called()
+        self.assertFalse(AvitoDailyStatistic.objects.exists())
 
 
 class DailySourceComparisonTests(SimpleTestCase):

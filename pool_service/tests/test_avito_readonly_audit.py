@@ -1254,3 +1254,52 @@ class StatisticsSourceProjectionTests(SimpleTestCase):
             self.assertEqual({"error": "audit_statistics_source_evidence_unavailable"},
                 receipt.connection(self.parent(statistics_evidence(), **changes))["statistics_source_evidence"])
         self.assertNotIn("PRIVATE", json.dumps(result))
+
+
+class OwnStatisticsOptionalContractProjectionTests(SimpleTestCase):
+    def test_new_incomplete_classification_is_closed_idempotent_and_not_zero(self):
+        raw = statistics_evidence()
+        gap = raw["gap_diagnostics"]
+        first = gap["dates"][0]
+        first.update(latest_attempt_run_id=72, latest_attempt_state="partial",
+            latest_attempt_error_code="statistics_fields_unavailable",
+            latest_attempt_finished_at="2026-10-25T17:22:00+00:00")
+        gap["last_attempt"] = {"state": "observed", "run_id": 72, "source_date": first["date"],
+            "offset": 0, "phase": "fetch_statistics", "exception_class": "AvitoError",
+            "error_code": "statistics_fields_unavailable", "outcome": "skipped",
+            "started_at": "2026-10-25T17:21:59+00:00", "finished_at": "2026-10-25T17:22:00+00:00",
+            "statistics_reason": "groupings_and_total_absent",
+            "statistics_shape": {"groupings_kind": "missing", "data_total_count_kind": "missing",
+                                 "provider_error_present": False},
+            "raw_provider": "PRIVATE"}
+        result = receipt.statistics_source_evidence(raw)
+        self.assertEqual(result, receipt.statistics_source_evidence(result))
+        self.assertEqual(result["completed_dates"], 0)
+        attempt = result["gap_diagnostics"]["last_attempt"]
+        self.assertEqual(attempt["error_code"], "statistics_fields_unavailable")
+        self.assertEqual(attempt["outcome"], "skipped")
+        self.assertFalse(result["periods"][0]["pages_complete"])
+        self.assertNotIn("PRIVATE", repr(result))
+        for key, value in (("statistics_reason", "groupings_type"),
+                ("statistics_shape", {"raw": "PRIVATE"}),
+                ("error_code", "statistics_fields_unavailable PRIVATE")):
+            invalid = deepcopy(raw)
+            invalid["gap_diagnostics"]["last_attempt"][key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                receipt.statistics_source_evidence(invalid)
+
+    def test_legacy_failed_attempt_is_not_reclassified_by_the_new_contract(self):
+        raw = statistics_evidence()
+        raw["gap_diagnostics"]["last_attempt"] = {
+            "state": "observed", "run_id": 72,
+            "source_date": raw["gap_diagnostics"]["dates"][0]["date"],
+            "offset": 0, "phase": "fetch_statistics", "exception_class": "AvitoError",
+            "error_code": "provider_data_invalid", "outcome": "failed",
+            "started_at": "2026-10-25T17:21:59+00:00", "finished_at": "2026-10-25T17:22:00+00:00",
+            "statistics_reason": "groupings_type",
+            "statistics_shape": {"groupings_kind": "missing", "data_total_count_kind": "missing",
+                                 "provider_error_present": False}}
+        projected = receipt.statistics_source_evidence(raw)["gap_diagnostics"]["last_attempt"]
+        self.assertEqual(projected["error_code"], "provider_data_invalid")
+        self.assertEqual(projected["outcome"], "failed")
+        self.assertEqual(projected["statistics_reason"], "groupings_type")
