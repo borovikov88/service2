@@ -23,20 +23,31 @@ def entry_for(request, organization):
     return ""
 
 
-def entry_options(user):
+def entry_options(user, *, navigation_accesses=None):
     """Bounded-query advisory choices; selected pages recheck canonical policy.
 
     Keep these predicates aligned with can_view_team_deals/can_activate_pilot.
-    This list never authorizes an API request or an activation.
+    Navigation alone may reuse its request's existing role snapshot. Page choices
+    omit that argument and read current memberships. This list never authorizes
+    an API request or an activation.
     """
     if not user or not user.is_authenticated or not get_user_model().objects.filter(pk=user.pk, is_active=True).exists():
         return []
-    memberships = OrganizationAccess.objects.filter(user_id=user.pk, organization_id=OuterRef("pk"))
+    if navigation_accesses is None:
+        memberships = OrganizationAccess.objects.filter(user_id=user.pk, organization_id=OuterRef("pk"))
+        organizations = Organization.objects.filter(accesses__user_id=user.pk).distinct().annotate(
+            entry_owner=Exists(memberships.filter(role="owner")),
+            entry_manager=Exists(memberships.filter(role="manager")),
+        )
+    else:
+        accesses = [access for access in navigation_accesses if access.user_id == user.pk]
+        organizations = Organization.objects.filter(pk__in={access.organization_id for access in accesses}).annotate(
+            entry_owner=Q(pk__in={access.organization_id for access in accesses if access.role == "owner"}),
+            entry_manager=Q(pk__in={access.organization_id for access in accesses if access.role == "manager"}),
+        )
     blocked_employees = Employee.objects.filter(user_id=user.pk, organization_id=OuterRef("pk")).filter(
         Q(is_active=False) | Q(employment_status=Employee.STATUS_DISMISSED))
-    organizations = Organization.objects.filter(accesses__user_id=user.pk).distinct().annotate(
-        entry_owner=Exists(memberships.filter(role="owner")),
-        entry_manager=Exists(memberships.filter(role="manager")),
+    organizations = organizations.annotate(
         entry_grant=Exists(CrmAccess.objects.filter(user_id=user.pk, organization_id=OuterRef("pk"), view_team_deals=True)),
         entry_blocked=Exists(blocked_employees),
     ).filter(entry_blocked=False).filter(

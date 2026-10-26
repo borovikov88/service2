@@ -6,7 +6,9 @@ import uuid
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
+from django.db import connection
 from django.test import Client as HttpClient, RequestFactory, TestCase
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 
@@ -423,19 +425,24 @@ class ColdWorkspaceEntryTests(TestCase):
     def test_navigation_is_constant_query_advisory_only_and_revocation_is_fresh(self):
         from pool_service.crm_live_views import workspace
         from pool_service.crm_pilot_views import start
+        from pool_service.services.permissions import organization_accesses_for_user
         from pool_service.templatetags.crm_live import crm_workspace_entry
 
         request = RequestFactory().get(self.workspace)
         request.user = self.user
-        with self.assertNumQueries(2):
+        # Base rendering already has this advisory snapshot from plan_status_context.
+        organization_accesses_for_user(request.user)
+        with self.assertNumQueries(2), CaptureQueriesContext(connection) as queries:
             self.assertEqual(crm_workspace_entry({"request": request}), self.start + self.scope)
+        self.assertFalse(any("pool_service_organizationaccess" in query["sql"].lower() for query in queries.captured_queries))
         with self.assertNumQueries(0):
             for _ in range(4):
                 self.assertEqual(crm_workspace_entry({"request": request}), self.start + self.scope)
         other_org = Organization.objects.create(name="Additional eligible choice")
         OrganizationAccess.objects.create(organization=other_org, user=self.user, role="owner")
         other_request = RequestFactory().get(self.workspace)
-        other_request.user = self.user
+        other_request.user = get_user_model().objects.get(pk=self.user.pk)
+        organization_accesses_for_user(other_request.user)
         with self.assertNumQueries(2):
             self.assertEqual(crm_workspace_entry({"request": other_request}), self.workspace)
         scoped_request = RequestFactory().get(self.workspace + self.scope)
@@ -446,6 +453,9 @@ class ColdWorkspaceEntryTests(TestCase):
             workspace(scoped_request)
         with self.assertRaises(PermissionDenied):
             start(scoped_request)
+        # Page discovery must ignore the stale role snapshot still held by request.user.
+        self.assertEqual(workspace(request).url, self.start + "?org_id=" + str(other_org.pk))
+        self.assertEqual(start(request).url, self.start + "?org_id=" + str(other_org.pk))
         # A still-authenticated, previously loaded user object cannot bypass a fresh DB check.
         OrganizationAccess.objects.create(organization=self.org, user=self.user, role="owner")
         get_user_model().objects.filter(pk=self.user.pk).update(is_active=False)
