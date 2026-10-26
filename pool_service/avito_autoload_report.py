@@ -36,6 +36,49 @@ ERRORS = {
 CONSISTENCY_GUARDS = {"queried_rows_changed", "shop_xml_snapshot_changed",
                       "profile_snapshot_changed", "summary_snapshot_changed"}
 
+ROW_DIFFERENCE_LABELS = {
+    "missing_identity": "нет совпадающей пары XML ID / ID Авито",
+    "avito_status": "статус объявления", "avito_date_end": "срок размещения",
+    "feed_name": "название источника", "section": "раздел отчёта",
+    "messages": "сообщения Авито", "message_order_only": "только порядок сообщений",
+    "message_time_only": "только время сообщений", "other_fields": "прочие поля строки",
+}
+
+
+def safe_row_differences(value):
+    """Fixed field names and bounded counts only; never provider values or IDs."""
+    if not isinstance(value, dict):
+        return {}
+    return {key: value[key] for key in ROW_DIFFERENCE_LABELS
+            if type(value.get(key)) is int and 0 < value[key] <= PAGE_SIZE}
+
+
+def row_difference_counts(probe_rows, by_identity):
+    counts = Counter()
+    for row in probe_rows:
+        other = by_identity.get((row["ad_id"], row["avito_id"]))
+        if other is None:
+            counts["missing_identity"] += 1
+            continue
+        for key in ("avito_status", "avito_date_end", "feed_name", "section", "messages"):
+            if row[key] != other[key]:
+                counts[key] += 1
+        # Diagnose ordering/timestamp-only differences without accepting them.
+        def messages(values, *, omit_time=False):
+            return Counter(json.dumps({key: value for key, value in entry.items()
+                                       if not (omit_time and key == "updated_at")}, sort_keys=True)
+                           for entry in values)
+        if row["messages"] != other["messages"]:
+            if messages(row["messages"]) == messages(other["messages"]):
+                counts["message_order_only"] += 1
+            elif messages(row["messages"], omit_time=True) == messages(other["messages"], omit_time=True):
+                counts["message_time_only"] += 1
+        known = {"ad_id", "avito_id", "avito_status", "avito_date_end", "feed_name", "section", "messages"}
+        if {key: value for key, value in row.items() if key not in known} != {
+                key: value for key, value in other.items() if key not in known}:
+            counts["other_fields"] += 1
+    return safe_row_differences(counts)
+
 
 def consistency_guard(value):
     return value if isinstance(value, str) and value in CONSISTENCY_GUARDS else None
@@ -43,11 +86,24 @@ def consistency_guard(value):
 
 class ReportChanged(AvitoError):
     """Fixed guard identity only; the original top-level rejection code remains."""
-    def __init__(self, guard):
+    def __init__(self, guard, *, row_differences=None):
         if consistency_guard(guard) is None:
             raise ValueError("invalid report consistency guard")
         super().__init__("autoload_report_changed")
         self.consistency_guard = guard
+        self.row_differences = safe_row_differences(row_differences) if guard == "queried_rows_changed" else {}
+
+
+def failure_detail(error):
+    detail = ERRORS[str(error)]
+    if (str(error) == "autoload_report_changed"
+            and getattr(error, "consistency_guard", None) == "queried_rows_changed"):
+        detail += " Строки выборки по XML ID отличаются от проверочной страницы."
+        counts = safe_row_differences(getattr(error, "row_differences", None))
+        if counts:
+            detail += " Различия (число строк): " + "; ".join(
+                f"{ROW_DIFFERENCE_LABELS[key]} — {count}" for key, count in counts.items()) + "."
+    return detail
 
 
 def _invalid():
@@ -376,7 +432,7 @@ def _query_shop_rows(get, base, snapshot, probe_rows, total, deadline):
         raise AvitoError("autoload_report_pagination")
     by_identity = {(row["ad_id"], row["avito_id"]): row for row in rows}
     if any(by_identity.get((row["ad_id"], row["avito_id"])) != row for row in probe_rows):
-        raise ReportChanged("queried_rows_changed")
+        raise ReportChanged("queried_rows_changed", row_differences=row_difference_counts(probe_rows, by_identity))
     after = _shop_snapshot(deadline)
     if after is None or after[1] != digest:
         raise ReportChanged("shop_xml_snapshot_changed")
