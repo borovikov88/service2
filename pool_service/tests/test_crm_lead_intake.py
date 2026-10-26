@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
-from django.db import transaction
+from django.db import connection, transaction
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -143,6 +143,26 @@ class LeadIntakeTests(Fixture, TestCase):
         CallPrivateNumber.objects.create(organization=self.org, owner=self.user, phone_key="9001234567")
         self.assertEqual(self.deliver("call").error_code, "private_ignored")
         self.assertFalse(CrmLead.objects.exists())
+
+    def test_corrupt_source_tenant_hides_both_original_and_derived_lead(self):
+        self.incoming()
+        self.deliver()
+        original = CrmLead.objects.get()
+        derived = CrmLead.objects.create(organization=self.org, title="Synthetic derived need",
+            origin_lead=original, assignee=self.user)
+        self.assertEqual(set(leads_for_user(self.user, self.org).values_list("pk", flat=True)),
+            {original.pk, derived.pk})
+        other = Organization.objects.create(name="Synthetic foreign source tenant")
+        source = CrmLeadSource.objects.get(lead=original)
+        # Simulate storage corruption in the isolated test database. Supported
+        # ORM writes already prohibit this immutable provenance reassignment.
+        table = connection.ops.quote_name(CrmLeadSource._meta.db_table)
+        with connection.cursor() as cursor:
+            cursor.execute(f"UPDATE {table} SET organization_id = %s WHERE id = %s", [other.pk, source.pk])
+        self.assertFalse(leads_for_user(self.user, self.org).exists())
+        for lead in (original, derived):
+            self.assertFalse(can_read_lead(self.user, self.org, lead))
+            self.assertEqual(source_metadata(user=self.user, organization=self.org, lead=lead), [])
 
     def test_later_privacy_and_whitespace_aliases_hide_list_and_detail(self):
         call = self.mapped_call()

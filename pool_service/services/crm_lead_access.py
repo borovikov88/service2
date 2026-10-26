@@ -82,21 +82,18 @@ def _without_private_calls(queryset):
     return queryset.annotate(_crm_private=Exists(hidden)).filter(_crm_private=False)
 
 
-def _readable_sources(user, organization):
-    """Scoped locator queryset, with live source permission and connection binding."""
+def _source_access_annotations(user, organization):
+    """Annotate authority without discarding invalid or foreign source links."""
     org_id = organization.pk
     capabilities = _communication_caps(user, organization)
-    source_links = CrmLeadSource.objects.filter(
-        organization_id=org_id, lead__organization_id=org_id,
-        inbox__organization_id=org_id, inbox__scope_verified=True,
-    )
+    source_links = CrmLeadSource.objects.all()
     channel = ChannelConnection.objects.filter(
         pk=OuterRef("inbox__channel_id_snapshot"), is_active=True,
         channel__organization_id=org_id, channel__is_active=True,
         channel__kind=OuterRef("inbox__provider_kind"),
         external_id=OuterRef("inbox__account_id_snapshot"),
     )
-    source_links = source_links.annotate(_crm_channel=Exists(channel)).filter(_crm_channel=True)
+    source_links = source_links.alias(_crm_channel=Exists(channel))
     messages = ConversationMessage.objects.filter(
         pk=OuterRef("inbox__source_id"), direction="in",
         conversation__organization_id=org_id,
@@ -140,10 +137,23 @@ def _readable_sources(user, organization):
         else:
             calls = calls.filter(Q(employee_id=user.pk) | Q(peer_employee_id=user.pk))
     calls = _without_private_calls(calls)
-    return source_links.annotate(_crm_message=Exists(messages), _crm_call=Exists(calls)).filter(
+    return source_links.alias(_crm_message=Exists(messages), _crm_call=Exists(calls))
+
+
+def _readable_source_scope(organization):
+    return Q(
+        organization_id=organization.pk, lead__organization_id=organization.pk,
+        inbox__organization_id=organization.pk, inbox__scope_verified=True,
+        _crm_channel=True,
+    ) & (
         Q(inbox__source_type="message", _crm_message=True)
         | Q(inbox__source_type="call", inbox__provider_kind="megafon", _crm_call=True)
     )
+
+
+def _readable_sources(user, organization):
+    """Scoped locator queryset, with live source permission and connection binding."""
+    return _source_access_annotations(user, organization).filter(_readable_source_scope(organization))
 
 
 def leads_for_user(user, organization):
@@ -151,10 +161,13 @@ def leads_for_user(user, organization):
         return CrmLead.objects.none()
     # An inconsistent, revoked or private source hides the derived card. An
     # independent manually created lead has no source link and remains readable.
-    allowed_sources = _readable_sources(user, organization).values("pk")
-    forbidden = CrmLeadSource.objects.filter(
+    # Test the same predicate on each linked source directly. Nesting a second
+    # source query through NOT IN overflows older SQLite parsers once the phone
+    # privacy expression is expanded. Keep every invalid link in this predicate
+    # so corrupt/foreign links still hide the whole card, including its origin.
+    forbidden = _source_access_annotations(user, organization).filter(
         Q(lead_id=OuterRef("pk")) | Q(lead_id=OuterRef("origin_lead_id"))
-    ).exclude(pk__in=allowed_sources)
+    ).filter(~_readable_source_scope(organization))
     return CrmLead.objects.filter(organization_id=organization.pk).filter(
         Q(client__isnull=True) | Q(client__organization_id=organization.pk)
     ).filter(
