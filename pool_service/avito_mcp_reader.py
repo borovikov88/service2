@@ -111,6 +111,7 @@ def _feed(connection):
 
 def _listings(connection, _actor, _arguments):
     from pool_service.avito_services_feed import entries
+    from pool_service.avito_placement_continuity import aware_time, source_calendar_date
     feed = _feed(connection)
     if feed is None:
         return {"state": "unavailable", "source": "avito_item_detail", "received_at": None,
@@ -140,18 +141,29 @@ def _listings(connection, _actor, _arguments):
                 or status not in {"active", "old", "removed", "blocked", "rejected"}):
             continue
         seen.add(identifier)
-        finish = (_date_time_future(row.get("finish_time"))
-                  if row.get("finish_time_source") == "avito_item_detail.finish_time" else None)
+        instant = (aware_time(row.get("finish_time"))
+                   if row.get("finish_time_source") == "avito_item_detail.finish_time" else None)
+        finish = instant.isoformat() if instant is not None else None
+        evidence = row.get("finish_evidence")
+        evidence = evidence if type(evidence) is dict else {}
+        calendar = (source_calendar_date(evidence.get("source_finish_date"))
+            if row.get("finish_time") is None
+            and evidence.get("source") == "avito_item_detail.finish_time"
+            and evidence.get("finish_state") in {"timezone_missing", "calendar_date_only"}
+            and evidence.get("finish_time") is None else None)
         rows.append({"avito_id": identifier, "status": status, "received_at": when,
             "source": "avito_item_detail", "finish_time": finish,
             "finish_time_source": "avito_item_detail.finish_time" if finish else None,
+            "source_finish_date": calendar.isoformat() if calendar is not None else None,
+            "source_timezone": "unknown" if calendar is not None else None,
             "deadline_known": finish is not None})
     return {"state": "available" if rows else "unavailable", "source": "avito_item_detail",
             "received_at": _when(feed.last_checked_at), "listings": rows,
             "completeness": {"expected_ids": sorted(expected), "expected_published_ids": sorted(expected_published),
                 "observed_ids": sorted(seen),
                 "all_listings": valid_rows and identities_valid and bool(expected) and seen == expected,
-                "known_deadlines": sum(row["deadline_known"] for row in rows)},
+                "known_deadlines": sum(row["deadline_known"] for row in rows),
+                "source_calendar_dates_without_timezone": sum(row["source_finish_date"] is not None for row in rows)},
             "reactivation_performed": False, "additional_cost_confirmed": False}
 
 

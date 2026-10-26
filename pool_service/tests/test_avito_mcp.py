@@ -421,6 +421,70 @@ class AvitoMcpTests(TestCase):
         self.assertFalse(result["completeness"]["all_listings"])
 
 
+    def test_source_calendar_dates_are_returned_without_inventing_deadline_time(self):
+        from pool_service.avito_feed_models import AvitoServicesFeed
+        when = timezone.now()
+        owned = [{"Id":"synthetic-one","AvitoId":"1001"}, {"Id":"synthetic-two","AvitoId":"1002"}]
+        observations = [{"avito_id":row["AvitoId"], "id":row["Id"], "status":"active",
+            "source":"avito_item_detail", "checked_at":when.isoformat(), "finish_time":None,
+            "finish_time_source":"", "finish_evidence":{
+                "source":"avito_item_detail.finish_time", "finish_state":state,
+                "finish_time":None, "source_finish_date":"2030-01-02"}}
+            for row, state in zip(owned, ("timezone_missing", "calendar_date_only"))]
+        AvitoServicesFeed.objects.create(connection=self.connection, account_id="446312402",
+            organization_id_at_import=self.organization.pk, draft=[{"rows":owned}],
+            published=[{"rows":owned[:1]}], last_checked_at=when, latest_observations=observations)
+        result = self._call(name="get_avito_listings", token=self._token()).json()["result"]["structuredContent"]["data"]
+        self.assertEqual(len(result["listings"]), 2)
+        self.assertTrue(result["completeness"]["all_listings"])
+        self.assertEqual(result["completeness"]["known_deadlines"], 0)
+        self.assertEqual(result["completeness"]["source_calendar_dates_without_timezone"], 2)
+        for row in result["listings"]:
+            self.assertEqual(row["source_finish_date"], "2030-01-02")
+            self.assertEqual(row["source_timezone"], "unknown")
+            self.assertIsNone(row["finish_time"])
+            self.assertFalse(row["deadline_known"])
+
+    def test_foreign_malformed_or_conflicting_calendar_evidence_remains_unknown(self):
+        from pool_service.avito_feed_models import AvitoServicesFeed
+        when = timezone.now()
+        good = {"source":"avito_item_detail.finish_time", "finish_state":"timezone_missing",
+                "finish_time":None, "source_finish_date":"2030-01-02"}
+        bad = [
+            good | {"source":"foreign.finish_time"},
+            good | {"source_finish_date":"2030-02-30"},
+            good | {"source_finish_date":"2030-01-02T00:00:00"},
+            good | {"finish_state":"known"},
+            good | {"finish_time":"2030-01-02T00:00:00Z"},
+        ]
+        owned = [{"Id":f"synthetic-{i}", "AvitoId":str(1001+i)} for i in range(len(bad)+2)]
+        observations = [{"avito_id":row["AvitoId"], "id":row["Id"], "status":"active",
+            "source":"avito_item_detail", "checked_at":when.isoformat(), "finish_time":None,
+            "finish_time_source":"", "finish_evidence":evidence}
+            for row, evidence in zip(owned, bad)]
+        # A valid-looking calendar from another XML identity is never adopted.
+        observations.append({"avito_id":owned[-2]["AvitoId"], "id":"wrong-identity",
+            "status":"active", "source":"avito_item_detail", "checked_at":when.isoformat(),
+            "finish_time":None, "finish_evidence":good})
+        # RFC3339 -00:00 means an unknown offset, not a confirmed UTC instant.
+        observations.append({"avito_id":owned[-1]["AvitoId"], "id":owned[-1]["Id"],
+            "status":"active", "source":"avito_item_detail", "checked_at":when.isoformat(),
+            "finish_time":"2030-01-02T00:00:00-00:00", "finish_time_source":"avito_item_detail.finish_time"})
+        AvitoServicesFeed.objects.create(connection=self.connection, account_id="446312402",
+            organization_id_at_import=self.organization.pk, draft=[{"rows":owned}],
+            published=[{"rows":owned}], last_checked_at=when, latest_observations=observations)
+        result = self._call(name="get_avito_listings", token=self._token()).json()["result"]["structuredContent"]["data"]
+        self.assertEqual(len(result["listings"]), len(owned)-1)
+        self.assertFalse(result["completeness"]["all_listings"])
+        self.assertEqual(result["completeness"]["known_deadlines"], 0)
+        self.assertEqual(result["completeness"]["source_calendar_dates_without_timezone"], 0)
+        for row in result["listings"]:
+            self.assertIsNone(row["source_finish_date"])
+            self.assertIsNone(row["source_timezone"])
+            self.assertIsNone(row["finish_time"])
+            self.assertFalse(row["deadline_known"])
+
+
 from django.test import TransactionTestCase
 
 
