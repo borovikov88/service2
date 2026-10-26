@@ -511,7 +511,7 @@ class InboxReconciliationTests(Fixture, TestCase):
         call_command("crm_inbox", "status", organization=self.org.pk, source_type="message", connection=self.connection.pk, stdout=output)
         status = json.loads(output.getvalue())
         self.assertEqual(status["counts"], {"awaiting_consumer": 1})
-        self.assertFalse(status["consumer_available"])
+        self.assertTrue(status["consumer_available"])
         self.assertNotIn("Synthetic private body", output.getvalue())
         other = Organization.objects.create(name="Other synthetic")
         with self.assertRaises(CommandError):

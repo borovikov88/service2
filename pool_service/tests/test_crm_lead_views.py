@@ -1,0 +1,194 @@
+"""Synthetic HTTP acceptance for the lead -> qualified deals vertical slice."""
+from datetime import timedelta
+import json
+import uuid
+from unittest.mock import patch
+
+from django.contrib.auth import get_user_model
+from django.core.exceptions import PermissionDenied
+from django.test import Client as HttpClient, TestCase
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
+from django.urls import reverse
+from django.utils import timezone
+
+from pool_service.crm_commercial_models import CrmAccess, CrmDeal, CrmLead, CrmLeadDealLink, CrmPipeline
+from pool_service.models import Client, Employee, Organization, OrganizationAccess, ServiceTask
+from pool_service.services.crm_pilot_activation import activate_owner_pilot
+
+
+class LeadWorkspaceTests(TestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(name="Synthetic lead workspace", plan_type=Organization.PLAN_COMPANY_PAID,
+            paid_until=timezone.now() + timedelta(days=30))
+        self.actor = get_user_model().objects.create_user("lead-owner")
+        self.membership = OrganizationAccess.objects.create(organization=self.org, user=self.actor, role="owner")
+        self.employee = Employee.objects.create(organization=self.org, user=self.actor, display_name="Synthetic owner")
+        self.client.force_login(self.actor)
+        activate_owner_pilot(actor=self.actor, organization_id=self.org.pk)
+        self.org.refresh_from_db()
+        self.grant = CrmAccess.objects.get(organization=self.org, user=self.actor)
+        for name in ("view_leads", "create_own_leads", "take_leads", "edit_own_leads", "transition_own_leads", "qualify_own_leads"):
+            setattr(self.grant, name, True)
+        self.grant.save()
+        self.customer = Client.objects.create(organization=self.org, name="Synthetic customer")
+        self.pipeline = CrmPipeline.objects.get(organization=self.org, code="construction")
+        self.due = (timezone.now() + timedelta(days=1)).isoformat()
+
+    def url(self, name, *args, org=None):
+        return reverse(name, args=args) + "?org_id=" + str(org or self.org.pk)
+
+    def payload(self, kind="lead.create", lead=None, changes=None):
+        return {"operation_key": str(uuid.uuid4()), "command_type": kind,
+            "subject_id": lead["id"] if lead else None, "expected_revision": lead["revision"] if lead else None,
+            "changes": changes if changes is not None else {"title": "Synthetic need", "need": "Customer asks for construction",
+                "next_action": {"title": "Clarify synthetic requirement", "due_at": self.due}}}
+
+    def post(self, payload):
+        return self.client.post(self.url("crm_live_lead_command"), json.dumps(payload), content_type="application/json")
+
+    def create(self, **changes):
+        payload = self.payload()
+        payload["changes"].update(changes)
+        response = self.post(payload)
+        self.assertEqual(response.status_code, 200, response.content)
+        return response.json()["lead"]
+
+    def test_manual_without_contact_real_task_and_qualification_in_two_independent_deals(self):
+        lead = self.create()
+        self.assertIsNone(lead["client"])
+        self.assertEqual(lead["status"], "working")
+        self.assertEqual(lead["next_action"]["title"], "Clarify synthetic requirement")
+        self.assertEqual(self.client.get(self.url("crm_live_leads")).status_code, 200)
+        self.assertEqual(len(self.client.get(self.url("crm_live_lead_data") + "&mode=mine").json()["leads"]), 1)
+        deals = [{"pipeline_id": self.pipeline.pk, "client_id": self.customer.pk, "title": title,
+            "next_action": {"title": "Discuss " + title, "due_at": self.due}} for title in ("Build pool", "Build sauna")]
+        payload = self.payload("lead.qualify", lead, {"deals": deals})
+        response = self.post(payload)
+        self.assertEqual(response.status_code, 200, response.content)
+        body = response.json()
+        self.assertEqual(body["lead"]["result"], "qualified")
+        self.assertEqual(len(body["deals"]), 2)
+        self.assertEqual(self.post(payload).json()["result"], body["result"])
+        self.assertEqual((CrmDeal.objects.count(), CrmLeadDealLink.objects.count(), ServiceTask.objects.count()), (2, 2, 3))
+        self.assertEqual(self.client.get(self.url("crm_live_lead_data") + "&mode=mine").json()["total"], 0)
+        self.assertEqual(self.client.get(self.url("crm_live_lead_data") + "&mode=closed").json()["total"], 1)
+
+    def test_take_is_explicit_and_stale_competitor_gets_conflict(self):
+        lead = CrmLead.objects.create(organization=self.org, title="Shared synthetic inquiry", need="Requirement", intake_reason="unassigned")
+        before = self.client.get(self.url("crm_live_lead_detail", lead.pk)).json()["lead"]
+        self.assertEqual(before["intake_reason_label"], "Требуется ответственный")
+        lead.refresh_from_db()
+        self.assertIsNone(lead.assignee_id)
+        payload = self.payload("lead.take", before, {"next_action": {"title": "Call back", "due_at": self.due}})
+        response = self.post(payload)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["lead"]["assignee"]["id"], self.actor.pk)
+        self.assertEqual(response.json()["lead"]["intake_reason_label"], "")
+        lead.refresh_from_db()
+        self.assertEqual(lead.intake_reason, "unassigned")
+        self.assertEqual(self.post(payload).json()["result"], response.json()["result"])
+        other = get_user_model().objects.create_user("lead-other")
+        OrganizationAccess.objects.create(organization=self.org, user=other, role="manager")
+        CrmAccess.objects.create(organization=self.org, user=other, view_leads=True, take_leads=True)
+        self.client.force_login(other)
+        competitor = self.payload("lead.take", before, payload["changes"])
+        self.assertEqual(self.post(competitor).status_code, 409)
+        self.assertEqual(ServiceTask.objects.count(), 1)
+
+    def test_server_filters_pagination_review_and_no_history_per_list(self):
+        for index in range(53):
+            CrmLead.objects.create(organization=self.org, title="Paginated synthetic " + str(index), need="bounded")
+        reviewed = CrmLead.objects.create(organization=self.org, title="Follow-up after closed", status="closed", result="non_target", needs_review=True)
+        first = self.client.get(self.url("crm_live_lead_data")).json()
+        self.assertEqual((first["total"], len(first["leads"]), first["pages"]), (53, 50, 2))
+        second = self.client.get(self.url("crm_live_lead_data") + "&page=2").json()
+        self.assertEqual(len(second["leads"]), 3)
+        self.assertFalse({row["id"] for row in first["leads"]} & {row["id"] for row in second["leads"]})
+        self.assertNotIn("events", first)
+        self.assertEqual(self.client.get(self.url("crm_live_lead_data") + "&mode=review").json()["leads"][0]["id"], reviewed.pk)
+        self.assertEqual(self.client.get(self.url("crm_live_lead_data") + "&q=Absent").json()["total"], 0)
+        for suffix in ("&mode=foreign", "&status=bad", "&page=-1"):
+            self.assertEqual(self.client.get(self.url("crm_live_lead_data") + suffix).status_code, 400)
+
+    def test_team_read_does_not_expose_private_next_task_or_allow_others_edit(self):
+        lead = self.create(client_id=self.customer.pk)
+        other = get_user_model().objects.create_user("lead-reader")
+        OrganizationAccess.objects.create(organization=self.org, user=other, role="manager")
+        CrmAccess.objects.create(organization=self.org, user=other, view_leads=True, edit_own_leads=True, transition_own_leads=True)
+        self.client.force_login(other)
+        response = self.client.get(self.url("crm_live_lead_detail", lead["id"]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["lead"]["next_action"], {"restricted": True})
+        self.assertNotContains(response, "Clarify synthetic requirement")
+        self.assertFalse(response.json()["lead"]["can_edit"])
+        self.assertEqual(self.post(self.payload("lead.edit", lead, {"title": "Unauthorized"})).status_code, 403)
+
+    def test_explicit_scope_hr_revocation_and_foreign_targets_fail_closed(self):
+        lead = self.create()
+        foreign = Organization.objects.create(name="Foreign synthetic scope")
+        foreign_client = Client.objects.create(organization=foreign, name="Hidden synthetic customer")
+        for url in (reverse("crm_live_lead_data"), self.url("crm_live_lead_data", org=foreign.pk), self.url("crm_live_lead_data") + "&org_id=1"):
+            self.assertEqual(self.client.get(url).status_code, 403)
+        self.assertEqual(self.post(self.payload(changes={"title": "Need", "need": "Requirement", "client_id": foreign_client.pk,
+            "next_action": {"title": "Call", "due_at": self.due}})).status_code, 403)
+        self.employee.is_active = False
+        self.employee.save(update_fields=["is_active"])
+        self.assertEqual(self.client.get(self.url("crm_live_lead_detail", lead["id"])).status_code, 403)
+
+    def test_strict_payload_csrf_and_source_access_rechecked_on_detail(self):
+        csrf = HttpClient(enforce_csrf_checks=True)
+        csrf.force_login(self.actor)
+        self.assertEqual(csrf.post(self.url("crm_live_lead_command"), json.dumps(self.payload()), content_type="application/json").status_code, 403)
+        for value in ("[]", "null", "{", '{"unexpected":true}', '{"operation_key":"x","command_type":[],"changes":{}}'):
+            self.assertEqual(self.client.post(self.url("crm_live_lead_command"), value, content_type="application/json").status_code, 400)
+        lead = self.create(title="</script><script>synthetic()</script>")
+        self.assertNotContains(self.client.get(self.url("crm_live_leads") + "&mode=mine"), "<script>synthetic()</script>")
+        with patch("pool_service.services.crm_lead_access.can_read_lead", return_value=False):
+            self.assertEqual(self.client.get(self.url("crm_live_lead_detail", lead["id"])).status_code, 404)
+        self.client.logout()
+        self.assertEqual(self.client.get(self.url("crm_live_lead_data")).status_code, 401)
+
+    def test_lost_postcommit_read_is_verifiable_same_operation(self):
+        payload = self.payload()
+        with patch("pool_service.crm_lead_views._detail", side_effect=PermissionDenied):
+            response = self.post(payload)
+        self.assertEqual((response.status_code, response.json()["code"]), (503, "verify_required"))
+        response = self.post(payload)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual((CrmLead.objects.count(), ServiceTask.objects.count()), (1, 1))
+
+    def test_task_version_conflict_preserves_calendar_edit(self):
+        lead = self.create(client_id=self.customer.pk)
+        task = ServiceTask.objects.get(pk=lead["next_action"]["id"])
+        task.title = "Changed in calendar"
+        task.save(update_fields=["title", "updated_at"])
+        response = self.post(self.payload("lead.edit", lead, {"title": "Need changed", "expected_task_version": lead["next_action"]["version"],
+            "next_action": {"title": "Stale input", "due_at": self.due}}))
+        self.assertEqual(response.status_code, 409, response.content)
+        task.refresh_from_db()
+        self.assertEqual(task.title, "Changed in calendar")
+
+    def test_closed_followup_can_be_acknowledged_without_a_fabricated_deal(self):
+        lead = CrmLead.objects.create(organization=self.org, title="Resolved synthetic requirement", assignee=self.actor,
+            status="closed", result="non_target", needs_review=True)
+        before = self.client.get(self.url("crm_live_lead_detail", lead.pk)).json()["lead"]
+        self.assertTrue(before["can_acknowledge"])
+        payload = self.payload("lead.acknowledge", before, {})
+        response = self.post(payload)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual((response.json()["lead"]["status"], response.json()["lead"]["result"], response.json()["lead"]["needs_review"]), ("closed", "non_target", False))
+        self.assertFalse(CrmDeal.objects.exists())
+        self.assertEqual(self.post(payload).json()["result"], response.json()["result"])
+
+    def test_list_query_count_does_not_grow_per_visible_next_task(self):
+        self.create()
+        with CaptureQueriesContext(connection) as first:
+            response = self.client.get(self.url("crm_live_lead_data") + "&mode=mine")
+            self.assertEqual(response.status_code, 200)
+        for index in range(5):
+            self.create(title="Independent synthetic requirement " + str(index))
+        with CaptureQueriesContext(connection) as many:
+            response = self.client.get(self.url("crm_live_lead_data") + "&mode=mine")
+            self.assertEqual(len(response.json()["leads"]), 6)
+        self.assertLessEqual(len(many), len(first) + 2, "List must batch task privacy and avoid per-row version hashing")
