@@ -48,7 +48,7 @@ jobs:
       service_deploy: ${{ needs.scope.outputs.service_deploy }}
       calculator_deploy: ${{ needs.scope.outputs.calculator_deploy }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       SECRET_KEY: ci-only-secret
       DEBUG: "1"
@@ -113,19 +113,49 @@ jobs:
         run: |
           python manage.py check --settings=service_site.test_settings
           python manage.py makemigrations --check --dry-run --settings=service_site.test_settings
-      - name: Chromium commercial card acceptance
+      - name: Install Chromium commercial card dependencies
         if: steps.reuse.outputs.verified != 'true'
-        timeout-minutes: 8
+        timeout-minutes: 20
         shell: bash
         run: |
           set -euo pipefail
           browser_dir="$(mktemp -d "$RUNNER_TEMP/service2-crm-browser.XXXXXX")"
-          trap 'rm -rf -- "$browser_dir"' EXIT
-          npm install --prefix "$browser_dir" --ignore-scripts --no-audit --no-fund --package-lock=false playwright@1.62.1
           export NODE_PATH="$browser_dir/node_modules"
           export PLAYWRIGHT_BROWSERS_PATH="$browser_dir/browsers"
+          printf 'CRM_CARD_BROWSER_DIR=%s\nNODE_PATH=%s\nPLAYWRIGHT_BROWSERS_PATH=%s\n' \
+            "$browser_dir" "$NODE_PATH" "$PLAYWRIGHT_BROWSERS_PATH" >> "$GITHUB_ENV"
+          npm install --prefix "$browser_dir" --ignore-scripts --no-audit --no-fund --package-lock=false playwright@1.62.1
           node "$browser_dir/node_modules/playwright/cli.js" install --with-deps chromium
+      - name: Chromium commercial card acceptance
+        if: steps.reuse.outputs.verified != 'true'
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
           CRM_CARD_BROWSER_TEST=1 python manage.py test pool_service.tests.test_crm_commercial_card_browser --settings=service_site.test_settings --verbosity 1
+      - name: Clean up Chromium commercial card files
+        if: always() && steps.reuse.outputs.verified != 'true'
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          python - <<'PYTHON'
+          import os
+          from pathlib import Path
+          import shutil
+
+          raw = os.environ.get("CRM_CARD_BROWSER_DIR")
+          if raw:
+              directory = Path(raw)
+              root = Path(os.environ["RUNNER_TEMP"]).resolve()
+              prefix = "service2-crm-browser."
+              suffix = directory.name.removeprefix(prefix)
+              if (directory.parent.resolve() != root or not directory.name.startswith(prefix)
+                      or len(suffix) != 6 or not suffix.isascii() or not suffix.isalnum()
+                      or directory.is_symlink()):
+                  raise SystemExit("Refusing unexpected Chromium temporary directory")
+              if directory.exists():
+                  shutil.rmtree(directory)
+          PYTHON
       - name: Run test suite
         if: steps.reuse.outputs.verified != 'true'
         run: python manage.py test --settings=service_site.test_settings --verbosity 1
