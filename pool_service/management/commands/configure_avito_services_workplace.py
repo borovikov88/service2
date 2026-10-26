@@ -51,10 +51,9 @@ class Command(BaseCommand):
             from pool_service.avito_comparable_subsets import safe_setup_evidence as comparable_subset_evidence
             result["comparable_subsets"] = comparable_subset_evidence()
             from pool_service import avito_tariff_subscription
-            from pool_service.avito_services_workplace_setup import _actor, _connection
             try:
-                result["tariff_subscription"] = avito_tariff_subscription.setup_evidence(_actor(_connection(4)))
+                result["tariff_subscription"] = avito_tariff_subscription.probe_once()
             except Exception:
                 result["tariff_subscription"] = {"state": "blocked", "code": "tariff_scope_changed",
-                    "connection_id": 4, "account_id": "446312402", "request_performed": False}
+                    "connection_id": 4, "account_id": "446312402", "probe_state": "unconfirmed", "request_performed": None}
         self.stdout.write("AVITO_SERVICES_SETUP " + json.dumps(result, sort_keys=True))
