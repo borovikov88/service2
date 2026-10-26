@@ -362,6 +362,21 @@ def is_proposal(event):
         and isinstance(values[0], dict) and values[0].get('kind') == KIND and values[0].get('schema_version') == 1)
 
 
+
+def _title_validation(value):
+    """Existing editor format check, not a promise of provider moderation."""
+    from django.core.exceptions import ValidationError
+    valid = False
+    if type(value) is str and not any(char in value for char in ("<", ">", "\n", "\r", "\t")):
+        try:
+            valid = ContentForm.base_fields['title'].clean(value) == value
+        except ValidationError:
+            pass
+    return {'valid': valid, 'characters': len(value) if type(value) is str else None,
+            'editor_max_length': ContentForm.base_fields['title'].max_length,
+            'provider_acceptance_confirmed': False}
+
+
 def page_context(connection, actor):
     current, actor = _publication_connection(connection.pk, actor)
     if not _pilot(current):
@@ -400,9 +415,13 @@ def page_context(connection, actor):
             'proposed': change['after']['Title'], 'project': change.get('proposal', {}),
             'source_revision': change['source'].get('publication_revision'),
             'current_source': valid, 'draft_unchanged_since_project': event.snapshot == feed.draft,
+            'first_experiment_candidate': change['avito_id'] == '8346503274',
+            'title_validation': _title_validation(change['after']['Title']),
+            'owner_approval_required': True,
             'analysis_received_at': _time(change['proposal'].get('analysis', {}).get('received_at')),
             'status_observed_at': _time(change['proposal'].get('status_evidence', {}).get('observed_at')),
             'status_checked_at': _time(change['proposal'].get('status_evidence', {}).get('checked_at'))})
+    output.sort(key=lambda item: (not item['first_experiment_candidate'], -item['event'].pk))
     from .avito_experiment_baseline import decorate_context
     return decorate_context({'connection': current, 'feed': feed, 'source_version': source['version'],
         'projects': output, 'target_ids': list(TARGETS), 'error': ''}, actor)
