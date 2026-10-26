@@ -1,5 +1,10 @@
 # CRM source inbox (PR06)
 
+Historical scope of PR06 below. The next working release installs the SQL lead
+consumer and a bounded recurring worker; see `crm-lead-intake.md`. Capture remains
+independent of the processing flag. Activation has its own live cutoff and does
+not turn the already captured backlog into today's lead queue.
+
 The inbox is a durable handoff for saved incoming sources. It does not create a
 lead, response deadline, callback task or CRM notification. The production CRM
 consumer is absent; successful technical validation leaves `awaiting_consumer`,

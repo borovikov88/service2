@@ -4,10 +4,11 @@ import json
 from django.core.management.base import BaseCommand, CommandError
 
 from pool_service.services.crm_inbox import inbox_status, reconcile, retry_failed, run_worker
+from pool_service.services.crm_lead_intake import consume_incoming
 
 
 class Command(BaseCommand):
-    help = "Scoped CRM inbox worker, reconciliation, retry or status (no scheduler)."
+    help = "Scoped CRM inbox worker with the installed lead consumer, reconciliation, retry or status."
 
     def add_arguments(self, parser):
         parser.add_argument("action", choices=["work", "reconcile", "retry", "status"])
@@ -36,7 +37,7 @@ class Command(BaseCommand):
             elif options["action"] == "retry":
                 result = {"retried": retry_failed(**scope, limit=options["limit"])}
             else:
-                result = run_worker(**scope, limit=options["limit"], seconds=options["seconds"])
+                result = run_worker(**scope, limit=options["limit"], seconds=options["seconds"], consumer=consume_incoming)
         except ValueError as exc:
             raise CommandError(str(exc)) from None
         self.stdout.write(json.dumps(result, default=str, sort_keys=True))

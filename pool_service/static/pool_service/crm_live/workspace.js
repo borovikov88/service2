@@ -942,6 +942,8 @@
     renderPipelines();
     renderContent();
     syncURL();
+    const linkedDeal = new URL(win.location.href).searchParams.get("deal");
+    if (linkedDeal && /^[1-9][0-9]{0,17}$/.test(linkedDeal)) openDetail(linkedDeal);
   }
 
   return {OperationQueue, transitionIntent, deadlineISO, localDateTime, attentionFor, editableDeadline, conflictDraft, mount};

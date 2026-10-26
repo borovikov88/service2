@@ -27,6 +27,11 @@ on:
       - "pool_service/tests/test_crm_commercial_*.py"
       - "pool_service/tests/test_crm_live_*.py"
       - "pool_service/crm_live_views.py"
+      - "pool_service/crm_lead_views.py"
+      - "pool_service/services/crm_lead_*.py"
+      - "pool_service/tests/test_crm_lead_*.py"
+      - "pool_service/management/commands/run_crm_intake.py"
+      - "pool_service/management/commands/provision_crm_lead_intake.py"
       - "pool_service/crm_pilot_views.py"
       - "pool_service/services/crm_pilot_activation.py"
       - "pool_service/services/crm_approved_access.py"
@@ -167,6 +172,11 @@ jobs:
             pool_service.tests.test_crm_live_pilot_migrations \
             pool_service.tests.test_crm_live_views \
             pool_service.tests.test_crm_approved_access \
+            pool_service.tests.test_crm_lead_commands \
+            pool_service.tests.test_crm_lead_migrations \
+            pool_service.tests.test_crm_lead_intake \
+            pool_service.tests.test_crm_lead_views \
+            pool_service.tests.test_crm_lead_activation \
             pool_service.tests.test_crm_org_scope \
             pool_service.tests.test_task_read_privacy \
             pool_service.tests.test_avito_promotion_observations \
