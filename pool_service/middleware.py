@@ -79,7 +79,9 @@ class AuthRedirectMiddleware:
             path = request.path
             if path in {
                 "/crm/workspace/data/", "/crm/workspace/clients/", "/crm/workspace/commands/",
-            } or path.startswith("/crm/workspace/deals/"):
+            } or path.startswith("/crm/workspace/deals/") or (
+                path.startswith("/crm/workspace/leads/") and path != "/crm/workspace/leads/"
+            ):
                 response = JsonResponse({
                     "error": "Войдите в сервис, затем повторите действие.", "code": "auth_required",
                 }, status=401)

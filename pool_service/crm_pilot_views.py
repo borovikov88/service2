@@ -23,13 +23,14 @@ def entry_for(request, organization):
     return ""
 
 
-def entry_options(user, *, navigation_accesses=None):
+def entry_options(user, *, navigation_accesses=None, include_leads=False):
     """Bounded-query advisory choices; selected pages recheck canonical policy.
 
     Keep these predicates aligned with can_view_team_deals/can_activate_pilot.
     Navigation alone may reuse its request's existing role snapshot. Page choices
     omit that argument and read current memberships. This list never authorizes
-    an API request or an activation.
+    an API request or an activation. Template navigation can include explicit
+    lead grants in the same query; lead-only entries retain an empty deal URL.
     """
     if not user or not user.is_authenticated or not get_user_model().objects.filter(pk=user.pk, is_active=True).exists():
         return []
@@ -49,14 +50,24 @@ def entry_options(user, *, navigation_accesses=None):
         Q(is_active=False) | Q(employment_status=Employee.STATUS_DISMISSED))
     organizations = organizations.annotate(
         entry_grant=Exists(CrmAccess.objects.filter(user_id=user.pk, organization_id=OuterRef("pk"), view_team_deals=True)),
+        entry_leads=Exists(CrmAccess.objects.filter(user_id=user.pk, organization_id=OuterRef("pk"), view_leads=True)),
         entry_blocked=Exists(blocked_employees),
-    ).filter(entry_blocked=False).filter(
-        Q(entry_owner=True) | (Q(crm_v2_read=True) & (Q(entry_manager=True) | Q(entry_grant=True)))
-    ).order_by("pk")
-    return [{"organization": organization,
-        "url": reverse("crm_live_workspace" if organization.crm_v2_read and (
-            organization.entry_manager or organization.entry_grant) else "crm_live_start")
-            + "?" + urlencode({"org_id": organization.pk})} for organization in organizations]
+    ).filter(entry_blocked=False)
+    eligible = Q(entry_owner=True) | (Q(crm_v2_read=True) & (Q(entry_manager=True) | Q(entry_grant=True)))
+    if include_leads:
+        eligible |= Q(crm_v2_read=True, entry_leads=True)
+    organizations = organizations.filter(eligible).order_by("pk")
+    options = []
+    for organization in organizations:
+        scope = "?" + urlencode({"org_id": organization.pk})
+        deal_reader = organization.crm_v2_read and (organization.entry_manager or organization.entry_grant)
+        url = reverse("crm_live_workspace") + scope if deal_reader else (
+            reverse("crm_live_start") + scope if organization.entry_owner else "")
+        option = {"organization": organization, "url": url}
+        if include_leads:
+            option["leads_url"] = reverse("crm_live_leads") + scope if organization.crm_v2_read and organization.entry_leads else ""
+        options.append(option)
+    return options
 
 
 def explicit_organization(request):

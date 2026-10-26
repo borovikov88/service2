@@ -2,7 +2,7 @@
 
 All capture callers hold connection -> organization -> source locks. Claims use
 inbox-only transactions; delivery reacquires source locks before the inbox lock.
-There is deliberately no production intake adapter, scheduler or network work.
+The lead adapter is selected explicitly by the bounded worker; no network work.
 """
 import hashlib
 import json
@@ -191,8 +191,8 @@ def _release(event, state, code="", *, due=None):
 def deliver_claim(event_id, token, *, consumer=None, now=None):
     """An adapter may perform idempotent SQL work in this transaction only.
 
-    The production adapter is intentionally absent. No import-by-string or CLI
-    adapter loading is provided. Network effects cannot be atomic with this ack.
+    No import-by-string or CLI adapter loading is provided. Network effects
+    cannot be atomic with this ack.
     """
     peek = CrmInboxEvent.objects.filter(pk=event_id).first()
     if peek is None:
@@ -228,7 +228,7 @@ def deliver_claim(event_id, token, *, consumer=None, now=None):
                 return "awaiting_consumer"
             # Locking Organization serializes supported flag changes. Re-read after
             # adapter too: even an in-transaction switch OFF rolls back its effect.
-            consumer(event, source, f"{event.source_key}:{event.revision}")
+            outcome = consumer(event, source, f"{event.source_key}:{event.revision}")
             if not Organization.objects.get(pk=org.pk).crm_intake_process:
                 raise ProcessDisabled()
             now = max(now, timezone.now())
@@ -236,7 +236,8 @@ def deliver_claim(event_id, token, *, consumer=None, now=None):
                 raise ClaimExpired()
             event.attempts += 1
             event.processed_at = now
-            _release(event, "done")
+            from .crm_lead_intake import INTAKE_OUTCOMES
+            _release(event, "done", outcome if isinstance(outcome, str) and outcome in INTAKE_OUTCOMES else "")
             return "done"
     except ClaimExpired:
         code = "lease_expired"
@@ -418,6 +419,6 @@ def inbox_status(*, organization_id, source_type, connection_id):
         "last_delivery_at": rows.aggregate(value=Max("processed_at"))["value"],
         "last_prepared_at": rows.aggregate(value=Max("prepared_at"))["value"],
         "process_enabled": Organization.objects.get(pk=organization_id).crm_intake_process,
-        "consumer_available": False,
+        "consumer_available": True,
         "cursors": list(CrmInboxCursor.objects.filter(organization_id=organization_id, source_type=source_type,
             connection_id_snapshot=connection_id).values("after_id", "requested_through_id", "through_id", "last_id", "cycles", "include_legacy", "error_code"))}
