@@ -317,3 +317,297 @@ class PlacementReminderTests(TestCase):
                 scan.assert_called_once()
             self.assertIn("AVITO_PLACEMENT_REMINDER", output.getvalue())
             self.assertNotIn("PRIVATE", output.getvalue())
+
+    def begin_runtime(self, now=NOW):
+        import uuid
+        from pool_service.communication_models import AvitoSchedulerHeartbeat
+        self.run_id = str(uuid.uuid4())
+        self.heartbeat, _ = AvitoSchedulerHeartbeat.objects.update_or_create(
+            key="avito-status-monitor", defaults={"run_id": self.run_id, "state": "running",
+                "started_at": now - timedelta(seconds=1), "finished_at": None, "checks": []})
+
+    def finish_runtime(self, now=NOW):
+        self.heartbeat.refresh_from_db()
+        self.heartbeat.state, self.heartbeat.finished_at = "finished", now
+        self.heartbeat.save()
+
+    def runtime_row(self):
+        from pool_service import avito_runtime as runtime
+        self.connection.refresh_from_db()
+        return runtime.checks(self.connection, only_check="placement_reminder")[0]
+
+    def record_observer(self, *args, **kwargs):
+        from pool_service import avito_runtime as runtime
+        runtime.record(*args, run_id=self.run_id, **kwargs)
+
+    def test_night_completion_is_visible_without_refresh_or_stage_and_morning_creates(self):
+        night = NOW.replace(hour=0)
+        self.begin_runtime(night)
+        with patch.object(reminders.timezone, "now", return_value=night), \
+                patch("pool_service.avito_services_feed.verify_owned_observations") as verify:
+            self.assertEqual(reminders.scan_saved(deadline=reminders.time.monotonic() + 90,
+                observer=self.record_observer), ("skipped", 0))
+            self.assertFalse(self.runtime_row()["last_worker_verified"])
+            self.finish_runtime(night)
+            row = self.runtime_row()
+            self.assertEqual(row["last_worker_code"], "quiet_hours")
+            self.assertEqual(row["last_worker_notification_count"], 0)
+            self.assertTrue(row["last_worker_fresh"])
+            self.assertFalse(row["window_open"])
+        verify.assert_not_called()
+        self.connection.refresh_from_db()
+        self.assertNotIn(reminders.KEY, self.connection.settings)
+        self.assertFalse(Notification.objects.exists())
+        self.begin_runtime()
+        self.assertEqual(reminders.scan_saved(observer=self.record_observer), ("success", 1))
+        self.finish_runtime()
+        row = self.runtime_row()
+        self.assertEqual(row["last_worker_notification_count"], 1)
+        self.assertEqual(row["last_worker_outcome"], "success")
+        self.assertIsNone(row["checked_at"])  # Never attribute legacy settings to this run.
+
+    def test_fixed_skip_reasons_subscription_rights_stale_and_invalid(self):
+        cases = (("missing", "not_configured"), ("disabled", "disabled"),
+                 ("rights", "placement_recipient_unavailable"), ("stale", "placement_stale"),
+                 ("invalid", "placement_data_invalid"))
+        for case, expected in cases:
+            with self.subTest(case=case):
+                self.begin_runtime()
+                self.feed.draft = [{"rows": [{"Id": "synthetic", "AvitoId": "101"}]}]
+                self.observe("2026-01-09")
+                if case == "missing":
+                    self.monitor.delete()
+                elif case == "disabled":
+                    self.monitor.enabled = False
+                    self.monitor.save()
+                elif case == "rights":
+                    CommunicationAccess.objects.filter(user=self.owner).update(can_manage_channels=False)
+                elif case == "stale":
+                    self.observe("2026-01-09", checked=NOW - timedelta(hours=25))
+                else:
+                    self.feed.draft = []
+                    self.feed.save()
+                self.assertEqual(reminders.scan_saved(observer=self.record_observer), ("skipped", 0))
+                self.finish_runtime()
+                row = self.runtime_row()
+                self.assertEqual(row["last_worker_code"], expected)
+                self.assertEqual(row["last_worker_notification_count"], 0)
+                if case == "missing":
+                    self.monitor.pk = None
+                self.monitor.enabled = True
+                self.monitor.save()
+                CommunicationAccess.objects.filter(user=self.owner).update(can_manage_channels=True)
+
+    def test_refresh_failure_and_capacity_keep_real_transaction_count(self):
+        for age, expected in ((13, 1), (25, 0)):
+            self.observe("2026-01-09", checked=NOW - timedelta(hours=age))
+            self.begin_runtime()
+            with patch("pool_service.avito_services_feed.verify_owned_observations", side_effect=AvitoError("PRIVATE")):
+                self.assertEqual(reminders.scan_saved(deadline=reminders.time.monotonic() + 90,
+                    observer=self.record_observer), ("failed", expected))
+            self.finish_runtime()
+            row = self.runtime_row()
+            self.assertEqual(row["last_worker_code"], "placement_refresh_failed")
+            self.assertEqual(row["last_worker_notification_count"], expected)
+            self.assertNotIn("PRIVATE", str(row))
+        self.observe("2026-01-09")
+        self.begin_runtime()
+        with patch.object(reminders, "MAX_TRACKED_LISTINGS", 0):
+            self.assertEqual(reminders.scan_saved(observer=self.record_observer), ("failed", 0))
+        self.finish_runtime()
+        self.assertEqual(self.runtime_row()["last_worker_code"], "placement_capacity_exhausted")
+
+    def test_unknown_stale_run_id_and_binding_cannot_become_current_count(self):
+        from pool_service import avito_runtime as runtime
+        self.assertIsNone(self.runtime_row()["last_worker_notification_count"])
+        self.begin_runtime()
+        runtime.record(4, "placement_reminder", "success", run_id="00000000-0000-0000-0000-000000000001", notification_count=1)
+        runtime.record(4, "placement_reminder", "success", run_id=self.run_id, notification_count=1,
+            binding={"account_id": "wrong"})
+        self.finish_runtime()
+        self.assertFalse(self.runtime_row()["last_worker_verified"])
+        self.begin_runtime()
+        reminders.scan_saved(observer=self.record_observer)
+        self.finish_runtime()
+        with patch.object(reminders.timezone, "now", return_value=NOW + timedelta(hours=2)):
+            row = self.runtime_row()
+            self.assertTrue(row["last_worker_verified"])
+            self.assertFalse(row["last_worker_fresh"])
+            self.assertEqual(row["last_worker_checked_at"], NOW.isoformat())
+        # Runtime only accepts the current account/org/channel binding.
+        ChannelConnection.objects.filter(pk=4).update(external_id="other-account")
+        self.connection.refresh_from_db()
+        self.assertEqual(runtime.checks(self.connection, only_check="placement_reminder"), [])
+        ChannelConnection.objects.filter(pk=4).update(external_id="446312402")
+        other = CommunicationChannel.objects.create(organization=self.org, kind="avito", name="Other")
+        ChannelConnection.objects.filter(pk=4).update(channel=other)
+        self.assertFalse(self.runtime_row()["last_worker_verified"])
+        ChannelConnection.objects.filter(pk=4).update(channel=self.channel)
+        foreign = Organization.objects.create(name="Foreign binding")
+        CommunicationChannel.objects.filter(pk=self.channel.pk).update(organization=foreign)
+        self.assertFalse(self.runtime_row()["last_worker_verified"])
+        goods = ChannelConnection.objects.create(pk=1, channel=self.channel, external_id="123", settings={"keep": 1})
+        self.begin_runtime()
+        runtime.record(1, "placement_reminder", "success", run_id=self.run_id, notification_count=1)
+        self.finish_runtime()
+        goods.refresh_from_db()
+        self.assertEqual(runtime.checks(goods, only_check="placement_reminder"), [])
+        self.assertEqual(goods.settings, {"keep": 1})
+
+    def test_runtime_count_and_receipt_schema_are_bounded_and_check_specific(self):
+        from pool_service import avito_runtime as runtime
+        from scripts.avito_readonly_receipt import runtime_checks
+        self.begin_runtime()
+        for count in (True, -1, 201, "PRIVATE", None):
+            runtime.record(4, "placement_reminder", "failed", run_id=self.run_id,
+                reason="placement_refresh_failed", notification_count=count)
+            self.finish_runtime()
+            row = self.runtime_row()
+            self.assertIsNone(row["last_worker_notification_count"])
+            self.assertEqual(runtime_checks([row])[0]["last_worker_code"], "placement_refresh_failed")
+            self.heartbeat.state, self.heartbeat.finished_at = "running", None
+            self.heartbeat.save()
+        self.assertEqual(runtime.safe_code("placement_refresh_failed", check="advance"), "check_error_unclassified")
+        self.finish_runtime()
+        row = self.runtime_row()
+        for changes in ({"source": "PRIVATE"}, {"last_worker_notification_count": True},
+                        {"last_worker_notification_count": 201}, {"last_worker_code": "placement_PRIVATE"}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                runtime_checks([dict(row, **changes)])
+        row["private_payload"] = "PRIVATE"
+        self.assertNotIn("PRIVATE", str(runtime_checks([row])))
+
+    def test_worker_uses_active_supervisor_and_exception_count_remains_unknown(self):
+        import os
+        self.begin_runtime()
+        zero = {"success": 0, "failed": 0, "skipped": 0}
+        with patch.dict(os.environ, {"SERVICE2_AVITO_CRON_SUPERVISED": "1"}), \
+                patch("pool_service.avito_tariff_reminder.scan_due", return_value=zero), \
+                patch("pool_service.avito_advance.scan_due", return_value=zero), \
+                patch("pool_service.avito_autoload_auto.scan_due", return_value=zero), \
+                patch("pool_service.avito_daily_statistics.scan_due", return_value=zero):
+            call_command("monitor_avito_statuses", stdout=io.StringIO())
+            self.finish_runtime()
+            self.assertEqual(self.runtime_row()["last_worker_notification_count"], 1)
+            self.begin_runtime()
+            with patch.object(reminders, "_scan_saved", side_effect=RuntimeError("PRIVATE")):
+                with self.assertRaises(CommandError):
+                    call_command("monitor_avito_statuses", stdout=io.StringIO())
+            self.finish_runtime()
+            row = self.runtime_row()
+            self.assertEqual(row["last_worker_code"], "worker_check_exception")
+            self.assertIsNone(row["last_worker_notification_count"])
+
+    def test_existing_diagnostics_ui_permissions_and_mcp_projection_are_read_only(self):
+        from django.core.exceptions import PermissionDenied
+        from django.urls import reverse
+        from pool_service.avito_mcp_reader import read_tool
+        from pool_service.communication_models import AvitoCredential
+        AvitoCredential.objects.create(connection=self.connection,
+            client_id_encrypted="synthetic-id", client_secret_encrypted="synthetic-secret")
+        self.begin_runtime()
+        reminders.scan_saved(observer=self.record_observer)
+        self.finish_runtime()
+        url = reverse("communication_connection_edit", args=[4])
+        self.client.force_login(self.owner)
+        with patch("pool_service.avito_management.access_token") as token:
+            response = self.client.get(url)
+            self.assertContains(response, "Напоминания о сроках размещения Услуг")
+            self.assertContains(response, "Создано in-app записей: 1")
+            self.assertContains(response, "Доставка и прочтение не подтверждены")
+            self.assertContains(response, "saved_owned_avito_item_detail")
+            data = read_tool(self.owner, "get_avito_diagnostics", {"connection_id": 4})
+        token.assert_not_called()
+        row = next(x for x in data["data"]["components"] if x["component"] == "placement_reminder")
+        self.assertEqual(row["last_worker_notification_count"], 1)
+        self.assertTrue(row["last_worker_verified"])
+        self.assertFalse(data["provider_request_performed"])
+        self.client.force_login(self.manager)
+        self.assertEqual(self.client.get(url).status_code, 403)
+        with self.assertRaises(PermissionDenied):
+            read_tool(self.manager, "get_avito_diagnostics", {"connection_id": 4})
+        foreign = User.objects.create_user("synthetic-foreign-owner")
+        org = Organization.objects.create(name="Foreign synthetic")
+        OrganizationAccess.objects.create(user=foreign, organization=org, role="owner")
+        self.client.force_login(foreign)
+        self.assertEqual(self.client.get(url).status_code, 404)
+        with self.assertRaises(PermissionDenied):
+            read_tool(foreign, "get_avito_diagnostics", {"connection_id": 4})
+
+    def test_channel_move_during_real_refresh_cannot_adopt_fallback_or_evidence(self):
+        self.observe("2026-01-09", checked=NOW - timedelta(hours=13))
+        original_checked = self.feed.last_checked_at
+        other = CommunicationChannel.objects.create(organization=self.org, kind="avito", name="Moved channel")
+        refreshed = deepcopy(self.feed.latest_observations)
+        refreshed[0]["checked_at"] = NOW.isoformat()
+        self.begin_runtime()
+
+        def move_during_read(*args, **kwargs):
+            ChannelConnection.objects.filter(pk=4).update(channel=other)
+            return {"observations": refreshed}
+
+        with patch("pool_service.avito_services_feed.verify_inventory", side_effect=move_during_read) as reader, \
+                patch.object(self, "record_observer", wraps=self.record_observer) as observer:
+            self.assertEqual(reminders.scan_saved(deadline=reminders.time.monotonic() + 90,
+                observer=observer), ("failed", 0))
+        reader.assert_called_once()
+        observer.assert_not_called()
+        self.finish_runtime()
+        self.assertFalse(Notification.objects.exists())
+        self.connection.refresh_from_db()
+        self.assertNotIn(reminders.KEY, self.connection.settings)
+        self.feed.refresh_from_db()
+        self.assertEqual(self.feed.last_checked_at, original_checked)
+        self.assertFalse(self.feed.versions.filter(action="verify").exists())
+        row = self.runtime_row()
+        self.assertFalse(row["last_worker_verified"])
+        self.assertIsNone(row["last_worker_notification_count"])
+
+    def test_channel_move_before_refresh_prevents_provider_read_and_local_fallback(self):
+        self.observe("2026-01-09", checked=NOW - timedelta(hours=13))
+        original = reminders.capture_binding()
+        other = CommunicationChannel.objects.create(organization=self.org, kind="avito", name="Moved before read")
+
+        def capture_then_move():
+            ChannelConnection.objects.filter(pk=4).update(channel=other)
+            return original
+
+        with patch.object(reminders, "capture_binding", side_effect=capture_then_move), \
+                patch("pool_service.avito_services_feed.verify_inventory") as reader, \
+                patch.object(self, "record_observer", wraps=self.record_observer) as observer:
+            self.assertEqual(reminders.scan_saved(deadline=reminders.time.monotonic() + 90,
+                observer=observer), ("skipped", 0))
+        reader.assert_not_called()
+        observer.assert_not_called()
+        self.assertFalse(Notification.objects.exists())
+        self.connection.refresh_from_db()
+        self.assertNotIn(reminders.KEY, self.connection.settings)
+
+    def test_command_exception_after_channel_move_does_not_attribute_failure_to_new_channel(self):
+        import os
+        original = reminders.capture_binding()
+        other = CommunicationChannel.objects.create(organization=self.org, kind="avito", name="Exception drift")
+        self.begin_runtime()
+        zero = {"success": 0, "failed": 0, "skipped": 0}
+
+        def move_then_fail(**kwargs):
+            self.assertEqual(kwargs["expected_binding"], original)
+            ChannelConnection.objects.filter(pk=4).update(channel=other)
+            raise RuntimeError("PRIVATE")
+
+        with patch.dict(os.environ, {"SERVICE2_AVITO_CRON_SUPERVISED": "1"}), \
+                patch.object(reminders, "scan_saved", side_effect=move_then_fail), \
+                patch("pool_service.avito_tariff_reminder.scan_due", return_value=zero), \
+                patch("pool_service.avito_advance.scan_due", return_value=zero), \
+                patch("pool_service.avito_autoload_auto.scan_due", return_value=zero), \
+                patch("pool_service.avito_daily_statistics.scan_due", return_value=zero):
+            with self.assertRaises(CommandError):
+                call_command("monitor_avito_statuses", stdout=io.StringIO())
+        self.finish_runtime()
+        self.assertFalse(Notification.objects.exists())
+        row = self.runtime_row()
+        self.assertFalse(row["last_worker_verified"])
+        self.assertIsNone(row["last_worker_notification_count"])
+        self.assertIsNone(row["last_worker_code"])
+        self.assertFalse(any(entry["check"] == "placement_reminder" and entry["channel_id"] == other.pk
+                             for entry in self.heartbeat.checks))

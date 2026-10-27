@@ -270,6 +270,11 @@ def _diagnostics(connection, _actor, _arguments):
             "enabled": row["enabled"] is True, "scope_valid": row["scope_valid"],
             "last_worker_outcome": row["last_worker_outcome"],
             "last_worker_received_at": _when(row["last_worker_checked_at"])})
+        if row["check"] == "placement_reminder":
+            data[-1].update(configured=row["configured"], source=row["source"], window=row["window"],
+                window_open=row["window_open"], last_worker_verified=row["last_worker_verified"],
+                last_worker_fresh=row["last_worker_fresh"], last_worker_code=row["last_worker_code"],
+                last_worker_notification_count=row["last_worker_notification_count"])
     return {"source": "service2.scoped_avito_runtime", "received_at": None,
         "components": data, "completeness": {"components": len(data)},
         "provider_refreshed": False}

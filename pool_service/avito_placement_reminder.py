@@ -23,11 +23,24 @@ REFRESH_AFTER = timedelta(hours=12)
 MAX_TRACKED_LISTINGS = 1000
 
 
-def _refresh_owned(deadline):
+def _binding(connection):
+    if (connection is None or connection.pk != 4 or connection.external_id != "446312402"
+            or connection.channel.kind != "avito"):
+        return None
+    return {"account_id": str(connection.external_id), "channel_id": connection.channel_id,
+            "organization_id": connection.channel.organization_id}
+
+
+def capture_binding():
+    """Pin the target before refresh I/O, including the command's exception path."""
+    return _binding(ChannelConnection.objects.select_related("channel").filter(pk=4).first())
+
+
+def _refresh_owned(deadline, *, binding):
     """Reuse the existing verifier, outside locks and within the worker budget."""
     from .avito_services_feed import verify_owned_observations
     connection = ChannelConnection.objects.select_related("channel").filter(pk=4).first()
-    if connection is None or not daylight():
+    if binding is None or _binding(connection) != binding or not daylight():
         return
     monitor = AvitoStatusMonitor.objects.select_related("recipient", "organization").filter(
         connection=connection, enabled=True).first()
@@ -45,7 +58,7 @@ def _refresh_owned(deadline):
     def guard(current, candidate):
         current_monitor = AvitoStatusMonitor.objects.select_related("recipient", "organization").filter(
             connection=current, enabled=True, generation=generation, recipient_id=recipient_id).first()
-        return bool(scope_matches(current, candidate) and current_monitor
+        return bool(_binding(current) == binding and scope_matches(current, candidate) and current_monitor
                     and not _scope_error(current_monitor, current))
 
     verify_owned_observations(connection, monitor.recipient, expected_revision=feed.revision,
@@ -58,57 +71,77 @@ def _stage(days):
     return next((stage for stage in (1, 3, 7) if 0 <= days <= stage), None)
 
 
-def scan_saved(*, deadline=None):
+def scan_saved(*, deadline=None, observer=None, expected_binding=None):
     """One bounded local check in the existing worker; no separate schedule/collector."""
+    binding = expected_binding if expected_binding is not None else capture_binding()
+    if binding is None:
+        return "skipped", 0
     refresh_failed = False
     if deadline is not None:
         try:
-            _refresh_owned(deadline)
+            _refresh_owned(deadline, binding=binding)
         except Exception:
             # Refresh and delivery are independent. Revalidate saved evidence
             # below, preserving the 24h limit, and report the partial tick failure
             # without persisting/logging exception strings or provider payloads.
             refresh_failed = True
-    outcome, count = _scan_saved(refresh_failed=refresh_failed)
-    return ("failed" if refresh_failed else outcome), count
+    outcome, count, reason, binding = _scan_saved(refresh_failed=refresh_failed, binding=binding)
+    if refresh_failed:
+        outcome, reason = "failed", "placement_refresh_failed"
+    if observer is not None and binding is not None:
+        observer(4, "placement_reminder", outcome, reason=reason,
+                 notification_count=count, binding=binding)
+    return outcome, count
 
 
-def _scan_saved(*, refresh_failed):
+def _scan_saved(*, refresh_failed, binding):
     with transaction.atomic():
         connection = ChannelConnection.objects.select_for_update().select_related(
             "channel__organization").filter(pk=4).first()
-        if connection is None:
-            return "skipped", 0
+        if binding is None or _binding(connection) != binding:
+            # A new channel in the same organization must not adopt a refresh
+            # failure or fallback notifications from the original channel.
+            return "skipped", 0, "binding_changed", None
+
+        def result(outcome, count, reason=""):
+            return outcome, count, reason, binding
+
         monitor = AvitoStatusMonitor.objects.select_for_update().select_related(
-            "recipient", "organization").filter(connection=connection, enabled=True).first()
+            "recipient", "organization").filter(connection=connection).first()
         feed = AvitoServicesFeed.objects.select_for_update().filter(connection=connection).first()
-        if not scope_matches(connection, feed) or monitor is None or _scope_error(monitor, connection):
-            return "skipped", 0
+        if not scope_matches(connection, feed):
+            return result("skipped", 0, "binding_changed")
+        if monitor is None:
+            return result("skipped", 0, "not_configured")
+        if not monitor.enabled:
+            return result("skipped", 0, "disabled")
+        if _scope_error(monitor, connection):
+            return result("skipped", 0, "placement_recipient_unavailable")
         now = timezone.now()
         # Quiet hours never consume a stage; next native tick after 08:00 catches up.
         if not daylight(now):
-            return "skipped", 0
-        if (feed.last_checked_at is None or not timedelta(0) <= now - feed.last_checked_at <= MAX_AGE
-                or not isinstance(feed.latest_observations, list)
-                or not isinstance(feed.draft, list)):
-            return "skipped", 0
+            return result("skipped", 0, "quiet_hours")
+        if feed.last_checked_at is None or not timedelta(0) <= now - feed.last_checked_at <= MAX_AGE:
+            return result("skipped", 0, "placement_stale")
+        if not isinstance(feed.latest_observations, list) or not isinstance(feed.draft, list):
+            return result("skipped", 0, "placement_data_invalid")
         rows = []
         for sheet in feed.draft:
             if not isinstance(sheet, dict) or not isinstance(sheet.get("rows"), list):
-                return "skipped", 0
+                return result("skipped", 0, "placement_data_invalid")
             rows.extend(sheet["rows"])
         if (not 1 <= len(rows) <= 200 or any(not isinstance(row, dict)
                 or not isinstance(row.get("Id"), str) or not row["Id"]
                 or not isinstance(row.get("AvitoId"), str) or not row["AvitoId"].isdigit()
                 for row in rows)):
-            return "skipped", 0
+            return result("skipped", 0, "placement_data_invalid")
         observations = feed.latest_observations
         if (len(observations) > 200 or any(not isinstance(row, dict)
                 or not isinstance(row.get("avito_id"), str) for row in observations)):
-            return "skipped", 0
+            return result("skipped", 0, "placement_data_invalid")
         owned = {row["avito_id"]: row for row in observations}
         if len(owned) != len(observations) or len({row["AvitoId"] for row in rows}) != len(rows):
-            return "skipped", 0
+            return result("skipped", 0, "placement_data_invalid")
         withdrawn = set(feed.listing_intents.filter(account_id=connection.external_id,
             organization_id=connection.channel.organization_id, owner_withdrawn=True
         ).values_list("avito_id", flat=True))
@@ -121,16 +154,15 @@ def _scan_saved(*, refresh_failed):
         # observation is obsolete. It must never revive that listing for a reminder.
         statuses = {row.item_id: row for row in monitor.listings.all()}
         metadata = dict(connection.settings) if isinstance(connection.settings, dict) else {}
-        binding = {"account_id": connection.external_id, "channel_id": connection.channel_id,
-                   "organization_id": connection.channel.organization_id}
         saved = metadata.get(KEY)
         saved = saved if isinstance(saved, dict) and saved.get("binding") == binding else {}
         cycles = saved.get("listings") if isinstance(saved.get("listings"), dict) else {}
         if len(cycles) > MAX_TRACKED_LISTINGS:
-            return "failed", 0
+            return result("failed", 0, "placement_capacity_exhausted")
         # Absence from one draft is not evidence of a new placement cycle. Keep
         # its generation/stages so restoring the same identity cannot resend.
         next_cycles, count, capacity_exhausted = dict(cycles), 0, False
+        stale, eligible, preferences_disabled, quiet = False, False, False, False
         for row in projected["rows"]:
             identifier = row["avito_id"]
             if identifier not in next_cycles and len(next_cycles) >= MAX_TRACKED_LISTINGS:
@@ -141,6 +173,7 @@ def _scan_saved(*, refresh_failed):
             next_cycles[identifier] = previous
             checked = row["checked_at"]
             if checked is None or not timedelta(0) <= now - checked <= MAX_AGE:
+                stale = True
                 continue
             if row["status"] != "active":
                 previous["last_status"] = row["status"]
@@ -171,10 +204,12 @@ def _scan_saved(*, refresh_failed):
             stage = _stage(row["days_remaining"])
             if stage is None:
                 continue
+            eligible = True
             delivered = previous.get("delivered")
             delivered = dict(delivered) if isinstance(delivered, dict) else {}
             for recipient in recipients:
                 if not daylight():
+                    quiet = True
                     break
                 last = delivered.get(str(recipient.pk))
                 if type(last) is int and last <= stage:
@@ -193,6 +228,8 @@ def _scan_saved(*, refresh_failed):
                 if created or Notification.objects.filter(user=recipient, organization=connection.channel.organization,
                         kind="communication", dedupe_key=dedupe).exists():
                     delivered[str(recipient.pk)] = stage
+                else:
+                    preferences_disabled = True
                 count += len(created)
             previous["delivered"] = delivered
         metadata[KEY] = {"binding": binding, "listings": next_cycles,
@@ -200,4 +237,8 @@ def _scan_saved(*, refresh_failed):
                          "last_checked_at": now.isoformat()}
         connection.settings = metadata
         connection.save(update_fields=["settings"])
-        return ("failed" if capacity_exhausted else "success"), count
+        reason = ("placement_capacity_exhausted" if capacity_exhausted else "quiet_hours" if quiet
+                  else "notification_preferences_disabled" if preferences_disabled
+                  else "placement_stale" if stale else "" if count else
+                  "placement_already_recorded" if eligible else "placement_no_eligible")
+        return result("failed" if capacity_exhausted else "success", count, reason)

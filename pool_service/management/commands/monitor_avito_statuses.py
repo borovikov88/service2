@@ -64,10 +64,19 @@ class Command(BaseCommand):
         tariffs = avito_tariff_reminder.scan_due(deadline=report_deadline, limit=4, observer=observed)
         # Saved owned dates only; independent of provider availability, sharing
         # this worker and the existing explicit status-monitor subscription.
+        placement_binding = None
         try:
-            placement_outcome, placement_notifications = avito_placement_reminder.scan_saved(deadline=report_deadline)
+            placement_binding = avito_placement_reminder.capture_binding()
+            if placement_binding is None:
+                placement_outcome, placement_notifications = "skipped", 0
+            else:
+                placement_outcome, placement_notifications = avito_placement_reminder.scan_saved(
+                    deadline=report_deadline, observer=observed, expected_binding=placement_binding)
         except Exception:
             placement_outcome, placement_notifications = "failed", 0
+            if placement_binding is not None:
+                observed(4, "placement_reminder", "failed", exception=True,
+                         binding=placement_binding, notification_count=None)
         advances = avito_advance.scan_due(deadline=report_deadline, limit=2, observer=observed)
         reports = avito_autoload_auto.scan_due(deadline=report_deadline, limit=2, observer=observed)
         statistics = avito_daily_statistics.scan_due(deadline=report_deadline, observer=observed)
