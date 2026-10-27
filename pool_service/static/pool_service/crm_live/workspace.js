@@ -180,7 +180,7 @@
       filters: Object.fromEntries(["outcome", "stage", "object", "specialization", "decision_from", "decision_to"].map((key) => [key, params.get(key) || (key === "outcome" ? "open" : "")])),
       query: params.get("q") || "", owner: params.get("owner") === "me" ? "me" : "all",
       view: params.get("view") === "table" ? "table" : "kanban",
-      attention: ["overdue", "missing"].includes(params.get("attention")) ? params.get("attention") : "all",
+      attention: ["today", "overdue", "missing"].includes(params.get("attention")) ? params.get("attention") : "all",
       loading: false, dataController: null, detailController: null, clientController: null,
       dataGeneration: 0, detailGeneration: 0, clientGeneration: 0,
       drawer: null, dragging: null, suppressClickUntil: 0,
@@ -198,7 +198,7 @@
       return Number.isFinite(date.getTime()) ? dateFormatter.format(date) : "Срок не задан";
     };
     const nextDeadlineText = (next) => {
-      if (next.waiting) return "Срок уточняется";
+      if (next.waiting) return next.next_check_at ? "Контроль ожидания · " + dateFormatter.format(new Date(next.next_check_at)) : "Срок уточняется";
       if (next.due_at) return dateText(next.due_at);
       if (/^\d{4}-\d{2}-\d{2}$/.test(next.due_date || "")) return dayFormatter.format(new Date(next.due_date + "T12:00:00" + offset)) + " · время не задано";
       return "Срок не задан";
@@ -406,7 +406,7 @@
       const pipeline = pipelineFor(state.pipelineId);
       const all = (state.data.deals || []).filter((deal) => sameId(deal.pipeline_id, state.pipelineId));
       const filtered = all;
-      for (const kind of ["all", "overdue", "missing"]) {
+      for (const kind of ["all", "today", "overdue", "missing"]) {
         root.querySelector(`[data-attention="${kind}"]`).setAttribute("aria-pressed", String(state.attention === kind));
       }
       byId("crm-live-result-status").textContent = state.loading ? "Обновляем…" : "На странице: " + filtered.length + (state.data.attention_total == null ? "" : " · по фильтру: " + state.data.attention_total);
@@ -1128,7 +1128,7 @@
       const pageNumber = Number(current.get("page"));
       state.page = Number.isInteger(pageNumber) && pageNumber >= 1 && pageNumber <= 10000 ? pageNumber : 1;
       state.owner = current.get("owner") === "me" ? "me" : "all";
-      state.attention = ["overdue", "missing"].includes(current.get("attention")) ? current.get("attention") : "all";
+      state.attention = ["today", "overdue", "missing"].includes(current.get("attention")) ? current.get("attention") : "all";
       state.view = current.get("view") === "table" ? "table" : "kanban";
       state.pipelineId = current.get("pipeline") || state.pipelineId;
       for (const key of Object.keys(state.filters)) { state.filters[key] = current.get(key) || (key === "outcome" ? "open" : ""); byId("crm-live-" + key).value = state.filters[key]; }
