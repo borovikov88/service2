@@ -26,6 +26,7 @@ CAPABILITIES = {
     "lead.create": ("create_own_leads",),
     "lead.new_need": ("create_own_leads",),
     "lead.take": ("take_leads",),
+    "lead.disposition": ("transition_own_leads",),
     "lead.acknowledge": ("edit_own_leads",),
     "lead.edit": ("edit_own_leads",),
     "lead.transition": ("transition_own_leads",),
@@ -36,6 +37,16 @@ EDIT_FIELDS = {"title", "need", "client_id", "direction", "specialization", "loc
                "acquisition_source", "first_contact_channel", "budget_kind", "budget_min", "budget_max", "currency"}
 ACTIVE_STATES = {"working", "qualifying", "waiting", "deferred"}
 CLOSE_RESULTS = {"linked", "non_target", "spam", "duplicate", "no_deal"}
+
+
+def lead_column(lead):
+    if lead.is_archived:
+        return "deleted"
+    if lead.status == "closed" and lead.result == "spam":
+        return "spam"
+    if lead.status == "new" or lead.needs_review:
+        return "unparsed"
+    return "history" if lead.status == "closed" else "working"
 
 
 def _authorize_lead(using, actor_id, organization, kind):
@@ -89,6 +100,7 @@ def _normalize(kind, changes):
         "lead.create": EDIT_FIELDS | {"next_action"},
         "lead.new_need": EDIT_FIELDS | {"next_action"},
         "lead.take": {"next_action"},
+        "lead.disposition": {"column", "reason", "next_action", "expected_task_version"},
         "lead.acknowledge": set(),
         "lead.edit": EDIT_FIELDS | {"next_action", "expected_task_version"},
         "lead.transition": {"status", "result", "reason", "follow_up_at", "target_deal_id", "target_lead_id", "next_action", "expected_task_version"},
@@ -99,7 +111,8 @@ def _normalize(kind, changes):
         raise ValidationError("Fields unavailable for this lead command.")
     required = {
         "lead.create": {"title", "need", "next_action"}, "lead.new_need": {"title", "need", "next_action"},
-        "lead.take": {"next_action"}, "lead.transition": {"status"},
+        "lead.take": {"next_action"},
+        "lead.disposition": {"column", "reason"}, "lead.transition": {"status"},
         "lead.qualify": {"deals"}, "lead.add_deal": {"deals"},
     }.get(kind, set())
     if not required <= set(changes):
@@ -107,7 +120,7 @@ def _normalize(kind, changes):
     result = {}
     limits = {"title": 255, "need": 10000, "specialization": 40, "location": 255,
               "acquisition_source": 80, "first_contact_channel": 40, "currency": 3, "reason": 500,
-              "direction": 24, "status": 16, "budget_kind": 8, "result": 16, "expected_task_version": 64}
+              "column": 16, "direction": 24, "status": 16, "budget_kind": 8, "result": 16, "expected_task_version": 64}
     for name, value in changes.items():
         if name in limits:
             result[name] = _text(value, limits[name], required=name in {"title", "status", "result", "expected_task_version"})
@@ -334,7 +347,7 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
             if not lead:
                 raise PermissionDenied("Lead unavailable.")
             _visible(using, actor, organization, lead)
-            if command_type == "lead.take":
+            if command_type in {"lead.take", "lead.disposition"}:
                 if lead.assignee_id not in {None, actor.pk}:
                     raise CommercialConflict("Обращение уже взял другой сотрудник.")
             elif lead.assignee_id != actor.pk:
@@ -352,6 +365,12 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
                 _validate_task(using, replay_lead, tasks.get(replay_lead.next_task_id), actor)
                 if replay_lead.next_task_id not in tasks:
                     raise PermissionDenied("Lead task unavailable.")
+            if command_type == "lead.disposition":
+                recorded_task = tasks.get(previous.result.get("task_id"))
+                if previous.result.get("task_id") and not recorded_task:
+                    raise PermissionDenied("Recorded lead task unavailable.")
+                if recorded_task and recorded_task.pk != replay_lead.next_task_id:
+                    _validate_task(using, replay_lead, recorded_task, actor)
             from pool_service.services.crm_commercial_access import deals_for_user
             ids = previous.result.get("deal_ids", [])
             result_deals = list(deals_for_user(actor, organization).using(using).select_for_update().filter(pk__in=ids).order_by("pk"))
@@ -368,10 +387,16 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
             return dict(previous.result)
         if lead and lead.revision != expected_revision:
             raise CommercialConflict("Обращение уже изменено. Обновите карточку.")
-        if lead and lead.is_archived:
-            raise ValidationError("Archived leads are read-only.")
+        if lead and (lead.is_archived or lead.status == "closed" and lead.result == "spam") and command_type != "lead.disposition":
+            raise ValidationError("Сначала явно восстановите лид из спама или удалённых.")
         before = lead.revision if lead else 0
         before_status = lead.status if lead else None
+        before_owner = lead.assignee_id if lead else None
+        before_archived = lead.is_archived if lead else False
+        before_review = lead.needs_review if lead else False
+        before_result = lead.result if lead else ""
+        if command_type == "lead.disposition":
+            before_column = lead_column(lead)
         task = tasks.get(lead.next_task_id) if lead else None
         if lead:
             _validate_task(using, lead, task, actor)
@@ -396,6 +421,72 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
                 old.save(using=using)
                 additional["previous_lead_id"] = old.pk
             before, before_status = 0, None
+        elif command_type == "lead.disposition":
+            column = values["column"]
+            if column not in {"unparsed", "working", "spam", "deleted", "restore"} or not values["reason"]:
+                raise ValidationError("Укажите допустимую колонку и причину перемещения.")
+            if lead.assignee_id is None:
+                grant = CrmAccess.objects.using(using).select_for_update().get(user=actor, organization=organization)
+                if not grant.take_leads:
+                    raise PermissionDenied("Free lead claim requires take access.")
+                if lead.status != "new" or lead.result:
+                    raise ValidationError("Завершённый свободный лид нельзя назначить перемещением.")
+                lead.assignee = actor
+            spam = lead.status == "closed" and lead.result == "spam"
+            if column == "restore":
+                if not lead.is_archived:
+                    raise ValidationError("Лид уже восстановлен.")
+                lead.is_archived = False
+                if lead.status != "closed":
+                    lead.needs_review = True
+            elif column == "deleted":
+                if not _terminal(task):
+                    from pool_service.services.task_feedback import version_for
+                    if values.get("expected_task_version") != version_for(task):
+                        raise CommercialConflict("Следующий шаг уже изменён. Обновите карточку.")
+                if lead.is_archived:
+                    raise ValidationError("Лид уже в удалённых.")
+                lead.is_archived = True
+                _finish_next(using, actor, lead, task)
+            else:
+                if lead.is_archived:
+                    if spam and column != "spam":
+                        raise ValidationError("Удалённый спам сначала возвращается в колонку «Спам».")
+                    lead.is_archived = False
+                if column == "spam":
+                    if spam and before_archived:
+                        pass
+                    elif lead.status == "closed":
+                        raise ValidationError("Завершённый результат не меняется перемещением в спам.")
+                    if not _terminal(task):
+                        from pool_service.services.task_feedback import version_for
+                        if values.get("expected_task_version") != version_for(task):
+                            raise CommercialConflict("Следующий шаг уже изменён. Обновите карточку.")
+                    lead.status, lead.result, lead.reason = "closed", "spam", values["reason"]
+                    lead.follow_up_at = None
+                    _finish_next(using, actor, lead, task)
+                else:
+                    # Only an explicit spam restoration may reopen a final result.
+                    # Historical tasks stay cancelled; Work needs a new next step.
+                    if spam:
+                        lead.status, lead.result, lead.follow_up_at = "new", "", None
+                        lead.reason = values["reason"]
+                    if column == "working":
+                        if lead.status == "closed":
+                            raise ValidationError("Завершённая работа не открывается перемещением. Создайте новую потребность явно.")
+                        if "next_action" in values:
+                            task = _set_next(using, actor, lead, task, values["next_action"], values.get("expected_task_version"))
+                        if _terminal(task) or task.due_at is None:
+                            raise ValidationError("Для работы укажите реальный следующий шаг и срок.")
+                        if lead.status == "new":
+                            lead.status = "working"
+                        elif lead.status in {"waiting", "deferred"}:
+                            lead.follow_up_at = task.due_at
+                    else:
+                        lead.needs_review = True
+            if column != "working" and "next_action" in values:
+                raise ValidationError("Следующий шаг задаётся только при перемещении в работу.")
+            lead.revision += 1
         elif command_type == "lead.take":
             if lead.assignee_id is not None or lead.status != "new" or lead.result:
                 raise CommercialConflict("Обращение уже назначено или обработано.")
@@ -472,7 +563,8 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
             lead.follow_up_at = None
             _finish_next(using, actor, lead, task)
             lead.revision += 1
-        lead.needs_review = False
+        if command_type != "lead.disposition" or values["column"] == "working":
+            lead.needs_review = False
         lead.save(using=using)
         command = CrmCommand.objects.using(using).create(organization=organization, actor=actor,
             operation_key=operation_key, command_type=command_type, payload_hash=digest)
@@ -513,6 +605,12 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
             diff["status"] = {"before": before_status, "after": lead.status}
         if command_type in {"lead.create", "lead.new_need", "lead.take"}:
             diff["assignee_id"] = {"before": None, "after": actor.pk}
+        if command_type == "lead.disposition":
+            diff["column"] = {"before": before_column, "after": lead_column(lead)}
+            diff["result"] = {"before": before_result, "after": lead.result}
+            diff["needs_review"] = {"before": before_review, "after": lead.needs_review}
+            diff["is_archived"] = {"before": before_archived, "after": lead.is_archived}
+            diff["assignee_id"] = {"before": before_owner, "after": lead.assignee_id}
         if "next_action" in values:
             diff["next_action_changed"] = {"before": False, "after": True}
         if command_type == "lead.edit":

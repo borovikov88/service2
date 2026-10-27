@@ -380,6 +380,32 @@ class LeadCommandConcurrencyTests(LeadFixture, TransactionTestCase):
         self.assertEqual(CrmDeal.objects.count(), 1)
 
 
+    def test_free_claim_into_work_competes_with_spam_without_theft_or_orphan_task(self):
+        lead = CrmLead.objects.create(organization=self.org, title="Concurrent synthetic disposition")
+        other = get_user_model().objects.create_user("disposition-competitor")
+        OrganizationAccess.objects.create(organization=self.org, user=other, role="manager")
+        CrmAccess.objects.create(organization=self.org, user=other, view_leads=True, take_leads=True, transition_own_leads=True)
+        results = self.parallel([
+            lambda: self.command("lead.disposition", {"column": "working", "reason": "Claim real work", "next_action": self.action()}, lead),
+            lambda: self.command("lead.disposition", {"column": "spam", "reason": "Unwanted inquiry"}, lead, actor=other),
+        ])
+        self.assertEqual(sum(isinstance(result, dict) for result in results), 1)
+        lead.refresh_from_db()
+        self.assertEqual(ServiceTask.objects.count(), 1 if lead.status == "working" else 0)
+        self.assertEqual(CrmEvent.objects.filter(lead=lead).count(), 1)
+
+    def test_same_disposition_key_claims_once_without_extra_history(self):
+        lead = CrmLead.objects.create(organization=self.org, title="Concurrent unwanted inquiry")
+        changes = {"column": "spam", "reason": "Explicit unwanted inquiry"}
+        results = self.parallel([
+            lambda: self.command("lead.disposition", changes, lead, key="concurrent-spam-key"),
+            lambda: self.command("lead.disposition", changes, lead, key="concurrent-spam-key"),
+        ])
+        self.assertEqual(results[0], results[1])
+        self.assertEqual(CrmEvent.objects.filter(lead=lead).count(), 1)
+        self.assertEqual(ServiceTask.objects.count(), 0)
+
+
 from pool_service.tests.test_crm_inbox import Fixture as InboxFixture
 from pool_service.communication_models import CommunicationAccess
 from pool_service.services.crm_inbox import claim_one, deliver_claim
@@ -464,3 +490,117 @@ class SplitLeadSourcePrivacyTests(InboxFixture, TestCase):
         self.assertEqual(private_source_task_ids([task]), {task.pk})
         self.assertFalse(readable_tasks(ServiceTask.objects.filter(pk=task.pk), self.user))
         self.assertFalse(can_read_lead(self.user, self.org, lead))
+
+
+class LeadDispositionTests(LeadFixture, TestCase):
+    def move(self, lead, column, **changes):
+        values = {"column": column, "reason": "Synthetic explicit classification"}
+        if lead.next_task_id:
+            values["expected_task_version"] = version_for(ServiceTask.objects.get(pk=lead.next_task_id))
+        values.update(changes)
+        result = self.command("lead.disposition", values, lead)
+        lead.refresh_from_db()
+        return result
+
+    def test_spam_restore_creates_new_task_retains_source_history_and_links(self):
+        lead = self.create()
+        old_id = lead.next_task_id
+        self.move(lead, "spam")
+        self.assertEqual((lead.status, lead.result), ("closed", "spam"))
+        old = ServiceTask.objects.get(pk=old_id)
+        self.assertTrue(old.is_archived)
+        self.move(lead, "unparsed")
+        self.assertEqual((lead.status, lead.result, lead.needs_review), ("new", "", True))
+        self.move(lead, "working", next_action=self.action("A new real step"))
+        self.assertNotEqual(lead.next_task_id, old_id)
+        old.refresh_from_db()
+        self.assertTrue(old.is_archived)
+        self.assertEqual(CrmLeadTaskLink.objects.filter(lead=lead).count(), 2)
+        self.assertEqual(CrmEvent.objects.filter(lead=lead, event_type="lead.disposition").count(), 3)
+
+    def test_work_to_unparsed_preserves_stage_owner_and_task(self):
+        lead = self.create()
+        original = lead.next_task_id
+        self.move(lead, "unparsed")
+        self.assertEqual((lead.status, lead.assignee_id, lead.next_task_id, lead.needs_review), ("working", self.user.pk, original, True))
+        self.move(lead, "working")
+        self.assertFalse(lead.needs_review)
+        self.assertEqual(lead.next_task_id, original)
+        self.assertFalse(ServiceTask.objects.get(pk=original).is_archived)
+        events = list(CrmEvent.objects.filter(lead=lead, event_type="lead.disposition").order_by("pk"))
+        self.assertEqual(events[0].safe_diff["column"], {"before": "working", "after": "unparsed"})
+        self.assertEqual(events[0].safe_diff["needs_review"], {"before": False, "after": True})
+
+    def test_free_spam_claim_requires_both_caps_no_fabricated_task_or_theft(self):
+        lead = CrmLead.objects.create(organization=self.org, title="Free synthetic inquiry")
+        self.grant.take_leads = False; self.grant.save()
+        with self.assertRaises(PermissionDenied):
+            self.move(lead, "spam")
+        self.grant.take_leads = True; self.grant.save()
+        self.move(lead, "spam")
+        self.assertEqual(lead.assignee_id, self.user.pk)
+        self.assertFalse(ServiceTask.objects.exists())
+        other = get_user_model().objects.create_user("other-synthetic-owner")
+        OrganizationAccess.objects.create(organization=self.org, user=other, role="manager")
+        lead.assignee = other; lead.save()
+        with self.assertRaises(CommercialConflict):
+            self.move(lead, "deleted")
+
+    def test_trash_restore_retains_qualified_deals_and_never_reopens(self):
+        lead = self.create(client_id=self.client.pk)
+        self.command("lead.qualify", {"deals": [self.deal()]}, lead)
+        lead.refresh_from_db()
+        deal_ids = list(CrmLeadDealLink.objects.filter(lead=lead).values_list("deal_id", flat=True))
+        old_task = lead.next_task_id
+        self.move(lead, "deleted")
+        self.move(lead, "restore")
+        self.assertEqual((lead.status, lead.result, lead.next_task_id), ("closed", "qualified", old_task))
+        self.assertEqual(list(CrmLeadDealLink.objects.filter(lead=lead).values_list("deal_id", flat=True)), deal_ids)
+        with self.assertRaises(ValidationError):
+            self.move(lead, "working", next_action=self.action())
+        with self.assertRaises(ValidationError):
+            self.move(lead, "spam")
+
+    def test_cancel_checks_task_version_and_restore_requires_real_next_step(self):
+        lead = self.create()
+        stale = version_for(lead.next_task)
+        task = lead.next_task; task.title = "Changed in calendar"; task.save()
+        with self.assertRaises(CommercialConflict):
+            self.move(lead, "deleted", expected_task_version=stale)
+        task.refresh_from_db(); self.assertFalse(task.is_archived)
+        self.move(lead, "deleted")
+        self.move(lead, "restore")
+        self.assertTrue(lead.needs_review)
+        with self.assertRaises(ValidationError):
+            self.move(lead, "working")
+        self.move(lead, "working", next_action=self.action())
+        self.assertFalse(lead.needs_review)
+
+    def test_replay_stale_revision_payload_and_current_capability(self):
+        lead = self.create()
+        values = {"column": "spam", "reason": "Explicit synthetic reason", "expected_task_version": version_for(lead.next_task)}
+        first = self.command("lead.disposition", values, lead, key="spam-replay")
+        self.assertEqual(first, self.command("lead.disposition", values, lead, key="spam-replay"))
+        with self.assertRaises(CommercialConflict):
+            self.command("lead.disposition", {**values, "reason": "Changed"}, lead, key="spam-replay")
+        with self.assertRaises(CommercialConflict):
+            self.command("lead.disposition", {"column": "deleted", "reason": "Stale"}, lead)
+        self.grant.transition_own_leads = False; self.grant.save()
+        with self.assertRaises(PermissionDenied):
+            self.command("lead.disposition", values, lead, key="spam-replay")
+
+
+    def test_d01_working_without_task_requires_real_step_and_waiting_restore_keeps_check_date(self):
+        lead = CrmLead.objects.create(organization=self.org, assignee=self.user,
+            title="Confirmed synthetic answer", status="working", needs_review=True)
+        with self.assertRaises(ValidationError):
+            self.move(lead, "working")
+        self.move(lead, "working", next_action=self.action())
+        self.command("lead.transition", {"status": "waiting", "reason": "Customer decision", "follow_up_at": self.due.isoformat(),
+            "expected_task_version": version_for(lead.next_task)}, lead)
+        lead.refresh_from_db()
+        self.move(lead, "deleted")
+        self.move(lead, "restore")
+        self.move(lead, "working", next_action=self.action("New check after restoration"))
+        self.assertEqual(lead.status, "waiting")
+        self.assertEqual(lead.follow_up_at, lead.next_task.due_at)

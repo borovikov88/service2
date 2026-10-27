@@ -27,19 +27,23 @@ from .crm_live_views import _id, CommercialConflict
 from .models import Client, Organization, ServiceTask
 from .services.task_read_permissions import readable_tasks
 from .services.task_feedback import version_for, waiting_control
+from .services.crm_lead_commands import lead_column
 
 PAGE_SIZE = 50
 MAX_BODY_BYTES = 65536
 STATES = dict(CrmLead._meta.get_field("status").choices)
 RESULTS = dict(CrmLead._meta.get_field("result").choices)
 EVENTS = {"lead.create": "Лид создан", "lead.take": "Обращение взято в работу",
-    "lead.edit": "Карточка изменена", "lead.transition": "Состояние изменено",
+    "lead.edit": "Карточка изменена", "lead.disposition": "Лид перемещён", "lead.transition": "Состояние изменено",
     "lead.qualify": "Квалификация завершена", "lead.add_deal": "Добавлена сделка",
     "lead.new_need": "Открыта новая потребность", "lead.incoming": "Поступило обращение",
     "lead.acknowledge": "Новое обращение разобрано как продолжение текущей работы"}
 INTAKE_REASONS = {"unassigned": "Требуется ответственный", "missed_call": "Пропущенный звонок",
     "employee_unmapped": "Принявший сотрудник не сопоставлен", "employee_ambiguous": "Неоднозначное сопоставление сотрудника",
     "employee_unavailable": "Принявший сотрудник недоступен", "needs_qualification": "Требуется квалификация"}
+COLUMNS = {"unparsed": "Не разобраны", "working": "В работе", "spam": "Спам", "deleted": "Удалённые"}
+
+
 ROUTING_REASONS = {"unassigned", "employee_unmapped", "employee_ambiguous", "employee_unavailable"}
 
 
@@ -76,6 +80,8 @@ def _serialize(lead, user, capabilities, *, detail=False, visible_tasks=None):
     own = lead.assignee_id == user.pk
     opened = not lead.is_archived and lead.status != "closed"
     row = {"id": lead.pk, "title": lead.title, "revision": lead.revision,
+        "column": lead_column(lead), "is_archived": lead.is_archived,
+        "can_move": capabilities["transition_own_leads"] and (own or lead.assignee_id is None and lead.status == "new" and capabilities["take_leads"]),
         "status": lead.status, "status_label": STATES.get(lead.status, lead.status),
         "result": lead.result, "result_label": RESULTS.get(lead.result, ""),
         "client": {"id": lead.client_id, "name": lead.client.name} if lead.client_id else None,
@@ -87,9 +93,9 @@ def _serialize(lead, user, capabilities, *, detail=False, visible_tasks=None):
         "can_edit": own and opened and capabilities["edit_own_leads"],
         "can_transition": own and opened and capabilities["transition_own_leads"],
         "can_qualify": own and opened and all(capabilities[name] for name in ("qualify_own_leads", "create_own_deals", "manage_own_next_action")),
-        "can_add_deal": own and lead.result == "qualified" and all(capabilities[name] for name in ("qualify_own_leads", "create_own_deals", "manage_own_next_action")),
-        "can_new_need": detail and own and lead.status == "closed" and capabilities["create_own_leads"] and lead.threads.exists(),
-        "can_acknowledge": own and lead.status == "closed" and lead.needs_review and capabilities["edit_own_leads"],
+        "can_add_deal": own and not lead.is_archived and lead.result == "qualified" and all(capabilities[name] for name in ("qualify_own_leads", "create_own_deals", "manage_own_next_action")),
+        "can_new_need": detail and own and not lead.is_archived and lead.result != "spam" and lead.status == "closed" and capabilities["create_own_leads"] and lead.threads.exists(),
+        "can_acknowledge": own and not lead.is_archived and lead.result != "spam" and lead.status == "closed" and lead.needs_review and capabilities["edit_own_leads"],
         "needs_review": lead.needs_review, "next_action": None,
         "intake_reason_label": "" if lead.assignee_id and lead.intake_reason in ROUTING_REASONS else INTAKE_REASONS.get(lead.intake_reason, ""),
         "last_activity_at": lead.last_activity_at.isoformat() if lead.last_activity_at else None}
@@ -133,21 +139,22 @@ def _serialize_many(leads, user, capabilities, *, detail=False):
 
 def _data(request, organization):
     capabilities = _capabilities(request.user, organization)
-    mode = request.GET.get("mode", "unassigned")
+    mode = request.GET.get("mode", "all")
     status = request.GET.get("status", "")
     if mode not in {"unassigned", "mine", "all", "closed", "review"} or status and status not in STATES:
         raise ValidationError("Выберите корректный фильтр лидов.")
-    page_value = request.GET.get("page", "1")
-    if not page_value.isascii() or not page_value.isdigit() or len(page_value) > 8 or int(page_value) < 1:
-        raise ValidationError("Некорректная страница.")
+    def page_number(key):
+        value = request.GET.get(key, request.GET.get("page", "1"))
+        if not value.isascii() or not value.isdigit() or len(value) > 8 or int(value) < 1:
+            raise ValidationError("Некорректная страница.")
+        return int(value)
     query = request.GET.get("q", "").strip()[:200]
-    queryset = _queryset(request.user, organization).filter(is_archived=False)
+    # Authority and source privacy are applied BEFORE every search/count/page.
+    queryset = _queryset(request.user, organization)
     if mode == "review":
         queryset = queryset.filter(needs_review=True)
     elif mode == "closed":
-        queryset = queryset.filter(status="closed")
-    else:
-        queryset = queryset.exclude(status="closed")
+        queryset = queryset.filter(status="closed", is_archived=False).exclude(result="spam")
     if mode == "unassigned":
         queryset = queryset.filter(assignee__isnull=True)
     elif mode == "mine":
@@ -156,11 +163,32 @@ def _data(request, organization):
         queryset = queryset.filter(status=status)
     if query:
         queryset = queryset.filter(Q(title__icontains=query) | Q(need__icontains=query) | Q(client__name__icontains=query))
-    paginator = Paginator(queryset.order_by("-received_at", "-pk"), PAGE_SIZE)
-    page = paginator.get_page(int(page_value))
+    ordered = queryset.order_by("-received_at", "-pk")
+    columns = []
+    if mode == "closed":
+        paginator = Paginator(ordered, PAGE_SIZE)
+        page = paginator.get_page(page_number("page"))
+        leads = _serialize_many(page, request.user, capabilities)
+        total = paginator.count
+    else:
+        spam = Q(status="closed", result="spam")
+        predicates = {
+            "unparsed": Q(is_archived=False) & ~spam & (Q(status="new") | Q(needs_review=True)),
+            "working": Q(is_archived=False, needs_review=False) & ~Q(status__in=["new", "closed"]),
+            "spam": Q(is_archived=False) & spam,
+            "deleted": Q(is_archived=True),
+        }
+        for key, label in COLUMNS.items():
+            paginator = Paginator(ordered.filter(predicates[key]), PAGE_SIZE)
+            page = paginator.get_page(page_number("page_" + key))
+            columns.append({"key": key, "label": label, "page": page.number,
+                "pages": paginator.num_pages, "total": paginator.count,
+                "leads": _serialize_many(page, request.user, capabilities)})
+        leads = [lead for column in columns for lead in column["leads"]]
+        total = sum(column["total"] for column in columns)
     activation = CrmIntakeActivation.objects.filter(organization=organization).first()
-    return {"leads": _serialize_many(page, request.user, capabilities),
-        "page": page.number, "pages": paginator.num_pages, "total": paginator.count,
+    return {"leads": leads, "columns": columns,
+        "page": columns[0]["page"] if columns else page.number, "pages": columns[0]["pages"] if columns else paginator.num_pages, "total": total,
         "page_size": PAGE_SIZE, "q": query, "mode": mode, "status": status,
         "can_create": capabilities["create_own_leads"],
         "intake": {"enabled": organization.crm_intake_process,
@@ -246,6 +274,7 @@ def _detail(request, organization, lead_id):
     return {"lead": _serialize_many([lead], request.user, _capabilities(request.user, organization), detail=True)[0],
         "events": [{"label": EVENTS.get(event.event_type, "Изменение карточки"),
             "at": event.occurred_at.isoformat(), "reason": event.reason,
+            "movement": (COLUMNS.get(event.safe_diff.get("column", {}).get("before"), "История завершённых") + " → " + COLUMNS.get(event.safe_diff.get("column", {}).get("after"), "История завершённых")) if "column" in event.safe_diff else "",
             "actor": (event.actor.get_full_name() or event.actor.username) if event.actor else "Система"} for event in events],
         "sources": source_metadata(user=request.user, organization=organization, lead=lead), "duplicate_of": duplicate,
         "deals": [{"id": deal.pk, "title": deal.title, "pipeline_id": deal.pipeline_id,
@@ -310,7 +339,7 @@ def command(request):
     allowed = {"operation_key", "command_type", "subject_id", "expected_revision", "changes"}
     if type(payload) is not dict or not payload.keys() <= allowed or not {"operation_key", "command_type", "changes"} <= payload.keys():
         raise ValidationError("Некорректный состав запроса.")
-    if type(payload["command_type"]) is not str or type(payload["changes"]) is not dict or payload["command_type"] not in {"lead.create", "lead.take", "lead.edit", "lead.transition", "lead.qualify", "lead.add_deal", "lead.new_need", "lead.acknowledge"}:
+    if type(payload["command_type"]) is not str or type(payload["changes"]) is not dict or payload["command_type"] not in {"lead.create", "lead.take", "lead.edit", "lead.transition", "lead.qualify", "lead.add_deal", "lead.new_need", "lead.acknowledge", "lead.disposition"}:
         raise ValidationError("Эта команда недоступна.")
     from .services.crm_lead_commands import execute_lead_command
     result = execute_lead_command(actor=request.user, organization=organization, **payload)
