@@ -24,7 +24,12 @@ const {chromium} = require('playwright');
       if(next){await page.getByLabel('Следующий шаг',{exact:true}).fill('Synthetic actual next step');await page.locator('#lead-dialog input[type=datetime-local]').fill('2026-11-20T12:00');}
       await page.locator('#lead-dialog button[type=submit]').click();
     };
-    const close=async()=>{await page.locator('#lead-close').click();await page.locator('#lead-dialog').waitFor({state:'hidden'});};
+    const close=async()=>{
+      await page.locator('#lead-close').click();
+      await page.locator('#lead-dialog').waitFor({state:'hidden'});
+      await page.waitForURL(url=>!url.searchParams.has('lead'));
+    };
+    const noModal=async()=>assert.equal(await page.locator('#lead-dialog').evaluate(node=>node.open),false,'Reload must keep the closed card closed');
     await page.goto(f.base+f.workspace);await inColumn('unparsed');
     assert.deepEqual(await page.locator('.lead-column h2').allTextContents(),['Не разобраны · 1','В работе · 0','Спам · 0','Удалённые · 0']);
     const sent=[];let lose=true;
@@ -38,12 +43,18 @@ const {chromium} = require('playwright');
     await page.locator('#lead-operations').getByRole('button',{name:'Проверить результат',exact:true}).waitFor();await close();
     await page.getByRole('button',{name:'Проверить результат',exact:true}).click();
     await inColumn('working');assert.equal(sent[0],sent[1]);
-    await page.reload();await inColumn('working');
+    await page.reload();await inColumn('working');await noModal();
     await card().dragTo(page.locator('[data-column=spam] h2'));await confirm();await inColumn('spam');await close();
-    await page.reload();await inColumn('spam');
+    await page.reload();await inColumn('spam');await noModal();
     // Touch/keyboard equivalent: native details + focusable move controls.
-    await card().locator('summary').focus();await page.keyboard.press('Enter');
-    await card().getByRole('button',{name:'Не разобраны',exact:true}).click();await confirm();await inColumn('unparsed');await close();
+    assert.deepEqual(await card().locator('.lead-move-options button').allTextContents(),['Не разобраны','В работе','Удалённые']);
+    const summary=card().locator('summary');await summary.focus();
+    assert.equal(await summary.evaluate(node=>node===node.ownerDocument.activeElement),true,'Keyboard focus must reach the card summary');
+    await page.keyboard.press('Enter');
+    assert.equal(await summary.evaluate(node=>node.parentElement.open),true,'Native Enter must expand the move options');
+    const restore=card().getByRole('button',{name:'Не разобраны',exact:true});await restore.focus();
+    assert.equal(await restore.evaluate(node=>node===node.ownerDocument.activeElement),true,'Restore control must be keyboard focusable');
+    await page.keyboard.press('Enter');await confirm();await inColumn('unparsed');await close();
     await card().locator('summary').click();await card().getByRole('button',{name:'В работе',exact:true}).click();await confirm(true);await inColumn('working');await close();
     await card().dragTo(page.locator('[data-column=deleted] h2'));await confirm();await inColumn('deleted');await close();
     await card().dragTo(page.locator('[data-column=unparsed] h2'));await confirm();await inColumn('unparsed');await close();
@@ -57,7 +68,7 @@ const {chromium} = require('playwright');
     await page.getByLabel('Причина перемещения',{exact:true}).waitFor();
     assert.ok(await page.getByLabel('Следующий шаг',{exact:true}).isVisible());await close();
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1),'390px page must not overflow outside the scrollable board');
-    await page.reload();await inColumn('unparsed');assert.deepEqual(errors,[]);
+    await page.reload();await inColumn('unparsed');await noModal();assert.deepEqual(errors,[]);
     console.log('Lead kanban: real drag, immutable replay, reload, spam/trash restore, live search, keyboard, 390px and dark passed');
   } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

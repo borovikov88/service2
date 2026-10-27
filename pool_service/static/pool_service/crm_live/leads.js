@@ -415,8 +415,16 @@
       editForm(content, null, "lead.create"); if (!dialog.open) dialog.showModal();
     }
     byId("lead-create").addEventListener("click", createLead);
-    byId("lead-close").addEventListener("click", () => dialog.close());
-    dialog.addEventListener("close", () => { ++state.detailSequence; state.selected = null; urlState(); });
+    function clearSelection() {
+      if (state.selected !== null) { ++state.detailSequence; state.selected = null; }
+      urlState();
+    }
+    // close() hides synchronously; its native close event is queued. Clear the
+    // URL before a user can reload, and invalidate the pending detail read now.
+    byId("lead-close").addEventListener("click", () => { clearSelection(); dialog.close(); });
+    dialog.addEventListener("cancel", clearSelection);
+    // An older queued close must not clear a card opened in the meantime.
+    dialog.addEventListener("close", () => { if (!dialog.open) clearSelection(); });
     byId("lead-refresh").addEventListener("click", loadList);
     let searchTimer;
     byId("lead-search").value = state.q; byId("lead-status").value = state.status;
