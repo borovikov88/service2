@@ -40,6 +40,25 @@ def saved_report():
 
 
 class AutoloadReportTests(SimpleTestCase):
+    def test_row_equivalence_preserves_every_message_field_and_other_row_fields(self):
+        from copy import deepcopy
+        probe = report_api._item(item())
+        message_changes = {"code": 456, "type": "warning", "title": "Другое название",
+                           "description": "Другое описание", "updated_at": "2026-10-10T12:00:00+00:00",
+                           "truncated": True, "diagnostics": {}}
+        row_changes = {"ad_id": "1_9_3", "avito_id": 778, "avito_status": "active",
+                       "avito_date_end": "2026-11-01T00:00:00+00:00", "feed_name": "Другой источник",
+                       "status_label": "Активно", "section": {"slug": "other", "title": "Другое"}}
+        for field, value in message_changes.items():
+            with self.subTest(message_field=field):
+                other = deepcopy(probe)
+                other["messages"][0][field] = value
+                self.assertFalse(report_api._same_report_row(probe, other))
+        for field, value in row_changes.items():
+            with self.subTest(row_field=field):
+                self.assertFalse(report_api._same_report_row(probe, dict(probe, **{field: value})))
+        self.assertFalse(report_api._same_report_row(probe, None))
+
     def test_row_mismatch_diagnostic_distinguishes_order_time_and_payload_without_values(self):
         from copy import deepcopy
         first = report_api._item(item("PRIVATE_XML"))
@@ -517,6 +536,49 @@ class ShopXmlIdReportTests(SimpleTestCase):
         self.assertEqual([50, 5], [len(query["query"][0].split(",")) for query in queries])
         self.assertTrue(all(query["page"] == ["1"] and query["perPage"] == ["50"] for query in queries))
         self.assertEqual(2, source.call_count)
+
+    def test_reordered_messages_allow_complete_report_and_keep_query_order_and_duplicates(self):
+        from copy import deepcopy
+        rows = self.rows()
+        for row in rows:
+            first = row["messages"][0]
+            row["messages"] = [first, deepcopy(first), dict(first, code=456)]
+        queried = deepcopy(rows)
+        for row in queried:
+            row["messages"].reverse()
+        result, get, source = self.fetch([
+            self.shop_upload(), page(rows[:50], total=55),
+            page(queried[:50]), page(queried[50:]), self.shop_upload()
+        ])
+        self.assertTrue(result["complete"])
+        self.assertEqual((55, 55, "shop_xml_id_queries"),
+                         (result["total"], result["counts"]["error"], result["read_strategy"]))
+        self.assertEqual([report_api._item(row) for row in queried], result["rows"])
+        self.assertEqual(5, get.call_count)
+        self.assertEqual(2, source.call_count)
+
+    def test_message_order_does_not_hide_changed_multiplicity_or_timestamp(self):
+        from copy import deepcopy
+        rows = self.rows()
+        for row in rows:
+            first = row["messages"][0]
+            row["messages"] = [first, deepcopy(first), dict(first, code=456)]
+        for change in ("multiplicity", "timestamp"):
+            queried = deepcopy(rows)
+            for row in queried:
+                row["messages"].reverse()
+            if change == "multiplicity":
+                queried[0]["messages"][1]["code"] = 456
+            else:
+                queried[0]["messages"][1]["updated_at"] = "2026-10-10T12:00:00Z"
+            with self.subTest(change=change), self.assertRaisesMessage(AvitoError, "autoload_report_changed") as caught:
+                self.fetch([self.shop_upload(), page(rows[:50], total=55),
+                            page(queried[:50]), page(queried[50:])])
+            self.assertEqual("queried_rows_changed", caught.exception.consistency_guard)
+            self.assertEqual(50, caught.exception.row_differences["messages"])
+            self.assertEqual(49, caught.exception.row_differences["message_order_only"])
+            self.assertEqual(1 if change == "timestamp" else None,
+                             caught.exception.row_differences.get("message_time_only"))
 
     def test_ignored_filter_missing_or_foreign_ids_and_duplicate_records_block(self):
         rows = self.rows()

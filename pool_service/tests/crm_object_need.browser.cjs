@@ -23,6 +23,23 @@ const {chromium} = require('playwright');
     const page = await context.newPage();
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
+    const nextListResponse = () => page.waitForResponse((response) =>
+      new URL(response.url()).pathname === new URL(fixture.base + fixture.data).pathname
+      && response.request().method() === 'GET');
+    const reviewedList = async (responsePromise) => {
+      const response = await responsePromise;
+      assert.equal(response.status(), 200, 'Reviewed list must load successfully');
+      const data = await response.json();
+      assert.equal(data.total, 1);
+      const row = data.rows.find((item) => item.id === fixture.taskId);
+      assert.ok(row, 'Reviewed task must remain in the canonical list');
+      assert.equal(row.state, 'reviewed');
+      assert.equal(row.review_revision, 1);
+      assert.deepEqual(row.modes, ['chemistry_monthly', 'approval_required']);
+      await page.waitForFunction((revision) => document.querySelector('#needs-status')?.textContent === 'Доступно: 1'
+        && document.querySelectorAll('#needs-rows button').length === 1
+        && document.querySelector('#needs-rows')?.textContent.includes('Разобрано · редакция ' + revision), row.source_revision);
+    };
     const bootstrapResponse = page.waitForResponse((response) => response.url() === bootstrapURL);
     await page.goto(fixture.base + fixture.workspace);
     assert.equal(await (await bootstrapResponse).text(), bundle);
@@ -65,11 +82,18 @@ const {chromium} = require('playwright');
     for (const control of await frozenControls.all()) assert.equal(await control.isDisabled(), true);
     assert.equal(await page.locator('#needs-close').isDisabled(), true);
     assert.equal(await page.locator('#needs-retry').isEnabled(), true);
+    const savedList = nextListResponse();
     await page.locator('#needs-retry').click();
     await page.waitForFunction(() => document.querySelector('#needs-feedback').textContent.startsWith('Разбор сохранён'));
+    // Feedback precedes the list refresh; finish that request and render before reload.
+    await reviewedList(savedList);
     assert.equal(sent.length, 2);
     assert.equal(sent[0], sent[1]);
-    await page.reload();
+    const reloadedList = nextListResponse();
+    const reloaded = await page.reload();
+    assert.ok(reloaded, 'Reload must navigate to a new document');
+    assert.equal(reloaded.status(), 200, 'Reload must return a usable document');
+    await reviewedList(reloadedList);
     await page.locator('#needs-rows button').first().waitFor();
     await page.locator('#needs-rows button').click();
     await page.locator('#needs-detail:not([hidden])').waitFor();

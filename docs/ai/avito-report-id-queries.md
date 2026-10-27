@@ -17,7 +17,11 @@ unique canonical numeric shop IDs, and their count must equal the provider total
 Each query requests at most 50 IDs on page1 with perPage50. Its total must equal
 the requested count, every requested ID must appear, no foreign ID is accepted,
 and identity pairs remain unique. All returned rows together must exactly cover
-the XML IDs and declared total. The unfiltered probe rows must match these rows.
+the XML IDs and declared total. The unfiltered probe rows must match these rows,
+allowing only a different order of otherwise identical normalized messages.
+Messages are compared as multisets: repeated messages retain their counts, and
+every message field, including timestamps, truncation and diagnostics, must agree.
+The returned query rows keep their original message order.
 The XML byte digest and complete upload summary must remain unchanged across
 the read. Existing response-size, time, row, message and uniqueness limits apply.
 Source/profile reads receive the shared monotonic report deadline, capped by
@@ -41,6 +45,7 @@ reports only fixed field names and counts (at most 50 probe rows). It distinguis
 missing identity pairs, status, placement end, feed name, section and messages;
 message ordering-only and timestamp-only differences are diagnostic subcounts.
 No field values, IDs, feed names or message bodies enter this diagnostic. Manual
-and scheduled reads use the same error presentation. Every mismatch still rejects
-the report and preserves the previous successful snapshot as stale; ordering or
-timestamp-only differences are not accepted as equivalent.
+and scheduled reads use the same error presentation. Message ordering alone is
+accepted; any other mismatch rejects the report and preserves the previous
+successful snapshot as stale. Timestamp-only differences remain rejected, and
+order-only rows may appear in diagnostic subcounts alongside a genuine mismatch.

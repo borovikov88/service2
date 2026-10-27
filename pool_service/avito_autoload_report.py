@@ -53,6 +53,20 @@ def safe_row_differences(value):
             if type(value.get(key)) is int and 0 < value[key] <= PAGE_SIZE}
 
 
+def _message_counts(values, *, omit_time=False):
+    return Counter(json.dumps({key: value for key, value in entry.items()
+                               if not (omit_time and key == "updated_at")}, sort_keys=True)
+                   for entry in values)
+
+
+def _same_report_row(probe, other):
+    """Only message ordering is immaterial; retain every value and multiplicity."""
+    return (other is not None
+            and {key: value for key, value in probe.items() if key != "messages"} == {
+                key: value for key, value in other.items() if key != "messages"}
+            and _message_counts(probe["messages"]) == _message_counts(other["messages"]))
+
+
 def row_difference_counts(probe_rows, by_identity):
     counts = Counter()
     for row in probe_rows:
@@ -63,15 +77,11 @@ def row_difference_counts(probe_rows, by_identity):
         for key in ("avito_status", "avito_date_end", "feed_name", "section", "messages"):
             if row[key] != other[key]:
                 counts[key] += 1
-        # Diagnose ordering/timestamp-only differences without accepting them.
-        def messages(values, *, omit_time=False):
-            return Counter(json.dumps({key: value for key, value in entry.items()
-                                       if not (omit_time and key == "updated_at")}, sort_keys=True)
-                           for entry in values)
+        # Order-only rows can accompany a genuine mismatch elsewhere in the probe.
         if row["messages"] != other["messages"]:
-            if messages(row["messages"]) == messages(other["messages"]):
+            if _message_counts(row["messages"]) == _message_counts(other["messages"]):
                 counts["message_order_only"] += 1
-            elif messages(row["messages"], omit_time=True) == messages(other["messages"], omit_time=True):
+            elif _message_counts(row["messages"], omit_time=True) == _message_counts(other["messages"], omit_time=True):
                 counts["message_time_only"] += 1
         known = {"ad_id", "avito_id", "avito_status", "avito_date_end", "feed_name", "section", "messages"}
         if {key: value for key, value in row.items() if key not in known} != {
@@ -431,7 +441,7 @@ def _query_shop_rows(get, base, snapshot, probe_rows, total, deadline):
     if len(rows) != total or {row["ad_id"] for row in rows} != set(identifiers):
         raise AvitoError("autoload_report_pagination")
     by_identity = {(row["ad_id"], row["avito_id"]): row for row in rows}
-    if any(by_identity.get((row["ad_id"], row["avito_id"])) != row for row in probe_rows):
+    if any(not _same_report_row(row, by_identity.get((row["ad_id"], row["avito_id"]))) for row in probe_rows):
         raise ReportChanged("queried_rows_changed", row_differences=row_difference_counts(probe_rows, by_identity))
     after = _shop_snapshot(deadline)
     if after is None or after[1] != digest:
