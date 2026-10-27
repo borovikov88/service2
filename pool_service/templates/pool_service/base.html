@@ -137,8 +137,8 @@
           <i class="bi bi-kanban"></i><span>CRM</span><i class="bi bi-chevron-down desktop-sidebar__group-chevron"></i>
         </summary>
         <div class="desktop-sidebar__subnav">
+          {% if crm_leads_url %}<a href="{{ crm_leads_url }}" class="desktop-sidebar__sublink {% if request.resolver_match.url_name == 'crm_live_leads' %}is-active{% endif %}"><span>Лиды</span></a>{% endif %}
           {% if crm_deals_url %}<a href="{{ crm_deals_url }}" class="desktop-sidebar__sublink {% if request.resolver_match.url_name == 'crm_live_workspace' or request.resolver_match.url_name == 'crm_live_start' %}is-active{% endif %}">Сделки</a>{% endif %}
-          {% if crm_leads_url %}<a href="{{ crm_leads_url }}" class="desktop-sidebar__sublink {% if request.resolver_match.url_name == 'crm_live_leads' %}is-active{% endif %}"><span>Входящие и лиды</span></a>{% endif %}
           {% if can_access_crm %}
           <a href="{% url 'crm_index' %}" class="desktop-sidebar__sublink {% if request.resolver_match.url_name == 'crm_index' %}is-active{% endif %}">Обзор CRM</a>
           <a href="{% url 'crm_tasks' %}" class="desktop-sidebar__sublink {% if request.resolver_match.url_name == 'crm_tasks' %}is-active{% endif %}">Задачи</a>
@@ -349,8 +349,8 @@
               <a class="crm-nav__link text-decoration-none {% if active_tab == 'crm' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% if can_access_crm %}{% url 'crm_index' %}{% elif crm_deals_url %}{{ crm_deals_url }}{% else %}{{ crm_leads_url }}{% endif %}">CRM</a>
               <span class="crm-nav__toggle" aria-hidden="true"><i class="bi bi-chevron-down"></i></span>
               <div class="crm-nav__menu">
+          {% if crm_leads_url %}<a href="{{ crm_leads_url }}" class="ui-dropdown__item {% if request.resolver_match.url_name == 'crm_live_leads' %}is-active{% endif %}"><i class="bi bi-inbox"></i><span>Лиды</span></a>{% endif %}
                 {% if crm_deals_url %}<a href="{{ crm_deals_url }}" class="ui-dropdown__item {% if request.resolver_match.url_name == 'crm_live_workspace' or request.resolver_match.url_name == 'crm_live_start' %}is-active{% endif %}"><i class="bi bi-kanban"></i><span>Сделки</span></a>{% endif %}
-          {% if crm_leads_url %}<a href="{{ crm_leads_url }}" class="ui-dropdown__item {% if request.resolver_match.url_name == 'crm_live_leads' %}is-active{% endif %}"><i class="bi bi-inbox"></i><span>Входящие и лиды</span></a>{% endif %}
                 {% if can_access_crm %}
                 <a href="{% url 'crm_tasks' %}" class="ui-dropdown__item {% if request.resolver_match.url_name == 'crm_tasks' %}is-active{% endif %}">
                   <i class="bi bi-list-task"></i>
@@ -561,8 +561,8 @@
               <i class="bi bi-chevron-down"></i>
             </summary>
             <div class="mobile-submenu__body">
+          {% if crm_leads_url %}<a href="{{ crm_leads_url }}" class="mobile-submenu__item {% if request.resolver_match.url_name == 'crm_live_leads' %}is-active{% endif %}"><i class="bi bi-inbox"></i><span>Лиды</span></a>{% endif %}
               {% if crm_deals_url %}<a href="{{ crm_deals_url }}" class="mobile-submenu__item {% if request.resolver_match.url_name == 'crm_live_workspace' or request.resolver_match.url_name == 'crm_live_start' %}is-active{% endif %}"><i class="bi bi-kanban"></i><span>Сделки</span></a>{% endif %}
-          {% if crm_leads_url %}<a href="{{ crm_leads_url }}" class="mobile-submenu__item {% if request.resolver_match.url_name == 'crm_live_leads' %}is-active{% endif %}"><i class="bi bi-inbox"></i><span>Входящие и лиды</span></a>{% endif %}
               {% if can_access_crm %}
               <a href="{% url 'crm_index' %}" class="mobile-submenu__item {% if request.resolver_match.url_name == 'crm_index' %}is-active{% endif %}">
                 <i class="bi bi-grid-1x2"></i>

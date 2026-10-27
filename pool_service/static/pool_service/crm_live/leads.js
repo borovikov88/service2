@@ -60,13 +60,19 @@
     if (!Number.isFinite(new Date(iso).getTime())) throw new Error("Некорректная дата.");
     return iso;
   }
+  function moveTargets(lead) {
+    if (!lead.can_move) return [];
+    if (lead.is_archived) return lead.status === "closed" ? (lead.result === "spam" ? ["restore", "spam"] : ["restore", "unparsed"]) : ["restore", "unparsed", "working"];
+    if (lead.status === "closed" && lead.result !== "spam") return lead.needs_review ? ["deleted"] : ["unparsed", "deleted"];
+    return ["unparsed", "working", "spam", "deleted"].filter((key) => key !== lead.column);
+  }
   function mount(doc) {
     const root = doc.getElementById("crm-leads"); if (!root) return;
     const win = doc.defaultView;
     const initial = JSON.parse(doc.getElementById("lead-bootstrap").textContent);
     const byId = (id) => doc.getElementById(id);
     const dialog = byId("lead-dialog"), content = byId("lead-dialog-content");
-    const state = {data: initial, q: initial.q, mode: initial.mode, status: initial.status, page: initial.page,
+    const state = {data: initial, q: initial.q, mode: initial.mode, status: initial.status, page: initial.page, pages: Object.fromEntries((initial.columns || []).map((column) => [column.key, column.page])),
       selected: null, detail: null, loading: false, sequence: 0, detailSequence: 0, listController: null};
     const el = (tag, cls, text) => { const node = doc.createElement(tag); if (cls) node.className = cls; if (text != null) node.textContent = text; return node; };
     const button = (text, action, primary = false) => { const node = el("button", "crm-live-button" + (primary ? " crm-live-button-primary" : ""), text); node.type = "button"; if (action) node.addEventListener("click", action); return node; };
@@ -78,9 +84,10 @@
     };
     function urlState() {
       const url = new URL(win.location.href);
-      for (const [key, value, base] of [["q", state.q, ""], ["mode", state.mode, "unassigned"], ["status", state.status, ""], ["page", String(state.page), "1"]]) {
+      for (const [key, value, base] of [["q", state.q, ""], ["mode", state.mode, "all"], ["status", state.status, ""], ["page", String(state.mode === "closed" ? state.page : 1), "1"]]) {
         if (value && value !== base) url.searchParams.set(key, value); else url.searchParams.delete(key);
       }
+      for (const key of ["unparsed", "working", "spam", "deleted"]) { const page = state.pages[key] || 1; if (page > 1) url.searchParams.set("page_" + key, page); else url.searchParams.delete("page_" + key); }
       if (state.selected) url.searchParams.set("lead", state.selected); else url.searchParams.delete("lead");
       win.history.replaceState({}, "", url);
     }
@@ -141,36 +148,99 @@
         }
       } catch (error) { errorNode(form, error); }
     }
+    const columnLabels = {unparsed: "Не разобраны", working: "В работе", spam: "Спам", deleted: "Удалённые", restore: "Восстановить"};
+    let dragged = null;
+    function card(lead) {
+      const row = el("article", "lead-row"); row.dataset.leadId = lead.id;
+      const title = el("div"), middle = el("div"), next = el("div");
+      title.append(button(lead.title, () => openLead(lead.id)), el("p", "", lead.client?.name || "Клиент пока не определён"));
+      middle.append(el("span", "lead-state", lead.status_label), el("p", "", lead.assignee?.name || "Не назначен"));
+      if (lead.result) middle.append(el("p", "", lead.result_label));
+      if (lead.intake_reason_label) middle.append(el("p", "", lead.intake_reason_label));
+      if (lead.needs_review) middle.append(el("span", "lead-state review", "Новое обращение · нужен разбор"));
+      const action = lead.next_action;
+      next.append(el("p", "", action?.restricted ? "Следующий шаг ограничен доступом" : action?.completed ? "Предыдущий шаг завершён" : action?.title || (lead.can_take ? "Можно взять в работу" : "Следующий шаг не указан")));
+      if (action?.due_at && !action.restricted) next.append(el("p", "lead-date", dateText(action.due_at)));
+      row.append(title, middle, next);
+      const targets = moveTargets(lead);
+      if (targets.length) {
+        row.draggable = !state.loading && !operations.forSubject(lead.id);
+        row.addEventListener("dragstart", (event) => {
+          if (!row.draggable || operations.forSubject(lead.id)) { event.preventDefault(); return; }
+          dragged = lead; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", String(lead.id)); row.classList.add("is-dragging");
+        });
+        row.addEventListener("dragend", () => { dragged = null; row.classList.remove("is-dragging"); root.querySelectorAll(".is-drop-target").forEach((node) => node.classList.remove("is-drop-target")); });
+        const actions = el("details", "lead-card-move"), summary = el("summary", "", "Переместить…"); actions.append(summary);
+        const buttons = el("div", "lead-move-options");
+        for (const target of targets) buttons.append(button(columnLabels[target], () => moveLead(lead, target)));
+        actions.append(buttons); row.append(actions);
+      }
+      return row;
+    }
     function renderList() {
       const data = state.data, list = byId("lead-list"); list.replaceChildren(); list.setAttribute("aria-busy", String(state.loading));
+      list.className = state.mode === "closed" ? "lead-history-list" : "lead-board";
       byId("lead-count").textContent = state.loading ? "Обновляем…" : "Найдено: " + data.total;
       byId("lead-page").textContent = `${data.page} / ${data.pages}`;
+      byId("lead-prev").parentElement.hidden = state.mode !== "closed";
       byId("lead-prev").disabled = state.loading || data.page <= 1; byId("lead-next").disabled = state.loading || data.page >= data.pages;
       byId("lead-create").hidden = !data.can_create;
       const intake = data.intake || {};
       byId("lead-intake-status").textContent = "Приём обращений: " + (!intake.enabled ? "выключен" : intake.needs_attention ? "требует проверки" : !intake.last_run_at ? "ожидает первого запуска" : "включён") + (intake.last_run_at ? " · Последний запуск: " + dateText(intake.last_run_at) : "");
       root.querySelectorAll("[data-mode]").forEach((node) => { if (node.dataset.mode === state.mode) node.setAttribute("aria-current", "page"); else node.removeAttribute("aria-current"); });
-      if (!data.leads.length) list.append(el("div", "lead-empty", state.q || state.status ? "По этим условиям лидов нет. Измените поиск или фильтры." : "В этом представлении пока нет обращений."));
-      for (const lead of data.leads) {
-        const row = el("article", "lead-row"), title = el("div"), middle = el("div"), next = el("div");
-        const open = button(lead.title, () => openLead(lead.id)); title.append(open);
-        title.append(el("p", "", lead.client?.name || "Клиент пока не определён"));
-        middle.append(el("span", "lead-state", lead.status_label), el("p", "", lead.assignee?.name || "Не назначен"));
-        if (lead.intake_reason_label) middle.append(el("p", "", lead.intake_reason_label));
-        if (lead.needs_review) middle.append(el("span", "lead-state review", "Новое обращение · нужен разбор"));
-        const action = lead.next_action;
-        next.append(el("p", "", action?.restricted ? "Следующий шаг ограничен доступом" : action?.completed ? "Предыдущий шаг завершён" : action?.title || (lead.can_take ? "Можно взять в работу" : "Следующий шаг не указан")));
-        if (action?.due_at && !action.restricted) next.append(el("p", "lead-date", dateText(action.due_at)));
-        row.append(title, middle, next); list.append(row);
+      if (state.mode === "closed") {
+        list.append(el("h2", "", "История завершённых"));
+        if (!data.leads.length) list.append(el("p", "lead-empty", "Завершённых лидов по этим условиям нет."));
+        for (const lead of data.leads) list.append(card(lead));
+      } else for (const column of data.columns || []) {
+        const section = el("section", "lead-column"); section.dataset.column = column.key;
+        section.setAttribute("aria-label", column.label);
+        section.append(el("h2", "", column.label + " · " + column.total));
+        const cards = el("div", "lead-column-cards");
+        if (!column.leads.length) cards.append(el("p", "lead-empty", state.q || state.status ? "Нет совпадений" : "Пока пусто"));
+        for (const lead of column.leads) cards.append(card(lead));
+        section.append(cards);
+        section.addEventListener("dragover", (event) => { if (dragged && !state.loading && moveTargets(dragged).includes(column.key)) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; section.classList.add("is-drop-target"); } });
+        section.addEventListener("dragleave", (event) => { if (!section.contains(event.relatedTarget)) section.classList.remove("is-drop-target"); });
+        section.addEventListener("drop", (event) => { event.preventDefault(); section.classList.remove("is-drop-target"); const lead = dragged; dragged = null; if (lead && !state.loading && moveTargets(lead).includes(column.key)) moveLead(lead, column.key); });
+        const pager = el("nav", "lead-column-pager"); pager.setAttribute("aria-label", "Страницы: " + column.label);
+        const previous = button("←", () => { state.pages[column.key] = column.page - 1; loadList(); }); previous.setAttribute("aria-label", "Предыдущая страница: " + column.label); previous.disabled = state.loading || column.page <= 1;
+        const next = button("→", () => { state.pages[column.key] = column.page + 1; loadList(); }); next.setAttribute("aria-label", "Следующая страница: " + column.label); next.disabled = state.loading || column.page >= column.pages;
+        pager.append(previous, el("span", "", `${column.page} / ${column.pages}`), next); section.append(pager); list.append(section);
       }
       renderOperations();
+    }
+    async function moveLead(snapshot, target) {
+      if (operations.forSubject(snapshot.id)) { notice("Сначала проверьте предыдущее сохранение этой карточки."); return; }
+      const sequence = ++state.detailSequence; state.selected = snapshot.id; urlState();
+      content.replaceChildren(el("h2", "", "Перемещение лида")); content.firstChild.id = "lead-dialog-title";
+      if (!dialog.open) dialog.showModal();
+      try {
+        const data = await read(initial.urls.detail_prefix + snapshot.id + "/?org_id=" + initial.organization_id);
+        if (sequence !== state.detailSequence) return;
+        const lead = data.lead;
+        if (lead.revision !== snapshot.revision || !moveTargets(lead).includes(target)) throw new Error("Карточка уже изменена или действие недоступно. Обновите канбан.");
+        const free = !lead.assignee;
+        const form = makeForm(content, columnLabels[target], free ? "Первое успешное сохранение закрепит свободный лид за вами." : "Перемещение сохранится после подтверждения. История и связи останутся в карточке.");
+        const reason = field(form, "Причина перемещения", "", "textarea"); reason.required = true; reason.maxLength = 500;
+        let next = null;
+        if (target === "working" && (!lead.next_action || lead.next_action.completed)) next = nextFields(form, null);
+        if (target === "spam" || target === "deleted") form.append(el("p", "lead-form-note", "Текущий незавершённый шаг будет отменён с сохранением истории."));
+        formSubmit(form, free ? "Взять на себя и переместить" : "Подтвердить перемещение", () => {
+          const changes = {column: target, reason: reason.value.trim()}; if (next) changes.next_action = next();
+          if (["spam", "deleted"].includes(target) && lead.next_action?.version && !lead.next_action.completed) changes.expected_task_version = lead.next_action.version;
+          submit(form, "lead.disposition", lead, changes);
+        });
+        renderOperations();
+      } catch (error) { if (sequence === state.detailSequence) content.append(el("p", "lead-error", error.message)); }
     }
     async function loadList() {
       if (state.listController) state.listController.abort();
       const controller = new AbortController(), sequence = ++state.sequence; state.listController = controller; state.loading = true; renderList(); urlState();
       const url = new URL(initial.urls.data, win.location.origin);
-      for (const [key, value] of Object.entries({q: state.q, mode: state.mode, status: state.status, page: state.page})) url.searchParams.set(key, value);
-      try { const data = await read(url, controller.signal); if (sequence !== state.sequence) return; state.data = data; state.page = data.page; urlState(); }
+      for (const [key, value] of Object.entries({q: state.q, mode: state.mode, status: state.status, page: state.mode === "closed" ? state.page : 1})) url.searchParams.set(key, value);
+      for (const [key, page] of Object.entries(state.pages)) url.searchParams.set("page_" + key, page);
+      try { const data = await read(url, controller.signal); if (sequence !== state.sequence) return; state.data = data; state.page = data.page; state.pages = Object.fromEntries((data.columns || []).map((column) => [column.key, column.page])); urlState(); }
       catch (error) { if (error.name !== "AbortError" && sequence === state.sequence) notice(error.message); }
       finally { if (sequence === state.sequence) { state.loading = false; renderList(); } }
     }
@@ -322,6 +392,7 @@
         const form = makeForm(content, "Взять в работу", "Просмотр карточки не назначает ответственного. Первый успешный захват закрепит обращение за вами."), fields = el("div", "lead-fields"); form.append(fields); const next = nextFields(fields, null);
         formSubmit(form, "Взять в работу", () => submit(form, "lead.take", lead, {next_action: next()}));
       }
+      if (moveTargets(lead).length) { const moves = el("div", "lead-actions"); for (const target of moveTargets(lead)) moves.append(button(columnLabels[target], () => moveLead(lead, target))); content.append(moves); }
       if (lead.can_edit) editForm(content, lead);
       if (lead.can_transition) transitionForm(content, lead);
       if (lead.can_qualify) qualificationForm(content, lead);
@@ -329,7 +400,7 @@
       if (lead.can_new_need) { const details = el("details"); details.append(el("summary", "", "Новое обращение — самостоятельная потребность")); editForm(details, lead, "lead.new_need"); content.append(details); }
       if (data.events?.length) {
         const section = el("section"), history = el("ol", "lead-history"); section.append(el("h3", "", "История"), history);
-        for (const event of data.events) { const row = el("li", "", event.label + " · " + dateText(event.at) + " · " + event.actor); if (event.reason) row.append(el("p", "", event.reason)); history.append(row); } content.append(section);
+        for (const event of data.events) { const row = el("li", "", event.label + (event.movement ? " · " + event.movement : "") + " · " + dateText(event.at) + " · " + event.actor); if (event.reason) row.append(el("p", "", event.reason)); history.append(row); } content.append(section);
       }
       renderOperations();
     }
@@ -349,14 +420,14 @@
     byId("lead-refresh").addEventListener("click", loadList);
     let searchTimer;
     byId("lead-search").value = state.q; byId("lead-status").value = state.status;
-    byId("lead-search").addEventListener("input", (event) => { state.q = event.target.value; state.page = 1; win.clearTimeout(searchTimer); searchTimer = win.setTimeout(loadList, 300); });
-    byId("lead-status").addEventListener("change", (event) => { state.status = event.target.value; state.page = 1; loadList(); });
-    byId("lead-modes").addEventListener("click", (event) => { const target = event.target.closest("[data-mode]"); if (target) { state.mode = target.dataset.mode; state.page = 1; loadList(); } });
+    byId("lead-search").addEventListener("input", (event) => { state.q = event.target.value; state.page = 1; state.pages = {}; win.clearTimeout(searchTimer); searchTimer = win.setTimeout(loadList, 300); });
+    byId("lead-status").addEventListener("change", (event) => { state.status = event.target.value; state.page = 1; state.pages = {}; loadList(); });
+    byId("lead-modes").addEventListener("click", (event) => { const target = event.target.closest("[data-mode]"); if (target) { state.mode = target.dataset.mode; state.page = 1; state.pages = {}; loadList(); } });
     byId("lead-prev").addEventListener("click", () => { if (state.page > 1) { state.page -= 1; loadList(); } });
     byId("lead-next").addEventListener("click", () => { if (state.page < state.data.pages) { state.page += 1; loadList(); } });
     win.addEventListener("beforeunload", (event) => { if (operations.pending().length) { event.preventDefault(); event.returnValue = ""; } });
     const selected = new URL(win.location.href).searchParams.get("lead"); renderList(); if (selected && /^\d+$/.test(selected)) openLead(Number(selected));
     return {state, operations, loadList, openLead};
   }
-  return {LeadOperations, localDateTime, deadlineISO, mount};
+  return {LeadOperations, localDateTime, deadlineISO, moveTargets, mount};
 });

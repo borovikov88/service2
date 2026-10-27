@@ -39,3 +39,12 @@ test("manager-entered dates use the displayed organization offset and reject non
   assert.equal(localDateTime("2026-10-27T05:00:00Z", "Asia/Barnaul"), "2026-10-27T12:00");
   assert.throws(() => deadlineISO("2026-02-31T12:00", "+07:00")); assert.throws(() => deadlineISO("", "+07:00"));
 });
+
+
+test("move options preserve final results and offer explicit archived restoration", () => {
+  const {moveTargets} = require("../static/pool_service/crm_live/leads.js");
+  assert.deepEqual(moveTargets({can_move:false}), []);
+  assert.deepEqual(moveTargets({can_move:true, is_archived:true, status:"closed", result:"spam"}), ["restore", "spam"]);
+  assert.deepEqual(moveTargets({can_move:true, status:"closed", result:"qualified", needs_review:true}), ["deleted"]);
+  assert.deepEqual(moveTargets({can_move:true, status:"working", column:"working"}), ["unparsed", "spam", "deleted"]);
+});
