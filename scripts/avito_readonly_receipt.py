@@ -412,8 +412,8 @@ def cached_configuration(value):
 
 
 def runtime_checks(value):
-    require(isinstance(value, list) and len(value) <= 7)
-    names = {"statuses", "advance", "autoload_report", "tariff", "publication_correlation", "messages_digest", "statistics_daily"}
+    require(isinstance(value, list) and len(value) <= 8)
+    names = {"statuses", "advance", "autoload_report", "tariff", "publication_correlation", "messages_digest", "statistics_daily", "placement_reminder"}
     outcomes = {"baseline", "success", "failed", "skipped", "not_run"}
     allowed_codes = {
     "", "not_configured", "disabled", "not_checked", "check_due", "schedule_invalid",
@@ -449,6 +449,9 @@ def runtime_checks(value):
         require(row.get("last_worker_outcome") is None or row["last_worker_outcome"] in outcomes)
         def fixed_code(raw):
             require(raw is None or (isinstance(raw, str) and (raw in allowed_codes
+                or row["check"] == "placement_reminder" and raw in {"placement_stale", "placement_data_invalid",
+                    "placement_refresh_failed", "placement_capacity_exhausted", "placement_recipient_unavailable",
+                    "placement_already_recorded", "placement_no_eligible"}
                 or row["check"] == "statistics_daily" and raw in {"provider_data_invalid", "statistics_fields_unavailable", "statistics_provider_error"}
                 or re.fullmatch(r"provider_http_[1-5][0-9]{2}", raw))))
             return raw
@@ -470,6 +473,16 @@ def runtime_checks(value):
             "last_worker_code": fixed_code(row.get("last_worker_code")),
             "last_worker_checked_at": timestamp(row.get("last_worker_checked_at")),
             "consistency_guard": saved_guard, "last_worker_consistency_guard": worker_guard})
+        if row["check"] == "placement_reminder":
+            require(row.get("source") == "saved_owned_avito_item_detail")
+            require(row.get("window") == "08:00–21:00 Asia/Barnaul")
+            require(type(row.get("window_open")) is bool and type(row.get("last_worker_fresh")) is bool)
+            count = row.get("last_worker_notification_count")
+            require(count is None or type(count) is int and 0 <= count <= 200
+                and row["last_worker_verified"] and row.get("last_worker_outcome") != "not_run")
+            require(not row["last_worker_fresh"] or row["last_worker_verified"])
+            result[-1].update(source=row["source"], window=row["window"], window_open=row["window_open"],
+                last_worker_fresh=row["last_worker_fresh"], last_worker_notification_count=count)
     require(len({row["check"] for row in result}) == len(result))
     return result
 

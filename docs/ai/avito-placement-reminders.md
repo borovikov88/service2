@@ -51,13 +51,51 @@ outcome=failed/capacity_exhausted вместо удаления прежней �
 Технический итог tick: `AVITO_PLACEMENT_REMINDER outcome=... notifications=...`;
 это число созданных in-app записей, а не доказательство прочтения получателем.
 
+## Read-only доказательство выполнения
+
+`placement_reminder` входит в общий `avito_runtime.checks` только для
+connection4/account446312402. Штатный worker передаёт observer с реальным
+`worker_context()` run_id; запись разрешена только активному supervisor run,
+с проверкой исходного account/org/channel binding. UI и существующий
+`get_avito_diagnostics` читают эту же scoped projection, без нового tool/scope.
+Незавершённый, чужой или сменивший binding запуск не подтверждает результат.
+
+В настройках подключения `/communications/connections/4/edit/`, раздел
+«Фоновые проверки этого подключения», видны источник
+`saved_owned_avito_item_detail`, configured/enabled и текущее окно
+08:00–21:00 Asia/Barnaul отдельно от outcome, времени и фиксированного кода
+последней завершённой проверки. Доказательство старше штатных 45 минут явно
+помечается старым; время чтения страницы/MCP не заменяет время проверки.
+Счётчик `last_worker_notification_count` означает только реально созданные
+in-app записи; отсутствие доказательства/исключение даёт unknown (`null`),
+а не 0. Доставка и прочтение из этого счётчика не следуют.
+
+Ночной результат `skipped/quiet_hours/0` записывается без refresh, Notification
+и расходования дневного stage. Фиксированные причины включают отсутствие или
+отключение subscription, `placement_recipient_unavailable`, `placement_stale`,
+`placement_data_invalid`, `placement_refresh_failed`,
+`placement_capacity_exhausted`, отключённые in-app preferences, отсутствие
+подходящих порогов и уже сохранённые записи. Ошибка refresh может сопровождаться
+положительным фактическим счётчиком fallback по пригодным данным до 24 часов.
+Обычный scan по-прежнему возвращает `(outcome, count)`; observer добавлен
+необязательным keyword-аргументом. Новых настроек, Cron, collector, миграций,
+получателей и provider writes нет; connection1 не получает этот check.
+
 ## Рабочая проверка после штатного выпуска
 
 1. Read-only проверить область и уже включённую подписку статусов, её recipient
    и текущие права. Не включать подписку от имени другого человека.
-2. Проверить дневной завершённый native worker: общий supervisor/exit status и
-   строку `AVITO_PLACEMENT_REMINDER`. У owned observations должны появляться
-   свежие checked_at/last_checked_at без изменения draft/published/revision.
+2. После первого штатного завершённого native tick открыть под действующим
+   владельцем `/communications/connections/4/edit/`, «Фоновые проверки этого
+   подключения» → «Напоминания о сроках размещения Услуг». Сверить source,
+   outcome, fixed code, исходное время и число записей с общей runtime projection
+   в `get_avito_diagnostics(connection_id=4)` (при уже выданном доступе).
+   Ночью ожидается `skipped/quiet_hours/0`; до дневного tick это не доказательство
+   создания дневных уведомлений. После 08:00 проверить новый timestamp/outcome,
+   не переиспользуя ночное или старое доказательство. stdout
+   `AVITO_PLACEMENT_REMINDER` и supervisor/exit status остаются дополнительными
+   свидетельствами. У owned observations после требуемого refresh должны
+   появляться свежие checked_at/last_checked_at без изменения контента.
 3. Только для реального существующего объявления с подходящей датой и разрешённым
    получателем проверить in-app запись с `avito-placement:4:` и stage 7/3/1.
    Не менять даты или статус ради теста и не запускать реальные тестовые отправки.
