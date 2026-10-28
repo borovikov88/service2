@@ -87,7 +87,7 @@
       for (const [key, value, base] of [["q", state.q, ""], ["mode", state.mode, "all"], ["status", state.status, ""], ["page", String(state.mode === "closed" ? state.page : 1), "1"]]) {
         if (value && value !== base) url.searchParams.set(key, value); else url.searchParams.delete(key);
       }
-      for (const key of ["unparsed", "working", "spam", "deleted"]) { const page = state.pages[key] || 1; if (page > 1) url.searchParams.set("page_" + key, page); else url.searchParams.delete("page_" + key); }
+      for (const key of ["unparsed", "working", "history", "spam", "deleted"]) { const page = state.pages[key] || 1; if (page > 1) url.searchParams.set("page_" + key, page); else url.searchParams.delete("page_" + key); }
       if (state.selected) url.searchParams.set("lead", state.selected); else url.searchParams.delete("lead");
       win.history.replaceState({}, "", url);
     }

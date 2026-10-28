@@ -12,7 +12,8 @@ from django.urls import reverse
 from django.utils import timezone
 
 from pool_service.client_crm_models import ClientOwnedObject
-from pool_service.crm_commercial_models import CrmAccess, CrmCommand, CrmDeal, CrmEvent
+from pool_service.crm_commercial_bootstrap import bootstrap_commercial_settings
+from pool_service.crm_commercial_models import CrmPipeline, CrmAccess, CrmCommand, CrmDeal, CrmEvent
 from pool_service.models import Client, Organization, OrganizationAccess, Pool, ServiceTask, ServiceTaskChange
 from pool_service.services.crm_commercial_commands import (
     CommercialConflict, close_commercial_deal_negative, execute_commercial_command,
@@ -66,6 +67,48 @@ class CommercialCardTests(PilotFixture, TestCase):
         self.edit({'amount': None, 'amount_basis': 'unknown'})
         self.deal.refresh_from_db()
         self.assertIsNone(self.deal.amount)
+
+    def test_stage_totals_cover_all_filtered_pages_without_currency_conversion(self):
+        for index in range(51):
+            CrmDeal.objects.create(organization=self.org, client=self.client_record,
+                pipeline=self.deal.pipeline, stage=self.deal.stage, manager=self.user,
+                title='Aggregate synthetic ' + str(index), amount=Decimal('1.25'), currency='RUB', amount_basis='indicative')
+        foreign = Organization.objects.create(name='Foreign aggregate')
+        bootstrap_commercial_settings(foreign.pk)
+        foreign_pipeline = CrmPipeline.objects.get(organization=foreign, code="construction")
+        foreign_client = Client.objects.create(organization=foreign, name="Hidden synthetic")
+        OrganizationAccess.objects.create(organization=foreign, user=self.user, role="manager")
+        CrmDeal.objects.create(organization=foreign, client=foreign_client,
+            pipeline=foreign_pipeline, stage=foreign_pipeline.stages.get(code="need"), manager=self.user,
+            title='Aggregate hidden', amount=Decimal('999'), currency='RUB', amount_basis='indicative')
+        self.client.force_login(self.user)
+        url = reverse('crm_live_data')
+        params = dict(org_id=self.org.pk, pipeline=self.deal.pipeline_id, q='Aggregate')
+        first = self.client.get(url, params).json()
+        second = self.client.get(url, dict(params, page=2)).json()
+        self.assertEqual(first['stage_totals'], second['stage_totals'])
+        self.assertEqual(first['stage_totals'], [dict(stage_id=self.deal.stage_id, currency='RUB', amount='63.75', count=51, unknown_count=0)])
+        self.assertEqual(len(second['deals']), 1)
+        self.assertEqual(self.client.get(url, dict(params, q='No match')).json()['stage_totals'], [])
+        self.deal.amount, self.deal.currency, self.deal.amount_basis = Decimal('5'), 'EUR', 'agreed'
+        self.deal.save()
+        totals = self.client.get(url, dict(params, q='')).json()['stage_totals']
+        self.assertEqual({r['currency']: r['amount'] for r in totals}, {'RUB':'63.75', 'EUR':'5.00'})
+        self.deal.amount, self.deal.amount_basis = None, 'unknown'
+        self.deal.save()
+        totals = self.client.get(url, dict(params, q='')).json()['stage_totals']
+        self.assertEqual(next(r for r in totals if r['currency']=='EUR')['unknown_count'], 1)
+
+    def test_new_money_is_rub_and_legacy_currency_is_not_relabelled(self):
+        with self.assertRaises(ValidationError):
+            self.create(operation_key='foreign-currency-create', card_fields=dict(amount='10', currency='USD', amount_basis='agreed'))
+        self.deal.amount, self.deal.currency, self.deal.amount_basis = Decimal('10'), 'EUR', 'agreed'
+        self.deal.save()
+        with self.assertRaises(ValidationError): self.edit(dict(amount='10', currency='RUB', amount_basis='agreed'))
+        with self.assertRaises(ValidationError): self.edit(dict(amount='11', currency='EUR', amount_basis='agreed'))
+        self.edit(dict(title='Preserved legacy', amount='10.00', currency='EUR', amount_basis='agreed'))
+        self.deal.refresh_from_db()
+        self.assertEqual((self.deal.amount, self.deal.currency), (Decimal('10'), 'EUR'))
 
     def test_amount_currency_datetime_and_text_validation_is_atomic(self):
         for amount in (1.2, True, 'NaN', 'Infinity', '-1', '1.001', '10000000000000000', '1e999', 'x'):

@@ -76,7 +76,7 @@
 
   function transitionIntent(deal, stageId, pipeline, reason) {
     if (!deal || !pipeline || !deal.can_transition || isClosed(deal)) throw new Error("У вас нет права менять этап этой сделки.");
-    if (!sameId(deal.pipeline_id, pipeline.id)) throw new Error("Перенос между направлениями здесь недоступен.");
+    if (!sameId(deal.pipeline_id, pipeline.id)) throw new Error("Перенос между воронками здесь недоступен.");
     const from = pipeline.stages.find((stage) => sameId(stage.id, deal.stage_id));
     const to = pipeline.stages.find((stage) => sameId(stage.id, stageId));
     if (!from || !to) throw new Error("Этап изменился. Обновите список сделок.");
@@ -425,11 +425,11 @@
       }
       if (!pipeline) {
         const empty = element("div", "crm-live-empty");
-        empty.append(element("h2", "", "Направления CRM ещё не настроены"), element("p", "", "После настройки направлений здесь появятся сделки и этапы работы."));
+        empty.append(element("h2", "", "Воронки CRM ещё не настроены"), element("p", "", "После настройки воронок здесь появятся сделки и этапы работы."));
         container.append(empty);
         return;
       }
-      if (!filtered.length) {
+      if (!filtered.length && !(state.data.stage_totals || []).some(row => row.count > 0)) {
         const empty = element("div", "crm-live-empty");
         const hasFilters = state.query || state.owner === "me" || state.attention !== "all" || Object.entries(state.filters).some(([key, value]) => value && !(key === "outcome" && value === "open"));
         empty.append(element("h2", "", hasFilters ? "По этим условиям сделок нет" : "Первая сделка начинается с клиента"), element("p", "", hasFilters ? "Измените поисковый запрос или сбросьте фильтры." : "Выберите существующего клиента, задайте следующий шаг и срок. Сделка появится на первом этапе."));
@@ -454,10 +454,15 @@
           lane.dataset.stageId = stage.id;
           lane.dataset.canTransition = String(Boolean(stage.can_transition));
           const heading = element("h2");
-          heading.append(element("span", "", stage.name), element("span", "crm-live-lane-count", deals.length));
+          const totals = (state.data.stage_totals || []).filter(row => sameId(row.stage_id, stage.id));
+          const count = totals.reduce((sum, row) => sum + row.count, 0);
+          heading.append(element("span", "", stage.name), element("span", "crm-live-lane-count", count));
           lane.append(heading);
+          const known = totals.filter(row => row.amount !== null).map(row => row.amount + " " + (row.currency === "RUB" ? "₽" : row.currency));
+          const unknown = totals.reduce((sum, row) => sum + row.unknown_count, 0);
+          lane.append(element("p", "crm-live-stage-total", (known.length ? known.join(" + ") : unknown ? "Сумма неизвестна" : "0 ₽") + (unknown ? " · без суммы: " + unknown : "")));
           if (!stage.can_transition) lane.append(element("p", "crm-live-lane-unavailable", "Перенос в этот этап пока недоступен"));
-          if (!deals.length) lane.append(element("p", "crm-live-lane-empty", stage.can_transition ? "Нет сделок на этом этапе" : ""));
+          if (!deals.length) lane.append(element("p", "crm-live-lane-empty", count > 0 ? "На этой странице нет сделок этого этапа" : stage.can_transition ? "Нет сделок на этом этапе" : ""));
           else deals.forEach((deal) => lane.append(renderCard(deal, false)));
           board.append(lane);
         }
@@ -640,13 +645,18 @@
         }
       };
       objectSearch.input.addEventListener("input", () => { win.clearTimeout(timer); if (controller) controller.abort(); timer = win.setTimeout(form.refreshObjects, 300); });
-      const amount = field("Коммерческая сумма (пусто = неизвестна)", "text", "amount", deal?.amount ?? "", false);
+      const legacyCurrency = deal?.currency && deal.currency !== "RUB";
+      const amount = field(legacyCurrency ? "Историческая сумма · " + deal.currency : "Коммерческая сумма, ₽ (пусто = неизвестна)", "text", "amount", deal?.amount ?? "", false);
       amount.input.inputMode = "decimal"; amount.input.maxLength = 19; amount.input.pattern = "[0-9]{1,16}([.][0-9]{1,2})?";
-      const currency = field("Валюта (три заглавные буквы)", "text", "currency", deal?.currency || "", false);
-      currency.input.maxLength = 3; currency.input.pattern = "[A-Z]{3}"; currency.input.placeholder = "RUB";
-      form.append(amount.wrapper, currency.wrapper);
+      const currency = document.createElement("input"); currency.type = "hidden"; currency.name = "currency"; currency.value = legacyCurrency ? deal.currency : "RUB";
+      form.append(amount.wrapper, currency);
       const basis = selectField(form, "Основание суммы", "amount_basis", deal?.amount_basis || "unknown", [["unknown", "Неизвестна"], ["indicative", "Предварительная оценка"], ["agreed", "Согласовано с клиентом"]]);
-      const updateAmount = () => { const known = amount.input.value.trim() !== ""; currency.input.required = known; basis.input.required = known; };
+      if (legacyCurrency) {
+        amount.input.readOnly = true; basis.input.disabled = true;
+        const savedBasis = document.createElement("input"); savedBasis.type = "hidden"; savedBasis.name = "amount_basis"; savedBasis.value = deal.amount_basis; form.append(savedBasis);
+        form.append(element("small", "crm-live-muted", "Историческая сумма сохранена в исходной валюте. Пересчёт или смена валюты требуют отдельного решения."));
+      }
+      const updateAmount = () => { const known = amount.input.value.trim() !== ""; basis.input.required = known; };
       amount.input.addEventListener("input", updateAmount); updateAmount();
       form.append(element("small", "crm-live-muted", "Согласованная сумма — коммерческая оценка менеджера, не договор и не подтверждение оплаты."));
       const decision = field("Ожидаемое коммерческое решение (" + timezone + ")", "datetime-local", "expected_decision_at", localDateTime(deal?.expected_decision_at, timezone), false);
@@ -829,7 +839,7 @@
       const selected = element("small", "crm-live-client-selected");
       selected.hidden = true;
       client.wrapper.append(selected);
-      const pipeline = field("Направление", "select", "pipeline_id", null, true);
+      const pipeline = field("Воронка", "select", "pipeline_id", null, true);
       (state.data.pipelines || []).forEach((item) => {
         const option = element("option", "", item.name);
         option.value = item.id;

@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.db.models import F, Q
+from django.db.models import Count, F, Q, Sum
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -307,6 +307,11 @@ def _workspace_data(request, organization):
         matched_ids = _attention_ids(queryset, request.user, organization, attention)
         attention_total = len(matched_ids)
         queryset = queryset.filter(pk__in=matched_ids)
+    stage_totals = [{"stage_id": row["stage_id"], "currency": row["currency"],
+        "amount": format(row["amount_total"], ".2f") if row["amount_total"] is not None else None,
+        "count": row["count"], "unknown_count": row["count"] - row["known_count"]}
+        for row in queryset.order_by().values("stage_id", "currency").annotate(
+            amount_total=Sum("amount"), count=Count("pk"), known_count=Count("amount"))]
     offset = (page - 1) * PAGE_SIZE
     deals = list(queryset.order_by("-pk")[offset:offset + PAGE_SIZE + 1])
     return {
@@ -320,7 +325,7 @@ def _workspace_data(request, organization):
         "deals": _serialize_deals(deals[:PAGE_SIZE], request.user, organization, grant),
         "selected_pipeline_id": pipeline_id, "has_more": len(deals) > PAGE_SIZE,
         "page": page, "has_previous": page > 1,
-        "page_size": PAGE_SIZE, "q": query, "owner": owner,
+        "page_size": PAGE_SIZE, "q": query, "owner": owner, "stage_totals": stage_totals,
         "attention": attention, "attention_total": attention_total,
         "outcome": outcome, "object": object_kind, "stage": stage, "specialization": specialization,
         "decision_from": request.GET.get("decision_from", ""), "decision_to": request.GET.get("decision_to", ""),

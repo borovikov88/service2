@@ -71,7 +71,7 @@ class LeadWorkspaceTests(TestCase):
         self.assertEqual(len(body["deals"]), 2)
         self.assertEqual(self.post(payload).json()["result"], body["result"])
         self.assertEqual((CrmDeal.objects.count(), CrmLeadDealLink.objects.count(), ServiceTask.objects.count()), (2, 2, 3))
-        self.assertEqual(self.client.get(self.url("crm_live_lead_data") + "&mode=mine").json()["total"], 0)
+        self.assertEqual(self.client.get(self.url("crm_live_lead_data") + "&mode=mine").json()["total"], 1)
         self.assertEqual(self.client.get(self.url("crm_live_lead_data") + "&mode=closed").json()["total"], 1)
 
     def test_take_is_explicit_and_stale_competitor_gets_conflict(self):
@@ -193,7 +193,20 @@ class LeadWorkspaceTests(TestCase):
             self.assertEqual(len(response.json()["leads"]), 6)
         self.assertLessEqual(len(many), len(first) + 2, "List must batch task privacy and avoid per-row version hashing")
 
-    def test_four_columns_independent_pages_scoped_counts_and_menu(self):
+    def test_completed_history_pagination_and_new_incoming_are_disjoint(self):
+        for index in range(51):
+            CrmLead.objects.create(organization=self.org, assignee=self.actor,
+                title='Completed synthetic ' + str(index), status='closed', result='no_deal', reason='Synthetic completed inquiry')
+        reopened = CrmLead.objects.create(organization=self.org, assignee=self.actor,
+            title='Completed followup', status='closed', result='qualified', needs_review=True)
+        data = self.client.get(self.url('crm_live_lead_data') + '&page_history=2').json()
+        columns = {row['key']: row for row in data['columns']}
+        self.assertEqual((columns['history']['total'], columns['history']['page'], len(columns['history']['leads'])), (51,2,1))
+        self.assertEqual(columns['unparsed']['leads'][0]['id'], reopened.pk)
+        self.assertNotIn(reopened.pk, [row['id'] for row in columns['history']['leads']])
+        self.assertFalse(columns['history']['leads'][0]['can_transition'])
+
+    def test_five_columns_independent_pages_scoped_counts_and_menu(self):
         for index in range(51):
             CrmLead.objects.create(organization=self.org, title="Free board " + str(index))
         own = self.create(title="Active board")
@@ -203,12 +216,13 @@ class LeadWorkspaceTests(TestCase):
         foreign = Organization.objects.create(name="Foreign board scope")
         CrmLead.objects.create(organization=foreign, title="Foreign hidden board")
         response = self.client.get(self.url("crm_live_lead_data")).json()
-        self.assertEqual([column["label"] for column in response["columns"]], ["Не разобраны", "В работе", "Спам", "Удалённые"])
-        self.assertEqual([column["total"] for column in response["columns"]], [51, 1, 1, 1])
+        self.assertEqual([column["label"] for column in response["columns"]], ["Не разобраны", "В работе", "Завершённые", "Спам", "Удалённые"])
+        self.assertEqual([column["total"] for column in response["columns"]], [51, 1, 1, 1, 1])
         second = self.client.get(self.url("crm_live_lead_data") + "&page_unparsed=2").json()
-        self.assertEqual([len(column["leads"]) for column in second["columns"]], [1, 1, 1, 1])
-        self.assertEqual(second["columns"][2]["leads"][0]["id"], spam.pk)
-        self.assertEqual(second["columns"][3]["leads"][0]["id"], trash.pk)
+        self.assertEqual([len(column["leads"]) for column in second["columns"]], [1, 1, 1, 1, 1])
+        self.assertEqual(second["columns"][2]["leads"][0]["id"], done.pk)
+        self.assertEqual(second["columns"][3]["leads"][0]["id"], spam.pk)
+        self.assertEqual(second["columns"][4]["leads"][0]["id"], trash.pk)
         self.assertEqual(self.client.get(self.url("crm_live_lead_data") + "&mode=closed").json()["leads"][0]["id"], done.pk)
         html = self.client.get(self.url("crm_live_leads")).content.decode()
         self.assertNotIn("Входящие и лиды", html)
