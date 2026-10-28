@@ -6,9 +6,11 @@
 #needs-lines textarea { min-width: 0; }
 #needs-history h3 { font-size: 1rem; }
 #needs-form fieldset { min-width: 0; }
+#needs-deal-fields { min-width: 0; }
+#needs-deal-fields .form-control, #needs-deal-fields .form-select { max-width: 100%; min-width: 0; }
 </style>{% endblock %}
 {% block content %}
-<div class="container-fluid py-3" id="object-needs" data-data-url="{{ data_url }}" data-command-url="{{ command_url }}" data-detail-base="{{ detail_base }}" data-org-id="{{ organization.pk }}">
+<div class="container-fluid py-3" id="object-needs" data-data-url="{{ data_url }}" data-command-url="{{ command_url }}" data-detail-base="{{ detail_base }}" data-deal-command-url="{{ deal_command_url }}" data-org-id="{{ organization.pk }}" data-timezone="{{ communication_timezone }}" data-timezone-offset="{{ communication_timezone_offset }}">
   <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3"><h1 class="h3 mb-0">Потребности объектов</h1><a href="{% url 'crm_live_workspace' %}?org_id={{ organization.pk }}">Сделки</a></div>
   <p class="text-muted">Разбор состава исходной заявки. Решение менеджера не подтверждает договор, выдачу, доставку или расчёты.</p>
   <div class="d-flex flex-wrap gap-2 mb-3">
@@ -29,9 +31,31 @@
     <p id="needs-feedback" role="status" aria-live="polite"></p>
     <button type="button" id="needs-retry" class="btn btn-warning" hidden>Повторить сохранение тем же запросом</button>
     <button type="button" id="needs-refresh" class="btn btn-outline-secondary" hidden>Обновить данные</button>
+    <section class="border rounded p-3 mt-3" id="needs-deals" aria-labelledby="needs-deals-title" hidden>
+      <h3 class="h5" id="needs-deals-title">Согласуемые позиции → сделка</h3>
+      <p>Выберите позиции сохранённого разбора. Одна выбранная группа — одна сделка. Ранее созданная сделка не освобождает позицию после закрытия.</p>
+      <div id="needs-retained"></div>
+      <label class="d-block">Найти прежнюю позицию по ID или идентификатору строки<input type="search" class="form-control" id="needs-line-search" maxlength="64"></label>
+      <div id="needs-line-status" role="status"></div><div id="needs-line-history"></div>
+      <div class="d-flex align-items-center gap-2 my-2"><button type="button" class="btn btn-outline-secondary" id="needs-line-prev">Назад</button><span id="needs-line-page"></span><button type="button" class="btn btn-outline-secondary" id="needs-line-next">Далее</button></div>
+      <form id="needs-deal-form"><fieldset id="needs-deal-fields">
+        <div id="needs-deal-lines"></div>
+        <p class="text-muted">Если состав изменился, явно выберите прежний устойчивый ID либо подтвердите новую самостоятельную потребность. Изменение текста или закрытие сделки не делает прежнюю потребность новой.</p>
+        <button type="button" class="btn btn-outline-primary mb-3" id="needs-reconcile">Подтвердить идентичность выбранных</button>
+        <label class="d-block">Воронка<select class="form-select" id="needs-deal-pipeline" required><option value="">Выберите явно</option>{% for pipeline in pipelines %}<option value="{{ pipeline.pk }}">{{ pipeline.name }}</option>{% endfor %}</select></label>
+        <label class="d-block">Название сделки<input class="form-control" id="needs-deal-title" maxlength="255" required autocomplete="off"></label>
+        <label class="d-block">Следующее действие<input class="form-control" id="needs-deal-next" maxlength="255" required autocomplete="off"></label>
+        <label class="d-block">Дата и время · {{ communication_timezone }}<input class="form-control" id="needs-deal-due" type="datetime-local" required></label>
+        <button class="btn btn-primary mt-2" type="submit">Создать одну сделку</button>
+      </fieldset></form>
+      <p id="needs-deal-feedback" role="status" aria-live="polite"></p><div id="needs-deal-result"></div>
+      <button type="button" class="btn btn-warning" id="needs-deal-retry" hidden>Повторить тот же запрос</button>
+      <button type="button" class="btn btn-outline-secondary" id="needs-deal-refresh" hidden>Обновить данные</button>
+    </section>
     <details class="mt-3"><summary>История состава и разбора (последние 20 редакций каждого вида)</summary><div id="needs-history"></div></details>
   </section>
 </div>
 <template id="needs-line-template"><div class="needs-line border rounded p-2 mb-2"><label class="d-block">Позиция<textarea name="description" class="form-control" required maxlength="1000" rows="2"></textarea></label><label class="d-block">Режим или исключение<select name="mode" class="form-select" required><option value="">Выберите явно</option>{% for key,label in modes.items %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label><label class="d-block">Основание решения<textarea name="reason" class="form-control" required maxlength="500" rows="2"></textarea></label><button class="btn btn-sm btn-outline-danger mt-1" type="button" data-remove>Убрать позицию</button></div></template>
 <script src="{% static 'assets/js/crm-object-needs.js' %}" defer></script>
+<script src="{% static 'assets/js/crm-need-deals.js' %}" defer></script>
 {% endblock %}

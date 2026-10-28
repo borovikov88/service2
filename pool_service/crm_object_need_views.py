@@ -1,8 +1,11 @@
 """Bounded internal HTTP adapter; GET never creates source anchors."""
 import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from urllib.parse import urlencode
 
 from django.contrib.auth.decorators import login_required
+from django.conf import settings
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.paginator import Paginator
 from django.db.models import Case, CharField, Count, F, OuterRef, Q, Subquery, Value, When
@@ -13,7 +16,7 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_POST
 
-from .crm_commercial_models import CrmAccess
+from .crm_commercial_models import CrmAccess, CrmPipeline
 from .crm_object_need_models import CrmObjectNeedReview, CrmObjectNeedSourceRevision, MODES
 from .crm_live_views import _id
 from .services.crm_commercial_access import can_view_team_deals
@@ -21,6 +24,9 @@ from .models import Organization, ServiceTask
 from .services.crm_object_needs import NeedConflict, editable, materials_hash, review_need, source_tasks
 from .services.permissions import company_has_access
 from .services.task_feedback import version_for
+from .services.crm_commercial_commands import CommercialConflict, PREPARATORY_STAGES
+from .services.crm_need_deals import (convert_need_positions_to_deal, reconcile_need_positions,
+    current_line_bindings, retained_lines)
 
 
 STATES = {'pending': 'Не разобрано', 'reviewed': 'Разобрано', 'changed': 'Состав изменился', 'needs_resolution': 'Связи требуют проверки'}
@@ -97,6 +103,15 @@ def _row(task, request, org, *, detail=False):
             'materials_truncated': len(row.materials) > MAX_SOURCE_DISPLAY,
             'actor': (row.actor.get_full_name() or row.actor.username) if row.actor else 'Неизвестен',
             'recorded_at': row.recorded_at.isoformat()} for row in need.sources.select_related('actor').order_by('-sequence')[:20]] if need else []
+        result['review_id'] = latest.pk if latest and source and latest.source_id == source.pk else None
+        result['need_deals'] = {'restricted': True}
+        try:
+            bindings = current_line_bindings(request.user, org, task.pk, latest)
+            result['need_deals'] = {'bindings': bindings,
+                'can_convert': bool(can_review and result['review_id'] and grant.create_own_deals and grant.manage_own_next_action),
+                'client_id': task.client_id}
+        except (PermissionDenied, ValidationError):
+            pass
     return result
 
 
@@ -107,10 +122,15 @@ def _row(task, request, org, *, detail=False):
 def workspace(request):
     org = _scope(request)
     suffix = '?' + urlencode({'org_id': org.pk})
+    zone = ZoneInfo(getattr(settings, 'COMMUNICATION_TIME_ZONE', 'Asia/Barnaul'))
+    offset = datetime.now(zone).strftime('%z')
     return render(request, 'pool_service/crm_live/object_needs.html', {'organization': org,
         'data_url': reverse('crm_object_need_data') + suffix,
         'command_url': reverse('crm_object_need_review') + suffix,
         'detail_base': reverse('crm_object_need_detail', args=[1]).rsplit('1/', 1)[0],
+        'deal_command_url': reverse('crm_object_need_deal_command') + suffix,
+        'communication_timezone': str(zone), 'communication_timezone_offset': offset[:3] + ':' + offset[3:],
+        'pipelines': CrmPipeline.objects.filter(organization=org, is_active=True, code__in=PREPARATORY_STAGES).order_by('position', 'pk'),
         'modes': MODES, 'states': STATES, 'active_tab': 'crm'})
 
 
@@ -170,4 +190,48 @@ def review(request):
     except (ValueError, UnicodeError, ValidationError) as exc:
         message = '; '.join(exc.messages) if isinstance(exc, ValidationError) else 'Некорректный запрос.'
         return JsonResponse({'error': message}, status=409 if isinstance(exc, NeedConflict) else 400)
+    return JsonResponse({'result': result})
+
+
+@login_required
+@never_cache
+@require_GET
+def lines(request, task_id):
+    try:
+        org = _scope(request)
+        result = retained_lines(request.user, org, task_id,
+            query=request.GET.get('q', ''), page=request.GET.get('page', '1'))
+    except (PermissionDenied, ValidationError):
+        return JsonResponse({'error': 'История позиций сейчас недоступна.'}, status=403)
+    return JsonResponse(result)
+
+
+@login_required
+@never_cache
+@require_POST
+def deal_command(request):
+    try:
+        org = _scope(request)
+        if request.content_type != 'application/json' or len(request.body) > 32768:
+            raise ValidationError('Ожидается ограниченный запрос JSON.')
+        payload = json.loads(request.body)
+        common = {'task_id', 'source_revision', 'source_hash', 'review_id', 'review_revision', 'task_version', 'operation_key', 'selections', 'command_type'}
+        if type(payload) is not dict or type(payload.get('command_type')) is not str:
+            raise ValidationError('Некорректная команда.')
+        kind = payload['command_type']
+        extra = {'client_id', 'pipeline_id', 'title', 'next_action'} if kind == 'object_need.convert' else set()
+        if set(payload) != common | extra:
+            raise ValidationError('Неизвестные поля команды.')
+        values = {key: value for key, value in payload.items() if key != 'command_type'}
+        if kind == 'object_need.reconcile':
+            result = reconcile_need_positions(actor=request.user, organization=org, **values)
+        elif kind == 'object_need.convert':
+            result = convert_need_positions_to_deal(actor=request.user, organization=org, **values)
+        else:
+            raise ValidationError('Команда недоступна.')
+    except PermissionDenied:
+        return JsonResponse({'error': 'Текущий доступ к CRM, исходной задаче или объекту недоступен.'}, status=403)
+    except (ValueError, UnicodeError, ValidationError) as exc:
+        message = '; '.join(exc.messages) if isinstance(exc, ValidationError) else 'Некорректный запрос.'
+        return JsonResponse({'error': message}, status=409 if isinstance(exc, (NeedConflict, CommercialConflict)) else 400)
     return JsonResponse({'result': result})

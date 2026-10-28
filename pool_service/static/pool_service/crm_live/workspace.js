@@ -692,6 +692,16 @@
       if (deal.closed_at) overview.append(element("p", "crm-live-fact", "Завершена: " + dateText(deal.closed_at)));
       if (deal.close_reason) overview.append(element("p", "crm-live-fact", "Причина: " + deal.close_reason));
       dialogContent.append(overview);
+      if (deal.need_provenance) {
+        const provenance = section("Потребность объекта");
+        if (deal.need_provenance.restricted) provenance.append(element("p", "crm-live-muted", "Исходная потребность сейчас недоступна."));
+        else {
+          for (const position of deal.need_provenance.positions || []) provenance.append(element("p", "crm-live-fact", "#" + position.line_id + " · " + position.description + " · " + position.reason + " · состав #" + position.source_revision + ", разбор #" + position.review_revision));
+          const sourceURL = safeLink(deal.need_provenance.url);
+          if (sourceURL) { const sourceLink = element("a", "", "Открыть разбор потребности"); sourceLink.href = sourceURL; provenance.append(sourceLink); }
+        }
+        dialogContent.append(provenance);
+      }
       const next = element("div", "crm-live-detail-next is-" + attentionFor(deal));
       next.append(nextElement(deal));
       if (deal.next_action?.can_open && safeLink(deal.next_action.url)) {

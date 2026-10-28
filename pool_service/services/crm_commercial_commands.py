@@ -427,7 +427,7 @@ def _record_pilot_command(using, *, actor, deal, operation_key, digest, command_
     return dict(command.result)
 
 
-def create_commercial_deal(*, actor, organization, operation_key, client_id, pipeline_id, title, next_action, card_fields=None):
+def create_commercial_deal(*, actor, organization, operation_key, client_id, pipeline_id, title, next_action, card_fields=None, source_context=None):
     """Create an own preparatory deal and its first real task, or replay it."""
     from pool_service.client_queries import active_clients
     _positive_id(client_id)
@@ -439,13 +439,23 @@ def create_commercial_deal(*, actor, organization, operation_key, client_id, pip
     if type(card_fields) is not dict or not card_fields.keys() <= CARD_FIELDS:
         raise ValidationError("Некорректные поля карточки сделки.")
     card_fields = _normalize("deal.edit", card_fields) if card_fields else {}
+    context_fields = {}
+    if source_context is not None:
+        from .crm_need_deals import NeedDealContext
+        if type(source_context) is not NeedDealContext:
+            raise ValidationError('Invalid internal source context.')
+        if client_id != source_context.client_id or card_fields != {'object_kind': 'pool', 'pool_id': source_context.pool_id}:
+            raise PermissionDenied('Source client/object mismatch.')
+        context_fields = {'source_context': source_context.payload}
     actor_id, organization_id, digest = _pilot_payload(actor=actor, organization=organization,
         operation_key=operation_key, command_type="deal.create", client_id=client_id,
-        pipeline_id=pipeline_id, title=title, next_action=values, **({"card_fields": card_fields} if card_fields else {}))
+        pipeline_id=pipeline_id, title=title, next_action=values, **({"card_fields": card_fields} if card_fields else {}), **context_fields)
     using = router.db_for_write(CrmCommand)
     with transaction.atomic(using=using):
         organization = _locked_organization(using, organization_id)
         previous = _previous_pilot_command(using, organization_id, operation_key)
+        if source_context is not None:
+            source_context.validate(actor_id=actor_id, organization_id=organization_id, using=using, previous=previous)
         tasks = _locked_pilot_tasks(using, previous=previous)
         actor = _authorize(using, actor_id, organization, ("create_own_deals", "manage_own_next_action"))
         if previous:

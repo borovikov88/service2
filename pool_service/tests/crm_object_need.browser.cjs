@@ -105,6 +105,48 @@ const {chromium} = require('playwright');
     await page.waitForFunction(() => document.querySelector('#needs-status').textContent === 'Доступно: 1');
     await page.setViewportSize({width:375,height:900});
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 2), 'Mobile document overflow');
+    // Real Django conversion: chemistry cannot be selected; one pump gets one
+    // permanent identity, deal and actual next task, even after a lost response.
+    await page.locator('#needs-deal-fields:not([disabled])').waitFor();
+    assert.equal(await page.locator('#needs-deal-lines [name="selected"]').count(), 1);
+    await page.locator('#needs-deal-lines [name="selected"]').check();
+    await page.locator('#needs-deal-lines [name="identity"]').selectOption('new');
+    await page.locator('#needs-reconcile').click();
+    await page.locator('#needs-deal-lines [data-line-id]').waitFor();
+    assert.equal(await page.locator('#needs-deal-lines [name="selected"]').isChecked(), true);
+    await page.locator('#needs-deal-pipeline').selectOption(String(fixture.pipelineId));
+    await page.locator('#needs-deal-title').fill('Synthetic agreed scope');
+    await page.locator('#needs-deal-next').fill('Confirm scope with client');
+    await page.locator('#needs-deal-due').fill('2026-11-01T12:30');
+    const conversions = [];
+    await context.route('**/crm/workspace/needs/deal-command/**', async route => {
+      if (route.request().method() !== 'POST') return route.continue();
+      conversions.push(route.request().postData());
+      if (conversions.length === 1) {
+        const response = await route.fetch();
+        assert.equal(response.status(), 200, await response.text());
+        return route.abort('failed');
+      }
+      return route.continue();
+    });
+    await page.locator('#needs-deal-form button[type="submit"]').click();
+    await page.locator('#needs-deal-retry:not([hidden])').waitFor();
+    assert.equal(await page.locator('#needs-deal-title').isDisabled(), true);
+    assert.equal(await page.locator('#needs-close').isDisabled(), true);
+    await page.locator('#needs-deal-retry').click();
+    await page.locator('#needs-deal-result a').waitFor();
+    await page.waitForFunction(() => document.querySelector('#needs-deal-lines [name="selected"]')?.disabled);
+    assert.equal(conversions.length, 2);
+    assert.equal(conversions[0], conversions[1]);
+    const dealURL = await page.locator('#needs-deal-result a').getAttribute('href');
+    assert.match(dealURL, /&deal=\d+/);
+    await page.reload();
+    await page.locator('#needs-deal-lines [name="selected"]:disabled').waitFor();
+    await page.locator('#needs-line-search').fill(JSON.parse(conversions[0]).selections[0].line_token);
+    await page.waitForFunction(() => document.querySelector('#needs-line-status').textContent === 'Прежних позиций: 1');
+    assert.equal(await page.locator('#needs-line-history a').getAttribute('href'), dealURL);
+    await page.evaluate(() => document.documentElement.setAttribute('data-bs-theme', 'dark'));
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 2), 'Converted mobile overflow');
     assert.equal(errors.length, 0, errors.join('\n'));
   } finally { await browser.close(); }
 })().catch((error) => { process.stderr.write(String(error.stack || error) + '\n'); process.exitCode = 1; });
