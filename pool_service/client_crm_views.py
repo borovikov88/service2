@@ -18,13 +18,14 @@ from .client_crm_import import (
 )
 from .client_crm_models import (
     ClientCompanyLink,
+    ClientBusinessRole,
     ClientContact,
     ClientCRMProfile,
     ClientImportCandidate,
     ClientImportRun,
     ClientOwnedObject,
 )
-from .client_queries import active_clients
+from .client_queries import active_clients, readable_company_links
 from .client_crm_ui import card_tab, card_url, relationship_results
 from .phone_utils import format_phone
 from .client_merge import merge_clients, merge_suggestions
@@ -193,6 +194,22 @@ def client_detail(request, client_id):
                 messages.success(request, "Объект клиента удалён.")
             return redirect(card_url(client.id, "objects"))
 
+        if action == "set_supplier":
+            from .services.contact_roles import set_supplier
+            from django.core.exceptions import PermissionDenied, ValidationError
+            try:
+                set_supplier(request.user, client.pk, request.POST.get("enabled"), request.POST.get("revision"))
+            except PermissionDenied:
+                return HttpResponseForbidden()
+            except ValidationError:
+                from django.http import HttpResponse
+                return HttpResponse("Карточка изменилась. Обновите её и повторите действие.", status=409)
+            return redirect(card_url(client.pk))
+
+        if action in {"add_company_link", "update_company_link", "delete_company_link"}:
+            if not active_clients().filter(pk=client.pk, client_type__in=["legal", "private"]).exists():
+                return HttpResponseForbidden()
+
         if action == "add_company_link":
             try:
                 related_id = int(request.POST.get("related_client") or 0)
@@ -227,7 +244,7 @@ def client_detail(request, client_id):
                 link.is_primary = is_primary
                 link.save(update_fields=["position", "is_primary", "updated_at"])
             if is_primary:
-                ClientCompanyLink.objects.filter(company=company).exclude(pk=link.pk).update(
+                readable_company_links(request.user).filter(company=company).exclude(pk=link.pk).update(
                     is_primary=False
                 )
             messages.success(request, "Связь добавлена.")
@@ -239,7 +256,7 @@ def client_detail(request, client_id):
             except (TypeError, ValueError):
                 link_id = 0
             link_filter = Q(company=client) if client.client_type == "legal" else Q(person=client)
-            link = ClientCompanyLink.objects.filter(link_filter, pk=link_id).first()
+            link = readable_company_links(request.user).filter(link_filter, pk=link_id).first()
             if link is None:
                 return HttpResponseForbidden()
             if action == "delete_company_link":
@@ -256,7 +273,7 @@ def client_detail(request, client_id):
             link.is_primary = request.POST.get("is_primary") == "1"
             link.save(update_fields=["position", "is_primary", "updated_at"])
             if link.is_primary:
-                ClientCompanyLink.objects.filter(company=link.company).exclude(pk=link.pk).update(
+                readable_company_links(request.user).filter(company=link.company).exclude(pk=link.pk).update(
                     is_primary=False
                 )
             messages.success(request, "Связь обновлена.")
@@ -279,14 +296,14 @@ def client_detail(request, client_id):
 
     if client.client_type == "legal":
         relationship_links = list(
-            ClientCompanyLink.objects.filter(company=client)
+            readable_company_links(request.user).filter(company=client)
             .select_related("person", "person__crm_profile")
             .order_by("-is_primary", "person__name", "id")
         )
         relationship_mode = "people"
     else:
         relationship_links = list(
-            ClientCompanyLink.objects.filter(person=client)
+            readable_company_links(request.user).filter(person=client)
             .select_related("company", "company__crm_profile")
             .order_by("-is_primary", "company__name", "id")
         )
@@ -464,6 +481,7 @@ def client_detail(request, client_id):
             "calls_total": calls_total,
             "can_view_calls": can_view_calls,
             "can_manage": can_manage,
+            "supplier_role": ClientBusinessRole.objects.filter(client=client, role="supplier").first(),
             "can_view_object_finance": bool(
                 request.user.is_superuser
                 or (org_roles & {"owner", "admin", "manager"})

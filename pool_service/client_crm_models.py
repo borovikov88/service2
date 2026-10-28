@@ -382,3 +382,24 @@ class ClientImportRun(models.Model):
 
     def __str__(self):
         return f"1C client import #{self.pk} ({self.get_status_display()})"
+
+
+class ClientBusinessRole(models.Model):
+    """Explicit local classification; never an intake or access grant."""
+    client = models.ForeignKey("pool_service.Client", on_delete=models.PROTECT, related_name="business_roles")
+    role = models.CharField(max_length=20, choices=[("supplier", "Поставщик")])
+    active = models.BooleanField(default=False)
+    revision = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["client", "role"], name="client_business_role_uniq")]
+
+
+class ClientBusinessRoleEvent(models.Model):
+    client = models.ForeignKey("pool_service.Client", on_delete=models.PROTECT, related_name="business_role_events")
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    role = models.CharField(max_length=20)
+    active = models.BooleanField()
+    revision = models.PositiveIntegerField()
+    source_client = models.ForeignKey("pool_service.Client", null=True, on_delete=models.PROTECT, related_name="transferred_business_role_events")
+    created_at = models.DateTimeField(auto_now_add=True)

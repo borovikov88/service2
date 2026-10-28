@@ -3670,33 +3670,33 @@ def users_view(request):
 
 @login_required
 def clients_list(request):
-    allowed_roles = ORG_STAFF_ROLES
-    is_allowed = request.user.is_superuser or OrganizationAccess.objects.filter(
+    from .client_queries import readable_clients, readable_company_links, CONTACT_STAFF_ROLES
+    allowed_roles = CONTACT_STAFF_ROLES
+    is_allowed = request.user.is_active and (request.user.is_superuser or OrganizationAccess.objects.filter(
         user=request.user, role__in=allowed_roles
-    ).exists()
+    ).exists())
     if not is_allowed:
         return HttpResponseForbidden()
 
     if request.user.is_superuser:
-        clients_qs = Client.objects.all()
         pool_staff_qs = PoolAccess.objects.all()
     else:
-        org_ids = OrganizationAccess.objects.filter(user=request.user).values_list(
+        org_ids = OrganizationAccess.objects.filter(user=request.user, role__in=allowed_roles).values_list(
             "organization_id", flat=True
         )
-        clients_qs = Client.objects.filter(organization_id__in=org_ids).distinct()
         pool_staff_qs = PoolAccess.objects.filter(pool__organization_id__in=org_ids)
 
-    clients_qs = clients_qs.filter(
-        Q(crm_profile__isnull=True) | Q(crm_profile__merged_into__isnull=True)
-    )
+    clients_qs = readable_clients(request.user)
     clients = list(
         clients_qs.annotate(pool_count=Count("pool"))
         .select_related("organization", "crm_profile")
         .order_by("name")
     )
     companies = [client for client in clients if client.client_type == "legal"]
-    private_contacts = [client for client in clients if client.client_type != "legal"]
+    private_contacts = [client for client in clients if client.client_type == "private"]
+    from .client_crm_models import ClientBusinessRole
+    supplier_ids = set(ClientBusinessRole.objects.filter(role="supplier", active=True, client_id__in=[c.pk for c in clients]).values_list("client_id", flat=True))
+    suppliers = [c for c in clients if c.pk in supplier_ids]
 
     client_ids = [client.id for client in clients]
     contacts_by_client = {}
@@ -3706,9 +3706,7 @@ def clients_list(request):
         contacts_by_client.setdefault(contact.client_id, []).append(contact)
 
     links = list(
-        ClientCompanyLink.objects.filter(
-            Q(company_id__in=client_ids) | Q(person_id__in=client_ids)
-        )
+        readable_company_links(request.user)
         .select_related("company", "person")
         .order_by("-is_primary", "id")
     )
@@ -3807,9 +3805,10 @@ def clients_list(request):
         request,
         "pool_service/clients.html",
         {
-            "page_title": "Клиенты",
+            "page_title": "Контакты",
             "page_subtitle": "Контакты и объекты клиентов в одном списке",
             "companies": companies,
+            "suppliers": suppliers,
             "private_contacts": private_contacts,
             "pool_staff": pool_staff,
             "active_tab": "clients",
@@ -6005,7 +6004,12 @@ def client_delete(request, client_id):
 
 
 
-    client.delete()
+    from django.db.models.deletion import ProtectedError
+    try:
+        client.delete()
+    except ProtectedError:
+        messages.error(request, "Контакт связан с историей. Удаление недоступно.")
+        return redirect("clients_list")
 
     messages.success(request, "\u041a\u043b\u0438\u0435\u043d\u0442 \u0443\u0434\u0430\u043b\u0435\u043d.")
 

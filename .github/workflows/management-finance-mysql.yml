@@ -11,6 +11,10 @@ on:
       - "pool_service/communication_enrichment.py"
       - "pool_service/communication_models.py"
       - "pool_service/client_crm_models.py"
+      - "pool_service/client_crm_views.py"
+      - "pool_service/client_queries.py"
+      - "pool_service/services/contact_roles.py"
+      - "pool_service/tests/test_contacts*.py"
       - "pool_service/tests/test_contact_identity*.py"
       - "pool_service/crm_inbox_models.py"
       - "pool_service/services/crm_inbox.py"
@@ -186,6 +190,10 @@ jobs:
             pool_service.tests.test_crm_object_needs \
             pool_service.tests.test_crm_object_need_corrections \
             pool_service.tests.test_crm_object_need_concurrency \
+            pool_service.tests.test_contacts_roles \
+            pool_service.tests.test_contacts_preservation_contract \
+            pool_service.tests.test_contacts_migration \
+            pool_service.tests.test_contacts_concurrency \
             pool_service.tests.test_crm_need_deals \
             pool_service.tests.test_crm_need_deal_concurrency \
             pool_service.tests.test_crm_need_deal_migrations \

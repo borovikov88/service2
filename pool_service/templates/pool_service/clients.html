@@ -1,13 +1,13 @@
 {% extends 'pool_service/base.html' %}
 
-{% block title %}&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099;{% endblock %}
+{% block title %}Контакты{% endblock %}
 
 {% block content %}
 {% include "pool_service/_admin_workspace_styles.html" %}
 <div class="admin-desktop">
 <div class="admin-card card card-soft p-4">
   <div class="admin-page-header d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
-    <h4 class="fw-bold mb-0">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099; &#1089;&#1077;&#1088;&#1074;&#1080;&#1089;&#1085;&#1086;&#1081; &#1082;&#1086;&#1084;&#1087;&#1072;&#1085;&#1080;&#1080;</h4>
+    <h4 class="fw-bold mb-0">Контакты</h4>
     {% if is_org_admin or user.is_superuser %}
       <div class="d-flex gap-2 ms-auto">
         <a class="btn btn-outline-primary btn-sm" href="{% url "client_onec_import" %}"><i class="bi bi-database-down me-1"></i>Импорт из 1С</a>
@@ -18,8 +18,9 @@
       <li class="nav-item" role="presentation">
         <button class="nav-link active" id="companies-tab" data-bs-toggle="tab" data-bs-target="#companies-pane" type="button" role="tab" aria-controls="companies-pane" aria-selected="true">&#1050;&#1086;&#1084;&#1087;&#1072;&#1085;&#1080;&#1080;</button>
       </li>
+      <li class="nav-item" role="presentation"><button class="nav-link" id="suppliers-tab" data-bs-toggle="tab" data-bs-target="#suppliers-pane" type="button" role="tab" aria-controls="suppliers-pane" aria-selected="false">Поставщики</button></li>
       <li class="nav-item" role="presentation">
-        <button class="nav-link" id="contacts-tab" data-bs-toggle="tab" data-bs-target="#contacts-pane" type="button" role="tab" aria-controls="contacts-pane" aria-selected="false">Физические лица</button>
+        <button class="nav-link" id="contacts-tab" data-bs-toggle="tab" data-bs-target="#contacts-pane" type="button" role="tab" aria-controls="contacts-pane" aria-selected="false">Физ лица</button>
       </li>
     </ul>
   </div>
@@ -122,6 +123,16 @@
           </tbody>
         </table>
       </div>
+    </div>
+    <div class="tab-pane fade" id="suppliers-pane" role="tabpanel" aria-labelledby="suppliers-tab">
+      <label class="form-label" for="supplier-search">Поиск поставщиков</label>
+      <input id="supplier-search" class="form-control mb-2" type="search" data-client-search="suppliers" autocomplete="off">
+      <div class="text-muted small" data-client-search-count="suppliers"></div>
+      <div class="table-responsive"><table class="table align-middle"><thead><tr><th>Контакт</th><th>Телефон</th><th>Email</th></tr></thead><tbody>
+      {% for supplier in suppliers %}
+        <tr data-client-row="suppliers" data-search="{{ supplier.search_text }}"><td><a href="{% url 'client_detail' supplier.id %}">{{ supplier.name }}</a></td><td>{{ supplier.phone_display|default:"—" }}</td><td>{{ supplier.email|default:"—" }}</td></tr>
+      {% empty %}<tr><td colspan="3">Поставщики ещё не отмечены. Роль можно указать в карточке контакта.</td></tr>{% endfor %}
+      </tbody></table></div>
     </div>
     <div class="tab-pane fade" id="contacts-pane" role="tabpanel" aria-labelledby="contacts-tab">
       <div class="mb-3">
@@ -289,6 +300,7 @@
     const searchParamByGroup = {
       companies: "companies_q",
       people: "people_q",
+      suppliers: "suppliers_q",
     };
     const replaceUrl = () => {
       const query = searchParams.toString();
@@ -306,17 +318,33 @@
       if (paramName && searchParams.has(paramName)) {
         input.value = searchParams.get(paramName) || "";
       }
+      const pager = document.createElement("div");
+      pager.className = "d-flex align-items-center gap-2 my-2";
+      pager.dataset.contactPager = group;
+      const previous = document.createElement("button"), next = document.createElement("button"), status = document.createElement("span");
+      for (const button of [previous, next]) { button.type = "button"; button.className = "btn btn-outline-secondary btn-sm"; }
+      previous.textContent = "Назад"; next.textContent = "Далее";
+      pager.append(previous, status, next); counter.after(pager);
+      const pageParam = group + "_page";
+      let currentPage = Math.max(1, Number.parseInt(searchParams.get(pageParam), 10) || 1);
       const apply = (syncUrl) => {
         const query = normalizeQuery(input.value);
-        let visible = 0;
+        const matches = [];
         rows.forEach((row) => {
           const text = normalizeText(row.dataset.search);
           const textDigits = text.replace(/\D/g, "");
           const matched = !query.raw || query.raw.split(" ").every((token) => text.includes(token)) || (query.digits.length >= 4 && textDigits.includes(query.digits));
-          row.hidden = !matched;
-          if (matched) visible += 1;
+          row.hidden = true;
+          if (matched) matches.push(row);
         });
-        if (counter) counter.textContent = query.raw ? "Найдено: " + visible : "";
+        const pages = Math.max(1, Math.ceil(matches.length / 50));
+        currentPage = Math.min(currentPage, pages);
+        matches.slice((currentPage - 1) * 50, currentPage * 50).forEach(row => { row.hidden = false; });
+        counter.textContent = "Найдено: " + matches.length;
+        status.textContent = currentPage + " / " + pages;
+        previous.disabled = currentPage <= 1; next.disabled = currentPage >= pages;
+        pager.hidden = pages <= 1;
+        if (syncUrl) { searchParams.set(pageParam, String(currentPage)); }
         if (syncUrl && paramName) {
           if (input.value.trim()) {
             searchParams.set(paramName, input.value.trim());
@@ -329,14 +357,17 @@
       let searchTimer = null;
       input.addEventListener("input", () => {
         window.clearTimeout(searchTimer);
-        searchTimer = window.setTimeout(() => apply(true), 250);
+        searchTimer = window.setTimeout(() => { currentPage = 1; apply(true); }, 250);
       });
+      previous.addEventListener("click", () => { currentPage -= 1; apply(true); });
+      next.addEventListener("click", () => { currentPage += 1; apply(true); });
       apply(false);
     });
 
     const tabButtons = {
       companies: document.getElementById("companies-tab"),
       people: document.getElementById("contacts-tab"),
+      suppliers: document.getElementById("suppliers-tab"),
     };
     const initialTab = searchParams.get("clients_tab");
     if (initialTab && tabButtons[initialTab]) {

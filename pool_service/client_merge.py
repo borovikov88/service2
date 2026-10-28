@@ -12,6 +12,8 @@ from .crm_commercial_models import CrmDeal, CrmLead
 from .client_crm_models import (
     ClientCRMProfile,
     ClientCompanyLink,
+    ClientBusinessRole,
+    ClientBusinessRoleEvent,
     ClientContact,
     ClientImportCandidate,
     ClientImportRun,
@@ -179,6 +181,8 @@ def _generic_relations(source, target):
         ClientCRMProfile,
         ClientContact,
         ClientCompanyLink,
+        ClientBusinessRole,
+        ClientBusinessRoleEvent,
         ClientImportCandidate,
         ClientAccess,
         # These relations have a separate validated write contract. The source
@@ -284,6 +288,8 @@ def merge_clients(source_id, target_id, *, organization_id, actor=None):
     _merge_staff_access(source, target)
     _merge_contacts(source, target)
     _merge_company_links(source, target)
+    from .services.contact_roles import merge_supplier_role
+    merge_supplier_role(source, target, actor)
     for candidate in ClientImportCandidate.objects.select_for_update().filter(
         matched_client=source
     ):
