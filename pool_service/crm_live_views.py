@@ -469,6 +469,8 @@ def detail(request, deal_id):
     organization = _organization(request)
     deal = get_object_or_404(_deal_queryset(request.user, organization), pk=deal_id)
     row = _serialize_deals([deal], request.user, organization, _grant(request.user, organization), detail=True)[0]
+    from .services.crm_need_deals import deal_need_provenance
+    row['need_provenance'] = deal_need_provenance(deal, request.user, organization)
     events = CrmEvent.objects.filter(organization=organization, deal=deal).select_related("actor").order_by("-pk")[:30]
     return JsonResponse({"deal": row, "events": [{
         "type": event.event_type, "label": EVENT_LABELS.get(event.event_type, "Изменение сделки"),

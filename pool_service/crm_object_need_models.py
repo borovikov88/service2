@@ -132,3 +132,79 @@ class CrmObjectNeedReview(NeedModel):
                 or self.command.command_type != 'object_need.review'):
             raise ValidationError('Invalid review source/command graph.')
         validate_positions(self.positions)
+
+
+class CrmObjectNeedLine(NeedModel):
+    """Server identity; source/review changes never recycle an identity."""
+    immutable = True
+    need = models.ForeignKey(CrmObjectNeed, on_delete=models.PROTECT, related_name='lines')
+    creation_command = models.ForeignKey('pool_service.CrmCommand', on_delete=models.PROTECT)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        base_manager_name = 'objects'
+
+    def clean(self):
+        if (self.creation_command.organization_id != self.need.organization_id
+                or self.creation_command.actor_id != self.created_by_id
+                or self.creation_command.command_type != 'object_need.reconcile'):
+            raise ValidationError('Invalid canonical need line.')
+
+
+class CrmObjectNeedReviewLine(NeedModel):
+    """Immutable explicit identity decision for a saved review position."""
+    immutable = True
+    need = models.ForeignKey(CrmObjectNeed, on_delete=models.PROTECT)
+    review = models.ForeignKey(CrmObjectNeedReview, on_delete=models.PROTECT, related_name='line_bindings')
+    line_token = models.CharField(max_length=64)
+    line = models.ForeignKey(CrmObjectNeedLine, on_delete=models.PROTECT, related_name='bindings')
+    command = models.ForeignKey('pool_service.CrmCommand', on_delete=models.PROTECT)
+    resolution_kind = models.CharField(max_length=8, choices=[('new', 'Новая самостоятельная'), ('existing', 'Та же позиция')])
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        base_manager_name = 'objects'
+        constraints = [
+            models.UniqueConstraint(fields=['review', 'line_token'], name='crm_need_review_token_once'),
+            models.UniqueConstraint(fields=['review', 'line'], name='crm_need_review_line_once'),
+            models.CheckConstraint(condition=models.Q(resolution_kind__in=['new', 'existing']), name='crm_need_line_resolution'),
+        ]
+        indexes = [models.Index(fields=['need', 'line_token'], name='crm_need_token_identity_idx')]
+
+    def clean(self):
+        positions = [p for p in self.review.positions if p['line_token'] == self.line_token]
+        if (self.review.need_id != self.need_id or self.line.need_id != self.need_id
+                or len(positions) != 1 or positions[0]['mode'] != 'approval_required'
+                or self.command.organization_id != self.need.organization_id
+                or self.command.actor_id != self.created_by_id
+                or self.command.command_type != 'object_need.reconcile'
+                or (self.resolution_kind == 'new' and self.line.creation_command_id != self.command_id)):
+            raise ValidationError('Invalid review line identity.')
+
+
+class CrmObjectNeedDealLine(NeedModel):
+    """A canonical line is consumed forever, including after deal closure."""
+    immutable = True
+    line = models.OneToOneField(CrmObjectNeedLine, on_delete=models.PROTECT, related_name='conversion')
+    review_line = models.OneToOneField(CrmObjectNeedReviewLine, on_delete=models.PROTECT, related_name='conversion')
+    deal = models.ForeignKey('pool_service.CrmDeal', on_delete=models.PROTECT, related_name='need_lines')
+    command = models.ForeignKey('pool_service.CrmCommand', on_delete=models.PROTECT, related_name='need_lines')
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        base_manager_name = 'objects'
+
+    def clean(self):
+        if (self.review_line.line_id != self.line_id
+                or self.deal.organization_id != self.line.need.organization_id
+                or self.command.organization_id != self.deal.organization_id
+                or self.command.command_type != 'deal.create'
+                or self.command.actor_id != self.created_by_id
+                or self.deal.manager_id != self.created_by_id
+                or self.command.result.get('deal_id') != self.deal_id
+                or self.command.result.get('need_id') != self.line.need_id
+                or self.command.result.get('review_id') != self.review_line.review_id):
+            raise ValidationError('Invalid consumed need line.')
