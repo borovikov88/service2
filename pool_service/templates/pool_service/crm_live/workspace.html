@@ -5,7 +5,7 @@
 
 {% block extra_head %}
   <link rel="stylesheet" href="{% static 'pool_service/crm_live/workspace.css' %}?v=2">
-  <script src="{% static 'pool_service/crm_live/workspace.js' %}?v=4" defer></script>
+  <script src="{% static 'pool_service/crm_live/workspace.js' %}?v=5" defer></script>
 {% endblock %}
 
 {% block content %}
@@ -23,7 +23,7 @@
   <div id="crm-live-operations" class="crm-live-operations" aria-live="polite" aria-atomic="false"></div>
   <div id="crm-live-notice" class="crm-live-notice" role="status" hidden></div>
 
-  <nav class="crm-live-pipelines" id="crm-live-pipelines" aria-label="Направления CRM"></nav>
+  <nav class="crm-live-pipelines" id="crm-live-pipelines" aria-label="Воронки CRM"></nav>
 
   <div class="crm-live-toolbar">
     <label class="crm-live-search"><span aria-hidden="true">⌕</span><input id="crm-live-search" type="search" placeholder="Сделка, клиент, предмет или объект" aria-label="Поиск сделки, клиента, предмета или объекта" autocomplete="off"></label>

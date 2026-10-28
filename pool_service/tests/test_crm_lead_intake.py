@@ -217,7 +217,7 @@ class LeadIntakeTests(Fixture, TestCase):
         self.assertEqual(execute_lead_command(**payload), first)
         self.client.force_login(self.user)
         url = reverse("crm_live_lead_data") + "?org_id=" + str(self.org.pk)
-        self.assertEqual([column["total"] for column in self.client.get(url).json()["columns"]], [0, 0, 1, 0])
+        self.assertEqual({column["key"]: column["total"] for column in self.client.get(url).json()["columns"]}, {"unparsed": 0, "working": 0, "history": 0, "spam": 1, "deleted": 0})
         execute_lead_command(actor=self.user, organization=self.org, operation_key="source-trash-synthetic",
             command_type="lead.disposition", subject_id=lead.pk, expected_revision=lead.revision,
             changes={"column": "deleted", "reason": "Synthetic removal"})
@@ -225,7 +225,7 @@ class LeadIntakeTests(Fixture, TestCase):
         lead.refresh_from_db()
         self.assertTrue(lead.is_archived)
         self.assertEqual((lead.status, lead.result, CrmLeadSource.objects.filter(lead=lead).count()), ("closed", "spam", 3))
-        self.assertEqual([column["total"] for column in self.client.get(url).json()["columns"]], [0, 0, 0, 1])
+        self.assertEqual({column["key"]: column["total"] for column in self.client.get(url).json()["columns"]}, {"unparsed": 0, "working": 0, "history": 0, "spam": 0, "deleted": 1})
         CommunicationAccess.objects.filter(user=self.user, organization=self.org).update(can_view_conversations=False)
         self.assertEqual(self.client.get(url).json()["total"], 0)
         self.assertEqual(self.client.get(reverse("crm_live_lead_detail", args=[lead.pk]) + "?org_id=" + str(self.org.pk)).status_code, 404)

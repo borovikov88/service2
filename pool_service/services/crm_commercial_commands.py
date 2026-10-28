@@ -137,6 +137,13 @@ def _card_value(key, value):
 
 
 def _set_card_fields(subject, changes, diff):
+    money_fields = {"amount", "currency", "amount_basis"}
+    if subject.currency not in {"", "RUB"}:
+        if any(_card_value(key, getattr(subject, key)) != value
+               for key, value in changes.items() if key in money_fields):
+            raise ValidationError("Историческая сумма в другой валюте сохранена. Её изменение требует отдельного решения.")
+    elif changes.get("currency", subject.currency) not in {"", "RUB"}:
+        raise ValidationError("Новые коммерческие суммы указываются только в рублях (RUB).")
     changed = False
     for key, value in changes.items():
         old = _card_value(key, getattr(subject, key))

@@ -132,7 +132,7 @@ test("drag and stage selector share revision-aware transitions and require a bac
   assert.equal(transitionIntent(deal, 1, pipeline, "  Уточнить размеры  ").changes.reason, "Уточнить размеры");
   assert.throws(() => transitionIntent(deal, 4, pipeline), /недоступен/);
   assert.throws(() => transitionIntent({...deal, can_transition: false}, 3, pipeline), /нет права/);
-  assert.throws(() => transitionIntent({...deal, pipeline_id: 99}, 3, pipeline), /между направлениями/);
+  assert.throws(() => transitionIntent({...deal, pipeline_id: 99}, 3, pipeline), /между воронками/);
 });
 
 test("deadlines always use Barnaul time regardless of the browser's local timezone", () => {
