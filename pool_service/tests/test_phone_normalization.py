@@ -310,4 +310,6 @@ class ClientRelationshipUiTests(TestCase):
         self.assertContains(page, 'data-client-search="companies"', html=False)
         self.assertContains(page, 'data-client-search="people"', html=False)
         self.assertContains(page, "Иванов Иван Иванович")
-        self.assertContains(page, 'data-search=', html=False)
+        self.assertNotContains(page, 'data-search=', html=False)
+        filtered = self.client.get(reverse("clients_list"), {"companies_q": "Иванов Иван Иванович"})
+        self.assertEqual([row.pk for row in filtered.context["companies"]], [self.company.pk])

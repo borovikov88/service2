@@ -114,3 +114,11 @@ class ContactsPaginationTests(TestCase):
         response=self.client.get(self.url,{"people_q":"object 054"})
         self.assertEqual(response.context['staff_page'].paginator.count,1)
         self.assertEqual(response["Cache-Control"],"private, no-store")
+
+    def test_legacy_directory_normalization_cases_now_run_on_server(self):
+        company=self.companies[0];company.name='ООО «СТРОЙ–ИНВЕСТ» Семён';company.phone='+7 900 123 4567';company.save()
+        for query in ['Строй инвест','Строй-инвест','  строй   инвест ','СТРОЙ\u00a0ИНВЕСТ','семен','9001234567']:
+            response=self.client.get(self.url,{'companies_q':query})
+            self.assertEqual([row.pk for row in response.context['companies']],[company.pk])
+        response=self.client.get(self.url,{'companies_q':'Несуществующий'})
+        self.assertEqual(response.context['companies_page'].paginator.count,0)
