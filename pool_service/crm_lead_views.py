@@ -1,7 +1,7 @@
 """Current, scoped HTTP adapter for lead intake and qualification.
 
-All writes enter the lead command service. Source content is never serialized by
-this adapter; the source access service supplies separately authorized locators.
+All writes enter the lead command service. Lists contain bounded source metadata. Saved call content is returned only in
+detail after the existing listening authorization; GET never starts analysis.
 """
 from functools import wraps
 import json
@@ -73,7 +73,7 @@ def _capabilities(user, organization):
 
 def _queryset(user, organization):
     from .services.crm_lead_access import leads_for_user
-    return leads_for_user(user, organization).select_related("client", "assignee", "next_task")
+    return leads_for_user(user, organization).select_related("organization", "client", "assignee", "next_task")
 
 
 def _serialize(lead, user, capabilities, *, detail=False, visible_tasks=None):
@@ -134,7 +134,14 @@ def _serialize_many(leads, user, capabilities, *, detail=False):
     for lead in leads:
         if lead.next_task_id and (lead.pk, lead.next_task_id) not in links:
             visible.pop(lead.next_task_id, None)
-    return [_serialize(lead, user, capabilities, detail=detail, visible_tasks=visible) for lead in leads]
+    from .services.crm_lead_access import source_metadata_many
+    sources = source_metadata_many(user=user, organization=leads[0].organization, leads=leads) if leads else {}
+    output = []
+    for lead in leads:
+        row = _serialize(lead, user, capabilities, detail=detail, visible_tasks=visible)
+        row["source"] = next(iter(sources.get(lead.pk, [])), None)
+        output.append(row)
+    return output
 
 
 def _data(request, organization):
@@ -259,6 +266,32 @@ def data(request):
     return JsonResponse(_data(request, _organization(request)))
 
 
+def _saved_call_media(request, organization, sources):
+    # Reuse listening authorization; reading a card never requests analysis/status.
+    from .communication_models import PhoneCall, CallAnalysis
+    from .communication_views import _authorize_call_access
+    calls = {call.pk: call for call in PhoneCall.objects.filter(organization=organization,
+        pk__in=[source["call_id"] for source in sources if source.get("call_id")]).select_related("analysis", "connection")}
+    for source in sources:
+        call = calls.get(source.get("call_id"))
+        if not call:
+            continue
+        try:
+            _authorize_call_access(request, call)
+        except (PermissionDenied, Http404):
+            continue
+        media = {"recording_url": reverse("communication_call_recording", args=[call.pk]) + "?" + urlencode({"org_id": organization.pk}) if call.recording_file else None}
+        analysis = getattr(call, "analysis", None)
+        if analysis and analysis.status == CallAnalysis.STATUS_READY:
+            media.update(transcript=analysis.transcript[:20000], transcript_truncated=len(analysis.transcript) > 20000,
+                summary=analysis.summary[:4000], facts={})
+            for key in ("client_name", "company", "phone", "address", "request"):
+                value = analysis.facts.get(key) if isinstance(analysis.facts, dict) else None
+                if isinstance(value, str):
+                    media["facts"][key] = value[:2000]
+        source["media"] = media
+
+
 def _detail(request, organization, lead_id):
     from .services.crm_lead_access import can_read_lead, source_metadata
     lead = get_object_or_404(_queryset(request.user, organization), pk=lead_id)
@@ -272,12 +305,14 @@ def _detail(request, organization, lead_id):
         target = _queryset(request.user, organization).filter(pk=lead.duplicate_of_id).first()
         if target and can_read_lead(request.user, organization, target):
             duplicate = {"id": target.pk, "title": target.title}
+    sources = source_metadata(user=request.user, organization=organization, lead=lead)
+    _saved_call_media(request, organization, sources)
     return {"lead": _serialize_many([lead], request.user, _capabilities(request.user, organization), detail=True)[0],
         "events": [{"label": EVENTS.get(event.event_type, "Изменение карточки"),
             "at": event.occurred_at.isoformat(), "reason": event.reason,
             "movement": (COLUMNS.get(event.safe_diff.get("column", {}).get("before"), "История завершённых") + " → " + COLUMNS.get(event.safe_diff.get("column", {}).get("after"), "История завершённых")) if "column" in event.safe_diff else "",
             "actor": (event.actor.get_full_name() or event.actor.username) if event.actor else "Система"} for event in events],
-        "sources": source_metadata(user=request.user, organization=organization, lead=lead), "duplicate_of": duplicate,
+        "sources": sources, "duplicate_of": duplicate,
         "deals": [{"id": deal.pk, "title": deal.title, "pipeline_id": deal.pipeline_id,
             "url": reverse("crm_live_workspace") + "?" + urlencode({"org_id": organization.pk, "pipeline": deal.pipeline_id, "deal": deal.pk})} for deal in deals]}
 

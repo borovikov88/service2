@@ -150,14 +150,26 @@
     }
     const columnLabels = {unparsed: "Не разобраны", working: "В работе", spam: "Спам", deleted: "Удалённые", restore: "Восстановить"};
     let dragged = null;
+    function sourceLine(host, source) {
+      if (!source) return;
+      host.append(el("p", "lead-source", [source.label, source.phone || source.contact_name].filter(Boolean).join(" · ")));
+      const stamp = source.occurred_at || source.received_at;
+      if (stamp) host.append(el("p", "lead-date", (source.occurred_at ? "Событие: " : "Получено: ") + dateText(stamp) + (!source.occurred_at ? " · время события неизвестно" : "")));
+      if (source.employee) host.append(el("p", "lead-source", "Сотрудник звонка: " + source.employee));
+    }
+    function displayTitle(lead) {
+      if (!["Входящий звонок — требуется уточнение", "Входящее обращение — требуется уточнение"].includes(lead.title) || !lead.source) return lead.title;
+      return [lead.source.label, lead.client?.name || lead.source.phone || lead.source.contact_name || "Контакт не определён"].join(" · ");
+    }
     function card(lead) {
       const row = el("article", "lead-row"); row.dataset.leadId = lead.id;
       const title = el("div"), middle = el("div"), next = el("div");
-      title.append(button(lead.title, () => openLead(lead.id)), el("p", "", lead.client?.name || "Клиент пока не определён"));
+      title.append(button(displayTitle(lead), () => openLead(lead.id)), el("p", "", lead.client?.name || "Клиент пока не определён"));
       middle.append(el("span", "lead-state", lead.status_label), el("p", "", lead.assignee?.name || "Не назначен"));
       if (lead.result) middle.append(el("p", "", lead.result_label));
       if (lead.intake_reason_label) middle.append(el("p", "", lead.intake_reason_label));
       if (lead.needs_review) middle.append(el("span", "lead-state review", "Новое обращение · нужен разбор"));
+      sourceLine(title, lead.source);
       const action = lead.next_action;
       next.append(el("p", "", action?.restricted ? "Следующий шаг ограничен доступом" : action?.completed ? "Предыдущий шаг завершён" : action?.title || (lead.can_take ? "Можно взять в работу" : "Следующий шаг не указан")));
       if (action?.due_at && !action.restricted) next.append(el("p", "lead-date", dateText(action.due_at)));
@@ -292,6 +304,7 @@
       const fields = el("div", "lead-fields"); form.append(fields);
       const title = field(fields, "Название", creating ? "" : lead.title, "text", true); title.required = true; title.maxLength = 255;
       const need = field(fields, "Что требуется / контекст", creating ? "" : lead.need, "textarea", true); need.required = true; need.maxLength = 10000;
+      if (!creating) need.dataset.leadNeed = "true";
       const client = picker(fields, "Клиент · можно уточнить позже", initial.urls.clients, "clients", creating ? null : lead.client);
       const direction = select(fields, "Направление", [["", "Пока не определено"], ...initial.pipelines.map((p) => [p.code, p.name])], creating ? "" : lead.direction);
       const specialization = field(fields, "Специализация", creating ? "" : lead.specialization); specialization.maxLength = 40;
@@ -356,7 +369,7 @@
     }
     function renderDetail(data) {
       const lead = data.lead; state.detail = data; content.replaceChildren();
-      content.append(el("h2", "", lead.title)); content.firstChild.id = "lead-dialog-title";
+      content.append(el("h2", "", displayTitle(lead))); content.firstChild.id = "lead-dialog-title";
       content.append(el("div", "lead-summary", lead.status_label + (lead.result ? " · " + lead.result_label : "") + " · " + (lead.assignee?.name || "Не назначен")));
       if (lead.intake_reason_label) content.append(el("p", "crm-live-muted", lead.intake_reason_label));
       if (lead.needs_review) content.append(el("p", "lead-conflict", lead.status === "closed" ? "После разбора поступило новое обращение. Проверьте исходную коммуникацию: продолжение текущей работы или новая потребность." : "Обращение требует разбора: уточните потребность и следующий шаг."));
@@ -376,9 +389,33 @@
         const section = el("section"), links = el("div", "lead-link-list"); section.append(el("h3", "", "Исходные обращения"), links);
         for (const source of data.sources) {
           const link = el("a", "", source.label || "Открыть коммуникацию"); link.href = source.url; links.append(link);
-          if (source.occurred_at || source.received_at) {
-            const timestamp = source.occurred_at ? "Событие " + dateText(source.occurred_at) : "Получено " + dateText(source.received_at) + " · время события не передано";
-            links.append(el("span", "lead-date", timestamp + (source.historical ? " · История" : "")));
+          sourceLine(links, source);
+          if (source.historical) links.append(el("p", "lead-date", "Историческое обращение"));
+          const media = source.media;
+          if (media) {
+            if (media.recording_url) {
+              const audio = el("audio"); audio.controls = true; audio.preload = "none"; audio.src = media.recording_url;
+              audio.setAttribute("aria-label", "Запись разговора"); links.append(audio);
+            }
+            if (media.transcript) {
+              const transcript = el("details"); transcript.append(el("summary", "", "Сохранённая расшифровка"), el("p", "lead-transcript", media.transcript));
+              if (media.transcript_truncated) transcript.append(el("p", "lead-form-note", "Показано начало. Полная запись доступна в исходной коммуникации."));
+              links.append(transcript);
+            }
+            const labels = {client_name: "ФИО", company: "Компания", phone: "Телефон", address: "Адрес", request: "Что требуется"};
+            if (Object.values(media.facts || {}).some(Boolean)) {
+              const facts = el("details"); facts.append(el("summary", "", "Предложенные поля из разговора"), el("p", "lead-form-note", "Проверьте предложения по записи. Клиент и телефон автоматически не изменяются."));
+              for (const [key, label] of Object.entries(labels)) if (media.facts[key]) facts.append(el("p", "lead-transcript", label + ": " + media.facts[key]));
+              if (lead.can_edit && media.facts.request) facts.append(button("Подставить предложение в поле потребности", () => {
+                if (operations.forSubject(lead.id)) return;
+                const input = content.querySelector('[data-lead-need="true"]');
+                if (input && (!input.value || input.value === lead.need)) { input.value = media.facts.request; input.focus(); }
+                else if (input) input.focus();
+              }));
+              facts.append(el("p", "lead-form-note", "Подстановка не сохраняет карточку. Проверьте текст и нажмите её кнопку сохранения. Уже изменённый вручную текст не заменяется."));
+              links.append(facts);
+            }
+            links.append(el("p", "lead-form-note", "Запуск или повтор анализа — по вашему действию в исходной коммуникации. Открытие этой карточки не запускает распознавание."));
           }
         }
         content.append(section);
