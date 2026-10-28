@@ -16,8 +16,12 @@ class ContactsPaginationTests(TestCase):
         cls.other=Organization.objects.create(name="Synthetic foreign org")
         cls.actor=get_user_model().objects.create_user(username="synthetic-pagination-owner")
         OrganizationAccess.objects.create(user=cls.actor,organization=cls.org,role="owner")
-        cls.companies=Client.objects.bulk_create([Client(name=f"Company {i:04}",organization=cls.org,client_type="legal") for i in range(251)])
-        cls.people=Client.objects.bulk_create([Client(name=f"Person {i:04}",organization=cls.org,client_type="private") for i in range(151)])
+        Client.objects.bulk_create([Client(name=f"Company {i:04}",organization=cls.org,client_type="legal") for i in range(251)])
+        Client.objects.bulk_create([Client(name=f"Person {i:04}",organization=cls.org,client_type="private") for i in range(151)])
+        # MySQL does not populate AutoField IDs on bulk_create results.
+        # Reload persisted fixtures before constructing FK-dependent rows.
+        cls.companies=list(Client.objects.filter(organization=cls.org,client_type="legal").order_by("name","pk"))
+        cls.people=list(Client.objects.filter(organization=cls.org,client_type="private").order_by("name","pk"))
         cls.hidden=Client.objects.create(name="Hidden unmatched secret",organization=cls.other,client_type="private")
         ClientBusinessRole.objects.bulk_create([ClientBusinessRole(client=c,role="supplier",active=True,revision=1) for c in cls.companies])
         ClientCompanyLink.objects.create(company=cls.companies[0],person=cls.people[-1],position="Bounded outside page")
@@ -103,7 +107,8 @@ class ContactsPaginationTests(TestCase):
         self.assertNotContains(response,"Поставщики ещё не отмечены")
 
     def test_pool_staff_is_separately_paged_scoped_and_filtered(self):
-        pools=Pool.objects.bulk_create([Pool(client=self.companies[0],organization=self.org,address=f"Synthetic object {i:03}") for i in range(55)])
+        Pool.objects.bulk_create([Pool(client=self.companies[0],organization=self.org,address=f"Synthetic object {i:03}") for i in range(55)])
+        pools=list(Pool.objects.filter(client=self.companies[0],organization=self.org).order_by("pk"))
         PoolAccess.objects.bulk_create([PoolAccess(pool=p,user=self.actor,role="viewer") for p in pools])
         malformed=Pool.objects.create(client=self.hidden,organization=self.org,address="Foreign hidden object")
         PoolAccess.objects.create(pool=malformed,user=self.actor,role="viewer")
