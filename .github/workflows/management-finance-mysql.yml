@@ -97,7 +97,10 @@ permissions:
 jobs:
   mysql-foundation:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Full suite includes historical forward/reverse migration preservation.
+    # 20-minute runs exhausted the budget while still progressing; keep a
+    # bounded limit without skipping assertions, races or migration checks.
+    timeout-minutes: 30
     services:
       mysql:
         image: mysql:8.4
