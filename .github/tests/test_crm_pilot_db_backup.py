@@ -46,6 +46,50 @@ def receipt():
             'restore_verified': False, 'backup_file': SHA + '-20261026T120000Z-' + 'd' * 16 + '.sql.gz'}
 
 
+class BackupOnlyRequestTests(unittest.TestCase):
+    def setUp(self):
+        self.guard = module('backup_only_guard', '.github/scripts/validate_crm_backup_request.py')
+        self.env = dict(EVENT_NAME='workflow_dispatch', REF='refs/heads/main',
+            REPOSITORY='borovikov88/service2', COMMIT_SHA=SHA, CONFIRM_MAIN_SHA=SHA,
+            CURRENT_MAIN_SHA=SHA, CONFIRM_SCOPE='all-organizations-default-mysql')
+
+    def test_only_current_explicit_full_scope_dispatch_is_allowed(self):
+        self.assertTrue(self.guard.valid(self.env))
+        for key, bad in [('EVENT_NAME', 'push'), ('REF', 'refs/heads/feature'),
+                         ('REPOSITORY', 'someone/service2'), ('COMMIT_SHA', 'a' * 39),
+                         ('CONFIRM_MAIN_SHA', 'b' * 40), ('CURRENT_MAIN_SHA', 'b' * 40),
+                         ('CONFIRM_SCOPE', 'unconfirmed'), ('CONFIRM_SCOPE', 'organization-1')]:
+            with self.subTest(key=key, bad=bad):
+                self.assertFalse(self.guard.valid({**self.env, key: bad}))
+        for key in self.env:
+            with self.subTest(missing=key):
+                self.assertFalse(self.guard.valid({k: v for k, v in self.env.items() if k != key}))
+
+    def test_cli_never_echoes_untrusted_confirmation(self):
+        secret = 'private-value-do-not-print'
+        result = subprocess.run([sys.executable, str(ROOT / '.github/scripts/validate_crm_backup_request.py')],
+            env={**os.environ, **self.env, 'CONFIRM_SCOPE': secret}, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertNotIn(secret, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), 'CRM_BACKUP_REQUEST_BLOCKED invalid_confirmation_or_main')
+
+    def test_workflow_reuses_private_runner_without_deploy_or_artifacts(self):
+        workflow = (ROOT / '.github/workflows/crm-db-backup.yml').read_text()
+        self.assertIn('environment: production', workflow)
+        self.assertIn('persist-credentials: false', workflow)
+        self.assertIn('StrictHostKeyChecking=yes', workflow)
+        self.assertIn('PasswordAuthentication=no', workflow)
+        self.assertIn('< .github/scripts/crm_pilot_db_backup_remote.sh', workflow)
+        self.assertIn('scripts/crm_pilot_db_backup_receipt.py --failure', workflow)
+        self.assertIn('cancel-in-progress: false', workflow)
+        self.assertLess(workflow.index('python3 .github/scripts/validate_crm_backup_request.py'),
+                        workflow.index('DEPLOY_SSH_KEY:'))
+        for forbidden in ('workflow_call:', 'schedule:', 'push:', 'pull_request:',
+                          'upload-artifact', 'update.sh', 'manage.py migrate', 'ssh-keyscan',
+                          'StrictHostKeyChecking=no', 'cat "$backup_temp', 'set -x'):
+            self.assertNotIn(forbidden, workflow)
+
+
 class CoverageTests(unittest.TestCase):
     def test_streaming_schema_normalizes_only_auto_increment_and_requires_footer(self):
         check = B.DumpCoverage(SCHEMA)
