@@ -3670,7 +3670,7 @@ def users_view(request):
 
 @login_required
 def clients_list(request):
-    from .client_queries import readable_clients, readable_company_links, CONTACT_STAFF_ROLES
+    from .client_queries import CONTACT_STAFF_ROLES
     allowed_roles = CONTACT_STAFF_ROLES
     is_allowed = request.user.is_active and (request.user.is_superuser or OrganizationAccess.objects.filter(
         user=request.user, role__in=allowed_roles
@@ -3678,139 +3678,16 @@ def clients_list(request):
     if not is_allowed:
         return HttpResponseForbidden()
 
-    if request.user.is_superuser:
-        pool_staff_qs = PoolAccess.objects.all()
-    else:
-        org_ids = OrganizationAccess.objects.filter(user=request.user, role__in=allowed_roles).values_list(
-            "organization_id", flat=True
-        )
-        pool_staff_qs = PoolAccess.objects.filter(pool__organization_id__in=org_ids)
+    from .contact_directory import directory_context
+    directory = directory_context(request)
 
-    clients_qs = readable_clients(request.user)
-    clients = list(
-        clients_qs.annotate(pool_count=Count("pool"))
-        .select_related("organization", "crm_profile")
-        .order_by("name")
-    )
-    companies = [client for client in clients if client.client_type == "legal"]
-    private_contacts = [client for client in clients if client.client_type == "private"]
-    from .client_crm_models import ClientBusinessRole
-    supplier_ids = set(ClientBusinessRole.objects.filter(role="supplier", active=True, client_id__in=[c.pk for c in clients]).values_list("client_id", flat=True))
-    suppliers = [c for c in clients if c.pk in supplier_ids]
-
-    client_ids = [client.id for client in clients]
-    contacts_by_client = {}
-    for contact in ClientContact.objects.filter(client_id__in=client_ids).order_by(
-        "client_id", "-is_primary", "id"
-    ):
-        contacts_by_client.setdefault(contact.client_id, []).append(contact)
-
-    links = list(
-        readable_company_links(request.user)
-        .select_related("company", "person")
-        .order_by("-is_primary", "id")
-    )
-    people_by_company = {}
-    companies_by_person = {}
-    for link in links:
-        people_by_company.setdefault(link.company_id, []).append(link)
-        companies_by_person.setdefault(link.person_id, []).append(link)
-
-    def phone_terms(value):
-        normalized = normalize_crm_phone(value)
-        digits = "".join(ch for ch in normalized if ch.isdigit())
-        return [value or "", format_phone(value), normalized, digits]
-
-    for item in clients:
-        item.phone_display = format_phone(item.phone)
-        profile = getattr(item, "crm_profile", None)
-        search_parts = [
-            item.name,
-            item.company_name,
-            item.inn,
-            item.email,
-            getattr(profile, "legal_name", "") if profile else "",
-            *phone_terms(item.phone),
-        ]
-        for contact in contacts_by_client.get(item.id, []):
-            search_parts.extend([contact.value, contact.match_value])
-        if item.client_type == "legal":
-            legacy_contact_name = " ".join(
-                part for part in [item.first_name, item.last_name] if part
-            ).strip()
-            item.primary_contact = {
-                "name": legacy_contact_name,
-                "position": item.contact_position,
-                "phone": item.phone_display,
-                "email": item.email,
-            }
-            if not any(item.primary_contact.values()):
-                item.primary_contact = None
-            search_parts.extend(
-                [
-                    legacy_contact_name,
-                    item.contact_position,
-                ]
-            )
-            item.linked_people = people_by_company.get(item.id, [])
-            for link in item.linked_people:
-                link.person.phone_display = format_phone(link.person.phone)
-                search_parts.extend(
-                    [
-                        link.person.name,
-                        link.position,
-                        link.person.email,
-                        *phone_terms(link.person.phone),
-                    ]
-                )
-        else:
-            item.linked_companies = companies_by_person.get(item.id, [])
-            for link in item.linked_companies:
-                link.company.phone_display = format_phone(link.company.phone)
-                search_parts.extend(
-                    [
-                        link.company.name,
-                        link.position,
-                        link.company.inn,
-                        link.company.email,
-                        *phone_terms(link.company.phone),
-                    ]
-                )
-        item.search_text = " ".join(
-            str(value).strip().casefold()
-            for value in search_parts
-            if value
-        )
-
-    staff_by_client = {}
-    company_ids = [client.id for client in companies]
-    if company_ids:
-        staff_accesses = (
-            ClientAccess.objects.filter(client_id__in=company_ids)
-            .select_related("user")
-            .order_by("user__last_name", "user__first_name")
-        )
-        for access in staff_accesses:
-            staff_by_client.setdefault(access.client_id, []).append(access)
-
-    for company in companies:
-        company.staff_contacts = staff_by_client.get(company.id, [])
-
-    pool_staff = (
-        pool_staff_qs.select_related("pool", "pool__client", "pool__organization", "user")
-        .order_by("pool__client__name", "pool__address", "user__last_name", "user__first_name")
-    )
-
-    return render(
+    response = render(
         request,
         "pool_service/clients.html",
         {
             "page_title": "Контакты",
             "page_subtitle": "Контакты и объекты клиентов в одном списке",
-            "companies": companies,
-            "suppliers": suppliers,
-            "private_contacts": private_contacts,
-            "pool_staff": pool_staff,
+            **directory,
             "active_tab": "clients",
             "page_action_label": None if request.user.is_superuser else "Добавить клиента",
             "page_action_url": (
@@ -3823,6 +3700,8 @@ def clients_list(request):
             "add_url": None,
         },
     )
+    response["Cache-Control"] = "private, no-store"
+    return response
 
 
 @login_required

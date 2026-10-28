@@ -1,0 +1,6 @@
+<div class="text-muted small mt-1" data-client-search-count="{{ group }}" aria-live="polite">Найдено: {{ page.paginator.count }}</div>
+<nav class="d-flex align-items-center gap-2 my-2" data-contact-pager="{{ group }}" aria-label="Страницы: {{ group }}">
+  {% if page.previous_url %}<a role="button" class="btn btn-outline-secondary btn-sm" data-contact-page="{{ group }}" href="{{ page.previous_url }}">Назад</a>{% endif %}
+  <span>{{ page.number }} / {{ page.paginator.num_pages }}</span>
+  {% if page.next_url %}<a role="button" class="btn btn-outline-secondary btn-sm" data-contact-page="{{ group }}" href="{{ page.next_url }}">Далее</a>{% endif %}
+</nav>

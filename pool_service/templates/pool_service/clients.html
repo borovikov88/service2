@@ -1,11 +1,13 @@
 {% extends 'pool_service/base.html' %}
+{% load static %}
 
 {% block title %}Контакты{% endblock %}
 
 {% block content %}
 {% include "pool_service/_admin_workspace_styles.html" %}
 <div class="admin-desktop">
-<div class="admin-card card card-soft p-4">
+<div class="admin-card card card-soft p-4" id="contacts-directory" aria-busy="false">
+<div class="alert alert-danger" id="contacts-error" hidden role="alert">Не удалось загрузить контакты. <button type="button" class="btn btn-sm btn-outline-danger" id="contacts-retry">Повторить</button></div>
   <div class="admin-page-header d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
     <h4 class="fw-bold mb-0">Контакты</h4>
     {% if is_org_admin or user.is_superuser %}
@@ -27,8 +29,8 @@
   <div class="tab-content">
     <div class="tab-pane fade show active" id="companies-pane" role="tabpanel" aria-labelledby="companies-tab">
       <div class="mb-3">
-        <input class="form-control" type="search" placeholder="Поиск по названию, ИНН, телефону, email или контактному лицу" data-client-search="companies" autocomplete="off">
-        <div class="text-muted small mt-1" data-client-search-count="companies"></div>
+        <input class="form-control" type="search" placeholder="Поиск по названию, ИНН, телефону, email или контактному лицу" data-client-search="companies" value="{{ companies_q }}" maxlength="160" autocomplete="off">
+        {% include "pool_service/_contacts_pager.html" with page=companies_page group="companies" %}
       </div>
       <div class="table-responsive">
         <table class="table align-middle">
@@ -45,7 +47,7 @@
           </thead>
           <tbody>
             {% for company in companies %}
-              <tr data-client-row="companies" data-search="{{ company.search_text }}">
+              <tr data-client-row="companies">
                 <td class="fw-semibold"><a class="text-decoration-none" href="{% url 'client_detail' company.id %}">{{ company.name }}</a></td>
                 <td>{{ company.phone_display|default:"-" }}</td>
                 <td>{{ company.email|default:"-" }}</td>
@@ -60,6 +62,8 @@
                           {% if link.person.phone_display %}<div class="text-muted small">{{ link.person.phone_display }}</div>{% endif %}
                         </div>
                       {% endfor %}
+                      {% if company.more_relationships %}<a class="small" href="{% url 'client_detail' company.id %}?tab=contacts">Все связи в карточке</a>{% endif %}
+                      {% if company.more_staff_contacts %}<a class="small" href="{% url 'client_staff' company.id %}">Все сотрудники по доступу</a>{% endif %}
                       {% if not company.linked_people and company.primary_contact %}
                         <div>
                           {% if company.primary_contact.name %}<span class="fw-semibold">{{ company.primary_contact.name }}</span>{% endif %}
@@ -126,18 +130,18 @@
     </div>
     <div class="tab-pane fade" id="suppliers-pane" role="tabpanel" aria-labelledby="suppliers-tab">
       <label class="form-label" for="supplier-search">Поиск поставщиков</label>
-      <input id="supplier-search" class="form-control mb-2" type="search" data-client-search="suppliers" autocomplete="off">
-      <div class="text-muted small" data-client-search-count="suppliers"></div>
+      <input id="supplier-search" class="form-control mb-2" type="search" data-client-search="suppliers" value="{{ suppliers_q }}" maxlength="160" autocomplete="off">
+      {% include "pool_service/_contacts_pager.html" with page=suppliers_page group="suppliers" %}
       <div class="table-responsive"><table class="table align-middle"><thead><tr><th>Контакт</th><th>Телефон</th><th>Email</th></tr></thead><tbody>
       {% for supplier in suppliers %}
-        <tr data-client-row="suppliers" data-search="{{ supplier.search_text }}"><td><a href="{% url 'client_detail' supplier.id %}">{{ supplier.name }}</a></td><td>{{ supplier.phone_display|default:"—" }}</td><td>{{ supplier.email|default:"—" }}</td></tr>
-      {% empty %}<tr><td colspan="3">Поставщики ещё не отмечены. Роль можно указать в карточке контакта.</td></tr>{% endfor %}
+        <tr data-client-row="suppliers"><td><a href="{% url 'client_detail' supplier.id %}">{{ supplier.name }}</a></td><td>{{ supplier.phone_display|default:"—" }}</td><td>{{ supplier.email|default:"—" }}</td></tr>
+      {% empty %}<tr><td colspan="3">{% if suppliers_q %}По запросу ничего не найдено.{% else %}Поставщики ещё не отмечены. Роль можно указать в карточке контакта.{% endif %}</td></tr>{% endfor %}
       </tbody></table></div>
     </div>
     <div class="tab-pane fade" id="contacts-pane" role="tabpanel" aria-labelledby="contacts-tab">
       <div class="mb-3">
-        <input class="form-control" type="search" placeholder="Поиск по ФИО, телефону, email или компании" data-client-search="people" autocomplete="off">
-        <div class="text-muted small mt-1" data-client-search-count="people"></div>
+        <input class="form-control" type="search" placeholder="Поиск по ФИО, телефону, email или компании" data-client-search="people" value="{{ people_q }}" maxlength="160" autocomplete="off">
+        {% include "pool_service/_contacts_pager.html" with page=people_page group="people" %}
       </div>
       <div class="mb-4">
         <div class="fw-semibold mb-2">&#1060;&#1080;&#1079;&#1080;&#1095;&#1077;&#1089;&#1082;&#1080;&#1077; &#1083;&#1080;&#1094;&#1072;</div>
@@ -156,14 +160,15 @@
             </thead>
             <tbody>
               {% for client in private_contacts %}
-                <tr data-client-row="people" data-search="{{ client.search_text }}">
+                <tr data-client-row="people">
                   <td class="fw-semibold"><a class="text-decoration-none" href="{% url 'client_detail' client.id %}">{{ client.name }}</a></td>
                   <td>{{ client.phone_display|default:"-" }}</td>
                   <td>{{ client.email|default:"-" }}</td>
                   <td>
                     {% if client.linked_companies %}
                       <div class="d-flex flex-column gap-1">
-                        {% for link in client.linked_companies %}
+                        {% if client.more_relationships %}<a class="small" href="{% url 'client_detail' client.id %}?tab=contacts">Все связи в карточке</a>{% endif %}
+                      {% for link in client.linked_companies %}
                           <div>
                             <a class="text-decoration-none" href="{% url 'client_detail' link.company.id %}">{{ link.company.name }}</a>
                             {% if link.position %}<span class="text-muted small"> · {{ link.position }}</span>{% endif %}
@@ -224,6 +229,7 @@
       </div>
       <div>
         <div class="fw-semibold mb-2">&#1057;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1080; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074;</div>
+        {% include "pool_service/_contacts_pager.html" with page=staff_page group="staff" %}
         <div class="table-responsive">
           <table class="table align-middle">
             <thead class="small text-muted">
@@ -286,113 +292,7 @@
     </div>
   </div>
 </div>
-<script>
-  document.addEventListener("DOMContentLoaded", function () {
-    const normalizeText = (value) => String(value || "").normalize("NFKC")
-      .toLocaleLowerCase("ru-RU").replace(/ё/g, "е")
-      .replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-    const normalizeQuery = (value) => {
-      const raw = normalizeText(value);
-      const digits = raw.replace(/\D/g, "");
-      return {raw, digits};
-    };
-    const searchParams = new URLSearchParams(window.location.search);
-    const searchParamByGroup = {
-      companies: "companies_q",
-      people: "people_q",
-      suppliers: "suppliers_q",
-    };
-    const replaceUrl = () => {
-      const query = searchParams.toString();
-      history.replaceState(
-        null,
-        "",
-        window.location.pathname + (query ? "?" + query : "") + window.location.hash
-      );
-    };
-    document.querySelectorAll("[data-client-search]").forEach((input) => {
-      const group = input.dataset.clientSearch;
-      const paramName = searchParamByGroup[group];
-      const rows = Array.from(document.querySelectorAll('[data-client-row="' + group + '"]'));
-      const counter = document.querySelector('[data-client-search-count="' + group + '"]');
-      if (paramName && searchParams.has(paramName)) {
-        input.value = searchParams.get(paramName) || "";
-      }
-      const pager = document.createElement("div");
-      pager.className = "d-flex align-items-center gap-2 my-2";
-      pager.dataset.contactPager = group;
-      const previous = document.createElement("button"), next = document.createElement("button"), status = document.createElement("span");
-      for (const button of [previous, next]) { button.type = "button"; button.className = "btn btn-outline-secondary btn-sm"; }
-      previous.textContent = "Назад"; next.textContent = "Далее";
-      pager.append(previous, status, next); counter.after(pager);
-      const pageParam = group + "_page";
-      let currentPage = Math.max(1, Number.parseInt(searchParams.get(pageParam), 10) || 1);
-      const apply = (syncUrl) => {
-        const query = normalizeQuery(input.value);
-        const matches = [];
-        rows.forEach((row) => {
-          const text = normalizeText(row.dataset.search);
-          const textDigits = text.replace(/\D/g, "");
-          const matched = !query.raw || query.raw.split(" ").every((token) => text.includes(token)) || (query.digits.length >= 4 && textDigits.includes(query.digits));
-          row.hidden = true;
-          if (matched) matches.push(row);
-        });
-        const pages = Math.max(1, Math.ceil(matches.length / 50));
-        currentPage = Math.min(currentPage, pages);
-        matches.slice((currentPage - 1) * 50, currentPage * 50).forEach(row => { row.hidden = false; });
-        counter.textContent = "Найдено: " + matches.length;
-        status.textContent = currentPage + " / " + pages;
-        previous.disabled = currentPage <= 1; next.disabled = currentPage >= pages;
-        pager.hidden = pages <= 1;
-        if (syncUrl) { searchParams.set(pageParam, String(currentPage)); }
-        if (syncUrl && paramName) {
-          if (input.value.trim()) {
-            searchParams.set(paramName, input.value.trim());
-          } else {
-            searchParams.delete(paramName);
-          }
-          replaceUrl();
-        }
-      };
-      let searchTimer = null;
-      input.addEventListener("input", () => {
-        window.clearTimeout(searchTimer);
-        searchTimer = window.setTimeout(() => { currentPage = 1; apply(true); }, 250);
-      });
-      previous.addEventListener("click", () => { currentPage -= 1; apply(true); });
-      next.addEventListener("click", () => { currentPage += 1; apply(true); });
-      apply(false);
-    });
-
-    const tabButtons = {
-      companies: document.getElementById("companies-tab"),
-      people: document.getElementById("contacts-tab"),
-      suppliers: document.getElementById("suppliers-tab"),
-    };
-    const initialTab = searchParams.get("clients_tab");
-    if (initialTab && tabButtons[initialTab]) {
-      bootstrap.Tab.getOrCreateInstance(tabButtons[initialTab]).show();
-    } else if (searchParams.get("people_q") && tabButtons.people) {
-      bootstrap.Tab.getOrCreateInstance(tabButtons.people).show();
-    }
-    Object.entries(tabButtons).forEach(([name, button]) => {
-      if (!button) return;
-      button.addEventListener("shown.bs.tab", () => {
-        searchParams.set("clients_tab", name);
-        replaceUrl();
-      });
-    });
-    const modalEl = document.getElementById("clientDeleteBlockedModal");
-    if (!modalEl) return;
-    const modal = new bootstrap.Modal(modalEl);
-    document.querySelectorAll("[data-client-delete-blocked]").forEach((btn) => {
-      btn.addEventListener("click", (event) => {
-        event.preventDefault();
-        modal.show();
-      });
-    });
-  });
-</script>
+<script src="{% static 'pool_service/contacts_directory.js' %}?v=1" defer></script>
 
 </div><!-- /admin-desktop -->
 {% endblock %}

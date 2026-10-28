@@ -18,13 +18,38 @@ const {chromium}=require('playwright');
   page.setDefaultTimeout(10000);
   await page.goto(f.base+f.list);
   assert.deepEqual(await page.locator('#clients-tab button').allTextContents(),['Компании','Поставщики','Физ лица']);
-  assert.equal(await page.locator('[data-client-row=companies]:visible').count(),50);
+  assert.equal(await page.locator('[data-client-row=companies]').count(),50);
+  assert.equal(await page.locator('[data-client-row=companies]').filter({hasText:'Synthetic Company 52'}).count(),0);
   await page.locator('[data-contact-pager=companies]').getByRole('button',{name:'Далее'}).click();
-  assert.equal(await page.locator('[data-client-row=companies]:visible').count(),3);
-  await page.reload();assert.equal(await page.locator('[data-client-row=companies]:visible').count(),3);
+  await page.waitForFunction(()=>document.getElementById('contacts-directory').getAttribute('aria-busy')==='false');
+  assert.equal(await page.locator('[data-client-row=companies]').count(),3);
+  await page.reload();assert.equal(await page.locator('[data-client-row=companies]').count(),3);
   await page.locator('[data-client-search=companies]').fill('Linked Person');
   await page.waitForFunction(()=>document.querySelector('[data-client-search-count=companies]').textContent==='Найдено: 1');
   assert.equal(await page.locator('[data-client-row=companies]:visible').count(),1);
+  await page.goBack();
+  await page.waitForFunction(()=>document.getElementById('contacts-directory').getAttribute('aria-busy')==='false' && document.querySelectorAll('[data-client-row=companies]').length===50);
+  await page.goForward();
+  await page.waitForFunction(()=>document.getElementById('contacts-directory').getAttribute('aria-busy')==='false' && document.querySelectorAll('[data-client-row=companies]').length===1);
+  // Deliberately ignore abort for one old response: generation must still win.
+  await page.evaluate(()=>{
+    const original=window.fetch;window.__originalContactFetch=original;
+    window.fetch=async (url,options)=>{
+      if(new URL(url,location.href).searchParams.get('companies_q')==='Company 00'){
+        const response=await original(url,{...options,signal:undefined});window.__oldContactStarted=true;
+        await new Promise(resolve=>{window.__releaseOldContact=resolve;});window.__oldContactReleased=true;return response;
+      }
+      return original(url,options);
+    };
+  });
+  await page.locator('[data-client-search=companies]').fill('Company 00');
+  await page.waitForFunction(()=>window.__oldContactStarted===true);
+  await page.locator('[data-client-search=companies]').fill('Company 52');
+  await page.waitForFunction(()=>document.getElementById('contacts-directory').getAttribute('aria-busy')==='false' && document.querySelector('[data-client-search=companies]').value==='Company 52' && document.querySelectorAll('[data-client-row=companies]').length===1);
+  await page.evaluate(()=>window.__releaseOldContact());
+  await page.waitForFunction(()=>window.__oldContactReleased===true);
+  assert.ok((await page.locator('[data-client-row=companies]').textContent()).includes('Synthetic Company 52'));
+  await page.evaluate(()=>{window.fetch=window.__originalContactFetch;});
   await page.locator('#suppliers-tab').click();await page.locator('#suppliers-pane.active').waitFor();
   assert.ok((await page.locator('#suppliers-pane').textContent()).includes('Поставщики ещё не отмечены'));
   await page.goto(f.base+f.card);

@@ -22,10 +22,19 @@
 - Merge сохраняет исходный audit и переносит активную роль на target, объединяя
   совпадения. Запись merge с переносом роли требует actor; автоматической
   классификации, удаления history или изменений 1С нет.
-- Live search по полному уже разрешённому HTML-набору, debounce250ms;
-  клиентские страницы по50 строк после фильтрации. Query/tab/page сохраняются
-  в URL и восстанавливаются после reload. Это **не серверная пагинация**:
-  память/размер HTML для больших организаций остаются существующим ограничением.
+- Серверные поиск, счётчики и страницы по50 строк для каждой вкладки;
+  отдельная серверная страница сотрудников объектов. Фильтры прав и поиск
+  применяются до count/LIMIT/OFFSET. HTML содержит только текущие страницы,
+  без скрытого полного справочника или search_text. URL сохраняет tab/query/page.
+- Связи выбираются только для ID текущих страниц: до20 на карточку плюс один
+  индикатор продолжения через SQL Window. Все связи доступны через карточку;
+  поиск включает весь разрешённый набор связей, даже за пределами превью.
+- AJAX с debounce300ms, AbortController и generation guard, сохранением фокуса,
+  восстановлением back/forward и повтором после ошибки. Ответ private/no-store.
+- Поиск сохраняет национальные телефонные aliases 8…/7…/+7… без превращения
+  явного международного +8… в российский номер. Это только поиск, не matching
+  личности или автоматическое объединение. Пустой результат фильтра поставщиков
+  отличается от отсутствия назначенных ролей.
 
 ## Права и установленные риски
 
@@ -64,7 +73,7 @@ Preservation test сравнивает полные Client/Profile/Pool/ServiceT
 
 ## Gates и границы
 
-- Локальная regression: 80 tests, 78 PASS, 2 skipped (реальные row locks).
+- Предыдущая локальная regression: 80 tests, 78 PASS, 2 skipped (реальные row locks).
   Включены карточки, merge, CRM sync, shell, call privacy и новые security tests.
 - Реальный Chromium: supplier add/remove, tab/search/page/reload, связанное лицо,
   53 компании, viewport1440/390, dark; только синтетический локальный server.
@@ -78,3 +87,26 @@ Preservation test сравнивает полные Client/Profile/Pool/ServiceT
   MySQL отсутствует. Полный exact-head CI/MySQL/pinned Chromium остаются gates.
 - Независимое ревью требуется для финального diff; локальные логи в scratch,
   без production данных. Публикация/merge/deploy/production migration не разрешены.
+
+
+## Проверка актуального main для пагинации
+
+Повторный штатный fetch main подтвердил f65cea03c6f19f381b4514d7c3d1ea6fabfbafe4;
+AGENTS не изменился, main заканчивается миграцией0159. Номер0160 свободен;
+чужие изменения не перезаписывались. Миграция пагинацией не меняется.
+Новые regression проверяют 251 компанию/151 физлицо, count по всему scope,
+вторую страницу, поиск за пределами страницы/превью связей, foreign/merged,
+канонические номера, ограничение payload и отдельные страницы сотрудников.
+Browser дополнен реальными back/forward и delayed-response проверками.
+Полный MySQL/pinned CI по-прежнему не выполнялся локально; новые модули включены
+в явный MySQL gate. SQL regex/window требуют проверки на MySQL exact head.
+
+Финальная локальная квитанция серверной пагинации:
+- Общая regression89: 87 PASS, 2 MySQL-only skips;
+  `/workspace/scratch/contacts-server-final-regression.log`.
+- После последнего phone/Trim исправления: 11/11 PASS (9 boundary tests,
+  реальный Chromium, preservation migration), 11.774s;
+  `/workspace/scratch/contacts-pagination-terminal.log`.
+- Независимое ревью актуального diff: PASS; все замечания исправлены.
+- Django check, makemigrations consistency, JS syntax, diff check: PASS.
+- Полный exact-head CI/MySQL остаётся gate; внешняя публикация не выполнялась.
