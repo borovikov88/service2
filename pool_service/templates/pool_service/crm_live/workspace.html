@@ -5,7 +5,7 @@
 
 {% block extra_head %}
   <link rel="stylesheet" href="{% static 'pool_service/crm_live/workspace.css' %}?v=2">
-  <script src="{% static 'pool_service/crm_live/workspace.js' %}?v=3" defer></script>
+  <script src="{% static 'pool_service/crm_live/workspace.js' %}?v=4" defer></script>
 {% endblock %}
 
 {% block content %}
@@ -47,6 +47,7 @@
   <div class="crm-live-results">
     <div class="crm-live-attention" role="group" aria-label="Следующее действие">
       <button type="button" data-attention="all" aria-pressed="true">Все</button>
+      <button type="button" data-attention="today" aria-pressed="false">Сегодня</button>
       <button type="button" data-attention="overdue" aria-pressed="false">Просрочено</button>
       <button type="button" data-attention="missing" aria-pressed="false">Без следующего шага</button>
     </div>

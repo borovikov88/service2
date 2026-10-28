@@ -1,5 +1,34 @@
 # Bounded commercial deal card
 
+## Today next actions
+
+The existing attention filter also accepts `today`. It selects open,
+nonarchived deals whose readable current next task belongs to the current
+calendar day in `COMMUNICATION_TIME_ZONE` (Asia/Barnaul by default). A timed
+deadline uses its local date, including both earlier and later times today;
+date-only tasks use end_date, falling back to start_date. Thus an overdue
+deadline earlier today can occur in both Today and Overdue.
+
+For `waiting_control` tasks only a valid, aware `next_check_at` determines
+Today membership. Unknown/malformed checks do not fall back to an old
+appointment or calendar date. A subsequently edited end_date retains the
+existing precedence over a waiting marker. The UI labels the returned check
+as internal waiting control, not an agreed appointment. Existing Overdue and
+Missing behavior is unchanged.
+
+Classification and the existing `attention_total` count run before pagination,
+after ordinary business filters and current task/source privacy checks. The
+same 1000-candidate limit applies; hidden/inconsistent/terminal tasks are not
+Today entries. The filter survives reload and browser history, in both views.
+No schema, assignments, permissions, SLA or notifications change. This is a
+deal next-action filter, not the full cross-module Today dashboard in spec §11.
+
+Acceptance: `CommercialAttentionTests`, `test_crm_live_views`, existing Node
+operations tests and `CommercialCardBrowserTests.test_today_filter_count_waiting_reload_and_mobile`.
+The browser scenario runs in the existing CRM_CARD_BROWSER_TEST gate. A local
+preinstalled Chromium may be selected explicitly with CRM_TEST_CHROMIUM_PATH;
+CI retains Playwright's pinned browser by default.
+
 This change extends the existing commercial workspace and central command service.
 It does not change lead intake, qualification, cohorts, source cutoff/history,
 commercial grants, bootstrap flags or the legacy CrmItem writer.

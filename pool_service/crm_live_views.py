@@ -130,7 +130,8 @@ def _attention_ids(queryset, user, organization, attention):
     visible = {task.pk: task for task in readable_tasks(
         ServiceTask.objects.filter(pk__in=task_ids, organization=organization), user)}
     now = timezone.now()
-    today = now.astimezone(ZoneInfo(getattr(settings, "COMMUNICATION_TIME_ZONE", "Asia/Barnaul"))).date()
+    zone = ZoneInfo(getattr(settings, "COMMUNICATION_TIME_ZONE", "Asia/Barnaul"))
+    today = now.astimezone(zone).date()
     matched = []
     for deal in deals:
         task, invalid = pairs[deal.pk]
@@ -143,9 +144,17 @@ def _attention_ids(queryset, user, organization, attention):
             if not task or terminal:
                 matched.append(deal.pk)
         elif task and not terminal:
-            waiting, _next_check = waiting_control(task)
+            waiting, next_check = waiting_control(task)
             day = task.end_date or task.start_date
-            if not waiting and ((task.due_at and task.due_at < now)
+            if attention == "today":
+                # An internal waiting check is not an agreed appointment. Never
+                # fall back to an old date when its check is unknown.
+                instant = next_check if waiting else task.due_at
+                action_day = (instant.astimezone(zone).date()
+                    if instant else (None if waiting else day))
+                if action_day == today:
+                    matched.append(deal.pk)
+            elif not waiting and ((task.due_at and task.due_at < now)
                     or (not task.due_at and day and day < today)):
                 matched.append(deal.pk)
     return matched
@@ -191,12 +200,13 @@ def _serialize_deals(deals, user, organization, grant, *, detail=False):
             next_action = {"restricted": True}
         elif task:
             task = visible[task.pk]
-            waiting, _next_check = waiting_control(task)
+            waiting, next_check = waiting_control(task)
             next_action = {
                 "id": task.pk, "title": task.title,
                 "due_at": task.due_at.isoformat() if task.due_at else None,
                 "due_date": (task.end_date or task.start_date).isoformat() if not waiting else None,
                 "waiting": waiting,
+                "next_check_at": next_check.isoformat() if next_check else None,
                 "status": task.status, "status_label": task.get_status_display(),
                 "completed": bool(task.completed_at) or task.is_archived or task.status in (ServiceTask.STATUS_DONE, ServiceTask.STATUS_CANCELLED),
                 "url": reverse("task_edit", args=[task.pk]), "can_open": True,
@@ -290,7 +300,7 @@ def _workspace_data(request, organization):
             | (Q(pool_id__in=pools.filter(address__icontains=query).values("pk")) & Q(pool__client_id=F("client_id")))
             | (Q(client_object_id__in=owned.filter(Q(name__icontains=query) | Q(address__icontains=query)).values("pk")) & Q(client_object__client_id=F("client_id"))))
     attention = request.GET.get("attention", "all")
-    if attention not in {"all", "overdue", "missing"}:
+    if attention not in {"all", "today", "overdue", "missing"}:
         raise ValidationError("Некорректный фильтр следующего действия.")
     attention_total = None
     if attention != "all":

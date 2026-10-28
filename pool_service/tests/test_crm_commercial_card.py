@@ -491,7 +491,7 @@ class CommercialAttentionTests(PilotFixture, TestCase):
         other_user = get_user_model().objects.create_user('attention-hidden-author')
         unrelated_task.created_by = other_user; unrelated_task.primary_responsible = self.user
         unrelated_task.save(update_fields=['created_by', 'primary_responsible'])
-        for attention in ('overdue', 'missing'):
+        for attention in ('overdue', 'missing', 'today'):
             rows = self.client.get(self.url(attention)).json()
             self.assertEqual(rows['deals'], [])
             self.assertEqual(rows['attention_total'], 0)
@@ -528,11 +528,12 @@ class CommercialAttentionTests(PilotFixture, TestCase):
         self.assertEqual(len(selected.json()['deals']), 50)
         CrmDeal.objects.create(organization=self.org, pipeline=self.pipeline, stage=stage,
             client=self.client_record, manager=self.user, title='Synthetic sentinel attention')
-        with patch('pool_service.crm_live_views.readable_tasks') as reader:
-            refused = self.client.get(self.url('overdue'))
-            self.assertEqual(refused.status_code, 400)
-            self.assertIn('Уточните обычные фильтры', refused.json()['error'])
-            reader.assert_not_called()
+        for attention in ('overdue', 'today'):
+            with patch('pool_service.crm_live_views.readable_tasks') as reader:
+                refused = self.client.get(self.url(attention))
+                self.assertEqual(refused.status_code, 400)
+                self.assertIn('Уточните обычные фильтры', refused.json()['error'])
+                reader.assert_not_called()
         normal = self.client.get(self.url())
         self.assertEqual(normal.status_code, 200)
         self.assertEqual(len(normal.json()['deals']), 50)
@@ -559,3 +560,94 @@ class CommercialAttentionTests(PilotFixture, TestCase):
         self.assertEqual(self.client.get(workspace + '&pipeline=999999').status_code, 404)
         self.org.crm_v2_read = False; self.org.save(update_fields=['crm_v2_read'])
         self.assertEqual(self.client.get(workspace + '&outcome=bad').status_code, 403)
+
+    def test_today_uses_half_open_barnaul_day_and_keeps_overdue_overlap(self):
+        from datetime import datetime
+        now = datetime.fromisoformat('2026-10-27T18:00:00+00:00')  # Oct 28 locally
+        samples = [
+            ('2026-10-27T16:59:59.999999+00:00', False),
+            ('2026-10-27T17:00:00+00:00', True),
+            ('2026-10-28T16:59:59.999999+00:00', True),
+            ('2026-10-28T17:00:00+00:00', False),
+        ]
+        expected = []
+        for index, (stamp, included) in enumerate(samples):
+            deal, task = self.deal_task(index, due=datetime.fromisoformat(stamp))
+            if included:
+                expected.append(deal.pk)
+        with patch('pool_service.crm_live_views.timezone.now', return_value=now):
+            result = self.client.get(self.url('today')).json()
+            self.assertEqual([row['id'] for row in result['deals']], expected[::-1])
+            self.assertEqual(result['attention_total'], 2)
+            overdue = self.client.get(self.url('overdue')).json()
+            self.assertIn(expected[0], [row['id'] for row in overdue['deals']])
+
+    def test_today_date_only_end_date_and_waiting_check_precedence(self):
+        from datetime import datetime, timedelta
+        now = datetime.fromisoformat('2026-10-27T18:00:00+00:00')
+        day = datetime.fromisoformat('2026-10-28').date()
+        expected = []
+        for index, end in enumerate((None, day, day + timedelta(days=1))):
+            deal, task = self.deal_task(index)
+            task.due_at = None; task.start_date = day; task.end_date = end
+            task.save(update_fields=['due_at', 'start_date', 'end_date'])
+            if index < 2:
+                expected.append(deal.pk)
+        for index, check in enumerate((now.isoformat(), (now + timedelta(days=1)).isoformat(), None, 'bad', '2026-10-28T12:00:00')):
+            deal, task = self.deal_task(10 + index, due=now)
+            task.start_date = day; task.end_date = None; task.status = ServiceTask.STATUS_WAITING
+            task.payload_json = {'task_feedback': {'mode': 'waiting', 'next_check_at': check}}
+            task.save(update_fields=['start_date', 'end_date', 'status', 'payload_json'])
+            if index == 0:
+                expected.append(deal.pk)
+        edited, task = self.deal_task(20)
+        task.due_at = None; task.end_date = day; task.status = ServiceTask.STATUS_WAITING
+        task.payload_json = {'task_feedback': {'mode': 'waiting', 'next_check_at': (now + timedelta(days=1)).isoformat()}}
+        task.save(update_fields=['due_at', 'end_date', 'status', 'payload_json'])
+        expected.append(edited.pk)
+        with patch('pool_service.crm_live_views.timezone.now', return_value=now):
+            result = self.client.get(self.url('today')).json()
+        self.assertEqual([row['id'] for row in result['deals']], expected[::-1])
+        self.assertFalse(result['deals'][0]['next_action']['waiting'])
+        self.assertEqual(result['deals'][1]['next_action']['next_check_at'], now.isoformat())
+        self.assertTrue(result['deals'][1]['next_action']['waiting'])
+
+    def test_today_filters_before_pagination_and_counts_full_scope(self):
+        from datetime import timedelta
+        now = timezone.now()
+        today_ids = [self.deal_task(index, due=now)[0].pk for index in range(51)]
+        for index in range(51, 102):
+            self.deal_task(index, due=now + timedelta(days=2))
+        with patch('pool_service.crm_live_views.timezone.now', return_value=now):
+            first = self.client.get(self.url('today')).json()
+            second = self.client.get(self.url('today') + '&page=2').json()
+        self.assertEqual(first['attention_total'], 51)
+        self.assertEqual(len(first['deals']), 50)
+        self.assertTrue(first['has_more'])
+        self.assertEqual(second['attention_total'], 51)
+        self.assertEqual([row['id'] for row in second['deals']], today_ids[:1])
+        self.assertFalse(second['has_more'])
+
+    def test_today_excludes_terminal_closed_hidden_and_inconsistent_steps(self):
+        now = timezone.now()
+        other = get_user_model().objects.create_user('today-unrelated')
+        for index in range(6):
+            deal, task = self.deal_task(index, due=now)
+            if index == 0:
+                task.status = ServiceTask.STATUS_DONE
+            elif index == 1:
+                task.is_archived = True
+            elif index == 2:
+                task.completed_at = now
+            elif index == 3:
+                task.created_by = other
+                task.primary_responsible = self.user  # not direct private-task authority
+            elif index == 4:
+                task.client = Client.objects.create(organization=self.org, name='Different task client')
+            else:
+                deal.outcome = 'cancelled'; deal.close_reason = 'Synthetic'; deal.closed_at = now; deal.save()
+            task.save()
+        with patch('pool_service.crm_live_views.timezone.now', return_value=now):
+            result = self.client.get(self.url('today') + '&outcome=all').json()
+        self.assertEqual(result['deals'], [])
+        self.assertEqual(result['attention_total'], 0)
