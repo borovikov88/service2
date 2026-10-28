@@ -1,0 +1,105 @@
+name: Private CRM database backup only
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_main_sha:
+        description: Exact current main SHA already installed on the host
+        required: true
+        type: string
+      confirm_scope:
+        description: Confirm full default MySQL database, all organizations (not a single-org export)
+        required: true
+        type: choice
+        options:
+          - unconfirmed
+          - all-organizations-default-mysql
+        default: unconfirmed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: service2-private-db-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    if: github.repository == 'borovikov88/service2' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    environment: production
+    steps:
+      - name: Checkout exact main
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Confirm current main and full database scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+          CONFIRM_MAIN_SHA: ${{ inputs.confirm_main_sha }}
+          CONFIRM_SCOPE: ${{ inputs.confirm_scope }}
+        run: |
+          set -Eeuo pipefail
+          CURRENT_MAIN_SHA="$(curl --fail --silent --show-error --connect-timeout 10 --max-time 20 \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            'https://api.github.com/repos/borovikov88/service2/git/ref/heads/main' | jq -er '.object.sha')"
+          export CURRENT_MAIN_SHA
+          python3 .github/scripts/validate_crm_backup_request.py
+      - name: Configure existing pinned SSH identity
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_deploy
+          chmod 600 ~/.ssh/service2_deploy
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          ssh-keygen -y -f ~/.ssh/service2_deploy >/dev/null
+          PORT="${DEPLOY_PORT:-22}"
+          [[ "$PORT" =~ ^[0-9]+$ ]]
+          HOST_LOOKUP="$DEPLOY_HOST"
+          if [[ "$PORT" != "22" ]]; then HOST_LOOKUP="[$DEPLOY_HOST]:$PORT"; fi
+          ssh-keygen -F "$HOST_LOOKUP" -f ~/.ssh/known_hosts >/dev/null
+      - name: Create private backup without deploy or migration
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          backup_temp="$(mktemp -d "$RUNNER_TEMP/crm-backup-only.XXXXXX")"
+          trap 'rm -rf -- "$backup_temp"' EXIT
+          PORT="${DEPLOY_PORT:-22}"
+          [[ "$PORT" =~ ^[0-9]+$ ]]
+          test -n "$DEPLOY_HOST" && test -n "$DEPLOY_USER" && test -n "$DEPLOY_APP_PATH"
+          printf -v REMOTE_COMMAND 'bash -s -- %q %q' "$GITHUB_SHA" "$DEPLOY_APP_PATH"
+          backup_exit=0
+          ssh -i ~/.ssh/service2_deploy \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
+            -o StrictHostKeyChecking=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND" \
+            < .github/scripts/crm_pilot_db_backup_remote.sh \
+            >"$backup_temp/stdout" 2>"$backup_temp/stderr" || backup_exit=$?
+          if [[ "$backup_exit" != 0 ]]; then
+            python3 scripts/crm_pilot_db_backup_receipt.py --failure \
+              "$backup_temp/stdout" "$backup_temp/stderr" "$backup_exit" || exit 2
+            exit 2
+          fi
+          python3 scripts/crm_pilot_db_backup_receipt.py "$backup_temp/stdout" "$GITHUB_SHA"
+      - name: Remove runner SSH material
+        if: always()
+        run: rm -f -- ~/.ssh/service2_deploy ~/.ssh/known_hosts
