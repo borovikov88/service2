@@ -64,4 +64,3 @@ def merge_supplier_role(source, target, actor):
         if actor is None:
             raise ValidationError("An actor is required to preserve role audit")
         _apply(target, actor, True, source_client=source)
-
