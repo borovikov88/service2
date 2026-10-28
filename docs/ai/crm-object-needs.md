@@ -1,6 +1,6 @@
 # Object needs: stable source identity and explicit classification
 
-Package 1 only. WaterReading → existing supply ServiceTask/CrmItem remains the
+Source/review package. WaterReading → existing supply ServiceTask/CrmItem remains the
 operational identity. No commercial deal/lead, contract, delivery, stock issue,
 monthly calculation, finance or provider integration is created by the review.
 No grants, cohorts, activation/cutoff flags or Avito code are changed.
@@ -133,3 +133,34 @@ mixed classification, a committed/lost response replay with identical payload,
 search/URL, reload and mobile overflow with zero page errors. The dedicated
 browser env flag must be enabled in the mandatory CI browser step. Full exact
 head CI and independent review remain root's publication gates.
+
+## Selected positions to an own preparatory deal (draft, release on hold)
+
+Migration 0159 adds three empty additive tables: stable need-line identities,
+immutable review-line bindings and permanent deal consumption. There is no
+backfill, grant change or operational lifecycle write. Only explicitly selected
+`approval_required` positions can be reconciled and converted. One selected
+group creates one own preparatory deal through the existing commercial command
+and one real `crm_followup`; the supply request remains unchanged. Chemistry,
+included work, delivery, realization and payment remain separate.
+
+Reconciliation explicitly chooses an existing stable line ID or a new independent
+need. Known tokens cannot be reminted; consumed identities stay consumed after
+deal cancellation/archive and later source reviews. A new token explicitly
+declared new is a new audited identity, not semantic deduplication. Source/task
+changes require manual history inspection before a new operation. Exact replay
+after a newer review of the same unchanged source retains the original result,
+but current source/task versions, rights, ownership and graph guards still apply.
+
+Unknown HTTP outcomes freeze the exact request/key. HTTP 409 warns that an
+earlier operation may already have succeeded and requires history inspection.
+Team deal visibility does not grant source/provenance visibility. No private
+source description is automatically copied into the commercial title.
+
+Tests cover additive migration preservation, SQL uniqueness, rollback, current
+authority and replay. The MySQL workflow selects actual held-lock races; SQLite
+skips do not prove them. The existing mandatory object-needs Chromium scenario
+also converts a mixed review through Django, loses a committed response, retries
+the exact bytes and checks permanent history, one deal/next task, unchanged
+source, reload and mobile layout. Full exact-head CI and independent review are
+required; this draft does not authorize production migration, merge or deploy.
