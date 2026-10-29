@@ -153,6 +153,10 @@
     function sourceLine(host, source) {
       if (!source) return;
       host.append(el("p", "lead-source", [source.label, source.phone || source.contact_name].filter(Boolean).join(" · ")));
+      if (source.type === "call") host.append(el("p", "lead-source", (source.caller || "Кто звонил — неизвестно") + " → " + (source.callee || "Кому — неизвестно")));
+      if (source.contact?.url) {
+        const link = el("a", "lead-contact", source.contact.name); link.href = source.contact.url; host.append(link);
+      }
       const stamp = source.occurred_at || source.received_at;
       if (stamp) host.append(el("p", "lead-date", (source.occurred_at ? "Событие: " : "Получено: ") + dateText(stamp) + (!source.occurred_at ? " · время события неизвестно" : "")));
       if (source.employee) host.append(el("p", "lead-source", "Сотрудник звонка: " + source.employee));
@@ -165,7 +169,7 @@
       const row = el("article", "lead-row"); row.dataset.leadId = lead.id;
       const title = el("div"), middle = el("div"), next = el("div");
       title.append(button(displayTitle(lead), () => openLead(lead.id)), el("p", "", lead.client?.name || "Клиент пока не определён"));
-      middle.append(el("span", "lead-state", lead.status_label), el("p", "", lead.assignee?.name || "Не назначен"));
+      middle.append(el("span", "lead-state", lead.status_label), el("p", "", "Ответственный за лид: " + (lead.assignee?.name || "Не назначен")));
       if (lead.result) middle.append(el("p", "", lead.result_label));
       if (lead.intake_reason_label) middle.append(el("p", "", lead.intake_reason_label));
       if (lead.needs_review) middle.append(el("span", "lead-state review", "Новое обращение · нужен разбор"));
@@ -370,7 +374,7 @@
     function renderDetail(data) {
       const lead = data.lead; state.detail = data; content.replaceChildren();
       content.append(el("h2", "", displayTitle(lead))); content.firstChild.id = "lead-dialog-title";
-      content.append(el("div", "lead-summary", lead.status_label + (lead.result ? " · " + lead.result_label : "") + " · " + (lead.assignee?.name || "Не назначен")));
+      content.append(el("div", "lead-summary", lead.status_label + (lead.result ? " · " + lead.result_label : "") + " · " + ("Ответственный за лид: " + (lead.assignee?.name || "Не назначен"))));
       if (lead.intake_reason_label) content.append(el("p", "crm-live-muted", lead.intake_reason_label));
       if (lead.needs_review) content.append(el("p", "lead-conflict", lead.status === "closed" ? "После разбора поступило новое обращение. Проверьте исходную коммуникацию: продолжение текущей работы или новая потребность." : "Обращение требует разбора: уточните потребность и следующий шаг."));
       if (lead.can_acknowledge) {

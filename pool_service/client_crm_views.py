@@ -137,6 +137,23 @@ def client_detail(request, client_id):
             return HttpResponseForbidden()
         action = (request.POST.get("action") or "").strip()
 
+        if action in {"save_person_phone", "link_person_user"}:
+            from .services.contact_people import save_phone, link_person
+            from django.core.exceptions import PermissionDenied, ValidationError
+            from django.http import HttpResponse
+            try:
+                if action == "save_person_phone":
+                    save_phone(request.user, client.pk, value=request.POST.get("phone", ""),
+                        phone_type=request.POST.get("phone_type"), primary=request.POST.get("primary", "0"),
+                        revision=request.POST.get("contacts_revision"))
+                else:
+                    link_person(request.user, client.pk, request.POST.get("user_id"))
+            except PermissionDenied:
+                return HttpResponseForbidden()
+            except ValidationError:
+                return HttpResponse("Проверьте данные и обновите карточку перед повтором.", status=409)
+            return redirect(card_url(client.pk, "contacts"))
+
         if action == "save_profile":
             profile, _ = ClientCRMProfile.objects.get_or_create(client=client)
 
@@ -458,6 +475,8 @@ def client_detail(request, client_id):
         client_conversations = list(Conversation.objects.filter(client=client, organization_id=client.organization_id,
             connection__channel__organization_id=client.organization_id).select_related("connection__channel").order_by("-last_message_at")[:30])
 
+    from .services.contact_people import phone_revision
+    from .client_crm_models import OrganizationPersonLink
     return render(
         request,
         "pool_service/client_detail.html",
@@ -467,6 +486,8 @@ def client_detail(request, client_id):
             "profile": profile,
             "client_kind_label": client_kind_label,
             "phones": phones,
+            "phone_revision": phone_revision(client) if can_manage else "",
+            "person_user_link": OrganizationPersonLink.objects.filter(person=client, organization_id=client.organization_id).select_related("user", "employee").first() if can_manage else None,
             "emails": emails,
             "relationship_links": relationship_links,
             "relationship_mode": relationship_mode,

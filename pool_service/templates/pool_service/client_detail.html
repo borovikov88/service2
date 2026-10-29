@@ -194,22 +194,46 @@
       </div>
 
       <div class="tab-pane fade{% if card_tab == 'contacts' %} show active{% endif %}" id="client-contacts" role="tabpanel">
+        {% if can_manage and client.client_type == 'private' %}
+        <div class="border rounded-3 p-3 mb-3">
+          {% if person_user_link %}<p>Пользователь: {{ person_user_link.user.get_full_name|default:person_user_link.user.username }}</p>
+          {% else %}<form method="post" data-person-user-form>{% csrf_token %}<input type="hidden" name="action" value="link_person_user">
+          <label class="form-label">Связать с существующим пользователем организации</label>
+          <select class="form-select" name="user_id" required><option value="">Выберите пользователя</option>{% for option in staff_options %}<option value="{{ option.pk }}">{{ option.get_full_name|default:option.username }}</option>{% endfor %}</select>
+          <button class="btn btn-outline-primary btn-sm" type="submit">Подтвердить связь</button></form>{% endif %}
+          <small class="text-muted">Связь не меняет права доступа и не объединяет карточки.</small>
+        </div>
+        {% endif %}
+
         <div class="row g-4">
           <div class="col-12 col-lg-6">
             <div class="border rounded-3 p-4 h-100">
               <h6 class="fw-bold mb-3">Телефоны</h6>
+              {% if can_manage and client.client_type == 'private' %}
+              <form method="post" class="mb-3" data-person-phone-form>{% csrf_token %}
+                <input type="hidden" name="action" value="save_person_phone">
+                <input type="hidden" name="contacts_revision" value="{{ phone_revision }}">
+                <label class="form-label">Добавить номер или изменить тип существующего</label>
+                <input class="form-control" type="tel" name="phone" required maxlength="40" aria-label="Номер телефона">
+                <select class="form-select" name="phone_type" aria-label="Тип телефона"><option value="work">Рабочий</option><option value="personal">Личный</option><option value="other" selected>Другой</option></select>
+                <label><input type="checkbox" name="primary" value="1"> Основной номер</label>
+                <p class="text-muted small">Тип номера не отключает сохранение звонков.</p>
+                <button class="btn btn-outline-primary btn-sm" type="submit">Сохранить номер</button>
+              </form>
+              {% endif %}
+
               <div class="d-grid gap-2">
                 {% if client.phone %}
                   <div class="d-flex justify-content-between gap-2 border rounded-2 px-3 py-2">
                     <a href="tel:{{ client.phone }}" class="text-decoration-none">{{ client.phone_display }}</a>
-                    <span class="badge text-bg-secondary">Основной</span>
+                    <span class="badge text-bg-secondary">Основной</span>{% for item in phones %}{% if item.value == client.phone %}<span class="small">{{ item.get_phone_type_display }}</span>{% endif %}{% endfor %}
                   </div>
                 {% endif %}
                 {% for contact in phones %}
                   {% if contact.value != client.phone %}
                     <div class="d-flex justify-content-between gap-2 border rounded-2 px-3 py-2">
                       <a href="tel:{{ contact.value }}" class="text-decoration-none">{{ contact.display_value }}</a>
-                      <span class="text-muted small">{{ contact.label|default:"1С" }}</span>
+                      <span class="text-muted small">{{ contact.get_phone_type_display }} · {{ contact.label|default:"" }}</span>
                     </div>
                   {% endif %}
                 {% empty %}

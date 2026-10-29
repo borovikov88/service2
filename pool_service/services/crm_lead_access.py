@@ -11,6 +11,7 @@ from pool_service.call_processing_models import CallPrivateNumber
 from pool_service.communication_models import ChannelConnection, CommunicationAccess, ConversationMessage, PhoneCall
 from pool_service.crm_commercial_models import CrmAccess, CrmLead, CrmLeadSource
 from pool_service.models import Employee, Organization, OrganizationAccess
+from pool_service.client_queries import readable_clients
 from pool_service.services.call_privacy import private_call_ids
 
 
@@ -198,34 +199,49 @@ def source_metadata_many(*, user, organization, leads, limit=1):
         .filter(_source_rank__lte=limit).order_by("-inbox__received_at", "-pk"))
     messages = {row.pk: row for row in ConversationMessage.objects.filter(
         pk__in=[row.inbox.source_id for row in rows if row.inbox.source_type == "message"])
-        .select_related("conversation").only("pk", "sender_name", "conversation_id", "conversation__uuid")}
+        .select_related("conversation").only("pk", "sender_name", "conversation_id", "conversation__uuid", "conversation__client_id", "conversation__provider_phone", "conversation__participant_phone")}
     calls = {row.pk: row for row in PhoneCall.objects.filter(organization=organization,
         pk__in=[row.inbox.source_id for row in rows if row.inbox.source_type == "call"])
-        .select_related("employee", "employee_profile")}
+        .select_related("employee", "employee_profile").only("pk", "organization_id", "client_id", "employee_id", "peer_employee_id",
+            "provider_user", "provider_extension", "peer_provider_user", "peer_provider_extension", "phone_number", "direction",
+            "employee_profile_id", "employee_profile__display_name", "employee_profile__organization_id",
+            "employee__username", "employee__first_name", "employee__last_name")}
+    employee_ids = set(OrganizationAccess.objects.filter(organization=organization,
+        user_id__in=[call.employee_id for call in calls.values()]).values_list("user_id", flat=True))
     private_ids = private_call_ids(calls.values())
+    contact_ids = {call.client_id for call in calls.values()} | {msg.conversation.client_id for msg in messages.values()}
+    contacts = {item.pk: item for item in readable_clients(user).filter(organization=organization, pk__in=contact_ids)}
     grouped = {}
     for row in rows:
         event = row.inbox
         metadata = {"id": row.pk, "type": event.source_type, "provider": event.provider_kind,
             "occurred_at": event.occurred_at.isoformat() if event.occurred_at else None,
             "received_at": event.received_at.isoformat(), "historical": event.historical,
-            "phone": "", "contact_name": "", "direction": "", "employee": ""}
+            "phone": "", "contact_name": "", "direction": "", "employee": "", "contact": None, "caller": "", "callee": ""}
         if event.source_type == "message":
             message = messages.get(event.source_id)
             if not message:
                 continue
-            metadata.update(url=reverse("communications_conversations") + "?" + urlencode({"conversation": str(message.conversation.uuid), "org_id": organization.pk}),
+            contact = contacts.get(message.conversation.client_id)
+            metadata.update(phone=message.conversation.provider_phone or message.conversation.participant_phone or "", url=reverse("communications_conversations") + "?" + urlencode({"conversation": str(message.conversation.uuid), "org_id": organization.pk}),
                 label="Сообщение Авито" if event.provider_kind == "avito" else "Обращение с сайта",
                 contact_name=message.sender_name or "", direction="in")
         else:
             call = calls.get(event.source_id)
             if not call or call.pk in private_ids:
                 continue
-            metadata.update(url=reverse("communications_calls") + "?" + urlencode({"call_id": call.pk, "org_id": organization.pk}),
+            contact = contacts.get(call.client_id)
+            metadata.update(contact_name=contact.name if contact else "", url=reverse("communications_calls") + "?" + urlencode({"call_id": call.pk, "org_id": organization.pk}),
                 label="Входящий звонок" if call.direction == "in" else "Исходящий звонок" if call.direction == "out" else "Звонок",
                 phone=call.phone_number or "", direction=call.direction, call_id=call.pk,
-                employee=(call.employee_profile.display_name if call.employee_profile_id else
-                    (call.employee.get_full_name() or call.employee.username) if call.employee_id else ""))
+                employee=(call.employee_profile.display_name if call.employee_profile_id and call.employee_profile.organization_id == organization.pk else
+                    (call.employee.get_full_name() or call.employee.username) if call.employee_id in employee_ids else ""))
+        if contact:
+            metadata["contact"] = {"id": contact.pk, "name": contact.name, "url": reverse("client_detail", args=[contact.pk])}
+        if event.source_type == "call":
+            peer = " · ".join(value for value in (contact.name if contact else "Контакт не определён", metadata["phone"]) if value)
+            staff = metadata["employee"] or "Сотрудник не определён"
+            metadata["caller"], metadata["callee"] = (peer, staff) if metadata["direction"] == "in" else (staff, peer)
         grouped.setdefault(row.lead_id, []).append(metadata)
     result = {}
     for lead in leads:

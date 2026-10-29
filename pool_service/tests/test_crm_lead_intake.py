@@ -323,3 +323,21 @@ class LeadIntakeTests(Fixture, TestCase):
         self.assertEqual(self.client.get(url + '?org_id=' + str(second.pk) + '&org_id=' + str(self.org.pk)).status_code, 403)
         CommunicationAccess.objects.filter(user=self.user, organization=second).update(can_listen_calls=False)
         self.assertEqual(self.client.get(url + '?org_id=' + str(second.pk)).status_code, 403)
+
+    def test_source_contact_link_and_employee_labels_respect_current_org(self):
+        from pool_service.models import Client
+        call = self.mapped_call(); self.deliver('call')
+        lead = CrmLead.objects.get()
+        peer = Client.objects.create(organization=self.org, name='Synthetic actual caller', client_type='private')
+        call.client = peer; call.save(update_fields=['client'])
+        source = source_metadata(user=self.user, organization=self.org, lead=lead)[0]
+        self.assertEqual(source['contact']['url'], reverse('client_detail',args=[peer.pk]))
+        self.assertIn(call.phone_number,source['caller'])
+        self.assertEqual(source['callee'],self.employee.display_name)
+        foreign_org=Organization.objects.create(name='Foreign')
+        foreign_employee=Employee.objects.create(organization=foreign_org,display_name='Foreign hidden employee')
+        foreign=Client.objects.create(organization=foreign_org,name='Foreign hidden peer',client_type='private')
+        PhoneCall.objects.filter(pk=call.pk).update(client=foreign,employee_profile=foreign_employee)
+        source = source_metadata(user=self.user, organization=self.org, lead=lead)[0]
+        self.assertIsNone(source['contact'])
+        self.assertNotIn('Foreign hidden',str(source))

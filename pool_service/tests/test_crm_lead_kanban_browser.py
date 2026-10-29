@@ -96,7 +96,9 @@ class LeadSourceBrowserTests(InboxFixture, StaticLiveServerTestCase):
                 COMMUNICATION_RECORDING_DOWNLOAD_INLINE=False, COMMUNICATION_CLIENT_ENRICHMENT_ENABLED=False):
             call = self.mapped_call(); self.deliver('call')
             lead = CrmLead.objects.get(); lead.client = None; lead.save()
-            call.client = None; call.save(update_fields=['client'])
+            from pool_service.models import Client
+            peer = Client.objects.create(organization=self.org, name="Synthetic known caller", client_type="private")
+            call.client = peer; call.save(update_fields=['client'])
             sound = BytesIO()
             with wave.open(sound, 'wb') as wav:
                 wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(8000); wav.writeframes(b'\0\0' * 2000)
@@ -109,7 +111,7 @@ class LeadSourceBrowserTests(InboxFixture, StaticLiveServerTestCase):
             message_lead = CrmLead.objects.exclude(pk=lead.pk).get()
             self.client.force_login(self.user)
             fixture = dict(base=self.live_server_url, workspace=reverse('crm_live_leads') + '?org_id=' + str(self.org.pk),
-                leadId=lead.pk, messageLeadId=message_lead.pk, phone=call.phone_number, employee=self.employee.display_name,
+                leadId=lead.pk, messageLeadId=message_lead.pk, phone=call.phone_number, employee=self.employee.display_name, contactUrl=reverse("client_detail", args=[peer.pk]),
                 command=reverse('crm_live_lead_command'), data=reverse('crm_live_lead_data'), recording=reverse('communication_call_recording', args=[call.pk]),
                 sessionCookie=self.client.cookies[settings.SESSION_COOKIE_NAME].value, sessionCookieName=settings.SESSION_COOKIE_NAME)
             code, output = _bounded_browser_process(
