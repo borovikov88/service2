@@ -2,7 +2,9 @@
 """Private, bounded MySQL backup prerequisite. No SQL or credentials reach stdout."""
 import argparse
 import contextlib
+import ctypes
 import datetime as dt
+import errno
 import fcntl
 import gzip
 import hashlib
@@ -39,7 +41,8 @@ REASONS = frozenset(("unspecified", "lock_directory_path", "lock_directory_owner
                      "native_help_size", "private_path", "private_parent_type", "private_parent_mode",
                      "private_owner_type", "private_mode", "client_engine", "client_database",
                      "client_credentials", "client_options", "client_mirror", "client_port", "app_path",
-                     "database_timeout", "heartbeat_session", "heartbeat_autocommit", "heartbeat_wait_timeout"))
+                     "database_timeout", "heartbeat_session", "heartbeat_autocommit", "heartbeat_wait_timeout",
+                     "native_parent_guard", "native_process_threads"))
 
 
 class Blocked(Exception):
@@ -333,13 +336,44 @@ class MetadataHeartbeat:
         return max(0, self.next_at - time.monotonic())
 
 
+def native_parent_death_guard(executable):
+    # This CLI is single-threaded; preexec callbacks are not safe as a generic
+    # threaded API. Reject that use before fork. Load libc in the parent.
+    require(sys.platform == "linux", "native_parent_guard")
+    require(len(list(Path("/proc/self/task").iterdir())) == 1, "native_process_threads")
+    require(not Path(executable).stat().st_mode & (stat.S_ISUID | stat.S_ISGID), "native_parent_guard")
+    # Privileged exec also clears PDEATHSIG for file-capability executables.
+    # Only an explicitly absent attribute is accepted; never infer from errors.
+    try:
+        os.getxattr(executable, "security.capability")
+    except OSError as error:
+        if error.errno != errno.ENODATA:
+            raise Blocked("native_parent_guard") from error
+    else:
+        raise Blocked("native_parent_guard")
+    libc = ctypes.CDLL(None, use_errno=True)
+    prctl = libc.prctl
+    prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+    prctl.restype = ctypes.c_int
+    parent = os.getpid()
+    def protect():
+        # PR_SET_PDEATHSIG=1, Linux UAPI. Kill the native process even if the
+        # helper is SIGKILLed by the outer watchdog; preserve normal cleanup.
+        if prctl(1, signal.SIGKILL, 0, 0, 0) != 0:
+            os._exit(127)
+        if os.getppid() != parent:  # Close the death-before-prctl race.
+            os.kill(os.getpid(), signal.SIGKILL)
+    return protect
+
+
 def dump_to_gzip(command, destination, expected, deadline, heartbeat=None):
     coverage = DumpCoverage(expected)
     # Never forward inherited app secrets or MYSQL_PWD/MYSQL_* configuration.
     child_env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
                  "MYSQL_TEST_LOGIN_FILE": "/dev/null"}
+    guard = native_parent_death_guard(command[0])
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                               env=child_env, start_new_session=True)
+                               env=child_env, start_new_session=True, preexec_fn=guard)
     try:
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ)

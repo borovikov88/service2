@@ -83,6 +83,9 @@ on:
       - ".github/scripts/crm_pilot_db_backup_remote.sh"
       - ".github/tests/test_crm_pilot_db_backup.py"
       - "scripts/crm_pilot_db_backup.py"
+      - "scripts/crm_pre_migrate_backup.py"
+      - ".github/tests/test_crm_pre_migrate_backup.py"
+      - "update.sh"
       - "scripts/crm_pilot_db_backup_receipt.py"
   workflow_dispatch:
 
@@ -92,7 +95,7 @@ permissions:
 jobs:
   mysql-foundation:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     services:
       mysql:
         image: mysql:8.4
