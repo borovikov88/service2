@@ -232,6 +232,7 @@ def _serialize_deals(deals, user, organization, grant, *, detail=False):
                 and not (next_action and (next_action.get("restricted") or next_action.get("waiting"))),
             "client": {"id": deal.client_id, "name": deal.client.name,
                 "url": reverse("client_detail", args=[deal.client_id]) if client_card_access else ""} if deal.client_id else None,
+            "service_documents_url": reverse("crm_service_bindings",args=[deal.pk])+"?org_id="+str(organization.pk) if detail and deal.pipeline.code=="service" and writable and _write_capability(grant, organization, "edit_own_deals") else "",
             "manager": {"id": deal.manager_id, "name": _label(deal.manager)},
             "can_edit": writable and _write_capability(grant, organization, "edit_own_deals"),
             "can_transition": writable and _write_capability(grant, organization, "transition_own_deals")

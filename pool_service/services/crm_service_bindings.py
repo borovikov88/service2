@@ -187,3 +187,29 @@ def observe_document(*, actor, organization_id, deal_id, snapshot):
     actor,org,deal=_scope(actor,organization_id,deal_id,snapshot)
     result=_observe_existing(actor,org,deal,snapshot)
     return result or {'changed':False}
+
+
+@transaction.atomic
+def invalidate_scope_mismatch(*,actor,organization_id,deal_id,source_id,document_ref,
+                              organization_ref,client_ref,contract_ref,read_started_at):
+    """Trusted adapter error only, never a browser flag or transport failure.
+
+    Match the previously bound locator exactly. Do not retain mismatched foreign
+    contents. A read begun before a newer observation cannot invalidate that read.
+    """
+    from pool_service.onec_diagnostic import can_access_diagnostic_mcp
+    org=_locked_organization('default',organization_id)
+    actor=_authorize('default',actor.pk,org,'edit_own_deals')
+    deal=_owned_deal('default',actor.pk,org.pk,deal_id)
+    if not company_has_access(org) or not can_view_gross_profit(actor,org) or not can_access_diagnostic_mcp(actor,org): raise PermissionDenied
+    doc=ServiceBoundDocument.objects.select_for_update().filter(contract__deal=deal,
+        contract__source_id=source_id,document_ref=document_ref,contract__external_organization=organization_ref,
+        contract__external_client=client_ref,contract__contract_ref=contract_ref).first()
+    if not doc or parse_datetime(doc.current_snapshot['observed_at'])>read_started_at:
+        return False
+    if doc.status=='requires_reconciliation' and doc.current_snapshot.get('invalid_scope'): return True
+    doc.revision+=1;doc.status='requires_reconciliation'
+    doc.current_snapshot={'invalid_scope':True,'observed_at':timezone.now().isoformat()};doc.save()
+    ServiceBindingEvent.objects.create(organization=org,document=doc,operation_key=f'source-{doc.pk}-{doc.revision}',
+        payload_hash=_hash(doc.current_snapshot),kind='source_scope_mismatch',evidence=doc.current_snapshot,actor=actor)
+    return True

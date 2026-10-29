@@ -688,6 +688,8 @@
       if (href) { const link = element("a", "", deal.client.name); link.href = href; client.append(link); }
       else client.textContent = deal.client?.name || "Клиент не указан";
       dialogContent.append(client);
+      const serviceUrl = safeLink(deal.service_documents_url);
+      if (serviceUrl) { const link = element("a", "btn btn-outline-primary", "Документы обслуживания и периоды"); link.href = serviceUrl; dialogContent.append(link); }
       const meta = element("div", "crm-live-detail-meta");
       meta.append(element("span", "crm-live-pill", pipelineFor(deal.pipeline_id)?.name || ""), element("span", "crm-live-pill", stageFor(deal)?.name || ""), element("span", "crm-live-pill", deal.manager?.name || "Без ответственного"));
       dialogContent.append(meta);
