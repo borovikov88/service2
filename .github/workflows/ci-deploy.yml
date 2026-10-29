@@ -71,6 +71,7 @@ jobs:
         run: |
           python -m unittest discover -s .github/tests -p test_reuse_pr_tests.py -v
           python -m unittest discover -s .github/tests -p test_crm_pilot_db_backup.py -v
+          python -m unittest discover -s .github/tests -p test_crm_pre_migrate_backup.py -v
           python -m unittest discover -s .github/tests -p test_crm_approved_access.py -v
           python -m unittest discover -s .github/tests -p test_crm_lead_intake_ops.py -v
       - name: Verify equivalent successful PR tests

@@ -726,6 +726,18 @@ class NativeMySQLTests(unittest.TestCase):
                                  '; supports_no_login_paths=' + str(supports_no_login).lower())
                 proof = R.normalize(result.stdout, sha)
                 self.assertTrue(proof['integrity_verified']); self.assertFalse(proof['restore_verified'])
+                # Exercise the new gate with native dump and inherited EX locks,
+                # using only this existing disposable CI database/reader.
+                gate = subprocess.run(['bash', '-c',
+                    'set -e; umask 077; exec 8>"$1/service2-call-ai.lock"; flock -n 8; '
+                    'exec 9>"$1/service2-deploy.lock"; flock -n 9; exec "$2" "$3" --expected-sha "$4"',
+                    'synthetic-gate', str(root / 'tmp'), sys.executable,
+                    str(ROOT / 'scripts/crm_pre_migrate_backup.py'), sha], cwd=app,
+                    capture_output=True, text=True, timeout=340,
+                    env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
+                self.assertEqual(gate.returncode, 0, 'pre-migrate native gate failed; raw output suppressed')
+                self.assertIn('CRM_PRE_MIGRATE_BACKUP_VERIFIED_V1', gate.stdout)
+                proof = R.normalize(gate.stdout, sha)
                 archive = root / 'tmp' / 'service2-crm-backups' / proof['backup_file']
                 sql = gzip.decompress(archive.read_bytes())
                 self.assertIn('Тест CRM Ω'.encode(), sql)
