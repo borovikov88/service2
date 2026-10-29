@@ -316,7 +316,10 @@ class LeadIntakeTests(Fixture, TestCase):
         # Mock file IO only; real scope and listen guards run on each request.
         with patch('pool_service.communication_views.os.path.getsize', return_value=4), patch('builtins.open', return_value=BytesIO(b'RIFF')):
             response = self.client.get(url + '?org_id=' + str(second.pk))
-            self.assertEqual(response.status_code, 200); response.close()
+            self.assertEqual(response.status_code, 200)
+            # Consume through Django test client's closing iterator, which keeps
+            # request_finished from closing the enclosing TestCase connection.
+            self.assertEqual(b''.join(response.streaming_content), b'RIFF')
         self.assertEqual(self.client.get(url + '?org_id=' + str(self.org.pk)).status_code, 404)
         foreign = Organization.objects.create(name='Synthetic inaccessible organization')
         self.assertEqual(self.client.get(url + '?org_id=' + str(foreign.pk)).status_code, 403)
