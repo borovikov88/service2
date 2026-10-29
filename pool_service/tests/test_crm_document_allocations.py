@@ -56,3 +56,20 @@ class DocumentAllocationTests(SimpleTestCase):
         self.assertEqual(self.proposal(snapshot).proposal_hash,
             self.proposal(snapshot,[replace(item,quantity=D('0.50'),amount=D('60.00'))]).proposal_hash)
         self.assertIn('durable_consumption_unavailable',self.proposal(snapshot).blockers)
+
+    def test_decimal_context_cannot_round_away_overallocation(self):
+        from decimal import localcontext
+        snapshot=self.read(); item=self.proposal(snapshot).allocations[0]
+        for precision in (2, 28, 50):
+            with localcontext() as ctx:
+                ctx.prec=precision
+                with self.assertRaises(ValidationError):
+                    self.proposal(snapshot,[replace(item,amount=D('120.000000000000001'))])
+                with self.assertRaises(ValidationError):
+                    self.proposal(snapshot,[replace(item,amount=D('60.000000000000001')),
+                        replace(item,month=date(2026,2,1),amount=D('60'))])
+                a=self.proposal(snapshot,[replace(item,amount=D('60.000000000000001'))])
+                b=self.proposal(snapshot,[replace(item,amount=D('60'))])
+                self.assertNotEqual(a.proposal_hash,b.proposal_hash)
+        with self.assertRaises(ValidationError):
+            self.proposal(snapshot,[replace(item,amount=D('120.00000000000000000000000001'))])

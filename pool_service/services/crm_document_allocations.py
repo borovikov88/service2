@@ -8,6 +8,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from fractions import Fraction
 import hashlib
 import json
 
@@ -47,7 +48,7 @@ def preview_allocations(snapshot, *, expected_snapshot_hash, allocations):
     if type(allocations) not in (list, tuple) or not 1 <= len(allocations) <= 200:
         raise ValidationError('Select 1–200 explicit allocations.')
     lines = {line.number: line for line in snapshot.lines}
-    seen = set(); totals = defaultdict(lambda: [Decimal(0), Decimal(0)])
+    seen = set(); totals = defaultdict(lambda: [Fraction(0), Fraction(0)])
     for item in allocations:
         if type(item) is not Allocation or type(item.line_number) is not int:
             raise ValidationError('Invalid allocation.')
@@ -61,18 +62,19 @@ def preview_allocations(snapshot, *, expected_snapshot_hash, allocations):
             raise ValidationError('Duplicate line/month allocation.')
         seen.add(key)
         for value in (item.quantity, item.amount):
-            if type(value) is not Decimal or not value.is_finite() or value <= 0:
+            if (type(value) is not Decimal or not value.is_finite() or value <= 0
+                    or len(value.as_tuple().digits) > 38 or not -18 <= value.as_tuple().exponent <= 18):
                 raise ValidationError('Positive finite decimal quantity and amount required.')
-        totals[item.line_number][0] += item.quantity
-        totals[item.line_number][1] += item.amount
+        totals[item.line_number][0] += Fraction(item.quantity)
+        totals[item.line_number][1] += Fraction(item.amount)
         if totals[item.line_number][0] > line.quantity or totals[item.line_number][1] > line.total:
             raise ValidationError('Allocation exceeds the source line; corrections require review.')
     ordered = tuple(sorted(allocations, key=lambda item: (item.line_number, item.month)))
-    # Normalize decimal scale so equivalent proposals have the same local digest.
+    # Exact rational canonicalization is independent of Decimal context/scale.
     payload = [snapshot.source_id, snapshot.document_ref, snapshot.organization_ref,
         snapshot.client_ref, snapshot.contract_ref, snapshot.snapshot_hash,
         [[item.line_number, item.content_hash, item.month.isoformat(),
-          str(item.quantity.normalize()), str(item.amount.normalize())] for item in ordered]]
+          str(Fraction(item.quantity)), str(Fraction(item.amount))] for item in ordered]]
     digest = hashlib.sha256(json.dumps(payload, separators=(',', ':')).encode()).hexdigest()
     blockers = set(snapshot.warnings) | {'deal_contract_object_scope_unverified',
         'service_line_scope_unverified', 'durable_consumption_unavailable',
