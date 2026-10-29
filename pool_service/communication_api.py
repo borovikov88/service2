@@ -662,6 +662,10 @@ def megafon_webhook(request, public_id):
             )
             .first()
         )
+        from .services.owner_call_privacy import exclude_before_save
+        if exclude_before_save(connection=telephony, provider_user=provider_user, extension=extension,
+                peer_phone=phone, occurred_at=started_at if has_provider_start else None, existing=existing_call):
+            return JsonResponse({"accepted": True, "ignored": True, "reason": "private_call"})
         has_stored_provider_identity = existing_call and (
             existing_call.employee_profile_id
             or existing_call.provider_extension

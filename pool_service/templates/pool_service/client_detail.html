@@ -221,6 +221,17 @@
                 <button class="btn btn-outline-primary btn-sm" type="submit">Сохранить номер</button>
               </form>
               {% endif %}
+              {% if personal_call_state %}
+              <form method="post" class="mb-3" data-owner-personal-peer>{% csrf_token %}
+                <input type="hidden" name="action" value="set_personal_call_peer">
+                <input type="hidden" name="privacy_revision" value="{{ personal_call_state.revision }}">
+                <input type="hidden" name="enabled" value="{% if personal_call_state.marked %}0{% else %}1{% endif %}">
+                <p>Личный собеседник только для моих звонков. Разговоры сотрудников остаются рабочими.</p>
+                {% if personal_call_state.partial %}<p>Отмечены не все текущие номера. Проверьте новые номера перед подтверждением.</p>{% endif %}
+                <button class="btn btn-outline-secondary btn-sm" {% if not personal_call_state.keys %}disabled{% endif %}>{% if personal_call_state.marked %}Снять отметку для моих звонков{% else %}Отметить текущие номера личными для моих звонков{% endif %}</button>
+                <small>Для исключения до сохранения нужна подтверждённая привязка вашего пользователя телефонии. Настройки записи оператора и общие сообщения не меняются.</small>
+              </form>
+              {% endif %}
 
               <div class="d-grid gap-2">
                 {% if client.phone %}

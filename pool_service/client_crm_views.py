@@ -154,6 +154,18 @@ def client_detail(request, client_id):
                 return HttpResponse("Проверьте данные и обновите карточку перед повтором.", status=409)
             return redirect(card_url(client.pk, "contacts"))
 
+        if action == "set_personal_call_peer":
+            from .services.owner_call_privacy import set_personal_peer
+            from django.core.exceptions import PermissionDenied, ValidationError
+            from django.http import HttpResponse
+            try:
+                set_personal_peer(request.user, client.pk, request.POST.get("enabled"), request.POST.get("privacy_revision"))
+            except PermissionDenied:
+                return HttpResponseForbidden()
+            except ValidationError:
+                return HttpResponse("Обновите карточку и проверьте номера.", status=409)
+            return redirect(card_url(client.pk, "contacts"))
+
         if action == "save_profile":
             profile, _ = ClientCRMProfile.objects.get_or_create(client=client)
 
@@ -477,6 +489,9 @@ def client_detail(request, client_id):
 
     from .services.contact_people import phone_revision
     from .client_crm_models import OrganizationPersonLink
+    from .services.call_processing_settings import settings_allowed
+    from .services.owner_call_privacy import contact_state
+    personal_call_state = contact_state(request.user, client) if client.client_type == "private" and settings_allowed(request.user, client.organization) else None
     return render(
         request,
         "pool_service/client_detail.html",
@@ -488,6 +503,7 @@ def client_detail(request, client_id):
             "phones": phones,
             "phone_revision": phone_revision(client) if can_manage else "",
             "person_user_link": OrganizationPersonLink.objects.filter(person=client, organization_id=client.organization_id).select_related("user", "employee").first() if can_manage else None,
+            "personal_call_state": personal_call_state,
             "emails": emails,
             "relationship_links": relationship_links,
             "relationship_mode": relationship_mode,
