@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import ctypes
 import datetime as dt
+import errno
 import fcntl
 import gzip
 import hashlib
@@ -341,6 +342,15 @@ def native_parent_death_guard(executable):
     require(sys.platform == "linux", "native_parent_guard")
     require(len(list(Path("/proc/self/task").iterdir())) == 1, "native_process_threads")
     require(not Path(executable).stat().st_mode & (stat.S_ISUID | stat.S_ISGID), "native_parent_guard")
+    # Privileged exec also clears PDEATHSIG for file-capability executables.
+    # Only an explicitly absent attribute is accepted; never infer from errors.
+    try:
+        os.getxattr(executable, "security.capability")
+    except OSError as error:
+        if error.errno != errno.ENODATA:
+            raise Blocked("native_parent_guard") from error
+    else:
+        raise Blocked("native_parent_guard")
     libc = ctypes.CDLL(None, use_errno=True)
     prctl = libc.prctl
     prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]

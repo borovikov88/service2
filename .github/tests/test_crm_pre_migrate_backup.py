@@ -205,4 +205,13 @@ class GateTests(unittest.TestCase):
                 B.dump_to_gzip([sys.executable,'-c',code],self.root/'failed.partial',{},time.monotonic()+2)
         self.assertFalse(marker.exists())
 
+    def test_file_capabilities_or_unreadable_attributes_reject_before_spawn(self):
+        import errno
+        for outcome in (b'capability',b'',OSError(errno.EACCES,'private')):
+            kwargs={'side_effect':outcome} if isinstance(outcome,Exception) else {'return_value':outcome}
+            with self.subTest(outcome=type(outcome).__name__), patch.object(B.os,'getxattr',**kwargs),patch.object(B.subprocess,'Popen') as spawn:
+                with self.assertRaisesRegex(B.Blocked,'native_parent_guard'):
+                    B.dump_to_gzip([sys.executable,'-c','pass'],self.root/'must-not-open',{},time.monotonic()+2)
+                spawn.assert_not_called()
+
 if __name__ == '__main__': unittest.main()
