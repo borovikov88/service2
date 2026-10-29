@@ -1,0 +1,67 @@
+const assert = require('node:assert/strict');
+const {readFileSync} = require('node:fs');
+const {chromium} = require('playwright');
+(async () => {
+  let input=''; for await (const chunk of process.stdin) input+=chunk;
+  const f=JSON.parse(input); assert.match(f.base,/^http:\/\/(localhost|127\.0\.0\.1):[0-9]+$/);
+  const browser=await chromium.launch({headless:true});
+  try {
+    const context=await browser.newContext({viewport:{width:1440,height:1000},serviceWorkers:'block'});
+    await context.addCookies([{name:f.sessionCookieName,value:f.sessionCookie,url:f.base}]);
+    const bundle=readFileSync(require.resolve('bootstrap/dist/js/bootstrap.bundle.min.js'),'utf8');
+    await context.route('**/*', route=>{
+      const url=route.request().url();
+      if(url==='https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js') return route.fulfill({status:200,contentType:'application/javascript',body:bundle});
+      return new URL(url).origin===f.base ? route.continue() : route.abort();
+    });
+    const page=await context.newPage(),errors=[],requests=[];
+    page.on('pageerror',e=>errors.push(e.message)); page.on('request',r=>requests.push({path:new URL(r.url()).pathname,method:r.method()}));
+    console.log('PHASE navigation'); await page.goto(f.base+f.workspace); console.log('PHASE loaded');
+    const card=page.locator(`[data-lead-id="${f.leadId}"]`); await card.waitFor();
+    const messageCard=page.locator(`[data-lead-id="${f.messageLeadId}"]`);
+    assert.match(await messageCard.innerText(), /Сообщение Авито/);
+    assert.match(await messageCard.innerText(), /Synthetic message contact/);
+    assert.match(await messageCard.innerText(), /время события неизвестно/);
+    assert.match(await card.innerText(), /Входящий звонок/);
+    assert.ok((await card.innerText()).includes(f.phone)); assert.ok((await card.innerText()).includes(f.employee));
+    assert.match(await card.innerText(), /Событие:/);
+    assert.match(await card.innerText(), /Synthetic known caller.*→.*Synthetic source employee/);
+    assert.match(await card.innerText(), /Ответственный за лид:/);
+    assert.equal(await card.locator('a.lead-contact').getAttribute('href'),f.contactUrl);
+    await card.locator('a.lead-contact').click(); await page.waitForURL(f.base+f.contactUrl);
+    await page.goBack(); await card.waitFor();
+    console.log('PHASE open card'); await card.getByRole('button',{name:'Входящий звонок · '+f.phone,exact:true}).click();
+    await page.getByText('Сохранённая расшифровка',{exact:true}).click();
+    assert.ok((await page.locator('.lead-transcript').first().textContent()).includes('<script>neverExecute()</script>'));
+    assert.equal(await page.locator('#lead-dialog script').count(),0);
+    assert.equal(await page.locator('audio').getAttribute('preload'),'none');
+    assert.equal(requests.filter(r=>r.path===f.recording).length,0);
+    console.log('PHASE audio'); const audioResponse=page.waitForResponse(r=>new URL(r.url()).pathname===f.recording);
+    await page.locator('audio').evaluate(audio=>audio.play());
+    assert.ok([200,206].includes((await audioResponse).status()));
+    console.log('PHASE suggestions'); await page.getByText('Предложенные поля из разговора',{exact:true}).click();
+    const use=page.getByRole('button',{name:'Подставить предложение в поле потребности',exact:true});
+    await use.click();
+    const need=page.locator('[data-lead-need="true"]'); assert.equal(await need.inputValue(),'Synthetic suggested requirement');
+    assert.equal(requests.filter(r=>r.method==='POST').length,0);
+    await need.fill('Manual pending text'); await use.click(); assert.equal(await need.inputValue(),'Manual pending text');
+    await need.fill(''); await use.click();
+    const form=need.locator('xpath=ancestor::form');
+    await form.getByLabel('Следующий шаг',{exact:true}).fill('Synthetic followup');
+    await form.getByLabel('Дата и время · Asia/Barnaul',{exact:true}).fill('2026-11-20T12:00');
+    console.log('PHASE save'); const refreshed=page.waitForResponse(r=>new URL(r.url()).pathname===f.data && r.request().method()==='GET');
+    const saved=page.waitForResponse(r=>new URL(r.url()).pathname===f.command && r.request().method()==='POST');
+    await form.getByRole('button',{name:'Сохранить изменения',exact:true}).click(); assert.equal((await saved).status(),200);
+    assert.equal((await refreshed).status(),200,'Post-save list refresh must succeed');
+    await page.waitForFunction(()=>document.querySelector('#lead-operations')?.textContent.trim()===''
+      && document.querySelector('#lead-list')?.getAttribute('aria-busy')==='false'
+      && document.querySelector('[data-lead-need="true"]')?.value==='Synthetic suggested requirement');
+    console.log('PHASE saved and refreshed');
+    console.log('PHASE mobile'); await page.setViewportSize({width:390,height:844}); await page.emulateMedia({colorScheme:'dark'});
+    await page.reload(); await page.locator('[data-lead-need="true"]').waitFor();
+    assert.equal(await page.locator('[data-lead-need="true"]').inputValue(),'Synthetic suggested requirement');
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+    assert.equal(requests.filter(r=>r.path.includes('/analysis/')).length,0,'Card GET and save must not start/poll analysis');
+    assert.deepEqual(errors,[]); console.log('Source metadata, protected saved content, audio, explicit suggestion/save, reload and mobile PASS');
+  } finally {console.log('PHASE close'); await browser.close(); console.log('PHASE closed');}
+})().catch(e=>{console.error(e);process.exitCode=1;});

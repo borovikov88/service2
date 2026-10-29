@@ -232,3 +232,113 @@ class LeadIntakeTests(Fixture, TestCase):
         from django.core.exceptions import PermissionDenied
         with self.assertRaises(PermissionDenied):
             execute_lead_command(**payload)
+
+    def test_source_metadata_lists_are_bounded_and_do_not_copy_message_bodies(self):
+        self.incoming(participant_name='Synthetic sender', occurred_at=self.now)
+        self.deliver()
+        self.client.force_login(self.user)
+        url = reverse('crm_live_lead_data') + '?org_id=' + str(self.org.pk)
+        data = self.client.get(url).json()
+        source = data['leads'][0]['source']
+        self.assertEqual((source['label'], source['contact_name'], source['direction']), ('Сообщение Авито', 'Synthetic sender', 'in'))
+        self.assertEqual(source['occurred_at'], self.now.isoformat())
+        self.assertNotIn('Synthetic private body', json.dumps(data))
+        self.assertNotIn('media', source)
+        before = list(CrmInboxEvent.objects.values('state', 'attempts'))
+        self.client.get(url)
+        self.assertEqual(list(CrmInboxEvent.objects.values('state', 'attempts')), before)
+        CommunicationAccess.objects.filter(user=self.user, organization=self.org).update(can_view_conversations=False)
+        self.assertEqual(self.client.get(url).json()['total'], 0)
+
+    def test_saved_call_content_requires_listen_right_and_get_never_starts_analysis(self):
+        from pool_service.communication_models import CallAnalysis
+        self.mapped_call(); self.deliver('call')
+        call = PhoneCall.objects.get()
+        call.recording_file = 'synthetic/never-fetched.wav'; call.save(update_fields=['recording_file'])
+        analysis, _ = CallAnalysis.objects.update_or_create(call=call, defaults=dict(status=CallAnalysis.STATUS_READY,
+            transcript='Synthetic transcript', summary='Synthetic summary', facts={'client_name':'Synthetic person', 'phone':'+79000000000', 'request':'Synthetic need', 'private_extra':'not projected'}))
+        lead = CrmLead.objects.get()
+        self.client.force_login(self.user)
+        detail = reverse('crm_live_lead_detail', args=[lead.pk]) + '?org_id=' + str(self.org.pk)
+        data_url = reverse('crm_live_lead_data') + '?org_id=' + str(self.org.pk)
+        CommunicationAccess.objects.filter(user=self.user, organization=self.org).update(can_listen_calls=False)
+        source = self.client.get(detail).json()['sources'][0]
+        self.assertEqual((source['phone'], source['employee']), (call.phone_number, self.employee.display_name))
+        self.assertNotIn('media', source)
+        CommunicationAccess.objects.filter(user=self.user, organization=self.org).update(can_listen_calls=True)
+        before = (lead.revision, analysis.attempts, analysis.requested_at, CrmEvent.objects.count())
+        with patch('pool_service.communication_views.request_call_analysis') as request_analysis, patch('pool_service.communication_views.start_requested_call_analysis_worker') as worker:
+            for _ in range(2):
+                response = self.client.get(detail)
+                self.assertEqual(response.status_code, 200)
+                media = response.json()['sources'][0]['media']
+                self.assertEqual(media['transcript'], 'Synthetic transcript')
+                self.assertEqual(media['facts']['request'], 'Synthetic need')
+                self.assertNotIn('private_extra', media['facts'])
+                self.assertEqual(media['recording_url'], reverse('communication_call_recording', args=[call.pk]) + '?org_id=' + str(self.org.pk))
+            request_analysis.assert_not_called(); worker.assert_not_called()
+        self.assertNotIn('Synthetic transcript', self.client.get(data_url).content.decode())
+        lead.refresh_from_db(); analysis.refresh_from_db()
+        self.assertEqual((lead.revision, analysis.attempts, analysis.requested_at, CrmEvent.objects.count()), before)
+        CommunicationAccess.objects.filter(user=self.user, organization=self.org).update(can_listen_calls=False)
+        self.assertNotIn('media', self.client.get(detail).json()['sources'][0])
+        CallPrivateNumber.objects.create(organization=self.org, owner=self.user, phone_key="9001234567")
+        self.assertEqual(self.client.get(detail).status_code, 404)
+        self.assertEqual(self.client.get(data_url).json()['total'], 0)
+
+    def test_unknown_call_metadata_and_unready_transcript_remain_unknown(self):
+        from pool_service.communication_models import CallAnalysis
+        self.megafon(); self.history(); self.deliver('call')
+        call = PhoneCall.objects.get()
+        CallAnalysis.objects.update_or_create(call=call, defaults=dict(status=CallAnalysis.STATUS_PENDING,
+            transcript='Unready synthetic content', facts={'request':'Not ready'}))
+        CommunicationAccess.objects.filter(user=self.user, organization=self.org).update(can_listen_calls=True)
+        lead = CrmLead.objects.get(); self.client.force_login(self.user)
+        data = self.client.get(reverse('crm_live_lead_detail', args=[lead.pk]) + '?org_id=' + str(self.org.pk)).json()
+        source = data['sources'][0]
+        self.assertEqual(source['employee'], '')
+        self.assertIsNone(source['media']['recording_url'])
+        self.assertNotIn('transcript', source['media'])
+        self.assertNotIn('Not ready', json.dumps(data))
+
+    def test_recording_explicit_organization_and_current_listening_permissions(self):
+        from io import BytesIO
+        from pool_service.communication_models import TelephonyConnection
+        second = Organization.objects.create(name='Synthetic second source organization')
+        OrganizationAccess.objects.create(organization=second, user=self.user, role='manager')
+        CommunicationAccess.objects.filter(user=self.user, organization=second).update(can_view_all_calls=True, can_listen_calls=True)
+        connection = TelephonyConnection.objects.create(organization=second, external_id='synthetic-second-line')
+        call = PhoneCall.objects.create(organization=second, connection=connection, employee=self.user,
+            external_id='synthetic-second-call', phone_number='+79005550000', direction='in', started_at=self.now,
+            recording_file='synthetic-second.wav')
+        self.client.force_login(self.user)
+        url = reverse('communication_call_recording', args=[call.pk])
+        # Mock file IO only; real scope and listen guards run on each request.
+        with patch('pool_service.communication_views.os.path.getsize', return_value=4), patch('builtins.open', return_value=BytesIO(b'RIFF')):
+            response = self.client.get(url + '?org_id=' + str(second.pk))
+            self.assertEqual(response.status_code, 200)
+            # Consume through Django test client's closing iterator, which keeps
+            # request_finished from closing the enclosing TestCase connection.
+            self.assertEqual(b''.join(response.streaming_content), b'RIFF')
+        self.assertEqual(self.client.get(url + '?org_id=' + str(self.org.pk)).status_code, 404)
+        foreign = Organization.objects.create(name='Synthetic inaccessible organization')
+        self.assertEqual(self.client.get(url + '?org_id=' + str(foreign.pk)).status_code, 403)
+        self.assertEqual(self.client.get(url + '?org_id=' + str(second.pk) + '&org_id=' + str(self.org.pk)).status_code, 403)
+        CommunicationAccess.objects.filter(user=self.user, organization=second).update(can_listen_calls=False)
+        self.assertEqual(self.client.get(url + '?org_id=' + str(second.pk)).status_code, 403)
+
+    def test_source_contact_link_and_employee_labels_respect_current_org(self):
+        from pool_service.models import Client
+        call = self.mapped_call(); self.deliver('call')
+        lead = CrmLead.objects.get()
+        peer = Client.objects.create(organization=self.org, name='Synthetic actual caller', client_type='private')
+        call.client = peer; call.save(update_fields=['client'])
+        source = source_metadata(user=self.user, organization=self.org, lead=lead)[0]
+        self.assertEqual(source['contact']['url'], reverse('client_detail',args=[peer.pk]))
+        self.assertIn(call.phone_number,source['caller'])
+        self.assertEqual(source['callee'],self.employee.display_name)
+        foreign_org=Organization.objects.create(name='Foreign')
+        foreign_employee=Employee.objects.create(organization=foreign_org,display_name='Foreign hidden employee')
+        foreign=Client.objects.create(organization=foreign_org,name='Foreign hidden peer',client_type='private')
+        PhoneCall.objects.filter(pk=call.pk).update(client=foreign,employee_profile=foreign_employee)
+        self.assertEqual(source_metadata(user=self.user, organization=self.org, lead=lead), [])

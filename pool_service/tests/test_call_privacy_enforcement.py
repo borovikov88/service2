@@ -3,7 +3,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.test import TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -29,7 +29,10 @@ from pool_service.services.call_commitment_control import (
 from pool_service.services.call_privacy import is_private_call, private_call_ids
 
 
-class PrivateCallEnforcementTests(TestCase):
+# The analysis worker deliberately closes DB connections between stages. Use
+# committed fixtures: closing a MySQL connection inside TestCase's outer atomic
+# block invalidates the whole class transaction and causes cascading failures.
+class PrivateCallEnforcementTests(TransactionTestCase):
     def setUp(self):
         self.org = Organization.objects.create(name="Private call enforcement")
         self.owner = User.objects.create_user("79990000001", password="test")

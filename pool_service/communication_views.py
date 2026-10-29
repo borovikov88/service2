@@ -1162,7 +1162,7 @@ def _recording_range_iterator(file_handle, start, length, chunk_size=64 * 1024):
 
 @login_required
 def call_recording(request, call_id):
-    access = organization_access(request.user)
+    access = _selected_access(request)
     if not access:
         raise PermissionDenied
     call = get_object_or_404(

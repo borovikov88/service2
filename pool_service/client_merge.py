@@ -63,11 +63,16 @@ def _merge_contacts(source, target):
             existing = target_contacts.filter(value=contact.value).first()
 
         if existing:
+            if contact.kind == "phone" and contact.phone_type != "other" and existing.phone_type != "other" and contact.phone_type != existing.phone_type:
+                raise ValueError("Разные типы одного номера требуют явной сверки перед объединением.")
             sources = list(existing.sources or [])
             for value in contact.sources or []:
                 if value not in sources:
                     sources.append(value)
             changed = False
+            if contact.kind == "phone" and existing.phone_type == "other" and contact.phone_type != "other":
+                existing.phone_type = contact.phone_type
+                changed = True
             if sources != (existing.sources or []):
                 existing.sources = sources
                 changed = True
@@ -283,6 +288,10 @@ def merge_clients(source_id, target_id, *, organization_id, actor=None):
             "Нельзя автоматически объединить клиента с коммерческими лидами или сделками CRM. "
             "Для переноса этих связей требуется отдельная проверенная операция."
         )
+
+    from .client_crm_models import OrganizationPersonLink
+    if OrganizationPersonLink.objects.filter(person_id__in=[source.pk, target.pk]).exists():
+        raise ValueError("Связь физлица с пользователем требует отдельной сверки перед объединением.")
 
     moved = _generic_relations(source, target)
     _merge_staff_access(source, target)

@@ -14,3 +14,5 @@
 @media(max-width:700px){.lead-board{grid-template-columns:repeat(5,minmax(280px,82vw));scroll-snap-type:x proximity}.lead-column{scroll-snap-align:start}.lead-move-options button{min-height:42px}.lead-column-pager button{min-width:44px;min-height:44px}}
 
 .lead-pager[hidden]{display:none}
+
+.lead-source,.lead-transcript{white-space:pre-wrap;overflow-wrap:anywhere}.lead-link-list audio{width:100%;max-width:100%}
