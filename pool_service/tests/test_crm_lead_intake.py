@@ -338,6 +338,4 @@ class LeadIntakeTests(Fixture, TestCase):
         foreign_employee=Employee.objects.create(organization=foreign_org,display_name='Foreign hidden employee')
         foreign=Client.objects.create(organization=foreign_org,name='Foreign hidden peer',client_type='private')
         PhoneCall.objects.filter(pk=call.pk).update(client=foreign,employee_profile=foreign_employee)
-        source = source_metadata(user=self.user, organization=self.org, lead=lead)[0]
-        self.assertIsNone(source['contact'])
-        self.assertNotIn('Foreign hidden',str(source))
+        self.assertEqual(source_metadata(user=self.user, organization=self.org, lead=lead), [])
