@@ -17,6 +17,11 @@ on:
       - "pool_service/services/contact_people.py"
       - "pool_service/tests/test_contact_people*.py"
       - "pool_service/services/contact_roles.py"
+      - "pool_service/crm_service_binding_models.py"
+      - "pool_service/services/crm_service_bindings.py"
+      - "pool_service/services/crm_service_binding_reader.py"
+      - "pool_service/crm_service_binding_views.py"
+      - "pool_service/tests/test_crm_service_binding*.py"
       - "pool_service/services/owner_call_privacy.py"
       - "pool_service/tests/test_owner_call_privacy*.py"
       - "pool_service/tests/test_contacts*.py"
@@ -195,6 +200,9 @@ jobs:
             pool_service.tests.test_contact_identity_migrations \
             pool_service.tests.test_owner_call_privacy \
             pool_service.tests.test_call_privacy_enforcement \
+            pool_service.tests.test_crm_service_binding_http \
+            pool_service.tests.test_crm_service_bindings \
+            pool_service.tests.test_crm_service_binding_migration \
             pool_service.tests.test_crm_inbox \
             pool_service.tests.test_crm_inbox_migrations \
             pool_service.tests.test_crm_commercial_foundation \

@@ -1,0 +1,41 @@
+{% extends 'pool_service/base.html' %}
+{% block content %}
+<div class="container py-3" style="overflow-wrap:anywhere" data-service-bindings>
+<h1>Обслуживание: документы и периоды</h1><h2 class="h5">{{ deal.title }}</h2>
+<p>Объект: {% if deal.pool_id %}{{ deal.pool }}{% elif deal.client_object_id %}{{ deal.client_object }}{% else %}Сначала выберите объект в карточке сделки{% endif %}.</p>
+<p>Распределение документа не подтверждает оплату или выполнение месяца. Количество не определяет месяцы автоматически.</p>
+{% if error %}<p role="alert" class="alert alert-warning">{{ error }}</p>{% endif %}
+{% if request.GET.saved %}<p role="status">Распределение сохранено. История предыдущих версий сохранена.</p>{% endif %}
+{% if not allowed %}<p role="alert">Доступ к чтению 1С заблокирован существующей политикой: пользователь должен быть разрешён в диагностическом read-only доступе этой организации. Права автоматически не расширяются.</p>
+{% else %}
+<form method="post" data-preview-form>{% csrf_token %}<input type="hidden" name="action" value="preview">
+<p>Выберите документ по точным идентификаторам 1С. Поиск по имени и автоматическое сопоставление не выполняются.</p>
+<label class="d-block">Документ 1С<input class="form-control" name="document_ref" required maxlength="36"></label>
+<label class="d-block">Организация 1С<input class="form-control" name="organization_ref" required maxlength="36"></label>
+<label class="d-block">Контрагент 1С<input class="form-control" name="client_ref" required maxlength="36"></label>
+<label class="d-block">Договор 1С<input class="form-control" name="contract_ref" required maxlength="36"></label>
+<button class="btn btn-primary my-2">Прочитать документ</button></form>
+{% if snapshot %}<section data-source-preview><h2 class="h5">Документ {{ snapshot.document_ref }}</h2>
+<p>Договор {{ snapshot.contract_ref }} · Дата {{ snapshot.document_date }}. Версия снимка {{ snapshot.snapshot_hash|slice:':12' }}.</p>
+{% for line in snapshot.lines %}<p>Строка {{ line.number }} · Номенклатура {{ line.nomenclature }} · Количество {{ line.quantity }} · Всего {{ line.total }}</p>{% endfor %}
+{% if source_blocked %}<p role="alert">Документ заблокирован: будущий, непроведённый, удалённый, неоднозначный либо корректировочный. Отрицательные корректировки требуют отдельного правила; они не заменяются нулём.</p>
+{% else %}<form method="post" data-allocation-form>{% csrf_token %}<input type="hidden" name="action" value="save"><input type="hidden" name="selection" value="{{ selection }}">
+<div data-allocations><div data-allocation-row class="row g-2 mb-2">
+<label class="col-12 col-md-3">Строка<select class="form-select" name="line">{% for line in snapshot.lines %}<option value="{{ line.number }}">{{ line.number }} — {{ line.nomenclature }}</option>{% endfor %}</select></label>
+<label class="col-12 col-md-3">Месяц<input class="form-control" type="month" name="month" required></label>
+<label class="col-12 col-md-3">Количество<input class="form-control" name="quantity" inputmode="decimal" required maxlength="40"></label>
+<label class="col-12 col-md-3">Сумма в валюте документа<input class="form-control" name="amount" inputmode="decimal" required maxlength="40"></label>
+</div></div>
+<button type="button" class="btn btn-outline-secondary" data-add-allocation>Добавить период</button>
+<label class="d-block"><input type="checkbox" name="contract_confirm" value="yes" required> Подтверждаю этот договор для выбранного объекта и сделки</label>
+<label class="d-block"><input type="checkbox" name="service_confirm" value="yes" required> Выбранные строки относятся к основному обслуживанию, не к химии, оборудованию или ремонту</label>
+{% if needs_reconcile %}<label class="d-block"><input type="checkbox" name="reconcile" value="yes" required> Явно подтверждаю сверку: новое распределение заменяет активную версию, история сохраняется</label>{% endif %}
+<label class="d-block">Основание и подтверждённые периоды<textarea class="form-control" name="reason" required maxlength="1000"></textarea></label>
+<button class="btn btn-primary my-2">Сохранить распределение</button></form>{% endif %}</section>{% endif %}
+{% endif %}
+<h2 class="h5 mt-4">История</h2>
+{% for doc in documents %}<section class="border p-2 my-2"><h3 class="h6">{{ doc.document_ref }}</h3><p>Статус: {{ doc.status }} · Ревизия {{ doc.revision }}</p>
+{% for version in doc.history %}<details><summary>Версия {{ version.revision }} · {{ version.created_at }}</summary><p>{{ version.reason }}</p>{% for allocation in version.allocations %}<p>Строка {{ allocation.line_number }} · {{ allocation.month }} · {{ allocation.quantity }} · {{ allocation.amount }}</p>{% endfor %}</details>{% endfor %}{% for event in doc.recent_events %}<p>{{ event.created_at }} · {{ event.kind }}</p>{% endfor %}</section>{% empty %}<p>Привязок пока нет.</p>{% endfor %}
+</div>
+<script>document.querySelector('[data-add-allocation]')?.addEventListener('click',()=>{const box=document.querySelector('[data-allocations]');if(box.children.length>=200)return;const row=box.firstElementChild.cloneNode(true);row.querySelectorAll('input').forEach(el=>el.value='');box.appendChild(row);});</script>
+{% endblock %}
