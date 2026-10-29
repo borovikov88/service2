@@ -11,6 +11,7 @@
         <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
           <h4 class="fw-bold mb-0">{{ client.name }}</h4>
           <span class="badge text-bg-secondary">{{ client_kind_label }}</span>
+          {% if supplier_role.active %}<span class="badge text-bg-info" data-supplier-badge>Поставщик</span>{% endif %}
           {% if profile and profile.source == "onec" %}
             <span class="badge text-bg-primary">1С</span>
           {% endif %}
@@ -27,6 +28,14 @@
         {% endif %}
       </div>
       <div class="d-flex flex-wrap gap-2">
+        {% if can_manage and not profile.merged_into_id %}
+        <form method="post" data-supplier-form>{% csrf_token %}
+          <input type="hidden" name="action" value="set_supplier">
+          <input type="hidden" name="revision" value="{{ supplier_role.revision|default:0 }}">
+          <input type="hidden" name="enabled" value="{% if supplier_role.active %}0{% else %}1{% endif %}">
+          <button class="btn btn-outline-secondary btn-sm" type="submit">{% if supplier_role.active %}Снять роль поставщика{% else %}Отметить поставщиком{% endif %}</button>
+        </form>
+        {% endif %}
         {% if client.phone %}
           <a class="btn btn-outline-primary btn-sm" href="tel:{{ client.phone }}">
             <i class="bi bi-telephone me-1"></i>Позвонить

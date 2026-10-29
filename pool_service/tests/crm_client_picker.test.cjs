@@ -7,9 +7,6 @@ const path = require("node:path");
 const vm = require("node:vm");
 const base = path.resolve(__dirname, "..");
 const picker = fs.readFileSync(path.join(base, "static/assets/js/crm-client-picker.js"), "utf8");
-const template = fs.readFileSync(path.join(base, "templates/pool_service/clients.html"), "utf8");
-const listScript = Array.from(template.matchAll(/<script>([\s\S]*?)<\/script>/g))
-  .map(match => match[1]).find(source => source.includes("data-client-search"));
 
 function element() {
   const listeners = new Map(), attrs = new Map(), classes = new Set();
@@ -135,26 +132,6 @@ test("lookup errors recover, outside close and refocus only search when eligible
   assert.equal(page.requests.length, 3);
 });
 
-function listPage(query) {
-  const doc = element(), input = element(), counter = element(), row = element();
-  input.dataset.clientSearch = "companies";
-  row.dataset.search = "ООО «СТРОЙ–ИНВЕСТ» Семён +7 900 123 4567";
-  doc.querySelectorAll = selector => selector === "[data-client-search]" ? [input] : [row];
-  doc.querySelector = () => counter; doc.getElementById = () => null;
-  const location = new URL("https://crm.example.test/clients/");
-  const context = {document: doc, window: {location, clearTimeout() {}, setTimeout(fn) {fn();}},
-    history: {replaceState(_state, _title, url) {location.href = new URL(url, location).href;}},
-    URLSearchParams};
-  vm.runInNewContext(listScript, context, {timeout: 1000});
-  doc.fire("DOMContentLoaded");
-  input.value = query; input.fire("input");
-  return {row, location};
-}
-
-for (const query of ["Строй инвест", "Строй-инвест", "  строй   инвест ", "СТРОЙ\u00a0ИНВЕСТ", "семен", "9001234567"]) {
-  test("client list normalizes search: " + query, () => assert.equal(listPage(query).row.hidden, false));
-}
-test("client list does not match unrelated words", () => assert.equal(listPage("Несуществующий").row.hidden, true));
-test("client list preserves the typed query in the URL", () => {
-  assert.equal(listPage("Строй инвест").location.searchParams.get("companies_q"), "Строй инвест");
-});
+// Directory filtering moved to SQL: normalization and no-match cases are in
+// test_contacts_pagination, URL state in test_crm_search_state, real UI in
+// contacts.browser.cjs. Picker tests above still exercise the actual picker.
