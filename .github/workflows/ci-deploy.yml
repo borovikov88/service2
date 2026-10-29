@@ -134,7 +134,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CRM_CARD_BROWSER_TEST=1 CRM_NEEDS_BROWSER_TEST=1 CRM_LEADS_BROWSER_TEST=1 python manage.py test pool_service.tests.test_crm_commercial_card_browser pool_service.tests.test_crm_object_need_browser pool_service.tests.test_crm_lead_kanban_browser --settings=service_site.test_settings --verbosity 1
+          CRM_CARD_BROWSER_TEST=1 CRM_NEEDS_BROWSER_TEST=1 CRM_LEADS_BROWSER_TEST=1 python manage.py test pool_service.tests.test_sqlite_live_server_safety pool_service.tests.test_crm_commercial_card_browser pool_service.tests.test_crm_object_need_browser pool_service.tests.test_crm_lead_kanban_browser --settings=service_site.test_settings --verbosity 1
       - name: Clean up Chromium commercial card files
         if: always() && steps.reuse.outputs.verified != 'true'
         timeout-minutes: 2

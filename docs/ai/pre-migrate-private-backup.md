@@ -26,7 +26,12 @@ Before starting, the actual private destination filesystem must have at least
 512MiB (existing compressed cap) plus64MiB reserve free. A concurrent space loss
 still fails closed. Existing limits remain: 1GiB raw SQL,512MiB gzip,300s internal
 deadline; the deploy call adds a TERM330s/KILL+10s watchdog. Native children are
-terminated/reaped on helper failure. No limits are silently raised.
+terminated/reaped on helper failure. The single-threaded Linux helper also sets
+PR_SET_PDEATHSIG(SIGKILL) before native exec and checks the parent PID race, so
+native dump stops even after helper SIGKILL. Setup failure or a threaded caller
+fails closed. Normal cleanup remains; an orphan zombie may await host init reaping.
+A synthetic test kills the helper and verifies that its separate-session native
+child no longer executes. No limits are silently raised.
 
 The gate revalidates the persisted receipt and archive: current invocation,
 exact SHA, timestamps, private regular files with one link, receipt equality,
@@ -64,5 +69,6 @@ background write, so a backup cannot promise lossless automatic DB rollback.
 
 The deploy job's existing15-minute limit includes this bounded backup; it was not
 increased. Insufficient remaining time stops release rather than bypassing backup.
-The new gate and tests introduce no credentials, grants, cohort/cutoff or scheduler
+The reviewed SQLite LiveServer isolation fix is reused only for CI reliability;
+no Contacts features are included. The new gate and tests introduce no credentials, grants, cohort/cutoff or scheduler
 changes and no production migration of their own.

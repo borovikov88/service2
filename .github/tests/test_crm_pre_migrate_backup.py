@@ -163,4 +163,46 @@ class GateTests(unittest.TestCase):
         for value in (None,{}, {'integrity_verified':True}):
             with self.subTest(value=value),self.assertRaises(Exception): self.invoke(lambda *_:value)
 
+    def test_sigkill_helper_stops_separate_native_session(self):
+        pid_file = self.root / 'native.pid'
+        child_code = 'import os,time;from pathlib import Path;Path(' + repr(str(pid_file)) + ').write_text(str(os.getpid()));time.sleep(60)'
+        helper_code = ('import sys,time;from pathlib import Path;sys.path.insert(0,' + repr(str(ROOT/'scripts')) + ');'
+                       'import crm_pilot_db_backup as b;b.dump_to_gzip(' + repr([sys.executable,'-c',child_code]) + ','
+                       'Path(' + repr(str(self.root/'hard-kill.partial')) + '),{},time.monotonic()+60)')
+        helper = subprocess.Popen([sys.executable,'-c',helper_code],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        child = None
+        def running(pid):
+            try:
+                data=Path(f'/proc/{pid}/stat').read_text()
+                return data[data.rindex(')')+2:].split()[0] != 'Z'
+            except FileNotFoundError: return False
+        try:
+            deadline=time.monotonic()+5
+            while not pid_file.exists() and time.monotonic()<deadline: time.sleep(0.01)
+            self.assertTrue(pid_file.exists())
+            child=int(pid_file.read_text())
+            self.assertTrue(running(child))
+            helper.kill();helper.wait(timeout=3)
+            deadline=time.monotonic()+3
+            while running(child) and time.monotonic()<deadline: time.sleep(0.01)
+            self.assertFalse(running(child), 'Native process must not continue after helper SIGKILL')
+        finally:
+            if helper.poll() is None: helper.kill();helper.wait(timeout=3)
+            if child and running(child): os.killpg(child,signal.SIGKILL)
+
+    def test_threaded_helper_is_rejected_before_native_spawn(self):
+        with patch.object(Path,'iterdir',return_value=iter((Path('one'),Path('two')))):
+            with self.assertRaisesRegex(B.Blocked,'native_process_threads'):
+                B.native_parent_death_guard(sys.executable)
+
+    def test_parent_death_setup_failure_never_executes_dump(self):
+        class FailedPrctl:
+            def __call__(self, *args): return -1
+        marker=self.root/'must-not-run'
+        code='from pathlib import Path;Path('+repr(str(marker))+').touch()'
+        with patch.object(B.ctypes,'CDLL',return_value=types.SimpleNamespace(prctl=FailedPrctl())):
+            with self.assertRaises(B.NativeFailure):
+                B.dump_to_gzip([sys.executable,'-c',code],self.root/'failed.partial',{},time.monotonic()+2)
+        self.assertFalse(marker.exists())
+
 if __name__ == '__main__': unittest.main()
