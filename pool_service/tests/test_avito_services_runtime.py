@@ -575,6 +575,11 @@ class ServicesRuntimeTests(TestCase):
 
     def test_manual_recovery_is_deduped_bounded_and_never_claims_webhook_delivery(self):
         from pool_service import communication_avito as provider
+        from pool_service.crm_inbox_models import CrmInboxBoundary
+        # Recovery must be after the source cutover, including with --keepdb
+        # where migrated data may have been flushed by an earlier test run.
+        CrmInboxBoundary.objects.update_or_create(key="sources", defaults={
+            "captured_at": timezone.now() - timedelta(minutes=1)})
         self.install()
         responses = {"chats": [{"id": "synthetic-recovery-chat"}]}
         message = {"id": "synthetic-recovery-message", "author_id": "42", "direction": "in",

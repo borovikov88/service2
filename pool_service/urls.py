@@ -80,7 +80,7 @@ from .views import (
     push_unsubscribe,
 )
 from . import views
-from . import crm_live_views, crm_pilot_views
+from . import crm_live_views, crm_pilot_views, crm_lead_views, crm_object_need_views
 from .estimate_views import estimate_page, estimate_api, estimate_print, estimate_document
 from .client_crm_views import client_detail, client_merge_index, client_merge_search, client_onec_import
 from .client_crm_ui import client_edit
@@ -409,12 +409,25 @@ urlpatterns = [
     path("clients/merge/", client_merge_index, name="client_merge_index"),
     path("clients/merge/search/", client_merge_search, name="client_merge_search"),
     path("crm/", crm_index, name="crm_index"),
+    path("crm/workspace/needs/", crm_object_need_views.workspace, name="crm_object_needs"),
+    path("crm/workspace/needs/data/", crm_object_need_views.data, name="crm_object_need_data"),
+    path("crm/workspace/needs/review/", crm_object_need_views.review, name="crm_object_need_review"),
+    path("crm/workspace/needs/deal-command/", crm_object_need_views.deal_command, name="crm_object_need_deal_command"),
+    path("crm/workspace/needs/<int:task_id>/lines/", crm_object_need_views.lines, name="crm_object_need_lines"),
+    path("crm/workspace/needs/<int:task_id>/", crm_object_need_views.detail, name="crm_object_need_detail"),
     path("crm/workspace/", crm_live_views.workspace, name="crm_live_workspace"),
     path("crm/workspace/start/", crm_pilot_views.start, name="crm_live_start"),
     path("crm/workspace/data/", crm_live_views.data, name="crm_live_data"),
     path("crm/workspace/clients/", crm_live_views.clients, name="crm_live_clients"),
+    path("crm/workspace/objects/", crm_live_views.objects, name="crm_live_objects"),
     path("crm/workspace/commands/", crm_live_views.command, name="crm_live_command"),
     path("crm/workspace/deals/<int:deal_id>/", crm_live_views.detail, name="crm_live_detail"),
+    path("crm/workspace/leads/", crm_lead_views.workspace, name="crm_live_leads"),
+    path("crm/workspace/leads/data/", crm_lead_views.data, name="crm_live_lead_data"),
+    path("crm/workspace/leads/clients/", crm_lead_views.clients, name="crm_live_lead_clients"),
+    path("crm/workspace/leads/targets/", crm_lead_views.targets, name="crm_live_lead_targets"),
+    path("crm/workspace/leads/commands/", crm_lead_views.command, name="crm_live_lead_command"),
+    path("crm/workspace/leads/<int:lead_id>/", crm_lead_views.detail, name="crm_live_lead_detail"),
     path("crm/tasks/", crm_tasks, name="crm_tasks"),
     path("crm/tasks/bulk/", crm_tasks_bulk_update, name="crm_tasks_bulk_update"),
     path("crm/photos/<int:photo_id>/", crm_issue_photo_download, name="crm_issue_photo_download"),

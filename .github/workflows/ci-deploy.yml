@@ -48,7 +48,7 @@ jobs:
       service_deploy: ${{ needs.scope.outputs.service_deploy }}
       calculator_deploy: ${{ needs.scope.outputs.calculator_deploy }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       SECRET_KEY: ci-only-secret
       DEBUG: "1"
@@ -72,6 +72,7 @@ jobs:
           python -m unittest discover -s .github/tests -p test_reuse_pr_tests.py -v
           python -m unittest discover -s .github/tests -p test_crm_pilot_db_backup.py -v
           python -m unittest discover -s .github/tests -p test_crm_approved_access.py -v
+          python -m unittest discover -s .github/tests -p test_crm_lead_intake_ops.py -v
       - name: Verify equivalent successful PR tests
         id: reuse
         run: python .github/scripts/reuse_pr_tests.py
@@ -93,7 +94,8 @@ jobs:
             .github/workflows/development-codex.yml .github/workflows/codex-plan-connection.yml \
             .github/workflows/production-health.yml .github/workflows/avito-readonly-audit.yml .github/workflows/call-recordings-sync.yml \
             .github/workflows/employee-identity-sync.yml .github/workflows/avito-status-monitor.yml \
-            .github/workflows/avito-outbox-readonly.yml .github/workflows/management-finance-mysql.yml
+            .github/workflows/avito-outbox-readonly.yml .github/workflows/management-finance-mysql.yml \
+            .github/workflows/crm-db-backup.yml
       - name: Verify Avito monitor scheduling and deployment locks
         if: steps.reuse.outputs.verified != 'true'
         run: python -m unittest discover -s .github/tests -p 'test_avito*py' -v
@@ -102,7 +104,7 @@ jobs:
         run: |
           node --test tools/aqualine22-calculator/tests/engine.test.mjs
           node --test pool_service/tests/estimate_state.test.mjs pool_service/tests/estimate_parameters.test.mjs pool_service/tests/estimate_numbers.test.mjs
-          node --test pool_service/tests/crm_live_operations.test.cjs
+          node --test pool_service/tests/crm_live_operations.test.cjs pool_service/tests/crm_lead_operations.test.cjs
           python -m unittest discover -s .github/tests -p test_aqualine22_publication.py -v
       - name: Install dependencies
         if: steps.reuse.outputs.verified != 'true'
@@ -112,6 +114,49 @@ jobs:
         run: |
           python manage.py check --settings=service_site.test_settings
           python manage.py makemigrations --check --dry-run --settings=service_site.test_settings
+      - name: Install Chromium commercial card dependencies
+        if: steps.reuse.outputs.verified != 'true'
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          set -euo pipefail
+          browser_dir="$(mktemp -d "$RUNNER_TEMP/service2-crm-browser.XXXXXX")"
+          export NODE_PATH="$browser_dir/node_modules"
+          export PLAYWRIGHT_BROWSERS_PATH="$browser_dir/browsers"
+          printf 'CRM_CARD_BROWSER_DIR=%s\nNODE_PATH=%s\nPLAYWRIGHT_BROWSERS_PATH=%s\n' \
+            "$browser_dir" "$NODE_PATH" "$PLAYWRIGHT_BROWSERS_PATH" >> "$GITHUB_ENV"
+          npm install --prefix "$browser_dir" --ignore-scripts --no-audit --no-fund --package-lock=false playwright@1.62.1 bootstrap@5.2.3
+          node "$browser_dir/node_modules/playwright/cli.js" install --with-deps chromium
+      - name: Chromium commercial card acceptance
+        if: steps.reuse.outputs.verified != 'true'
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          CRM_CARD_BROWSER_TEST=1 CRM_NEEDS_BROWSER_TEST=1 CRM_LEADS_BROWSER_TEST=1 python manage.py test pool_service.tests.test_crm_commercial_card_browser pool_service.tests.test_crm_object_need_browser pool_service.tests.test_crm_lead_kanban_browser --settings=service_site.test_settings --verbosity 1
+      - name: Clean up Chromium commercial card files
+        if: always() && steps.reuse.outputs.verified != 'true'
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          python - <<'PYTHON'
+          import os
+          from pathlib import Path
+          import shutil
+
+          raw = os.environ.get("CRM_CARD_BROWSER_DIR")
+          if raw:
+              directory = Path(raw)
+              root = Path(os.environ["RUNNER_TEMP"]).resolve()
+              prefix = "service2-crm-browser."
+              suffix = directory.name.removeprefix(prefix)
+              if (directory.parent.resolve() != root or not directory.name.startswith(prefix)
+                      or len(suffix) != 6 or not suffix.isascii() or not suffix.isalnum()
+                      or directory.is_symlink()):
+                  raise SystemExit("Refusing unexpected Chromium temporary directory")
+              if directory.exists():
+                  shutil.rmtree(directory)
+          PYTHON
       - name: Run test suite
         if: steps.reuse.outputs.verified != 'true'
         run: python manage.py test --settings=service_site.test_settings --verbosity 1
@@ -536,6 +581,37 @@ jobs:
             exit 2
           fi
           python3 scripts/crm_approved_access_receipt.py "$access_temp/stdout" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+
+      - name: Enable the approved CRM incoming-lead release once
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[crm-lead-intake-aqualine-20261026]')
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          access_temp="$(mktemp -d "$RUNNER_TEMP/crm-lead-intake.XXXXXX")"
+          trap 'rm -rf -- "$access_temp"' EXIT
+          PORT="${DEPLOY_PORT:-22}"
+          [[ "$PORT" =~ ^[0-9]+$ ]]
+          printf -v REMOTE_COMMAND 'bash -s -- %q %q %q %q' \
+            "$GITHUB_SHA" "$DEPLOY_APP_PATH" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+          access_exit=0
+          ssh -i ~/.ssh/service2_deploy \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
+            -o StrictHostKeyChecking=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND" \
+            < .github/scripts/crm_lead_intake_remote.sh \
+            >"$access_temp/stdout" 2>"$access_temp/stderr" || access_exit=$?
+          if [[ "$access_exit" != 0 ]]; then
+            python3 scripts/crm_lead_intake_receipt.py --failure "$access_temp/stderr"
+            exit 2
+          fi
+          python3 scripts/crm_lead_intake_receipt.py "$access_temp/stdout" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
 
   calculator:
     name: Publish calculator to the verified informational website

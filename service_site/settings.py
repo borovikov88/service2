@@ -506,3 +506,12 @@ COMMUNICATION_CREDENTIAL_KEY = os.getenv("COMMUNICATION_CREDENTIAL_KEY", "")
 AVITO_SERVICES_PUBLIC_ORIGIN = os.getenv("AVITO_SERVICES_PUBLIC_ORIGIN", "") or "https://service2.aqualine22.ru"
 # Keep new Avito photographs outside the web checkout; created by the web worker.
 AVITO_SERVICES_MEDIA_ROOT = os.getenv("AVITO_SERVICES_MEDIA_ROOT", "") or str(BASE_DIR.parent / "private_avito_media")
+
+# Dedicated cache-only Avito read resource; this creates no OAuth grants.
+# Existing Finance/Operations tokens have a different audience and are rejected.
+ADVISOR_AVITO_MCP_ENABLED = _env_bool('ADVISOR_AVITO_MCP_ENABLED', True)
+ADVISOR_AVITO_MCP_RESOURCE_URL = os.getenv('ADVISOR_AVITO_MCP_RESOURCE_URL', '')
+ADVISOR_AVITO_MCP_ALLOWED_ORIGINS = {
+    value.strip() for value in os.getenv('ADVISOR_AVITO_MCP_ALLOWED_ORIGINS', 'https://chatgpt.com').split(',')
+    if value.strip()
+}

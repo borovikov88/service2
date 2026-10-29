@@ -10,7 +10,8 @@ from .communication_models import AvitoSchedulerHeartbeat, AvitoStatusMonitor, C
 
 CHECKS = {"statuses": "Статусы объявлений", "advance": "Аванс",
           "autoload_report": "Подробный отчёт автозагрузки", "tariff": "Срок тарифа", "publication_correlation": "Связь версии с загрузкой",
-          "messages_digest": "Отложенные сообщения владельцу", "statistics_daily": "Суточная история эффективности"}
+          "messages_digest": "Отложенные сообщения владельцу", "statistics_daily": "Суточная история эффективности",
+          "placement_reminder": "Напоминания о сроках размещения Услуг"}
 KEYS = {"advance": "avito_advance_monitor", "autoload_report": "avito_autoload_auto",
         "tariff": "avito_tariff_reminder", "publication_correlation": "avito_autoload_auto",
         "messages_digest": "avito_deferred_owner_messages", "statistics_daily": "avito_daily_statistics_v1"}
@@ -31,6 +32,15 @@ CODES = {
     "statistics_binding_changed", "statistics_data_invalid", "statistics_total_unavailable", "statistics_limit",
     "statistics_unavailable", "statistics_incomplete", "publication_correlation_failed", "dependency_failed", "deferred_queue_invalid", "conversation_access_denied",
 }
+PLACEMENT_CODES = {"placement_stale", "placement_data_invalid", "placement_refresh_failed",
+    "placement_capacity_exhausted", "placement_recipient_unavailable", "placement_already_recorded", "placement_no_eligible"}
+PLACEMENT_SOURCE = "saved_owned_avito_item_detail"
+
+
+def safe_notification_count(value):
+    return value if type(value) is int and 0 <= value <= 200 else None
+
+
 CONSISTENCY_GUARDS = {
     "queried_rows_changed": "Строки выборки по XML ID отличаются от проверочной страницы.",
     "shop_xml_snapshot_changed": "XML магазина изменился или стал непроверяемым во время чтения.",
@@ -48,6 +58,7 @@ OUTCOMES = {"baseline", "success", "failed", "skipped", "not_run"}
 
 def safe_code(value, *, check=None):
     return value if isinstance(value, str) and (value in CODES or
+        check == "placement_reminder" and value in PLACEMENT_CODES or
         check == "statistics_daily" and value in {"provider_data_invalid", "statistics_fields_unavailable", "statistics_provider_error"} or
         re.fullmatch(r"provider_http_[1-5][0-9]{2}", value)) else "check_error_unclassified"
 
@@ -72,12 +83,19 @@ def worker_context():
     return None
 
 
-def record(connection_id, check, outcome, *, run_id, exception=False, deferred=False, reason=None):
+def record(connection_id, check, outcome, *, run_id, exception=False, deferred=False, reason=None,
+           notification_count=None, binding=None):
     """Only a live matching supervisor row can receive worker evidence."""
     if not run_id or check not in CHECKS or outcome not in OUTCOMES:
         return
     connection = ChannelConnection.objects.select_related("channel").filter(pk=connection_id).first()
     if not connection or connection.channel.kind != "avito":
+        return
+    current_binding = {"account_id": str(connection.external_id), "channel_id": connection.channel_id,
+                       "organization_id": connection.channel.organization_id}
+    if binding is not None and binding != current_binding:
+        return
+    if check == "placement_reminder" and (connection.pk != 4 or connection.external_id != "446312402"):
         return
     # Codes are drawn from scoped state, never from exception strings.
     state = _saved(connection, check)
@@ -101,6 +119,9 @@ def record(connection_id, check, outcome, *, run_id, exception=False, deferred=F
             "consistency_guard": state.get("consistency_guard")
                 if check == "autoload_report" and outcome == "failed" and code == "autoload_report_changed" else None,
             "checked_at": timezone.now().isoformat()})
+        if check == "placement_reminder":
+            # Count is supplied by the completed transaction, never inferred from settings.
+            entries[-1]["notification_count"] = safe_notification_count(notification_count) if outcome != "not_run" else None
         heartbeat.checks = entries
         heartbeat.save(update_fields=["checks"])
 
@@ -119,6 +140,18 @@ def _saved(connection, check):
             "code": safe_code(monitor.last_error_code) if valid else safe_code(scope_error),
             "checked_at": max(filter(None, (monitor.last_success_at, monitor.last_failure_at)), default=None),
             "success_at": monitor.last_success_at, "next_due_at": monitor.next_due_at}
+    if check == "placement_reminder":
+        from .avito_feed_models import AvitoServicesFeed
+        from .avito_placement_continuity import scope_matches
+        from .avito_status_monitor import _scope_error
+        monitor = AvitoStatusMonitor.objects.select_related("recipient").filter(connection=connection).first()
+        feed = AvitoServicesFeed.objects.filter(connection=connection).first()
+        valid = bool(scope_matches(connection, feed) and monitor and not _scope_error(monitor, connection))
+        return {"configured": monitor is not None, "enabled": bool(monitor and monitor.enabled),
+            "scope_valid": valid if monitor else None,
+            "code": "" if valid else "binding_changed" if not scope_matches(connection, feed)
+                else "placement_recipient_unavailable" if monitor else "not_configured",
+            "checked_at": None, "success_at": None, "next_due_at": None}
     if check == "messages_digest":
         from .avito_deferred_messages import allowed_actor, KEY
         value = metadata.get(KEY)
@@ -164,6 +197,8 @@ def checks(connection, *, only_check=None):
     for key, label in CHECKS.items():
         if only_check is not None and key != only_check:
             continue
+        if key == "placement_reminder" and (connection.pk != 4 or connection.external_id != "446312402"):
+            continue
         saved = _saved(connection, key)
         match = next((row for row in recorded if isinstance(row, dict) and
             row.get("connection_id") == connection.pk and row.get("account_id") == str(connection.external_id)
@@ -190,6 +225,14 @@ def checks(connection, *, only_check=None):
             "last_worker_consistency_guard_label": CONSISTENCY_GUARDS.get(consistency_guard(match.get("consistency_guard")), "")
                 if match and key == "autoload_report" and match["outcome"] == "failed" and match["code"] == "autoload_report_changed" else "",
             "last_worker_verified": bool(match)})
+        if key == "placement_reminder":
+            from .avito_deferred_messages import daylight
+            from .avito_scheduler import MAX_AGE
+            output[-1].update(source=PLACEMENT_SOURCE, window="08:00–21:00 Asia/Barnaul",
+                window_open=daylight(),
+                last_worker_notification_count=safe_notification_count(match.get("notification_count"))
+                    if match and match["outcome"] != "not_run" else None,
+                last_worker_fresh=bool(match and timedelta(0) <= timezone.now() - when(match["checked_at"]) <= MAX_AGE))
     return output
 
 

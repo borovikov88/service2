@@ -1,0 +1,36 @@
+{% extends 'pool_service/base.html' %}
+{% load static %}
+{% block title %}Лиды · {{ brand_name }}{% endblock %}
+{% block extra_head %}
+<link rel="stylesheet" href="{% static 'pool_service/crm_live/workspace.css' %}?v=1">
+<link rel="stylesheet" href="{% static 'pool_service/crm_live/leads.css' %}?v=3">
+<script src="{% static 'pool_service/crm_live/leads.js' %}?v=4" defer></script>
+{% endblock %}
+{% block content %}
+<section class="crm-live crm-leads" id="crm-leads" aria-label="Лиды">
+  <header class="crm-live-heading">
+    <div><div class="crm-live-eyebrow">CRM · {{ lead_bootstrap.organization_name }}</div><h1>Лиды</h1><p>Разберите обращение, уточните потребность и договоритесь о следующем шаге.</p></div>
+    <button class="crm-live-button crm-live-button-primary" id="lead-create" type="button" hidden>+ Новый лид</button>
+  </header>
+  <nav class="lead-section-nav" aria-label="Разделы CRM"><span aria-current="page">Лиды</span><a href="{{ lead_bootstrap.urls.deals }}">Сделки →</a></nav>
+  <div id="lead-operations" class="crm-live-operations" aria-live="polite"></div>
+  <div id="lead-notice" class="crm-live-notice" role="status" hidden></div>
+  <div class="lead-toolbar">
+    <label class="crm-live-search"><span aria-hidden="true">⌕</span><input type="search" id="lead-search" placeholder="Потребность, название или клиент" aria-label="Поиск лидов" autocomplete="off"></label>
+    <label class="crm-live-owner"><span>Состояние</span><select id="lead-status"><option value="">Все состояния</option>{% for code,label in lead_bootstrap.states.items %}<option value="{{ code }}">{{ label }}</option>{% endfor %}</select></label>
+    <button type="button" class="crm-live-refresh" id="lead-refresh" aria-label="Обновить список">↻</button>
+  </div>
+  <nav class="lead-modes" id="lead-modes" aria-label="Рабочие представления">
+    <button type="button" data-mode="unassigned">Свободные</button><button type="button" data-mode="mine">Мои</button><button type="button" data-mode="all">Все лиды</button><button type="button" data-mode="review">Новое после разбора</button><button type="button" data-mode="closed">История завершённых</button>
+  </nav>
+  <div class="lead-count" id="lead-count" aria-live="polite"></div>
+  <p class="crm-live-muted" id="lead-intake-status"></p>
+  <div id="lead-list" aria-busy="false"></div>
+  <nav class="lead-pager" aria-label="Страницы лидов"><button class="crm-live-button" type="button" id="lead-prev">← Назад</button><span id="lead-page"></span><button class="crm-live-button" type="button" id="lead-next">Далее →</button></nav>
+  <p class="crm-live-muted lead-limits">Переписка, записи звонков и вложения открываются в исходных коммуникациях с учётом ваших прав. При разборе обращения укажите следующий шаг и его срок.</p>
+  <noscript><p>Для работы с лидами включите JavaScript.</p></noscript>
+  <dialog class="crm-live-dialog lead-dialog" id="lead-dialog" aria-labelledby="lead-dialog-title"><header class="crm-live-dialog-header"><span>Карточка лида</span><button type="button" class="crm-live-close" id="lead-close" aria-label="Закрыть карточку">×</button></header><div class="crm-live-dialog-inner" id="lead-dialog-content"></div></dialog>
+  <div hidden>{% csrf_token %}</div>
+  {{ lead_bootstrap|json_script:'lead-bootstrap' }}
+</section>
+{% endblock %}

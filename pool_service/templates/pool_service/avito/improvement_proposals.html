@@ -26,6 +26,7 @@
 {% for item in projects %}
 <section class="card card-body my-3" aria-label="Проект объявления {{ item.avito_id }}">
   <div class="d-flex flex-wrap gap-2 justify-content-between"><h2 class="h5 mb-0">Объявление {{ item.avito_id }}</h2><strong>Проект, не применён</strong></div>
+  {% if item.first_experiment_candidate %}<div class="mt-2"><strong>Первый кандидат на согласование: одна переменная Title</strong></div>{% endif %}
   <div class="small text-muted mt-2">История №{{ item.event.pk }} · {{ item.event.created_at|date:"d.m.Y H:i:s" }} · Барнаул · автор: {{ item.event.actor|default:"не установлен" }}.</div>
   {% if not item.current_source %}<div class="alert alert-warning mt-2 mb-1">Исходная публикация или привязка изменились. Предложение требует новой проверки.</div>{% endif %}
   {% if not item.draft_unchanged_since_project %}<div class="small text-warning-emphasis mt-2">Черновик менялся после подготовки проекта. Повторно проверьте его перед редактированием.</div>{% endif %}
@@ -34,6 +35,11 @@
   <div class="small">Одна переменная: заголовок. Описание, фотографии, цены, Id и AvitoId остаются прежними.</div>
   <div class="mt-3"><strong>В исходном снимке</strong><p class="text-break">{{ item.before }}</p>
   <strong>Предложенный заголовок</strong><p class="text-break">{{ item.proposed }}</p></div>
+  <p class="small">Проверка формата редактора: {% if item.title_validation.valid %}пройдена{% else %}не пройдена, требуется исправление проекта{% endif %};
+    {{ item.title_validation.characters }} символов при лимите редактора {{ item.title_validation.editor_max_length }}.
+    Это не подтверждение модерации или всех ограничений категории Авито.</p>
+  <p class="small">Добавление города проверяет гипотезу ясности услуги и географии. Оно само по себе не доказывает рост качества или количества обращений.
+    Требуется отдельное согласование владельца; проект не меняет действующий заголовок.</p>
   {% if item.period_baseline %}
   <details class="mt-3 border rounded p-2"><summary>Сохранённая база первого эксперимента · периодные отчёты</summary>
     <p class="small mt-2">История №{{ item.period_baseline.history_event_id }} · {{ item.period_baseline.created_at|date:"d.m.Y H:i:s" }} · Барнаул · автор: {{ item.period_baseline.actor|default:"не установлен" }}. Проект заголовка не применён, оценка не началась.</p>

@@ -58,4 +58,19 @@ class Command(BaseCommand):
             except Exception:
                 result["tariff_subscription"] = {"state": "blocked", "code": "tariff_scope_changed",
                     "connection_id": 4, "account_id": "446312402", "probe_state": "unconfirmed", "request_performed": None}
+
+            from pool_service.avito_mcp_setup import prepare_wallet_once
+            try:
+                result["assistant_wallet"] = prepare_wallet_once()
+            except Exception:
+                result["assistant_wallet"] = {"state": "blocked", "code": "wallet_setup_unconfirmed",
+                    "connection_id": 4, "account_id": "446312402", "request_performed": None}
+            from pool_service.avito_placement_continuity import prepare_once as placement_calendar_check
+            try:
+                result["placement_calendar_check"] = placement_calendar_check()
+            except Exception:
+                result["placement_calendar_check"] = {"state": "blocked", "code": "placement_check_unconfirmed",
+                    "connection_id": 4, "account_id": "446312402", "provider_write_performed": False}
+            from pool_service.avito_mcp_reader import setup_evidence as assistant_read_evidence
+            result["assistant_read_tools"] = assistant_read_evidence()
         self.stdout.write("AVITO_SERVICES_SETUP " + json.dumps(result, sort_keys=True))

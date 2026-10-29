@@ -422,6 +422,101 @@ def _aggregate(report):
     return values
 
 
+
+def _metric_rows(values, rows):
+    """Presentation over validated stored rows; no reads, zero filling or daily facts."""
+    dependencies = {"ctr": ("views", "impressions"), "conversion": ("contacts", "views"),
+                    "cpl_cash": ("spending", "contacts")}
+    return [{"slug": slug,
+             "label": LABELS.get(slug, {"ctr": "CTR", "conversion": "Просмотр → контакт",
+                                        "cpl_cash": "Стоимость обращения, деньги"}.get(slug, slug)),
+             "value": format(value, "f") if value is not None else None,
+             "unit": "₽/контакт" if slug == "cpl_cash" else "₽" if slug in MONEY
+                     else "%" if slug in {"ctr", "conversion"} else "",
+             "known_groups": sum(all(row["metrics"].get(key) is not None
+                                    for key in dependencies.get(slug, (slug,))) for row in rows),
+             "expected_groups": len(rows)}
+            for slug, value in values.items()]
+
+
+def _ad_rows(report):
+    result = []
+    for entry in report["rows"]:
+        values = _aggregate({"rows": [entry]})
+        views, contacts = values["views"], values["contacts"]
+        result.append({"avito_id": entry["id"], "metrics": _metric_rows(values, [entry]),
+                       "metric_values": {key: format(value, "f") if value is not None else None
+                                         for key, value in values.items()},
+                       "low_or_unknown_volume": views is None or contacts is None
+                           or views < 100 or contacts < 10})
+    return result
+
+
+def _ad_comparisons(current, previous):
+    """An identical individual ID can be compared without claiming account coverage."""
+    before = {row["avito_id"]: row for row in previous["ads"]}
+    after = {row["avito_id"]: row for row in current["ads"]}
+    result = []
+    for identifier in sorted(set(before) | set(after)):
+        left, right = after.get(identifier), before.get(identifier)
+        metrics = []
+        for slug in FIELDS + ("ctr", "conversion", "cpl_cash"):
+            now_value = left["metric_values"][slug] if left else None
+            old_value = right["metric_values"][slug] if right else None
+            description = next(item for item in (left or right)["metrics"] if item["slug"] == slug)
+            metrics.append({"slug": slug, "label": description["label"], "unit": description["unit"],
+                            "current": now_value, "previous": old_value,
+                            "delta": format(Decimal(now_value)-Decimal(old_value), "f")
+                                     if now_value is not None and old_value is not None else None})
+        result.append({"avito_id": identifier, "present_in_both": bool(left and right),
+                       "low_or_unknown_volume": (not left or not right
+                           or left["low_or_unknown_volume"] or right["low_or_unknown_volume"]),
+                       "metrics": metrics})
+    return result
+
+
+def _recommendations(reports, now=None):
+    """At most three next steps over actual saved IDs; never an automatic purchase."""
+    now = now or timezone.now()
+    if not reports:
+        return []
+    report = reports[0]
+    received = _time(report["received_at"])
+    if received is None or not timedelta(0) <= now-received <= timedelta(hours=24):
+        return []
+    result = []
+    water = next((row for row in report["ads"] if row["avito_id"] == "8346503274"), None)
+    if water is not None:
+        result.append({"avito_id": water["avito_id"], "code": "review_title_project",
+            "issue": "Согласовать один проект заголовка водоочистки",
+            "reason": "В сохранённом периоде есть строка этого объявления. Проект №9 проверяет ясность географии; улучшение ещё не доказано.",
+            "next_step": "Открыть проект и исходную базу. Менять только Title после отдельного согласования; оценивать 14 дат источника после подтверждённого применения.",
+            "url_name": "avito_service_improvement_proposals",
+            "basis": "saved_period_row_and_existing_unapplied_project"})
+    contacted = [row for row in report["ads"] if row["metric_values"]["contacts"] is not None
+                 and Decimal(row["metric_values"]["contacts"]) > 0]
+    if contacted:
+        row = max(contacted, key=lambda item: (Decimal(item["metric_values"]["contacts"]), item["avito_id"]))
+        result.append({"avito_id": row["avito_id"], "code": "review_contact_quality",
+            "issue": "Оценить качество обращений и следующий шаг",
+            "reason": "Авито вернул контакты объявления. Их качество, заявки и продажи из этого счётчика не установлены.",
+            "next_step": "В существующей CRM оценить доступные обращения и подтвердить заявку и следующую задачу. Не увеличивать расходы только из-за наличия контактов.",
+            "url_name": "avito_crm_attribution", "basis": "known_period_contacts"})
+    unknown = sorted(report["ads"], key=lambda row: (
+        -sum(row["metric_values"][key] is None for key in ("impressions", "views", "contacts", "spending")),
+        row["avito_id"]))
+    if unknown and any(unknown[0]["metric_values"][key] is None
+                       for key in ("impressions", "views", "contacts", "spending")):
+        result.append({"avito_id": unknown[0]["avito_id"], "code": "inspect_period_metrics",
+            "issue": "Уточнить неизвестные показатели объявления",
+            "reason": "Все страницы периода получены, но часть основных показателей этой строки неизвестна.",
+            "next_step": "Сохранить неизвестность и проверить доступность метрик источника. Не подменять пропуск нулём и не покупать продвижение ради проверки.",
+            "url_name": "", "basis": "unknown_period_core_metrics"})
+    return [{**row, "date_from": report["date_from"], "date_to": report["date_to"],
+             "received_at": received, "source": SOURCE, "causality_confirmed": False,
+             "paid_action_proposed": False} for row in result[:3]]
+
+
 def display(connection, actor):
     if connection is None or connection.pk != 4 or str(connection.external_id) != ACCOUNT:
         return {"state": "not_applicable", "reports": [], "comparisons": []}
@@ -434,11 +529,9 @@ def display(connection, actor):
         for report in reports:
             values = _aggregate(report)
             row = {**report, "ids": [entry["id"] for entry in report["rows"]],
-                "group_count": len(report["rows"]), "received_at_display": _time(report["received_at"]), "metrics": [
-                    {"slug": slug, "label": LABELS.get(slug, {"ctr":"CTR","conversion":"Просмотр → контакт","cpl_cash":"Стоимость обращения, деньги"}.get(slug, slug)),
-                     "value": format(value, "f") if value is not None else None,
-                     "unit": "₽" if slug in MONEY or slug == "cpl_cash" else "%" if slug in {"ctr", "conversion"} else ""}
-                    for slug, value in values.items()], "metric_values": values,
+                "group_count": len(report["rows"]), "received_at_display": _time(report["received_at"]),
+                "metrics": _metric_rows(values, report["rows"]), "metric_values": values,
+                "ads": _ad_rows(report), "page_count": len(report["page_offsets"]),
                 "confirmed_empty": report["total"] == 0, "provider_timezone": "unknown",
                 "daily_history_independent": True, "atomic_snapshot_confirmed": False}
             output.append(row)
@@ -451,6 +544,7 @@ def display(connection, actor):
                 continue
             same_ids = set(current_report["ids"]) == set(previous["ids"])
             comparisons.append({"current": current_report, "previous": previous, "same_ids": same_ids,
+                "ads": _ad_comparisons(current_report, previous),
                 "metrics": [{"slug": metric["slug"], "label": metric["label"], "unit": metric["unit"],
                     "current": metric["value"], "previous": next(x["value"] for x in previous["metrics"] if x["slug"] == metric["slug"]),
                     "delta": (format(current_report["metric_values"][metric["slug"]]-previous["metric_values"][metric["slug"]], "f")
@@ -461,6 +555,7 @@ def display(connection, actor):
         if final_binding != binding:
             raise AvitoError("period_scope_changed")
         return {"state": "available" if output else "empty", "reports": output, "comparisons": comparisons,
+            "recommendations": _recommendations(output),
             "latest_attempt": {**book["latest_attempt"], "checked_at_display": _time(book["latest_attempt"].get("checked_at"))}, "provider_timezone": "unknown",
             "source": SOURCE, "binding_digest": hashlib.sha256(json.dumps(binding, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
             "binding_verified": True, "daily_history_independent": True}
@@ -478,7 +573,12 @@ def setup_evidence():
             "provider_timezone": "unknown", "daily_history_independent": True,
             "reports": [{"date_from": row["date_from"], "date_to": row["date_to"], "grouping": row["grouping"],
                 "received_at": row["received_at"], "pages_complete": True, "group_count": row["group_count"],
-                "ids": row["ids"], "known_metrics": [metric["slug"] for metric in row["metrics"] if metric["value"] is not None]}
+                "ids": row["ids"], "known_metrics": [metric["slug"] for metric in row["metrics"] if metric["value"] is not None],
+                "metric_coverage": {metric["slug"]: {"known_groups": metric["known_groups"],
+                    "expected_groups": metric["expected_groups"]} for metric in row["metrics"]},
+                "ad_metric_availability": [{"avito_id": ad["avito_id"],
+                    "known_metrics": [metric["slug"] for metric in ad["metrics"] if metric["value"] is not None]}
+                    for ad in row["ads"]]}
                 for row in result["reports"]],
             "latest_attempt": _safe_attempt({key: value for key, value in result.get("latest_attempt", {}).items() if key != "checked_at_display"})}
     except Exception:

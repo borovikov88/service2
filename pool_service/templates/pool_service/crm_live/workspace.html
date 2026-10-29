@@ -4,12 +4,13 @@
 {% block title %}CRM · {{ brand_name }}{% endblock %}
 
 {% block extra_head %}
-  <link rel="stylesheet" href="{% static 'pool_service/crm_live/workspace.css' %}?v=1">
-  <script src="{% static 'pool_service/crm_live/workspace.js' %}?v=1" defer></script>
+  <link rel="stylesheet" href="{% static 'pool_service/crm_live/workspace.css' %}?v=2">
+  <script src="{% static 'pool_service/crm_live/workspace.js' %}?v=5" defer></script>
 {% endblock %}
 
 {% block content %}
 <section class="crm-live" id="crm-live" aria-label="Рабочее пространство CRM">
+  <nav aria-label="CRM"><a href="{% url 'crm_object_needs' %}?org_id={{ crm_bootstrap.organization_id }}">Потребности объектов</a></nav>
   <div class="crm-live-heading">
     <div>
       <div class="crm-live-eyebrow">Клиенты и сделки</div>
@@ -22,10 +23,10 @@
   <div id="crm-live-operations" class="crm-live-operations" aria-live="polite" aria-atomic="false"></div>
   <div id="crm-live-notice" class="crm-live-notice" role="status" hidden></div>
 
-  <nav class="crm-live-pipelines" id="crm-live-pipelines" aria-label="Направления CRM"></nav>
+  <nav class="crm-live-pipelines" id="crm-live-pipelines" aria-label="Воронки CRM"></nav>
 
   <div class="crm-live-toolbar">
-    <label class="crm-live-search"><span aria-hidden="true">⌕</span><input id="crm-live-search" type="search" placeholder="Сделка или клиент" aria-label="Поиск сделки или клиента" autocomplete="off"></label>
+    <label class="crm-live-search"><span aria-hidden="true">⌕</span><input id="crm-live-search" type="search" placeholder="Сделка, клиент, предмет или объект" aria-label="Поиск сделки, клиента, предмета или объекта" autocomplete="off"></label>
     <label class="crm-live-owner"><span>Ответственный</span><select id="crm-live-owner"><option value="all">Все сделки</option><option value="me">Мои сделки</option></select></label>
     <div class="crm-live-views" role="group" aria-label="Вид сделок">
       <button type="button" data-view="kanban" aria-pressed="true"><span aria-hidden="true">▥</span> Канбан</button>
@@ -34,17 +35,32 @@
     <button type="button" class="crm-live-refresh" id="crm-live-refresh" aria-label="Обновить сделки" title="Обновить сделки">↻</button>
   </div>
 
+  <div class="crm-live-card-filters">
+    <label class="crm-live-owner"><span>Исход</span><select id="crm-live-outcome"><option value="open">Открытые</option><option value="lost">Отказ / проигрыш</option><option value="cancelled">Отменённые</option><option value="won">Успех (история)</option><option value="unknown">Legacy: не определён</option><option value="all">Все исходы</option></select></label>
+    <label class="crm-live-owner"><span>Этап</span><select id="crm-live-stage"><option value="">Все этапы</option></select></label>
+    <label class="crm-live-owner"><span>Объект</span><select id="crm-live-object"><option value="">Все объекты</option><option value="none">Не выбран</option><option value="planned">Планируемый</option><option value="pool">Обслуживаемый</option><option value="client_object">Объект клиента</option></select></label>
+    <label class="crm-live-owner"><span>Специализация</span><input id="crm-live-specialization" maxlength="40" placeholder="Например, хамам"></label>
+    <label class="crm-live-owner"><span>Решение от (Барнаул)</span><input id="crm-live-decision_from" type="date"></label>
+    <label class="crm-live-owner"><span>Решение до (включительно)</span><input id="crm-live-decision_to" type="date"></label>
+  </div>
+
   <div class="crm-live-results">
     <div class="crm-live-attention" role="group" aria-label="Следующее действие">
-      <button type="button" data-attention="all" aria-pressed="true">Все <span id="crm-live-count-all">0</span></button>
-      <button type="button" data-attention="overdue" aria-pressed="false">Просрочено <span id="crm-live-count-overdue">0</span></button>
-      <button type="button" data-attention="missing" aria-pressed="false">Без следующего шага <span id="crm-live-count-missing">0</span></button>
+      <button type="button" data-attention="all" aria-pressed="true">Все</button>
+      <button type="button" data-attention="today" aria-pressed="false">Сегодня</button>
+      <button type="button" data-attention="overdue" aria-pressed="false">Просрочено</button>
+      <button type="button" data-attention="missing" aria-pressed="false">Без следующего шага</button>
     </div>
     <span id="crm-live-result-status" class="crm-live-muted" aria-live="polite"></span>
   </div>
 
   <div id="crm-live-content" aria-busy="false"></div>
-  <p class="crm-live-limit" id="crm-live-limit" hidden>Показана часть сделок. Уточните поиск, чтобы найти нужную.</p>
+  <p class="crm-live-limit" id="crm-live-limit" hidden>Есть ещё сделки по этим условиям. Перейдите на следующую страницу или уточните поиск.</p>
+  <nav class="crm-live-pagination" aria-label="Страницы сделок">
+    <button type="button" class="crm-live-button" data-action="page-prev" id="crm-live-page-prev">← Назад</button>
+    <span id="crm-live-page-label" aria-live="polite"></span>
+    <button type="button" class="crm-live-button" data-action="page-next" id="crm-live-page-next">Далее →</button>
+  </nav>
   <p class="crm-live-help" id="crm-live-help">Перетащите карточку мышкой в другой этап или измените этап внутри карточки.</p>
   <noscript><div class="crm-live-empty"><h2>Для работы CRM нужен JavaScript</h2><p>Включите JavaScript в браузере и обновите страницу.</p></div></noscript>
 

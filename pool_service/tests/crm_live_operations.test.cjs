@@ -132,7 +132,7 @@ test("drag and stage selector share revision-aware transitions and require a bac
   assert.equal(transitionIntent(deal, 1, pipeline, "  Уточнить размеры  ").changes.reason, "Уточнить размеры");
   assert.throws(() => transitionIntent(deal, 4, pipeline), /недоступен/);
   assert.throws(() => transitionIntent({...deal, can_transition: false}, 3, pipeline), /нет права/);
-  assert.throws(() => transitionIntent({...deal, pipeline_id: 99}, 3, pipeline), /между направлениями/);
+  assert.throws(() => transitionIntent({...deal, pipeline_id: 99}, 3, pipeline), /между воронками/);
 });
 
 test("deadlines always use Barnaul time regardless of the browser's local timezone", () => {
@@ -177,4 +177,33 @@ test("date-only next steps are overdue only after their Barnaul day, and waiting
   assert.equal(attentionFor({outcome: "open", next_action: {due_at: null, due_date: "2026-10-26"}}, now), "overdue");
   assert.equal(attentionFor({outcome: "open", next_action: {waiting: true, due_at: null, due_date: null}}, now), "all");
   assert.equal(editableDeadline({due_at: null, due_date: "2026-10-27"}, "Asia/Barnaul", now), "2026-10-27T09:00");
+});
+
+test("commercial card conflict restores every entered field and the current task version", () => {
+  const changes = {title: "Card", work_subject: "Install", specialization: "hammam", fulfillment_kind: "construction", object_kind: "pool", pool_id: 7,
+    client_object_id: null, planned_object_name: "", planned_object_address: "", amount: "0.00", currency: "RUB", amount_basis: "agreed", expected_decision_at: "2026-10-27T02:30:00Z"};
+  const fresh = {id: 41, revision: 9, next_action: {version: "fresh-task-version"}};
+  const restored = conflictDraft({subject_id: 41, command_type: "deal.edit", changes}, fresh, "Asia/Barnaul");
+  assert.equal(restored.revision, 9);
+  assert.equal(restored.taskVersion, "fresh-task-version");
+  assert.equal(restored.fields.object_ref, "pool:7");
+  assert.equal(restored.fields.work_subject, "Install");
+  assert.equal(restored.fields.amount, "0.00");
+  assert.equal(restored.fields.expected_decision_at, "2026-10-27T09:30");
+  const close = conflictDraft({subject_id: 41, command_type: "deal.close_negative", changes: {outcome: "lost", reason: "Refusal", expected_task_version: "stale-task-version"}}, fresh, "Asia/Barnaul");
+  assert.deepEqual(close.fields, {outcome: "lost", reason: "Refusal"});
+  assert.equal(close.taskVersion, "fresh-task-version");
+});
+
+test("uncertain negative outcome retries the frozen reason and original task version", async () => {
+  const sent = [];
+  const queue = new OperationQueue(async (body) => { sent.push(JSON.stringify(body)); if (sent.length === 1) throw new TypeError("Network lost"); return {result: {deal_id: 41}, deal: {id: 41}}; });
+  const body = {...payload(), command_type: "deal.close_negative", changes: {outcome: "lost", reason: "Original refusal", expected_task_version: "original-task-version"}};
+  const entry = queue.add(body, "Refusal");
+  await queue.run(entry.payload.operation_key);
+  body.changes.reason = "Changed form";
+  body.changes.expected_task_version = "changed-version";
+  await queue.run(entry.payload.operation_key);
+  assert.equal(sent[0], sent[1]);
+  assert.equal(entry.status, "succeeded");
 });

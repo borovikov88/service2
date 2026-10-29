@@ -5,7 +5,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 from pool_service.avito_status_monitor import SCAN_SECONDS, scan_monitor
 from pool_service.communication_models import AvitoStatusMonitor, ChannelConnection
-from pool_service import avito_autoload_auto, avito_advance, avito_tariff_reminder, avito_runtime, avito_deferred_messages, avito_daily_statistics
+from pool_service import avito_autoload_auto, avito_advance, avito_tariff_reminder, avito_runtime, avito_deferred_messages, avito_daily_statistics, avito_placement_reminder
 from pool_service.avito_scheduler import scheduler_state
 
 
@@ -62,6 +62,21 @@ class Command(BaseCommand):
         report_deadline = deadline - (SCAN_SECONDS + 20 if ids else 0)
         # Calendar reminders survive provider access loss at tariff expiry.
         tariffs = avito_tariff_reminder.scan_due(deadline=report_deadline, limit=4, observer=observed)
+        # Saved owned dates only; independent of provider availability, sharing
+        # this worker and the existing explicit status-monitor subscription.
+        placement_binding = None
+        try:
+            placement_binding = avito_placement_reminder.capture_binding()
+            if placement_binding is None:
+                placement_outcome, placement_notifications = "skipped", 0
+            else:
+                placement_outcome, placement_notifications = avito_placement_reminder.scan_saved(
+                    deadline=report_deadline, observer=observed, expected_binding=placement_binding)
+        except Exception:
+            placement_outcome, placement_notifications = "failed", 0
+            if placement_binding is not None:
+                observed(4, "placement_reminder", "failed", exception=True,
+                         binding=placement_binding, notification_count=None)
         advances = avito_advance.scan_due(deadline=report_deadline, limit=2, observer=observed)
         reports = avito_autoload_auto.scan_due(deadline=report_deadline, limit=2, observer=observed)
         statistics = avito_daily_statistics.scan_due(deadline=report_deadline, observer=observed)
@@ -92,7 +107,8 @@ class Command(BaseCommand):
             f"{key}={tariffs[key]}" for key in ("success", "failed", "skipped")))
         self.stdout.write("AVITO_DAILY_STATISTICS " + " ".join(
             f"{key}={statistics[key]}" for key in ("success", "failed", "skipped")))
-        if counts["failed"] or counts["correlation_failed"] or counts["diagnostic_failed"] or deferred["failed"] or reports["failed"] or advances["failed"] or tariffs["failed"] or statistics["failed"]:
+        self.stdout.write(f"AVITO_PLACEMENT_REMINDER outcome={placement_outcome} notifications={placement_notifications}")
+        if counts["failed"] or counts["correlation_failed"] or counts["diagnostic_failed"] or deferred["failed"] or reports["failed"] or advances["failed"] or tariffs["failed"] or statistics["failed"] or placement_outcome == "failed":
             # Distinguish a completed tick with scoped failures from a crash, timeout
             # or skipped/locked tick. Only the supervisor records the actual code.
             raise CommandError("Avito checks incomplete; inspect scoped state in Service2.", returncode=2)

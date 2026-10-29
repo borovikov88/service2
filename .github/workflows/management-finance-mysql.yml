@@ -25,8 +25,21 @@ on:
       - "pool_service/services/crm_commercial_*.py"
       - "pool_service/management/commands/bootstrap_crm_commercial.py"
       - "pool_service/tests/test_crm_commercial_*.py"
+      - "pool_service/tests/test_crm_object_need*.py"
+      - "pool_service/crm_object_need*.py"
+      - "pool_service/services/crm_object_needs.py"
+      - "pool_service/services/crm_need_deals.py"
+      - "pool_service/tests/test_crm_need_deal*.py"
+      - "pool_service/admin.py"
+      - "pool_service/services/task_generation.py"
+      - "pool_service/tests/test_supply_task_generation.py"
       - "pool_service/tests/test_crm_live_*.py"
       - "pool_service/crm_live_views.py"
+      - "pool_service/crm_lead_views.py"
+      - "pool_service/services/crm_lead_*.py"
+      - "pool_service/tests/test_crm_lead_*.py"
+      - "pool_service/management/commands/run_crm_intake.py"
+      - "pool_service/management/commands/provision_crm_lead_intake.py"
       - "pool_service/crm_pilot_views.py"
       - "pool_service/services/crm_pilot_activation.py"
       - "pool_service/services/crm_approved_access.py"
@@ -131,6 +144,13 @@ jobs:
           python manage.py makemigrations --check --dry-run
           python manage.py migrate --plan
 
+      - name: Verify Avito date precision and read-only tools on MySQL
+        run: |
+          python manage.py test \
+            pool_service.tests.test_avito_placement_continuity \
+            pool_service.tests.test_avito_mcp \
+            --verbosity 2
+
       - name: Run management finance tests on MySQL
         run: |
           python manage.py test \
@@ -162,11 +182,25 @@ jobs:
             pool_service.tests.test_crm_inbox_migrations \
             pool_service.tests.test_crm_commercial_foundation \
             pool_service.tests.test_crm_commercial_commands \
+            pool_service.tests.test_crm_commercial_card \
+            pool_service.tests.test_crm_object_needs \
+            pool_service.tests.test_crm_object_need_corrections \
+            pool_service.tests.test_crm_object_need_concurrency \
+            pool_service.tests.test_crm_need_deals \
+            pool_service.tests.test_crm_need_deal_concurrency \
+            pool_service.tests.test_crm_need_deal_migrations \
+            pool_service.tests.test_crm_object_need_migrations \
+            pool_service.tests.test_crm_commercial_card_migrations \
             pool_service.tests.test_crm_commercial_migrations \
             pool_service.tests.test_crm_live_pilot_commands \
             pool_service.tests.test_crm_live_pilot_migrations \
             pool_service.tests.test_crm_live_views \
             pool_service.tests.test_crm_approved_access \
+            pool_service.tests.test_crm_lead_commands \
+            pool_service.tests.test_crm_lead_migrations \
+            pool_service.tests.test_crm_lead_intake \
+            pool_service.tests.test_crm_lead_views \
+            pool_service.tests.test_crm_lead_activation \
             pool_service.tests.test_crm_org_scope \
             pool_service.tests.test_task_read_privacy \
             pool_service.tests.test_avito_promotion_observations \
@@ -194,4 +228,6 @@ jobs:
             pool_service.tests.test_avito_autoload_auto \
             pool_service.tests.test_avito_autoload_report \
             pool_service.tests.test_avito_readonly_audit \
+            pool_service.tests.test_avito_placement_continuity \
+            pool_service.tests.test_avito_mcp \
             --verbosity 2

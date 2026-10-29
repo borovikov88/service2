@@ -27,6 +27,7 @@ SAFE_ERRORS = {
     "provider_credentials_missing", "provider_credentials_invalid", "provider_token_missing",
     "audit_provider_root_invalid", "audit_provider_cooldown", "audit_report_code_limit",
     "audit_profile_source_invalid", "audit_profile_source_changed",
+    "audit_placement_scope_invalid", "audit_placement_read_limit", "audit_placement_status_changed",
     "monitor_scan_limit", "monitor_pagination_invalid", "monitor_status_invalid",
     "provider_account_id_missing", "provider_account_id_invalid", "provider_item_unavailable",
     "provider_account_mismatch", "provider_data_invalid", "provider_unavailable",
@@ -351,6 +352,52 @@ def services_coverage(feed, all_items, *, requested, checked, skipped):
         'published_inactive': len(published_ids & inactive) if complete else None,
         'requested_count': requested, 'checked_count': checked, 'skipped_out_of_scope': skipped}
 
+
+def services_placement_evidence(connection, token, account_id, feed, all_items):
+    """Bounded fresh item reads; no provider mutation, local snapshot update or private fields."""
+    from .avito_placement_continuity import scope_matches, classify_finish
+    if not scope_matches(connection, feed) or account_id != SERVICES_ACCOUNT_ID:
+        raise AvitoError("provider_account_mismatch")
+    requested = [row for sheet in feed.draft for row in sheet["rows"]]
+    if (not 1 <= len(requested) <= 20
+            or len({row["AvitoId"] for row in requested}) != len(requested)
+            or len({row["Id"] for row in requested}) != len(requested)
+            or any(not isinstance(row.get("AvitoId"), str)
+                   or not re.fullmatch(r"[0-9]{1,32}", row["AvitoId"]) for row in requested)):
+        raise AvitoError("audit_placement_scope_invalid")
+    observed = []
+    deadline = time.monotonic() + 100
+    for row in requested:
+        item_id = row["AvitoId"]
+        try:
+            if time.monotonic() >= deadline:
+                raise AvitoError("audit_placement_read_limit")
+            detail = fetch_detail(token, account_id, item_id)
+            if detail.get("status") not in avito_workspace.ITEM_STATUSES:
+                raise AvitoError("provider_data_invalid")
+            if detail.get("autoload_item_id") not in {"", row["Id"]}:
+                raise AvitoError("provider_account_mismatch")
+            if (isinstance(all_items, dict)
+                    and (item_id not in all_items
+                         or all_items[item_id]["status"] != detail["status"])):
+                raise AvitoError("audit_placement_status_changed")
+            finish = classify_finish(detail.get("finish_time"))
+            observed.append({"avito_id": item_id, "status": detail["status"],
+                "checked_at": timezone.now().isoformat(),
+                "finish_time": finish["finish_time"], "finish_state": finish["finish_state"],
+                "source_finish_date": finish["source_finish_date"], "finish_shape": finish["shape"],
+                "identity_state": "matched" if detail.get("autoload_item_id") == row["Id"] else "not_returned"})
+        except Exception as error:
+            observed.append({"avito_id": item_id, "error": safe_error(error)})
+    checked = sum("error" not in row for row in observed)
+    return {"source": "avito_core_v1_owned_item_detail", "connection_id": 4,
+        "account_id": SERVICES_ACCOUNT_ID, "requested": len(requested), "checked": checked,
+        "complete": checked == len(requested),
+        "terms_known": sum(row.get("finish_state") == "known" for row in observed),
+        "status_scan_complete": isinstance(all_items, dict),
+        "rows": observed, "provider_write_performed": False, "local_snapshot_changed": False}
+
+
 def collect_connection(connection, item_ids, index, stocks=None, stock_error=None, *, release_evidence=False,
                        release_revision=SERVICES_REVISION):
     identity = {"connection_id": connection.pk}
@@ -426,6 +473,13 @@ def collect_connection(connection, item_ids, index, stocks=None, stock_error=Non
             listing_scan = listing_summary(all_items, pages)
         except Exception as error:
             listing_scan = {"error": safe_error(error)}
+        placement = None
+        if release_evidence:
+            try:
+                placement = services_placement_evidence(connection, token, account_id, service_feed,
+                    all_items if "error" not in listing_scan else None)
+            except Exception as error:
+                placement = {"error": safe_error(error)}
         if service_feed is not None:
             active_source = {"scope": "services", "state": "not_applicable",
                              "reason": "services_have_no_physical_stock"}
@@ -474,6 +528,8 @@ def collect_connection(connection, item_ids, index, stocks=None, stock_error=Non
             cached_flags = {"error": "audit_configuration_unavailable"}
         from .avito_runtime import checks
         runtime_checks = checks(ChannelConnection.objects.select_related("channel").get(pk=connection.pk))
+        if placement is not None:
+            release_fields["placement_evidence"] = placement
         return identity | release_fields | ({"services_coverage": service_coverage} if service_coverage is not None else {}) | {"account_id": account_id, "items": items, "autoload_report": summary, "listing_scan": listing_scan, "active_source_audit": active_source,
                            "configured_feed_source": configured_source, "advance_access": advance_access,
                            "monitoring": flags, "cached_configuration": cached_flags, "runtime_checks": runtime_checks,
@@ -615,5 +671,6 @@ def collect_services(item_ids=None, *, connection_id=SERVICES_CONNECTION_ID,
         ("autoload_report", "listing_scan", "configured_feed_source", "advance_access",
          "publication_release", "webhook_chain", "approved_photo", "raw_content_fields",
          "media_readiness", "operation_ledger"))
-        and all("error" not in item for item in row["items"]))
+        and all("error" not in item for item in row["items"])
+        and row.get("placement_evidence", {}).get("complete") is True)
     return normalize(envelope | {"status": "read" if complete else "partial", "connections": [row]})

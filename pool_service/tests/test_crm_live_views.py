@@ -467,3 +467,53 @@ class ColdWorkspaceEntryTests(TestCase):
         fresh_request.user = self.user
         self.assertEqual(crm_workspace_entry({"request": fresh_request}), "")
         self.assert_no_activation()
+
+    def test_deal_and_lead_navigation_share_one_advisory_snapshot(self):
+        from pool_service.crm_lead_views import data
+        from pool_service.services.permissions import organization_accesses_for_user
+        from pool_service.templatetags.crm_live import crm_leads_entry, crm_workspace_entry
+
+        self.org.crm_v2_read = True
+        self.org.save(update_fields=["crm_v2_read"])
+        grant = CrmAccess.objects.create(organization=self.org, user=self.user, view_team_deals=True, view_leads=True)
+        request = RequestFactory().get(self.workspace)
+        request.user = self.user
+        organization_accesses_for_user(request.user)
+        with self.assertNumQueries(2), CaptureQueriesContext(connection) as queries:
+            self.assertEqual(crm_leads_entry({"request": request}), reverse("crm_live_leads") + self.scope)
+            self.assertEqual(crm_workspace_entry({"request": request}), self.workspace + self.scope)
+        self.assertFalse(any("pool_service_organizationaccess" in query["sql"].lower() for query in queries.captured_queries))
+        with self.assertNumQueries(0):
+            for _ in range(3):
+                crm_workspace_entry({"request": request})
+                crm_leads_entry({"request": request})
+
+        scoped = RequestFactory().get(reverse("crm_live_lead_data") + self.scope)
+        scoped.user = self.user
+        self.assertTrue(crm_leads_entry({"request": scoped}))
+        grant.view_leads = False
+        grant.save(update_fields=["view_leads"])
+        # A cached menu cannot authorize the same request after access revocation.
+        self.assertEqual(data(scoped).status_code, 403)
+        fresh = RequestFactory().get(self.workspace)
+        fresh.user = get_user_model().objects.get(pk=self.user.pk)
+        self.assertEqual(crm_leads_entry({"request": fresh}), "")
+        self.assertEqual(crm_workspace_entry({"request": fresh}), self.workspace + self.scope)
+
+    def test_lead_only_navigation_does_not_imply_deal_access_or_owner_activation(self):
+        from pool_service.templatetags.crm_live import crm_leads_entry, crm_workspace_entry
+
+        self.org.crm_v2_read = True
+        self.org.save(update_fields=["crm_v2_read"])
+        self.role.role = "service"
+        self.role.save(update_fields=["role"])
+        CrmAccess.objects.create(organization=self.org, user=self.user, view_leads=True)
+        request = RequestFactory().get(self.workspace)
+        request.user = get_user_model().objects.get(pk=self.user.pk)
+        self.assertEqual(crm_workspace_entry({"request": request}), "")
+        self.assertEqual(crm_leads_entry({"request": request}), reverse("crm_live_leads") + self.scope)
+        Employee.objects.create(organization=self.org, user=self.user, display_name="Synthetic service", is_active=False)
+        fresh = RequestFactory().get(self.workspace)
+        fresh.user = get_user_model().objects.get(pk=self.user.pk)
+        self.assertEqual(crm_workspace_entry({"request": fresh}), "")
+        self.assertEqual(crm_leads_entry({"request": fresh}), "")

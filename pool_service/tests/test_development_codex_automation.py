@@ -1242,6 +1242,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
             "development-codex-chatgpt-canary.yml",
             "development-codex-chatgpt-repo-canary.yml",
         }
+        manual_maintenance_workflows = {"crm-db-backup.yml"}
         allowed_automatic_workflows = {
             "avito-status-monitor.yml",
             "avito-readonly-audit.yml",
@@ -1250,6 +1251,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
             "client-sync.yml",
             "employee-identity-sync.yml",
             "ci-deploy.yml",
+            "crm-intake.yml",
             "direct-pr-review.yml",
             "finance-sync.yml",
             "hosting-connection-check.yml",
@@ -1257,13 +1259,14 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
             "production-health.yml",
         }
         expected_workflows = (
-            manual_canary_workflows | {production_workflow} | allowed_automatic_workflows
+            manual_canary_workflows | manual_maintenance_workflows
+            | {production_workflow} | allowed_automatic_workflows
         )
 
         self.assertEqual({item.name for item in workflows}, expected_workflows)
         self.assertEqual(
             [item.name for item in workflows if item.name not in manual_canary_workflows],
-            sorted({production_workflow} | allowed_automatic_workflows),
+            sorted({production_workflow} | allowed_automatic_workflows | manual_maintenance_workflows),
         )
         for workflow in workflows:
             with self.subTest(workflow=workflow.name):
@@ -1280,8 +1283,30 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
                                       "manage.py migrate", "collectstatic", "restart.txt",
                                       "send_avito_outbox", "recover_avito_original_reply", "avito_outbox_recovery_remote.sh"):
                         self.assertNotIn(forbidden, text)
+                elif workflow.name == "crm-db-backup.yml":
+                    expected_triggers = ["workflow_dispatch"]
+                    self.assertIn("contents: read", text)
+                    self.assertIn("environment: production", text)
+                    self.assertIn("github.ref == 'refs/heads/main'", text)
+                    self.assertIn("validate_crm_backup_request.py", text)
+                    self.assertIn("crm_pilot_db_backup_remote.sh", text)
+                    for forbidden in ("contents: write", "actions: write", "pull-requests: write",
+                                      "manage.py migrate", "update.sh", "collectstatic", "restart.txt",
+                                      "upload-artifact", "continue-on-error"):
+                        self.assertNotIn(forbidden, text)
                 elif workflow.name == "avito-status-monitor.yml":
                     expected_triggers = ["workflow_dispatch"]
+                elif workflow.name == "crm-intake.yml":
+                    expected_triggers = ["schedule", "workflow_dispatch"]
+                    self.assertIn("contents: read", text)
+                    self.assertIn("environment: production", text)
+                    self.assertIn("github.ref == 'refs/heads/main'", text)
+                    self.assertIn("crm_intake_worker_remote.sh", text)
+                    for forbidden in ("openai/codex-action", "codex exec", "OPENAI_API_KEY",
+                                      "CHATGPT_AUTH_JSON", "GITHUB_DEVELOPMENT_TOKEN",
+                                      "contents: write", "pull-requests: write", "actions: write",
+                                      "manage.py migrate", "collectstatic", "restart.txt"):
+                        self.assertNotIn(forbidden, text)
                 elif workflow.name in {"call-recordings-sync.yml", "client-sync.yml", "employee-identity-sync.yml"}:
                     expected_triggers = ["schedule", "workflow_dispatch"]
                 elif workflow.name == "ci-deploy.yml":

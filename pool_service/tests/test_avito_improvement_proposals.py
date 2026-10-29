@@ -309,6 +309,34 @@ class ImprovementProjectTests(ProposalFixture, TestCase):
         self.assertNotContains(response, 'Опубликовать')
         self.provider.assert_not_called()
 
+
+    def test_approval_packet_prioritizes_water_and_checks_editor_format_without_application(self):
+        self.prepare()
+        before = (deepcopy(self.feed.draft), deepcopy(self.feed.published), self.feed.revision)
+        result = projects.page_context(self.connection, self.owner)
+        water = result["projects"][0]
+        self.assertEqual(water["avito_id"], "8346503274")
+        self.assertTrue(water["first_experiment_candidate"])
+        self.assertTrue(water["owner_approval_required"])
+        self.assertTrue(water["title_validation"]["valid"])
+        self.assertEqual(water["title_validation"]["characters"], len(water["proposed"]))
+        self.assertFalse(water["title_validation"]["provider_acceptance_confirmed"])
+        self.feed.refresh_from_db()
+        self.assertEqual((self.feed.draft, self.feed.published, self.feed.revision), before)
+        response = self.client.get(self.url)
+        self.assertContains(response, "Первый кандидат на согласование")
+        self.assertContains(response, "Оно само по себе не доказывает")
+        self.assertNotContains(response, 'type="submit">Опубликовать')
+        self.provider.assert_not_called()
+
+    def test_title_validation_does_not_claim_provider_acceptance_or_accept_markup(self):
+        for value in ("Synthetic title", "Synthetic service · Test city"):
+            checked = projects._title_validation(value)
+            self.assertTrue(checked["valid"])
+            self.assertFalse(checked["provider_acceptance_confirmed"])
+        for value in ("", "x"*101, "<b>Synthetic</b>", "Synthetic\ntext", " Synthetic", None):
+            self.assertFalse(projects._title_validation(value)["valid"])
+
     def test_history_labels_proposal_as_unapplied_and_unknown_raw_shapes_are_skipped(self):
         self.prepare()
         event = self.events().first()

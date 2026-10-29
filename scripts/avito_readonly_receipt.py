@@ -412,8 +412,8 @@ def cached_configuration(value):
 
 
 def runtime_checks(value):
-    require(isinstance(value, list) and len(value) <= 7)
-    names = {"statuses", "advance", "autoload_report", "tariff", "publication_correlation", "messages_digest", "statistics_daily"}
+    require(isinstance(value, list) and len(value) <= 8)
+    names = {"statuses", "advance", "autoload_report", "tariff", "publication_correlation", "messages_digest", "statistics_daily", "placement_reminder"}
     outcomes = {"baseline", "success", "failed", "skipped", "not_run"}
     allowed_codes = {
     "", "not_configured", "disabled", "not_checked", "check_due", "schedule_invalid",
@@ -449,6 +449,9 @@ def runtime_checks(value):
         require(row.get("last_worker_outcome") is None or row["last_worker_outcome"] in outcomes)
         def fixed_code(raw):
             require(raw is None or (isinstance(raw, str) and (raw in allowed_codes
+                or row["check"] == "placement_reminder" and raw in {"placement_stale", "placement_data_invalid",
+                    "placement_refresh_failed", "placement_capacity_exhausted", "placement_recipient_unavailable",
+                    "placement_already_recorded", "placement_no_eligible"}
                 or row["check"] == "statistics_daily" and raw in {"provider_data_invalid", "statistics_fields_unavailable", "statistics_provider_error"}
                 or re.fullmatch(r"provider_http_[1-5][0-9]{2}", raw))))
             return raw
@@ -470,6 +473,16 @@ def runtime_checks(value):
             "last_worker_code": fixed_code(row.get("last_worker_code")),
             "last_worker_checked_at": timestamp(row.get("last_worker_checked_at")),
             "consistency_guard": saved_guard, "last_worker_consistency_guard": worker_guard})
+        if row["check"] == "placement_reminder":
+            require(row.get("source") == "saved_owned_avito_item_detail")
+            require(row.get("window") == "08:00–21:00 Asia/Barnaul")
+            require(type(row.get("window_open")) is bool and type(row.get("last_worker_fresh")) is bool)
+            count = row.get("last_worker_notification_count")
+            require(count is None or type(count) is int and 0 <= count <= 200
+                and row["last_worker_verified"] and row.get("last_worker_outcome") != "not_run")
+            require(not row["last_worker_fresh"] or row["last_worker_verified"])
+            result[-1].update(source=row["source"], window=row["window"], window_open=row["window_open"],
+                last_worker_fresh=row["last_worker_fresh"], last_worker_notification_count=count)
     require(len({row["check"] for row in result}) == len(result))
     return result
 
@@ -1047,6 +1060,90 @@ def statistics_source_evidence(value):
         "gap_diagnostics": _statistics_gaps(value.get("gap_diagnostics"), cutoff)}
 
 
+
+def placement_finish_metadata(row):
+    """Only closed shape/date evidence; historical rows without shape remain historical."""
+    raw = row.get("finish_shape")
+    if raw is None:
+        require(row.get("finish_state") in {"known", "not_returned", "invalid"})
+        return {}
+    require(isinstance(raw, dict) and raw.get("stage") == "reader_normalized")
+    kind, length, fmt = raw.get("value_type"), raw.get("length"), raw.get("format")
+    require(kind in {"null", "boolean", "string", "integer", "number", "array", "object", "other"})
+    require((type(length) is int and 0 <= length <= 51) if kind == "string" else length is None)
+    require(fmt in {"missing", "empty", "not_text", "invalid", "over_limit",
+                    "date_only", "naive_datetime", "unknown_offset_datetime", "aware_datetime"})
+    state, calendar = row.get("finish_state"), row.get("source_finish_date")
+    if calendar is not None:
+        require(isinstance(calendar, str) and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", calendar))
+        require(datetime.fromisoformat(calendar).date().isoformat() == calendar)
+    if state == "known":
+        require(kind == "string" and 1 <= length <= 50 and fmt == "aware_datetime" and calendar is None
+                and not re.search(r"-00(?::?00)?$", row.get("finish_time", "")))
+    elif state == "timezone_missing":
+        require(kind == "string" and 1 <= length <= 50 and fmt in {"naive_datetime", "unknown_offset_datetime"} and calendar is not None)
+    elif state == "calendar_date_only":
+        require(kind == "string" and length == 10 and fmt == "date_only" and calendar is not None)
+    elif state == "not_returned":
+        require((kind == "null" and fmt == "missing") or (kind == "string" and length == 0 and fmt == "empty"))
+        require(calendar is None)
+    elif state == "invalid_type":
+        require(kind not in {"null", "string"} and fmt == "not_text" and calendar is None)
+    elif state == "invalid_format":
+        require(kind == "string" and ((fmt == "invalid" and 1 <= length <= 50)
+                or (fmt == "over_limit" and length == 51)) and calendar is None)
+    else:
+        raise ValueError("invalid receipt")
+    return {"source_finish_date": calendar,
+        "finish_shape": {"stage": "reader_normalized", "value_type": kind, "length": length, "format": fmt}}
+
+
+def placement_evidence(value):
+    require(isinstance(value, dict))
+    if "error" in value:
+        return {"error": code(value["error"])}
+    require(value.get("source") == "avito_core_v1_owned_item_detail"
+            and type(value.get("connection_id")) is int and value["connection_id"] == 4
+            and value.get("account_id") == "446312402")
+    requested = integer(value.get("requested"), 20)
+    checked = integer(value.get("checked"), 20)
+    known = integer(value.get("terms_known"), 20)
+    require(1 <= requested and known <= checked <= requested)
+    require(type(value.get("complete")) is bool
+            and value["complete"] == (checked == requested)
+            and type(value.get("status_scan_complete")) is bool
+            and value.get("provider_write_performed") is False
+            and value.get("local_snapshot_changed") is False)
+    raw_rows = value.get("rows")
+    require(isinstance(raw_rows, list) and len(raw_rows) == requested)
+    rows, ids = [], set()
+    for row in raw_rows:
+        require(isinstance(row, dict))
+        item_id = identifier(row.get("avito_id"))
+        require(item_id not in ids)
+        ids.add(item_id)
+        if "error" in row:
+            rows.append({"avito_id": item_id, "error": code(row["error"])})
+            continue
+        require(row.get("status") in STATES
+                and row.get("finish_state") in {"known", "not_returned", "invalid", "timezone_missing",
+                    "calendar_date_only", "invalid_type", "invalid_format"}
+                and row.get("identity_state") in {"matched", "not_returned"})
+        checked_at = release_timestamp(row.get("checked_at"))
+        require(checked_at is not None)
+        finish = release_timestamp(row.get("finish_time"))
+        require((finish is not None) == (row["finish_state"] == "known"))
+        rows.append({"avito_id": item_id, "status": row["status"], "checked_at": checked_at,
+            "finish_time": finish, "finish_state": row["finish_state"],
+            "identity_state": row["identity_state"]} | placement_finish_metadata(row))
+    require(sum("error" not in row for row in rows) == checked
+            and sum(row.get("finish_state") == "known" for row in rows) == known)
+    return {"source": value["source"], "connection_id": 4, "account_id": "446312402",
+        "requested": requested, "checked": checked, "complete": value["complete"],
+        "terms_known": known, "status_scan_complete": value["status_scan_complete"], "rows": rows,
+        "provider_write_performed": False, "local_snapshot_changed": False}
+
+
 def connection(value):
     require(isinstance(value, dict))
     result = {"connection_id": integer(value.get("connection_id"))}
@@ -1070,6 +1167,12 @@ def connection(value):
                          ("media_readiness", media_readiness), ("operation_ledger", operation_ledger)):
         if key in value:
             result[key] = project(value[key])
+    if "placement_evidence" in value:
+        try:
+            require(result["connection_id"] == 4 and result["account_id"] == "446312402")
+            result["placement_evidence"] = placement_evidence(value["placement_evidence"])
+        except (ValueError, TypeError, KeyError, OverflowError):
+            result["placement_evidence"] = {"error": "audit_placement_evidence_unavailable"}
     if "statistics_source_evidence" in value:
         try:
             require(result["connection_id"] == 4 and result["account_id"] == "446312402")

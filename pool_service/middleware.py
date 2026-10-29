@@ -78,8 +78,10 @@ class AuthRedirectMiddleware:
         if not request.user.is_authenticated:
             path = request.path
             if path in {
-                "/crm/workspace/data/", "/crm/workspace/clients/", "/crm/workspace/commands/",
-            } or path.startswith("/crm/workspace/deals/"):
+                "/crm/workspace/data/", "/crm/workspace/clients/", "/crm/workspace/commands/", "/crm/workspace/objects/",
+            } or path.startswith("/crm/workspace/deals/") or (
+                path.startswith("/crm/workspace/leads/") and path != "/crm/workspace/leads/"
+            ):
                 response = JsonResponse({
                     "error": "Войдите в сервис, затем повторите действие.", "code": "auth_required",
                 }, status=401)
@@ -92,9 +94,11 @@ class AuthRedirectMiddleware:
                 "/mcp/finance",
                 "/mcp/1c",
                 "/mcp/operations",
+                "/mcp/avito",
                 "/.well-known/oauth-protected-resource/mcp/finance",
                 "/.well-known/oauth-protected-resource/mcp/1c",
                 "/.well-known/oauth-protected-resource/mcp/operations",
+                "/.well-known/oauth-protected-resource/mcp/avito",
                 "/.well-known/oauth-authorization-server",
                 "/.well-known/oauth-authorization-server/onec-diagnostic",
                 "/.well-known/oauth-authorization-server/operations",

@@ -9249,6 +9249,7 @@ def water_reading_create(request, pool_uuid):
                     messages.info(request, "Такие показания уже сохранены.")
                 return redirect("pool_detail", pool_uuid=pool.uuid)
 
+            reading._source_actor_id = request.user.pk
             reading.save()
             _write_data_audit(
                 request,
@@ -9354,6 +9355,7 @@ def water_reading_edit(request, reading_uuid):
 
             updated.added_by = reading.added_by
 
+            updated._source_actor_id = request.user.pk
             updated.save()
             _write_data_audit(
                 request,
