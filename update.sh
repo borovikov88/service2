@@ -308,6 +308,11 @@ python -m pip install --disable-pip-version-check -r requirements.txt --quiet
 echo "===== Running Django deployment checks ====="
 python manage.py check --deploy
 
+echo "===== Verifying private database backup before migrations ====="
+# Borrow the existing EX locks 8/9; never open a second deployment lock here.
+# The inner 300s guard stops native children; the outer watchdog fails closed.
+timeout --signal=TERM --kill-after=10 330 python scripts/crm_pre_migrate_backup.py --expected-sha "$EXPECTED_SHA"
+
 echo "===== Applying migrations ====="
 python manage.py migrate --noinput
 

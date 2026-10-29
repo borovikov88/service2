@@ -84,3 +84,44 @@ class DeployPreflightIntegrationTests(SimpleTestCase):
         self.assertEqual(self._git_snapshot(), before)
         self.assertFalse((self.host / "tmp/restart.txt").exists())
 
+    def _deploy_with_new_gate(self, fail):
+        import shlex
+        # The existing checkout has no gate. Only the streamed new script knows
+        # about it; checkout must happen before the new helper can run.
+        self.assertFalse((self.app / 'scripts/crm_pre_migrate_backup.py').exists())
+        scripts = self.seed / 'scripts'; scripts.mkdir()
+        (scripts / 'crm_pre_migrate_backup.py').write_text(
+            'from pathlib import Path\nimport sys\n'
+            'for fd in (8,9):\n'
+            '    assert "FLOCK  ADVISORY  WRITE" in Path(f"/proc/self/fdinfo/{fd}").read_text()\n'
+            'with Path("../tmp/events").open("a") as f: f.write("backup\\n")\n'
+            + ('sys.exit(2)\n' if fail else 'Path("../tmp/gate-verified").write_text(sys.argv[-1])\n'))
+        (self.seed / 'manage.py').write_text(
+            'from pathlib import Path\nimport sys\n'
+            'with Path("../tmp/events").open("a") as f: f.write(sys.argv[1]+"\\n")\n'
+            'if sys.argv[1]=="migrate":\n'
+            '    assert Path("../tmp/gate-verified").exists()\n'
+            '    sys.exit(42) # Stop the synthetic deployment before further operations.\n')
+        self._run('git','-C',str(self.seed),'add','.')
+        self._run('git','-C',str(self.seed),'-c','user.name=Test','-c','user.email=test@example.invalid','commit','-m','new gate')
+        self._run('git','-C',str(self.seed),'push','origin','main')
+        target=self._output('git','-C',str(self.seed),'rev-parse','HEAD').strip()
+        binary=self.host/'venv/bin/python'; binary.unlink()
+        binary.write_text('#!/usr/bin/env bash\nif [[ "$1" == -m && "$2" == pip ]]; then exit 0; fi\nexec '+shlex.quote(sys.executable)+' "$@"\n')
+        binary.chmod(0o755)
+        (self.host/'venv/bin/activate').write_text('export PATH='+shlex.quote(str(self.host/'venv/bin'))+':"$PATH"\n')
+        result=subprocess.run(['bash','-s','--',target,str(self.app)],input=self.script.read_text(),capture_output=True,text=True,timeout=20)
+        self.assertEqual(self._output('git','-C',str(self.app),'rev-parse','HEAD').strip(),target)
+        self.assertFalse((self.host/'tmp/restart.txt').exists())
+        events=(self.host/'tmp/events').read_text().splitlines()
+        return result,events
+
+    def test_first_deploy_checkout_new_gate_before_migrate(self):
+        result,events=self._deploy_with_new_gate(False)
+        self.assertEqual(result.returncode,42,result.stderr)
+        self.assertEqual(events,['check','backup','migrate'])
+
+    def test_backup_failure_after_checkout_never_migrates_or_restarts(self):
+        result,events=self._deploy_with_new_gate(True)
+        self.assertEqual(result.returncode,2,result.stderr)
+        self.assertEqual(events,['check','backup'])
