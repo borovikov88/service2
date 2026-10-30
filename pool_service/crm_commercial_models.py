@@ -397,7 +397,7 @@ class CrmEvent(CommercialModel):
 
     def clean(self):
         super().clean()
-        allowed = {"work_subject_changed", "planned_object_changed", "object_kind", "pool_id", "client_object_id", "specialization_changed", "fulfillment_kind", "amount", "currency", "amount_basis", "expected_decision_at", "outcome", "closed_at", "stage_id", "pipeline_id", "manager_id", "assignee_id", "revision", "is_archived", "status", "result", "needs_review", "column", "title_changed", "need_changed", "next_action_changed"}
+        allowed = {"work_subject_changed", "planned_object_changed", "object_kind", "pool_id", "client_object_id", "specialization_changed", "fulfillment_kind", "amount", "currency", "amount_basis", "expected_decision_at", "outcome", "closed_at", "stage_id", "pipeline_id", "manager_id", "assignee_id", "revision", "is_archived", "status", "result", "needs_review", "column", "title_changed", "need_changed", "next_action_changed", "manual_completion_exception"}
         if not isinstance(self.safe_diff, dict) or not self.safe_diff.keys() <= allowed:
             raise ValidationError("Event diff accepts only structural CRM fields.")
         for field, change in self.safe_diff.items():
@@ -441,7 +441,7 @@ class CrmEvent(CommercialModel):
                 if any(type(value) is not str or value not in {"new", "working", "qualifying", "waiting", "deferred", "closed"} for value in change.values()):
                     raise ValidationError("Event status must be a known lead state.")
                 continue
-            if field in {"needs_review", "title_changed", "need_changed", "next_action_changed", "work_subject_changed", "planned_object_changed", "specialization_changed"} and any(type(value) is not bool for value in change.values()):
+            if field in {"needs_review", "title_changed", "need_changed", "next_action_changed", "work_subject_changed", "planned_object_changed", "specialization_changed", "manual_completion_exception"} and any(type(value) is not bool for value in change.values()):
                 raise ValidationError("Content markers must be booleans.")
             if any(value is not None and type(value) not in (int, bool) for value in change.values()):
                 raise ValidationError("Event values must be IDs, revisions or booleans.")
