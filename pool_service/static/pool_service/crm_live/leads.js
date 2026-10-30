@@ -202,7 +202,7 @@
       byId("lead-prev").disabled = state.loading || data.page <= 1; byId("lead-next").disabled = state.loading || data.page >= data.pages;
       byId("lead-create").hidden = !data.can_create;
       const intake = data.intake || {};
-      byId("lead-intake-status").textContent = "Приём обращений: " + (!intake.enabled ? "выключен" : intake.needs_attention ? "требует проверки" : !intake.last_run_at ? "ожидает первого запуска" : "включён") + (intake.last_run_at ? " · Последний запуск: " + dateText(intake.last_run_at) : "");
+      byId("lead-intake-status").textContent = "Приём обращений: " + (!intake.enabled ? "выключен" : intake.needs_attention ? "требует проверки" : !intake.last_run_at ? "ожидает первого запуска" : "включён") + (intake.last_run_at ? " · Последняя попытка обработки: " + dateText(intake.last_run_at) : "");
       root.querySelectorAll("[data-mode]").forEach((node) => { if (node.dataset.mode === state.mode) node.setAttribute("aria-current", "page"); else node.removeAttribute("aria-current"); });
       if (state.mode === "closed") {
         list.append(el("h2", "", "История завершённых"));

@@ -115,8 +115,9 @@ def capture_source(source_type, source):
         if latest.source_key != key:
             raise ValueError("inbox_source_binding_changed")
         if latest.fingerprint == digest:
+            _wake_after_commit(latest)
             return latest
-    return CrmInboxEvent.objects.create(organization_id=org_id, source_type=source_type, source_id=source.pk,
+    event = CrmInboxEvent.objects.create(organization_id=org_id, source_type=source_type, source_id=source.pk,
         source_key=key, provider_kind=scope["provider"], connection_id_snapshot=scope["connection"],
         channel_id_snapshot=scope["channel"], account_id_snapshot=scope["account"], namespace=scope["namespace"],
         external_id=scope["external"], scope_verified=verified, revision=(latest.revision + 1 if latest else 1),
@@ -124,6 +125,13 @@ def capture_source(source_type, source):
         received_at=source.intake_received_at or source.created_at, origin=source.intake_origin if verified else "legacy",
         historical=(source.intake_revision_historical if source_type == "call" else source.intake_historical) if verified else True,
         state="pending" if verified else "blocked", error_code="" if verified else "legacy_scope_unknown")
+    _wake_after_commit(event)
+    return event
+
+
+def _wake_after_commit(event):
+    from .crm_intake_wakeup import schedule_wakeup
+    schedule_wakeup(event)
 
 
 def _locked_source(source_type, source_id, channel_id, organization_id):

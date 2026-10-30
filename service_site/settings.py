@@ -189,6 +189,9 @@ COMMUNICATION_TIME_ZONE = os.getenv(
     "COMMUNICATION_TIME_ZONE",
     ONEC_FINANCE_TIME_ZONE,
 )
+# Opt-in only after independent same-host periodic recovery is verified.
+CRM_INTAKE_EVENT_WAKEUP_ENABLED = _env_bool("CRM_INTAKE_EVENT_WAKEUP_ENABLED", False)
+
 COMMUNICATION_RECORDING_DOWNLOAD_INLINE = _env_bool(
     "COMMUNICATION_RECORDING_DOWNLOAD_INLINE",
     True,
