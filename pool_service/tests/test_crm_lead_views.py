@@ -54,6 +54,32 @@ class LeadWorkspaceTests(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         return response.json()["lead"]
 
+    def test_serving_runtime_uses_web_settings_and_is_owner_only(self):
+        from django.test import override_settings
+        from pool_service.services.crm_intake_wakeup import MODULE_LOADED_AT
+        url = self.url("crm_live_lead_data")
+        with override_settings(CRM_INTAKE_EVENT_WAKEUP_ENABLED=False):
+            response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        runtime = response.json()["intake"]["serving_runtime"]
+        self.assertEqual(set(runtime), {"contract", "module_loaded_at", "observed_at",
+            "event_wakeup_enabled", "configuration_gate", "event_gate", "scope"})
+        self.assertFalse(runtime["event_wakeup_enabled"])
+        self.assertEqual(runtime["module_loaded_at"], MODULE_LOADED_AT)
+        self.assertEqual(runtime["event_gate"], "not_observed")
+        self.assertIn("no-store", response["Cache-Control"])
+        with override_settings(CRM_INTAKE_EVENT_WAKEUP_ENABLED=True):
+            second = self.client.get(url).json()["intake"]["serving_runtime"]
+        self.assertTrue(second["event_wakeup_enabled"])
+        self.assertEqual(second["module_loaded_at"], runtime["module_loaded_at"])
+        self.membership.role = "manager"
+        self.membership.save()
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("serving_runtime", response.json()["intake"])
+        self.client.logout()
+        self.assertEqual(self.client.get(url).status_code, 401)
+
     def test_intake_status_is_scoped_without_queue_scan_or_false_zero(self):
         from pool_service.crm_commercial_models import CrmIntakeActivation
         activation=CrmIntakeActivation.objects.create(organization=self.org, last_run_at=timezone.now(), last_error="worker_failed")
