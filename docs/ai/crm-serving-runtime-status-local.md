@@ -42,6 +42,7 @@ another speculative diagnostic sink or weaken guards. The earlier file snapshot
 can still supply evidence when a current callback actually fails.
 
 Access prerequisite: the operator has verified an existing authenticated admin
-session and HTTP 200 for this data route. No relogin, role changes or superuser
+session and readable expected JSON for this data route. The numeric HTTP status
+was not separately observed. No relogin, role changes or superuser
 lookup are needed. Production identities/details are intentionally not stored here.
 Actual runtime fields remain unavailable until a separately authorised release.
