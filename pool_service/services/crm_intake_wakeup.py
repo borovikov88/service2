@@ -44,4 +44,9 @@ def wake():
             metadata = failure_metadata(error)
         except Exception:
             pass
+        try:
+            from scripts.crm_wakeup_diagnostic import record_failure
+            record_failure(settings.BASE_DIR, metadata)
+        except Exception:
+            pass
         logger.warning("crm_intake_wakeup_unavailable code=%s errno=%s real_effective_uid_equal=%s; durable inbox retained", *metadata)
