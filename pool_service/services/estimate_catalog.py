@@ -19,11 +19,12 @@ from . import estimate_embedded as embedded
 from . import estimate_lighting as lighting
 from . import estimate_temperature_control as temperature
 from . import estimate_filter_media as filter_media
+from . import estimate_uv as uv
 from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requirement, heating_types, row_heating_type, ensure_heating_rows, make_row, string
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
-CACHE_KEY = "pool-estimate-shop-v29"
+CACHE_KEY = "pool-estimate-shop-v30"
 CACHE_SECONDS = 900
 MAX_BYTES = 20_000_000
 FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
@@ -187,6 +188,7 @@ def parse_catalog(payload, checked_at=None):
         from .estimate_plaster_catalog import classify as classify_plaster
         classify_plaster(specs,name,brand,description,offer)
         classify_geotextile(specs, name, description, category_path(offer.findtext("categoryId")), offer)
+        uv.classify(specs, name, category_path(offer.findtext('categoryId')))
         from .estimate_heater_purpose import purpose_note
         specs['heater_purpose_note'] = purpose_note(name, category_path(offer.findtext('categoryId')), url, description) if specs['heater_type'] == 'heatpump' else ''
         circulation_section = (bool(re.search(r"циркуляцион\w* насос", category, re.I))
@@ -301,6 +303,8 @@ def candidate_reason(product, inputs, required_flow, *, for_auto=False):
             return blocked or 'Проверить: ' + ', '.join(missing) + '.'
     if product['kind'] == 'filter_valve':
         return 'Проверьте совместимость шестипозиционного клапана с артикулом и исполнением выбранного фильтра; один бренд или диаметр не подтверждает совместимость.'
+    if product['kind'] == 'uv':
+        return uv.CHECK
     if product['kind'] == 'level_regulator':
         from .estimate_level_control import regulator_reason
         return regulator_reason(product)
@@ -330,6 +334,8 @@ def candidate_reason(product, inputs, required_flow, *, for_auto=False):
 
 def apply_product(row, product, catalog, selection="manual"):
     from .estimate_liner import validate_selection
+    if row['kind'] == 'uv' and product['kind'] != 'uv':
+        raise EstimateInputError('Для строки УФ-установки выберите полную УФ-установку; лампы, колбы и другие товары не подходят для этой позиции.')
     validate_selection(row, product)
     row['construction_price'] = None
     row['construction_price_suspended'] = False
@@ -604,7 +610,7 @@ def search_catalog(catalog, query, kind, brand, inputs, required_flow, variant="
     query = search_text(string(query, "Поиск товара", 120)).split()
     kind = string(kind, "Тип товара", 20)
     brand = string(brand, "Бренд", 80)
-    if kind not in {*lighting.ROLES, "thermostat", "filter_media", "filter_gravel", "filter_valve", "liner", "liner_corner", "plaster_component", "", "other", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "level_regulator", "level_inlet", "treatment", "control_panel", "geotextile", *embedded.ROLES}:
+    if kind not in {*lighting.ROLES, "uv", "thermostat", "filter_media", "filter_gravel", "filter_valve", "liner", "liner_corner", "plaster_component", "", "other", "pump", "filter", "heater", "circulation_pump", "solenoid_valve", "level_regulator", "level_inlet", "treatment", "control_panel", "geotextile", *embedded.ROLES}:
         raise EstimateInputError("Неизвестный тип товара.")
     def matches_kind(product):
         if kind == 'level_inlet':return product['kind'] in {'inlet','vacuum'}
@@ -689,6 +695,10 @@ def refresh_prices(snapshot, catalog, variant_key):
                 origin['filter_media']=deepcopy(new)
                 filter_media.selected(row,product)
                 row['catalog_review_note']=''
+            if row['kind'] == 'uv' and product['kind'] != 'uv':
+                row['catalog_review_note']='Назначение товара как полной УФ-установки больше не подтверждено; сохранена прежняя цена. Проверьте выбранный товар.'
+                skipped += 1
+                continue
             row["price"] = product["price"]
             origin.update(price=product["price"], available=product["available"], availability=deepcopy(product.get('availability', {})), missing=False, checked_at=catalog["checked_at"], feed_date=catalog["feed_date"])
             updated += 1
