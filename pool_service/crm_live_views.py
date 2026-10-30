@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.db.models import Count, F, Q, Sum
+from django.db.models import Count, F, Q, Sum, OuterRef, Subquery
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -27,7 +27,7 @@ from .crm_commercial_models import CrmAccess, CrmDeal, CrmEvent, CrmPipeline
 from .models import Client, Organization, OrganizationAccess, ServiceTask
 from .services.crm_commercial_access import can_view_team_deals
 from .services.crm_commercial_commands import (
-    CARD_FIELDS, PREPARATORY_STAGES, CommercialConflict, close_commercial_deal_negative, create_commercial_deal,
+    CARD_FIELDS, PREPARATORY_STAGES, MANUAL_STAGES, FINAL_STAGE_REASON, CommercialConflict, close_commercial_deal_negative, create_commercial_deal,
     execute_commercial_command, set_deal_next_action,
 )
 from .services.task_feedback import version_for, waiting_control
@@ -181,6 +181,10 @@ def _object_data(deal, pools, owned):
 
 def _serialize_deals(deals, user, organization, grant, *, detail=False):
     deals = list(deals)
+    final_ids = [deal.pk for deal in deals if deal.stage.code == "completed" and deal.outcome == "open"]
+    evidence = dict(CrmDeal.objects.filter(organization=organization,pk__in=final_ids).annotate(
+        latest_diff=Subquery(CrmEvent.objects.filter(organization=organization,deal_id=OuterRef("pk"),event_type="deal.transition").order_by("-pk").values("safe_diff")[:1])
+    ).values_list("pk","latest_diff")) if final_ids else {}
     pools, owned = _object_maps(deals, user, organization)
     tasks = {deal.pk: _task_for(deal) for deal in deals}
     task_ids = {task.pk for task, _invalid in tasks.values() if task}
@@ -219,6 +223,9 @@ def _serialize_deals(deals, user, organization, grant, *, detail=False):
             "id": deal.pk, "title": deal.title, "revision": deal.revision,
             "pipeline_id": deal.pipeline_id, "stage_id": deal.stage_id,
             "outcome": deal.outcome, "is_archived": deal.is_archived,
+            "unverified_completion_stage": deal.stage.code == "completed" and deal.outcome == "open",
+            "manual_completion": deal.pk in final_ids and (evidence.get(deal.pk) or {}).get("manual_completion_exception",{}).get("after") is True,
+            "completion_warning": FINAL_STAGE_REASON if deal.stage.code == "completed" and deal.outcome == "open" else "",
             "work_subject": deal.work_subject, "specialization": deal.specialization,
             "fulfillment_kind": deal.fulfillment_kind, "object": object_data,
             "amount": format(deal.amount, ".2f") if deal.amount is not None else None,
@@ -236,7 +243,7 @@ def _serialize_deals(deals, user, organization, grant, *, detail=False):
             "manager": {"id": deal.manager_id, "name": _label(deal.manager)},
             "can_edit": writable and _write_capability(grant, organization, "edit_own_deals"),
             "can_transition": writable and _write_capability(grant, organization, "transition_own_deals")
-                and deal.pipeline.is_active and deal.stage.code in PREPARATORY_STAGES.get(deal.pipeline.code, ()),
+                and deal.pipeline.is_active and deal.stage.code in MANUAL_STAGES.get(deal.pipeline.code, ()),
             "can_next_action": writable and _write_capability(grant, organization, "manage_own_next_action")
                 and not (next_action and (next_action.get("restricted") or next_action.get("waiting"))),
             "next_action": next_action,
@@ -321,7 +328,9 @@ def _workspace_data(request, organization):
             and _write_capability(grant, organization, "manage_own_next_action") and bool(pipelines)},
         "pipelines": [{"id": pipeline.pk, "code": pipeline.code, "name": pipeline.name,
             "stages": [{"id": stage.pk, "code": stage.code, "name": stage.name, "position": stage.position,
-                "can_transition": stage.is_active and stage.code in PREPARATORY_STAGES.get(pipeline.code, ())}
+                "can_transition": stage.is_active and stage.code in MANUAL_STAGES.get(pipeline.code, ()),
+                "requires_manual_confirmation": stage.code == "completed",
+                "transition_block_reason": "Этап отключён" if not stage.is_active else ""}
                 for stage in pipeline.stages.all()]} for pipeline in pipelines],
         "deals": _serialize_deals(deals[:PAGE_SIZE], request.user, organization, grant),
         "selected_pipeline_id": pipeline_id, "has_more": len(deals) > PAGE_SIZE,
@@ -483,6 +492,7 @@ def detail(request, deal_id):
         "at": event.occurred_at.isoformat(), "actor": _label(event.actor),
         # Task content remains in its protected source. Only stage-change
         # reasons belong on the team-visible deal timeline in this release.
+        "manual_completion_exception": event.safe_diff.get("manual_completion_exception", {}).get("after", False),
         "reason": event.reason if event.event_type in {"deal.transition", "deal.close_negative"} else "",
     } for event in events]})
 

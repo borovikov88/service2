@@ -1,4 +1,5 @@
 {% extends 'pool_service/base.html' %}
+{% load crm_money %}
 {% block content %}
 <div class="container py-3" style="overflow-wrap:anywhere" data-service-bindings>
 <h1>Обслуживание: документы и периоды</h1><h2 class="h5">{{ deal.title }}</h2>
@@ -17,7 +18,7 @@
 <button class="btn btn-primary my-2">Прочитать документ</button></form>
 {% if snapshot %}<section data-source-preview><h2 class="h5">Документ {{ snapshot.document_ref }}</h2>
 <p>Договор {{ snapshot.contract_ref }} · Дата {{ snapshot.document_date }}. Версия снимка {{ snapshot.snapshot_hash|slice:':12' }}.</p>
-{% for line in snapshot.lines %}<p>Строка {{ line.number }} · Номенклатура {{ line.nomenclature }} · Количество {{ line.quantity }} · Всего {{ line.total }}</p>{% endfor %}
+{% for line in snapshot.lines %}<p>Строка {{ line.number }} · Номенклатура {{ line.nomenclature }} · Количество {{ line.quantity }} · Всего {{ line.total|crm_money }}</p>{% endfor %}
 {% if source_blocked %}<p role="alert">Документ заблокирован: будущий, непроведённый, удалённый, неоднозначный либо корректировочный. Отрицательные корректировки требуют отдельного правила; они не заменяются нулём.</p>
 {% else %}<form method="post" data-allocation-form>{% csrf_token %}<input type="hidden" name="action" value="save"><input type="hidden" name="selection" value="{{ selection }}">
 <div data-allocations><div data-allocation-row class="row g-2 mb-2">
@@ -35,7 +36,7 @@
 {% endif %}
 <h2 class="h5 mt-4">История</h2>
 {% for doc in documents %}<section class="border p-2 my-2"><h3 class="h6">{{ doc.document_ref }}</h3><p>Статус: {{ doc.status }} · Ревизия {{ doc.revision }}</p>
-{% for version in doc.history %}<details><summary>Версия {{ version.revision }} · {{ version.created_at }}</summary><p>{{ version.reason }}</p>{% for allocation in version.allocations %}<p>Строка {{ allocation.line_number }} · {{ allocation.month }} · {{ allocation.quantity }} · {{ allocation.amount }}</p>{% endfor %}</details>{% endfor %}{% for event in doc.recent_events %}<p>{{ event.created_at }} · {{ event.kind }}</p>{% endfor %}</section>{% empty %}<p>Привязок пока нет.</p>{% endfor %}
+{% for version in doc.history %}<details><summary>Версия {{ version.revision }} · {{ version.created_at }}</summary><p>{{ version.reason }}</p>{% for allocation in version.allocations %}<p>Строка {{ allocation.line_number }} · {{ allocation.month }} · {{ allocation.quantity }} · {{ allocation.amount|crm_money }}</p>{% endfor %}</details>{% endfor %}{% for event in doc.recent_events %}<p>{{ event.created_at }} · {{ event.kind }}</p>{% endfor %}</section>{% empty %}<p>Привязок пока нет.</p>{% endfor %}
 </div>
 <script>document.querySelector('[data-add-allocation]')?.addEventListener('click',()=>{const box=document.querySelector('[data-allocations]');if(box.children.length>=200)return;const row=box.firstElementChild.cloneNode(true);row.querySelectorAll('input').forEach(el=>el.value='');box.appendChild(row);});</script>
 {% endblock %}

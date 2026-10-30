@@ -1,6 +1,7 @@
 """Browser supplies selections only; document amounts always come from a fresh server read."""
 from datetime import date
 from decimal import Decimal,InvalidOperation
+from .crm_money import parse_money_input
 from uuid import uuid4
 from django.contrib.auth.decorators import login_required
 from django.core import signing
@@ -59,7 +60,7 @@ def workspace(request,deal_id):
                     lines={line.number:line for line in snapshot.lines};items=[]
                     for number,month,quantity,amount in zip(*columns):
                         n=int(number);line=lines[n]
-                        items.append(Allocation(n,line.content_hash,date.fromisoformat(month+'-01'),Decimal(quantity),Decimal(amount)))
+                        items.append(Allocation(n,line.content_hash,date.fromisoformat(month+'-01'),Decimal(quantity),parse_money_input(amount)))
                     result=save_allocations(actor=actor,organization_id=org.pk,deal_id=deal.pk,snapshot=snapshot,
                         allocations=items,operation_key=token['operation'],expected_revision=token['revision'],expected_snapshot_hash=token['hash'],
                         confirm_contract=request.POST.get('contract_confirm')=='yes',confirm_service=request.POST.get('service_confirm')=='yes',

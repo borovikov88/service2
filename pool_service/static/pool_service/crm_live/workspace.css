@@ -19,3 +19,7 @@ html[data-theme=dark] .crm-live{--crm-bg:#0d1726;--crm-panel:#142237;--crm-soft:
 @media(min-width:1200px){.crm-live-card-filters{grid-template-columns:repeat(6,minmax(0,1fr))}}
 @media(max-width:600px){.crm-live-card-filters{grid-template-columns:repeat(2,minmax(0,1fr))}.crm-live-card-filters input{font-size:16px}}
 .crm-live-pagination{display:flex;align-items:center;justify-content:center;gap:14px;margin:18px 0}
+
+#crm-live-dialog-caption{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.crm-live-copy-link{white-space:nowrap}
+
+.crm-live-completion-warning{padding:14px;border-radius:9px;background:var(--crm-amber-soft);color:var(--crm-amber)!important;border:1px solid var(--crm-line);font-size:13px;line-height:1.5}

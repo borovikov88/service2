@@ -31,6 +31,12 @@ class BindingHTTPTests(BindingFixture,TestCase):
         self.assertEqual(ServiceAllocationVersion.objects.count(),1)
         self.assertContains(self.client.get(self.url),'manually_allocated')
 
+    def test_localized_amount_is_decimal_allocation_not_new_source_value(self):
+        with patch.object(reader,'read_document',return_value=self.snapshot):
+            form=self.save_form(self.preview());form['amount']='60,00'
+            self.assertEqual(self.client.post(self.url,form).status_code,302)
+        self.assertEqual(ServiceAllocationVersion.objects.get().allocations[0]['amount'],'60.00')
+
     def test_changed_source_requires_new_explicit_selection(self):
         with patch.object(reader,'read_document',return_value=self.snapshot): preview=self.preview()
         changed=replace(self.snapshot,snapshot_hash='e'*64,observed_at=timezone.now().isoformat())
