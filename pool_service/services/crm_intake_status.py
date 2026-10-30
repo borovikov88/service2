@@ -20,3 +20,19 @@ def intake_status(organization, activation, *, now=None):
         # Global org counts could reveal private calls or inaccessible channels.
         "backlog": {"status": "unavailable", "count": None},
     }
+
+
+def can_read_serving_runtime(user, organization):
+    """Org admin/owner/superuser policy, additionally subject to CRM read access.
+
+    Encapsulated here to avoid importing the large views module (_is_org_admin_or_owner).
+    No global permission or membership is created or changed.
+    """
+    from django.contrib.auth import get_user_model
+    from pool_service.models import OrganizationAccess
+    from .crm_lead_access import can_view_leads
+    if not can_view_leads(user, organization):
+        return False
+    actor = get_user_model().objects.filter(pk=user.pk, is_active=True).first()
+    return bool(actor and (actor.is_superuser or OrganizationAccess.objects.filter(
+        user_id=actor.pk, organization=organization, role__in=("owner", "admin")).exists()))

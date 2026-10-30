@@ -54,7 +54,7 @@ class LeadWorkspaceTests(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         return response.json()["lead"]
 
-    def test_serving_runtime_uses_web_settings_and_is_owner_only(self):
+    def test_serving_runtime_uses_web_settings_and_administrative_policy(self):
         from django.test import override_settings
         from pool_service.services.crm_intake_wakeup import MODULE_LOADED_AT
         url = self.url("crm_live_lead_data")
@@ -77,6 +77,24 @@ class LeadWorkspaceTests(TestCase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("serving_runtime", response.json()["intake"])
+        self.membership.role = "admin"
+        self.membership.save()
+        self.assertIn("serving_runtime", self.client.get(url).json()["intake"])
+        self.membership.role = "manager"
+        self.membership.save()
+        self.actor.is_superuser = True
+        self.actor.save(update_fields=["is_superuser"])
+        self.assertIn("serving_runtime", self.client.get(url).json()["intake"])
+        foreign = Organization.objects.create(name="Synthetic foreign runtime")
+        self.assertEqual(self.client.get(self.url("crm_live_lead_data", org=foreign.pk)).status_code, 403)
+        self.grant.view_leads = False
+        self.grant.save(update_fields=["view_leads"])
+        self.assertEqual(self.client.get(url).status_code, 403)
+        self.grant.view_leads = True
+        self.grant.save(update_fields=["view_leads"])
+        self.actor.is_active = False
+        self.actor.save(update_fields=["is_active"])
+        self.assertEqual(self.client.get(url).status_code, 401)
         self.client.logout()
         self.assertEqual(self.client.get(url).status_code, 401)
 
