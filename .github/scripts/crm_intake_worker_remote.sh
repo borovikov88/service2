@@ -6,7 +6,8 @@ export GIT_OPTIONAL_LOCKS=0
 exec 3>&2 2>/dev/null
 fail() { printf 'CRM_INTAKE_WORKER_BLOCKED\n' >&3; exit 2; }
 trap fail ERR
-[[ $# == 2 ]] || fail
+[[ $# == 2 || ( $# == 3 && "$3" == diagnostics ) ]] || fail
+intake_mode="${3:-process}"
 # Event launcher owns the process group and its outer timeout. Keep nested
 # timeout commands in that group; scheduled invocations retain existing behavior.
 intake_timeout_options=()
@@ -39,6 +40,10 @@ intake_main="$(timeout "${intake_timeout_options[@]}" 20 git ls-remote --exit-co
 read -r intake_main_sha intake_main_ref <<< "$intake_main"
 if [[ "$intake_main_sha" != "$intake_sha" || "$intake_main_ref" != refs/heads/main ]]; then
     printf '{"status":"release_pending","processed":0}\n'; exit 0
+fi
+if [[ "$intake_mode" == diagnostics ]]; then
+    timeout --signal=TERM --kill-after=5 20 ../venv/bin/python manage.py crm_intake_diagnostics --organization 1
+    exit 0
 fi
 timeout "${intake_timeout_options[@]}" --signal=TERM --kill-after=10 55 ../venv/bin/python manage.py run_crm_intake \
     --organization 1 --limit 100 --seconds 40

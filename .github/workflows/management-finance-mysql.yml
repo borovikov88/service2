@@ -53,6 +53,16 @@ on:
       - "pool_service/services/crm_lead_*.py"
       - "pool_service/tests/test_crm_lead_*.py"
       - "pool_service/management/commands/run_crm_intake.py"
+      - "pool_service/management/commands/crm_intake_diagnostics.py"
+      - "pool_service/services/crm_intake_status.py"
+      - "pool_service/services/crm_intake_wakeup.py"
+      - "pool_service/tests/test_crm_intake_diagnostics.py"
+      - "pool_service/tests/test_crm_intake_status.py"
+      - "pool_service/tests/test_crm_intake_wakeup.py"
+      - "scripts/crm_intake_event_wakeup.py"
+      - "scripts/crm_intake_diagnostic_receipt.py"
+      - ".github/scripts/crm_intake_worker_remote.sh"
+      - ".github/workflows/crm-intake-diagnostics.yml"
       - "pool_service/management/commands/provision_crm_lead_intake.py"
       - "pool_service/crm_pilot_views.py"
       - "pool_service/services/crm_pilot_activation.py"
@@ -232,6 +242,9 @@ jobs:
             pool_service.tests.test_crm_lead_commands \
             pool_service.tests.test_crm_lead_migrations \
             pool_service.tests.test_crm_lead_intake \
+            pool_service.tests.test_crm_intake_diagnostics \
+            pool_service.tests.test_crm_intake_status \
+            pool_service.tests.test_crm_intake_wakeup \
             pool_service.tests.test_crm_lead_views \
             pool_service.tests.test_crm_lead_conversion_contacts \
             pool_service.tests.test_crm_lead_timeline \

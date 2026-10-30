@@ -98,3 +98,39 @@ organization counts would leak private/inaccessible activity. A future exact
 backlog view needs a reviewed source authorization query and query-plan evidence.
 Persisting last-success history would require a separately reviewed additive
 schema change; this minimal local package does not add one.
+
+## Proposed one-time read-only diagnostic release
+
+Existing `crm_inbox status` is read-only, but requires a known connection, performs
+uncapped whole-scope counts, and has no dedicated authorized workflow route.
+Activation/deploy workflows mutate state and must not be used as substitute reads.
+
+Local diagnostic addition: `crm_intake_diagnostics --organization 1`, reached only
+through manual `crm-intake-diagnostics.yml` on exact confirmed main, production
+Environment and existing SSH credentials/known-host checks. Reuses the guarded
+wrapper with explicit `diagnostics` mode; never invokes intake processing. The
+wrapper retains clean/main checks and locks. Busy/deploying/release_pending is an
+explicit non-collected result, not success or an empty queue.
+
+The command selects at most 101 rows per nonterminal state using the existing
+organization/state/due index and returns counts of at most 100 sampled rows,
+truncation, due age, activation flags/cutoff and last-attempt metadata. No source
+lookup, phone, message, account, raw error, client identifier or credentials.
+Claimed expiry counts are only within the capped sample, never asserted global.
+It cannot read panel cron configuration or historical ticks: these remain explicit
+unknowns. Wrapper lock acquisition only proves this instant, not worker liveness
+between runs. Diagnostics are not a delivery trigger.
+
+SSH stdout/stderr stay in a temporary private runner directory until deletion;
+a strict receipt parser emits only approved keys/types and drops untrusted noise.
+No raw output or artifacts are published. Queries do not mutate CRM, grants,
+leases, retries, sources or activation. A 20-second command bound limits an
+unexpected query plan; production EXPLAIN remains unverified until authorized.
+
+One concrete approval request: publish this combined local package as a public
+draft PR; after full Django/native MySQL/pinned browser CI and independent review,
+ready/merge/deploy it with the normal private pre-migrate backup, keeping event
+wakeup OFF; then run the diagnostic workflow once on that installed exact main.
+This does NOT authorize cron registration, intake activation, processing/requeue,
+historical backfill or changes to real CRM/1C bindings. Those remain a later
+separate decision after diagnostics and confirmed host fallback.
