@@ -138,3 +138,18 @@ class BrowserProcessBoundTests(SimpleTestCase):
         code, output = _bounded_browser_process([sys.executable, '-c', 'print("synthetic browser complete")'], {})
         self.assertEqual(code, 0)
         self.assertIn('synthetic browser complete', output)
+
+from pool_service.tests.test_crm_lead_commands import LeadFixture
+@skipUnless(os.environ.get('CRM_LEADS_BROWSER_TEST') == '1','Dedicated Chromium acceptance step enables this test')
+class LeadConversionBrowserTests(LeadFixture,StaticLiveServerTestCase):
+    def test_drag_cancel_then_mobile_explicit_atomic_conversion(self):
+        from pool_service.crm_commercial_models import CrmDeal
+        self.org.plan_type=Organization.PLAN_COMPANY_PAID;self.org.paid_until=timezone.now()+timedelta(days=30);self.org.save()
+        lead=self.create();task_id=lead.next_task_id
+        # LeadFixture uses self.client for the domain client; obtain an HTTP client separately.
+        from django.test import Client as HttpClient
+        http=HttpClient();http.force_login(self.user)
+        fixture=dict(base=self.live_server_url,path=reverse('crm_live_leads')+'?org_id='+str(self.org.pk),leadId=lead.pk,command=reverse('crm_live_lead_command'),sessionCookie=http.cookies[settings.SESSION_COOKIE_NAME].value,sessionCookieName=settings.SESSION_COOKIE_NAME)
+        code,output=_bounded_browser_process(['node',str(Path(__file__).with_name('crm_lead_conversion.browser.cjs'))],fixture)
+        self.assertEqual(code,0,output);lead.refresh_from_db();deal=CrmDeal.objects.get()
+        self.assertEqual((lead.result,deal.next_action.task_link.task_id),('qualified',task_id))
