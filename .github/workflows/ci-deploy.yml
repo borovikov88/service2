@@ -96,7 +96,7 @@ jobs:
             .github/workflows/production-health.yml .github/workflows/avito-readonly-audit.yml .github/workflows/call-recordings-sync.yml \
             .github/workflows/employee-identity-sync.yml .github/workflows/avito-status-monitor.yml \
             .github/workflows/avito-outbox-readonly.yml .github/workflows/management-finance-mysql.yml \
-            .github/workflows/crm-db-backup.yml
+            .github/workflows/crm-db-backup.yml .github/workflows/crm-intake-diagnostics.yml
       - name: Verify Avito monitor scheduling and deployment locks
         if: steps.reuse.outputs.verified != 'true'
         run: python -m unittest discover -s .github/tests -p 'test_avito*py' -v

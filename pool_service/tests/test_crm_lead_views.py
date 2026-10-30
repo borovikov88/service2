@@ -54,6 +54,25 @@ class LeadWorkspaceTests(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         return response.json()["lead"]
 
+    def test_intake_status_is_scoped_without_queue_scan_or_false_zero(self):
+        from pool_service.crm_commercial_models import CrmIntakeActivation
+        activation=CrmIntakeActivation.objects.create(organization=self.org, last_run_at=timezone.now(), last_error="worker_failed")
+        with CaptureQueriesContext(connection) as queries:
+            response=self.client.get(self.url("crm_live_lead_data"))
+        self.assertEqual(response.status_code,200)
+        status=response.json()["intake"]
+        self.assertEqual(status["last_attempt_result"],"error")
+        self.assertIsNone(status["last_successful_pass_at"])
+        self.assertIsNone(status["backlog"]["count"])
+        self.assertNotIn("worker_failed",str(status))
+        self.assertFalse(any('from pool_service_crminboxevent' in q['sql'].replace('`', '').replace(chr(34), '').lower() for q in queries))
+
+    def test_intake_status_rejects_foreign_organization(self):
+        foreign=Organization.objects.create(name="Synthetic foreign status")
+        response=self.client.get(self.url("crm_live_lead_data",org=foreign.pk))
+        self.assertEqual(response.status_code,403)
+        self.assertNotIn("intake",response.json())
+
     def test_manual_without_contact_real_task_and_qualification_in_two_independent_deals(self):
         lead = self.create()
         self.assertIsNone(lead["client"])

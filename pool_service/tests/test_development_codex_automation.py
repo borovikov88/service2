@@ -1242,7 +1242,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
             "development-codex-chatgpt-canary.yml",
             "development-codex-chatgpt-repo-canary.yml",
         }
-        manual_maintenance_workflows = {"crm-db-backup.yml"}
+        manual_maintenance_workflows = {"crm-db-backup.yml", "crm-intake-diagnostics.yml"}
         allowed_automatic_workflows = {
             "avito-status-monitor.yml",
             "avito-readonly-audit.yml",
@@ -1282,6 +1282,16 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
                                       "contents: write", "pull-requests: write", "actions: write",
                                       "manage.py migrate", "collectstatic", "restart.txt",
                                       "send_avito_outbox", "recover_avito_original_reply", "avito_outbox_recovery_remote.sh"):
+                        self.assertNotIn(forbidden, text)
+                elif workflow.name == "crm-intake-diagnostics.yml":
+                    expected_triggers = ["workflow_dispatch"]
+                    for required in ("contents: read", "environment: production", "github.ref == 'refs/heads/main'",
+                                     'test "$CONFIRM_SHA" = "$GITHUB_SHA"', 'bash -s -- %q %q diagnostics',
+                                     'crm_intake_diagnostic_receipt.py'):
+                        self.assertIn(required, text)
+                    for forbidden in ("contents: write", "actions: write", "pull-requests: write", "schedule:",
+                                      "manage.py migrate", "run_crm_intake", "update.sh", "collectstatic", "restart.txt",
+                                      "upload-artifact", "continue-on-error"):
                         self.assertNotIn(forbidden, text)
                 elif workflow.name == "crm-db-backup.yml":
                     expected_triggers = ["workflow_dispatch"]
