@@ -287,7 +287,7 @@
         if (value && !(key === "outcome" && value === "open")) url.searchParams.set(key, value);
         else url.searchParams.delete(key);
       }
-      win.history.replaceState({}, "", url);
+      win.history.replaceState(win.history.state, "", url);
     }
 
     function renderOperations() {
@@ -513,7 +513,14 @@
       dialog.scrollTop = 0;
       renderOperations();
     }
-    function closeDialog() {
+    function setDealURL(id, push) {
+      const url = new URL(win.location.href);
+      if (id != null) url.searchParams.set("deal", String(id));
+      else url.searchParams.delete("deal");
+      if (url.href !== win.location.href) win.history[push ? "pushState" : "replaceState"](null, "", url);
+    }
+    function closeDialog(updateURL = true) {
+      if (updateURL) setDealURL(null, true);
       if (state.detailController) state.detailController.abort();
       if (state.clientController) state.clientController.abort();
       state.detailGeneration += 1;
@@ -683,6 +690,29 @@
       state.drawer = {kind: "detail", id: deal.id, deal};
       dialogContent.dataset.revision = String(deal.revision);
       dialogContent.append(titleNode(deal.title));
+      const identity = section("Ссылка на сделку");
+      identity.append(element("p", "crm-live-deal-id", "ID сделки: " + deal.id));
+      // Share only the authorized entity locator, never search/filter contents.
+      const permalink = new URL(win.location.pathname, win.location.origin);
+      permalink.searchParams.set("org_id", String(bootstrap.organization_id));
+      permalink.searchParams.set("pipeline", String(deal.pipeline_id));
+      permalink.searchParams.set("deal", String(deal.id));
+      const link = field("Прямая ссылка", "text", "deal_permalink", permalink.href, false);
+      link.input.readOnly = true;
+      const copy = element("button", "crm-live-button", "Копировать ссылку");
+      copy.type = "button";
+      const feedback = element("small", "crm-live-muted"); feedback.setAttribute("role", "status");
+      copy.addEventListener("click", async () => {
+        try {
+          await win.navigator.clipboard.writeText(permalink.href);
+          if (feedback.isConnected) feedback.textContent = "Ссылка скопирована.";
+        } catch (_) {
+          if (!link.input.isConnected) return;
+          link.input.focus(); link.input.select();
+          feedback.textContent = "Не удалось скопировать автоматически. Скопируйте выделенную ссылку.";
+        }
+      });
+      identity.append(link.wrapper, copy, feedback); dialogContent.append(identity);
       const client = element("p", "crm-live-detail-client");
       const href = safeLink(deal.client?.url);
       if (href) { const link = element("a", "", deal.client.name); link.href = href; client.append(link); }
@@ -793,7 +823,8 @@
       updateFormLocks();
     }
 
-    async function openDetail(id, keepOpen) {
+    async function openDetail(id, keepOpen, updateURL = true) {
+      if (updateURL) setDealURL(id, !keepOpen);
       const generation = ++state.detailGeneration;
       if (state.detailController) state.detailController.abort();
       const controller = new AbortController();
@@ -822,6 +853,7 @@
       if (!state.data.capabilities?.create || queue.forSubject(null)) return;
       if (state.detailController) state.detailController.abort();
       state.detailGeneration += 1;
+      setDealURL(null, false);
       state.drawer = {kind: "create", selectedClient: null};
       dialogContent.replaceChildren(titleNode("Новая сделка"), element("p", "crm-live-form-note", "Выберите клиента и договоритесь о следующем шаге. Ответственным станете вы."));
       const form = newForm("create", null);
@@ -1156,6 +1188,9 @@
       for (const key of Object.keys(state.filters)) { state.filters[key] = current.get(key) || (key === "outcome" ? "open" : ""); byId("crm-live-" + key).value = state.filters[key]; }
       byId("crm-live-search").value = state.query;
       byId("crm-live-owner").value = state.owner;
+      const linked = current.get("deal");
+      if (linked && /^[1-9][0-9]{0,17}$/.test(linked)) openDetail(linked, false, false);
+      else closeDialog(false);
       loadData();
     });
     renderPipelines();
@@ -1163,7 +1198,7 @@
     syncURL();
     if (bootstrap.initial_notice) notice(bootstrap.initial_notice, true);
     const linkedDeal = new URL(win.location.href).searchParams.get("deal");
-    if (linkedDeal && /^[1-9][0-9]{0,17}$/.test(linkedDeal)) openDetail(linkedDeal);
+    if (linkedDeal && /^[1-9][0-9]{0,17}$/.test(linkedDeal)) openDetail(linkedDeal, false, false);
   }
 
   return {OperationQueue, transitionIntent, deadlineISO, localDateTime, attentionFor, editableDeadline, conflictDraft, mount};
