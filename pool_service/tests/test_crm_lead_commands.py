@@ -346,6 +346,23 @@ class LeadCommandConcurrencyTests(LeadFixture, TransactionTestCase):
         with ThreadPoolExecutor(max_workers=len(functions)) as executor:
             return list(executor.map(run, functions))
 
+    def test_two_managers_convert_free_lead_once(self):
+        lead = CrmLead.objects.create(organization=self.org, title="Free conversion race", need="Synthetic need")
+        other = get_user_model().objects.create_user("other-converter")
+        OrganizationAccess.objects.create(organization=self.org, user=other, role="manager")
+        Employee.objects.create(organization=self.org, user=other, display_name="Other synthetic manager")
+        CrmAccess.objects.create(organization=self.org, user=other, view_leads=True, take_leads=True,
+            qualify_own_leads=True, create_own_deals=True, manage_own_next_action=True)
+        changes = {"deals": [self.deal(client_id=self.client.pk)]}
+        results = self.parallel([
+            lambda: self.command("lead.qualify", changes, lead),
+            lambda: self.command("lead.qualify", changes, lead, actor=other),
+        ])
+        self.assertEqual(sum(isinstance(result, dict) for result in results), 1)
+        self.assertEqual(CrmDeal.objects.count(), 1)
+        self.assertEqual(CrmLeadDealLink.objects.filter(lead=lead).count(), 1)
+        self.assertEqual(CrmEvent.objects.filter(lead=lead).count(), 1)
+
     def test_double_take_one_owner_one_task(self):
         lead = CrmLead.objects.create(organization=self.org, title="Unassigned")
         other = get_user_model().objects.create_user("other-taker")
@@ -627,3 +644,69 @@ class LeadDispositionTests(LeadFixture, TestCase):
         self.move(lead, "working", next_action=self.action("New check after restoration"))
         self.assertEqual(lead.status, "waiting")
         self.assertEqual(lead.follow_up_at, lead.next_task.due_at)
+
+class KanbanRepairTests(LeadFixture, TestCase):
+    def test_forward_completion_no_reason_backward_and_trash_require_reason(self):
+        lead = self.create()
+        self.command('lead.disposition', {'column': 'history', 'expected_task_version': version_for(lead.next_task)}, lead)
+        lead.refresh_from_db()
+        self.assertEqual((lead.status, lead.result, lead.needs_review), ('closed', 'no_deal', False))
+        self.assertFalse(CrmDeal.objects.exists())
+        task = ServiceTask.objects.get(pk=lead.next_task_id) if lead.next_task_id else ServiceTask.objects.get()
+        self.assertTrue(task.is_archived)
+        event = CrmEvent.objects.filter(lead=lead, event_type='lead.disposition').get()
+        self.assertEqual(event.safe_diff['result']['after'], 'no_deal')
+        with self.assertRaises(ValidationError):
+            self.command('lead.disposition', {'column': 'unparsed'}, lead)
+        with self.assertRaises(ValidationError):
+            self.command('lead.disposition', {'column': 'deleted'}, lead)
+        self.command('lead.disposition', {'column': 'unparsed', 'reason': 'Review new activity'}, lead)
+        lead.refresh_from_db()
+        self.assertEqual(lead.result, 'no_deal')
+
+    def test_free_and_deleted_conversion_atomic_replay_and_take_permission(self):
+        for archived in (False, True):
+            lead = CrmLead.objects.create(organization=self.org, title='Synthetic free', is_archived=archived)
+            changes = {'need': 'Explicit pool need', 'deals': [self.deal(client_id=self.client.pk)]}
+            self.grant.take_leads = False; self.grant.save()
+            before = self.state()
+            with self.assertRaises(PermissionDenied):
+                self.command('lead.qualify', changes, lead)
+            self.assertEqual(before, self.state())
+            self.grant.take_leads = True; self.grant.save()
+            key = uuid4().hex
+            result = self.command('lead.qualify', changes, lead, key=key)
+            self.assertEqual(result, self.command('lead.qualify', changes, lead, key=key))
+            lead.refresh_from_db()
+            self.assertEqual((lead.assignee_id, lead.status, lead.result, lead.is_archived), (self.user.pk, 'closed', 'qualified', False))
+            self.assertEqual(CrmLeadDealLink.objects.filter(lead=lead).count(), 1)
+
+    def test_foreign_and_spam_not_convertible(self):
+        other = get_user_model().objects.create_user('other-kanban-owner')
+        OrganizationAccess.objects.create(organization=self.org, user=other, role='manager')
+        lead = CrmLead.objects.create(organization=self.org, title='Synthetic', assignee=other)
+        changes = {'need': 'Need', 'deals': [self.deal(client_id=self.client.pk)]}
+        with self.assertRaises((PermissionDenied, CommercialConflict)):
+            self.command('lead.qualify', changes, lead)
+        lead.assignee = self.user; lead.status = 'closed'; lead.result = 'spam'; lead.save()
+        with self.assertRaises(ValidationError):
+            self.command('lead.qualify', changes, lead)
+
+    def test_conversion_need_edit_permission_is_not_bypassed(self):
+        lead = self.create()
+        self.grant.edit_own_leads = False; self.grant.save()
+        changes = {'need': 'Changed need', 'deals': [self.deal(client_id=self.client.pk)]}
+        before = self.state()
+        with self.assertRaises(PermissionDenied):
+            self.command('lead.qualify', changes, lead)
+        self.assertEqual(before, self.state())
+        changes['need'] = lead.need
+        self.command('lead.qualify', changes, lead)
+
+    def test_deleted_conversion_requires_restore_permission(self):
+        lead = CrmLead.objects.create(organization=self.org, title='Synthetic deleted', need='Need', assignee=self.user, is_archived=True)
+        self.grant.transition_own_leads = False; self.grant.save()
+        before = self.state()
+        with self.assertRaises(PermissionDenied):
+            self.command('lead.qualify', {'deals': [self.deal(client_id=self.client.pk)]}, lead)
+        self.assertEqual(before, self.state())

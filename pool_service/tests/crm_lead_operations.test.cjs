@@ -46,7 +46,7 @@ test("move options preserve final results and offer explicit archived restoratio
   assert.deepEqual(moveTargets({can_move:false}), []);
   assert.deepEqual(moveTargets({can_move:true, is_archived:true, status:"closed", result:"spam"}), ["restore", "spam"]);
   assert.deepEqual(moveTargets({can_move:true, status:"closed", result:"qualified", needs_review:true}), ["deleted"]);
-  assert.deepEqual(moveTargets({can_move:true, status:"working", column:"working"}), ["unparsed", "spam", "deleted"]);
+  assert.deepEqual(moveTargets({can_move:true, status:"working", column:"working"}), ["unparsed", "history", "spam", "deleted"]);
 });
 
 test("closing a card clears its URL before queued native close and cannot clear a newly opened card", async () => {
