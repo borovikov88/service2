@@ -41,6 +41,12 @@ PREPARATORY_STAGES = {
     "retail": ("need", "selection", "proposal"),
     "tender": ("review", "assessment", "preparation"),
 }
+# Manual manager progress only; never authorizes execution, payment or closure.
+from pool_service.crm_commercial_bootstrap import PROPOSED_PIPELINES
+MANUAL_STAGES = {code: tuple(key for key, _ in stages if key != "completed")
+    for code, _, stages in PROPOSED_PIPELINES}
+FINAL_STAGE_REASON = "Успешное закрытие требует подтверждения исполнения и расчётов; ручной этап не заменяет эти факты."
+
 LEAD_STATES = ("new", "working", "qualifying", "waiting", "deferred")
 
 
@@ -198,16 +204,16 @@ def _apply(subject, command_type, changes, using, actor=None):
             raise ValidationError("CRM stage/pipeline scope is inconsistent.")
         if command_type == "deal.transition":
             target = stages.get(changes["stage_id"])
-            order = PREPARATORY_STAGES.get(pipeline.code, ())
+            order = MANUAL_STAGES.get(pipeline.code, ())
             if not target or target.pipeline_id != pipeline.pk:
                 raise ValidationError("Target stage must belong to the current pipeline.")
             if not pipeline.is_active or not target.is_active:
                 raise ValidationError("The target pipeline or stage is disabled.")
             if current.code not in order or target.code not in order:
-                raise ValidationError("Stage requires a later contract, execution, payment or closure process.")
+                raise ValidationError(FINAL_STAGE_REASON)
             if target.pk == current.pk:
                 raise ValidationError("The deal is already at this stage.")
-            if order.index(target.code) < order.index(current.code) and not reason:
+            if target.position < current.position and not reason:
                 raise ValidationError("A backward transition requires a reason.")
             diff["stage_id"] = {"before": subject.stage_id, "after": target.pk}
             subject.stage = target

@@ -27,7 +27,7 @@ from .crm_commercial_models import CrmAccess, CrmDeal, CrmEvent, CrmPipeline
 from .models import Client, Organization, OrganizationAccess, ServiceTask
 from .services.crm_commercial_access import can_view_team_deals
 from .services.crm_commercial_commands import (
-    CARD_FIELDS, PREPARATORY_STAGES, CommercialConflict, close_commercial_deal_negative, create_commercial_deal,
+    CARD_FIELDS, PREPARATORY_STAGES, MANUAL_STAGES, FINAL_STAGE_REASON, CommercialConflict, close_commercial_deal_negative, create_commercial_deal,
     execute_commercial_command, set_deal_next_action,
 )
 from .services.task_feedback import version_for, waiting_control
@@ -236,7 +236,7 @@ def _serialize_deals(deals, user, organization, grant, *, detail=False):
             "manager": {"id": deal.manager_id, "name": _label(deal.manager)},
             "can_edit": writable and _write_capability(grant, organization, "edit_own_deals"),
             "can_transition": writable and _write_capability(grant, organization, "transition_own_deals")
-                and deal.pipeline.is_active and deal.stage.code in PREPARATORY_STAGES.get(deal.pipeline.code, ()),
+                and deal.pipeline.is_active and deal.stage.code in MANUAL_STAGES.get(deal.pipeline.code, ()),
             "can_next_action": writable and _write_capability(grant, organization, "manage_own_next_action")
                 and not (next_action and (next_action.get("restricted") or next_action.get("waiting"))),
             "next_action": next_action,
@@ -321,7 +321,8 @@ def _workspace_data(request, organization):
             and _write_capability(grant, organization, "manage_own_next_action") and bool(pipelines)},
         "pipelines": [{"id": pipeline.pk, "code": pipeline.code, "name": pipeline.name,
             "stages": [{"id": stage.pk, "code": stage.code, "name": stage.name, "position": stage.position,
-                "can_transition": stage.is_active and stage.code in PREPARATORY_STAGES.get(pipeline.code, ())}
+                "can_transition": stage.is_active and stage.code in MANUAL_STAGES.get(pipeline.code, ()),
+                "transition_block_reason": "Этап отключён" if not stage.is_active else FINAL_STAGE_REASON if stage.code == "completed" else ""}
                 for stage in pipeline.stages.all()]} for pipeline in pipelines],
         "deals": _serialize_deals(deals[:PAGE_SIZE], request.user, organization, grant),
         "selected_pipeline_id": pipeline_id, "has_more": len(deals) > PAGE_SIZE,

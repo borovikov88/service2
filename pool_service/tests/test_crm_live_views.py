@@ -130,6 +130,27 @@ class LiveWorkspaceTests(TestCase):
         rows = self.client.get(self.url("crm_live_clients") + "&q=Synthetic").json()["clients"]
         self.assertEqual(rows, [{"id": self.customer.pk, "name": self.customer.name}])
 
+    def test_all_pipeline_manual_stages_are_exposed_and_writes_preserve_tasks(self):
+        for pipeline in CrmPipeline.objects.filter(organization=self.org):
+            row = self.post(self.payload(pipeline_id=pipeline.pk)).json()["deal"]
+            data = self.client.get(self.url("crm_live_data") + "&pipeline=" + str(pipeline.pk)).json()
+            stages = next(p for p in data["pipelines"] if p["id"] == pipeline.pk)["stages"]
+            task_count = ServiceTask.objects.count()
+            for stage in stages:
+                self.assertEqual(stage["can_transition"], stage["code"] != "completed")
+                if stage["code"] == "completed":
+                    self.assertIn("подтверждения", stage["transition_block_reason"])
+                    continue
+                if stage["id"] == row["stage_id"]: continue
+                response = self.post({"operation_key": str(uuid.uuid4()), "command_type": "deal.transition",
+                    "subject_id": row["id"], "expected_revision": row["revision"], "changes": {"stage_id": stage["id"]}})
+                self.assertEqual(response.status_code, 200, response.content)
+                row = response.json()["deal"]
+                self.assertTrue(row["can_transition"])
+                self.assertEqual(row["outcome"], "open")
+                self.assertEqual(ServiceTask.objects.count(), task_count)
+                self.assertFalse(ServiceTask.objects.filter(completed_at__isnull=False).exists())
+
     def test_filters_and_unsupported_stages_use_canonical_server_policy(self):
         created = self.post(self.payload(title="Find this deal")).json()["deal"]
         self.assertEqual(len(self.client.get(self.url("crm_live_data") + "&q=Find&owner=me").json()["deals"]), 1)

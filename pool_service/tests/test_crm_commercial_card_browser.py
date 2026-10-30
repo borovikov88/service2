@@ -19,6 +19,23 @@ from pool_service.tests.test_crm_live_pilot_commands import PilotFixture
 
 @skipUnless(os.environ.get('CRM_CARD_BROWSER_TEST') == '1', 'Dedicated Chromium acceptance step enables this test')
 class CommercialCardBrowserTests(PilotFixture, StaticLiveServerTestCase):
+    def test_all_pipeline_cards_header_money_and_manual_stage(self):
+        from pool_service.crm_commercial_models import CrmPipeline
+        self.org.paid_until = timezone.now() + timedelta(days=30)
+        self.org.save(update_fields=['paid_until'])
+        rows=[]
+        for pipeline in CrmPipeline.objects.filter(organization=self.org):
+            created=self.create(operation_key='ui-pipeline-'+pipeline.code, pipeline_id=pipeline.pk,
+                title='Synthetic '+pipeline.code, card_fields={'amount':'1234567.00','currency':'RUB','amount_basis':'agreed'})
+            stages=list(pipeline.stages.order_by('position','pk'))
+            rows.append(dict(id=created['deal_id'],pipeline=pipeline.pk,target=stages[-2].pk,final=stages[-1].pk))
+        self.client.force_login(self.user)
+        fixture=dict(base=self.live_server_url,org=self.org.pk,rows=rows,
+            sessionCookie=self.client.cookies[settings.SESSION_COOKIE_NAME].value,sessionCookieName=settings.SESSION_COOKIE_NAME)
+        result=subprocess.run(['node',str(Path(__file__).with_name('crm_all_pipeline_cards.browser.cjs'))],
+            input=json.dumps(fixture),text=True,capture_output=True,timeout=90,check=False)
+        self.assertEqual(result.returncode,0,(result.stdout+result.stderr)[-6000:])
+
     def test_today_filter_count_waiting_reload_and_mobile(self):
         self.org.paid_until = timezone.now() + timedelta(days=30)
         self.org.save(update_fields=['paid_until'])

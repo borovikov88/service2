@@ -207,3 +207,15 @@ test("uncertain negative outcome retries the frozen reason and original task ver
   assert.equal(sent[0], sent[1]);
   assert.equal(entry.status, "succeeded");
 });
+
+const {formatMoney, parseMoney} = require("../static/pool_service/crm_live/workspace.js");
+test("money is grouped without floating point or currency conversion", () => {
+  for (const [raw, shown] of [["1234567.00", "1\u00a0234\u00a0567,00"], ["-1234.05", "-1\u00a0234,05"], ["9999999999999999.99", "9\u00a0999\u00a0999\u00a0999\u00a0999\u00a0999,99"], ["0", "0,00"]]) {
+    assert.equal(formatMoney(raw), shown);
+    assert.equal(parseMoney(shown), raw === "0" ? "0.00" : raw);
+  }
+  assert.equal(parseMoney("1 234 567,00"), "1234567.00");
+  assert.equal(parseMoney("1\u202f234,5"), "1234.50");
+  assert.equal(parseMoney(""), "");
+  for (const bad of ["1 2,00", "1e6", "NaN", "1,234.00", "1.999", "Infinity"]) assert.throws(() => parseMoney(bad));
+});

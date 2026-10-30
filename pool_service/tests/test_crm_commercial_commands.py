@@ -173,6 +173,32 @@ class CommercialCommandTests(CommandFixture, TestCase):
         self.assertEqual(CrmEvent.objects.last().safe_diff["status"], {"before": "waiting", "after": "working"})
         self.rejected(command_type="lead.transition", operation_key="close", expected_revision=2, changes={"status": "closed"})
 
+    def test_all_manual_stages_keep_financial_and_execution_facts_unknown(self):
+        for pipeline in CrmPipeline.objects.filter(organization=self.org):
+            stages = list(pipeline.stages.order_by("position", "pk"))
+            deal = CrmDeal.objects.create(organization=self.org, manager=self.user,
+                pipeline=pipeline, stage=stages[0], title="Synthetic manual progress")
+            revision = 0
+            for stage in stages[1:]:
+                kwargs = dict(command_type="deal.transition", subject_id=deal.pk,
+                    operation_key=f"manual-{pipeline.pk}-{stage.pk}", expected_revision=revision,
+                    changes={"stage_id": stage.pk})
+                if stage.code == "completed":
+                    self.rejected(**kwargs)
+                    continue
+                result = self.execute(**kwargs)
+                self.assertEqual(result, self.execute(**kwargs))
+                revision += 1
+                deal.refresh_from_db()
+                self.assertEqual((deal.stage_id, deal.outcome, deal.revision), (stage.pk, "open", revision))
+                self.assertIsNone(deal.completed_at)
+                self.assertIsNone(deal.closed_at)
+                self.assertIsNone(deal.amount)
+                self.assertEqual(CrmEvent.objects.filter(deal=deal).count(), revision)
+            self.rejected(command_type="deal.transition", subject_id=deal.pk,
+                operation_key=f"manual-back-{pipeline.pk}", expected_revision=revision,
+                changes={"stage_id": stages[0].pk})
+
     def test_deal_transitions_use_codes_and_preserve_unknown_finance(self):
         self.next_stage.position = 999
         self.next_stage.name = "Успешно завершено"
@@ -180,7 +206,7 @@ class CommercialCommandTests(CommandFixture, TestCase):
         self.execute(command_type="deal.transition", subject_id=self.deal.pk, changes={"stage_id": self.next_stage.pk})
         self.rejected(command_type="deal.transition", subject_id=self.deal.pk, operation_key="back", expected_revision=1, changes={"stage_id": self.stage.pk})
         self.execute(command_type="deal.transition", subject_id=self.deal.pk, operation_key="back", expected_revision=1, changes={"stage_id": self.stage.pk, "reason": "Review needed"})
-        for code in ("sent", "order", "execution", "reconciliation", "completed"):
+        for code in ("completed",):
             self.rejected(command_type="deal.transition", subject_id=self.deal.pk, operation_key=code, expected_revision=2, changes={"stage_id": self.pipeline.stages.get(code=code).pk})
         self.next_stage.is_active = False
         self.next_stage.save()
