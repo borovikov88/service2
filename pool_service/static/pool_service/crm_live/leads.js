@@ -8,6 +8,19 @@
   }
 })(function () {
   "use strict";
+  function intakeStatusText(intake, dateText) {
+    const parts = ["Приём обращений: " + (intake.enabled ? "включён" : "выключен")];
+    const attempted = intake.last_attempt_at || intake.last_run_at;
+    if (attempted) {
+      parts.push("Последняя попытка обработки: " + dateText(attempted));
+      if (Number.isFinite(intake.attempt_age_seconds)) parts.push("прошло " + Math.floor(intake.attempt_age_seconds / 60) + " мин");
+      parts.push(intake.last_attempt_result === "complete" ? "проход завершён без ошибки" : intake.last_attempt_result === "error" ? "ошибка обработки" : "результат неизвестен");
+    } else parts.push("попытка обработки ещё не зафиксирована");
+    if (intake.last_successful_pass_at) parts.push("Последний известный успешный проход: " + dateText(intake.last_successful_pass_at));
+    else parts.push("Время последнего успешного прохода неизвестно");
+    parts.push("Необработанные события: оценка недоступна; успешный проход не означает пустую очередь");
+    return parts.join(" · ");
+  }
   const freeze = (value) => {
     if (value && typeof value === "object") { Object.values(value).forEach(freeze); Object.freeze(value); }
     return value;
@@ -202,7 +215,7 @@
       byId("lead-prev").disabled = state.loading || data.page <= 1; byId("lead-next").disabled = state.loading || data.page >= data.pages;
       byId("lead-create").hidden = !data.can_create;
       const intake = data.intake || {};
-      byId("lead-intake-status").textContent = "Приём обращений: " + (!intake.enabled ? "выключен" : intake.needs_attention ? "требует проверки" : !intake.last_run_at ? "ожидает первого запуска" : "включён") + (intake.last_run_at ? " · Последняя попытка обработки: " + dateText(intake.last_run_at) : "");
+      byId("lead-intake-status").textContent = intakeStatusText(intake, dateText);
       root.querySelectorAll("[data-mode]").forEach((node) => { if (node.dataset.mode === state.mode) node.setAttribute("aria-current", "page"); else node.removeAttribute("aria-current"); });
       if (state.mode === "closed") {
         list.append(el("h2", "", "История завершённых"));
@@ -478,5 +491,5 @@
     const selected = new URL(win.location.href).searchParams.get("lead"); renderList(); if (selected && /^\d+$/.test(selected)) openLead(Number(selected));
     return {state, operations, loadList, openLead};
   }
-  return {LeadOperations, localDateTime, deadlineISO, moveTargets, mount};
+  return {intakeStatusText, LeadOperations, localDateTime, deadlineISO, moveTargets, mount};
 });

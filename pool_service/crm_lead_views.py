@@ -28,6 +28,7 @@ from .models import Client, Organization, ServiceTask
 from .services.task_read_permissions import readable_tasks
 from .services.task_feedback import version_for, waiting_control
 from .services.crm_lead_commands import lead_column
+from .services.crm_intake_status import intake_status
 
 PAGE_SIZE = 50
 MAX_BODY_BYTES = 65536
@@ -199,9 +200,7 @@ def _data(request, organization):
         "page": columns[0]["page"] if columns else page.number, "pages": columns[0]["pages"] if columns else paginator.num_pages, "total": total,
         "page_size": PAGE_SIZE, "q": query, "mode": mode, "status": status,
         "can_create": capabilities["create_own_leads"],
-        "intake": {"enabled": organization.crm_intake_process,
-            "last_run_at": activation.last_run_at.isoformat() if activation and activation.last_run_at else None,
-            "needs_attention": bool(activation and activation.last_error)}}
+        "intake": intake_status(organization, activation)}
 
 
 def _api(view):
