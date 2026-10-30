@@ -36,6 +36,12 @@ def wake():
         if process is not None:
             threading.Thread(target=_reap, args=(process,), daemon=True,
                 name="crm-intake-process-reaper").start()
-    except Exception:
-        # Do not log source payloads, paths, provider IDs or exception contents.
-        logger.warning("crm_intake_wakeup_unavailable; durable inbox retained")
+    except Exception as error:
+        # Import failure must still preserve ACK and may not expose its message.
+        metadata = ('unexpected_failure', 'NONE', None)
+        try:
+            from scripts.crm_intake_event_wakeup import failure_metadata
+            metadata = failure_metadata(error)
+        except Exception:
+            pass
+        logger.warning("crm_intake_wakeup_unavailable code=%s errno=%s real_effective_uid_equal=%s; durable inbox retained", *metadata)
