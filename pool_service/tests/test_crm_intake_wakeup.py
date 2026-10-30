@@ -177,3 +177,14 @@ class WakeDiagnosticTests(HostWakeTests):
                     wake()
             self.assertNotIn('sensitive', str(logs.output))
             self.assertNotIn(str(self.app), str(logs.output))
+
+
+class ServingRuntimeTests(SimpleTestCase):
+    def test_configuration_gate_is_not_event_or_worker_success(self):
+        from pool_service.services.crm_intake_wakeup import serving_runtime
+        with override_settings(CRM_INTAKE_EVENT_WAKEUP_ENABLED=False):
+            self.assertEqual(serving_runtime(1)["configuration_gate"], "disabled_by_web_settings")
+        with override_settings(CRM_INTAKE_EVENT_WAKEUP_ENABLED=True):
+            self.assertEqual(serving_runtime(1)["configuration_gate"], "enabled")
+            self.assertEqual(serving_runtime(2)["configuration_gate"], "outside_pilot")
+            self.assertEqual(serving_runtime(1)["event_gate"], "not_observed")

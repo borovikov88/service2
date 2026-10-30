@@ -28,7 +28,7 @@ from .models import Client, Organization, ServiceTask
 from .services.task_read_permissions import readable_tasks
 from .services.task_feedback import version_for, waiting_control
 from .services.crm_lead_commands import lead_column
-from .services.crm_intake_status import intake_status
+from .services.crm_intake_status import intake_status, can_read_serving_runtime
 
 PAGE_SIZE = 50
 MAX_BODY_BYTES = 65536
@@ -199,11 +199,15 @@ def _data(request, organization):
         leads = [lead for column in columns for lead in column["leads"]]
         total = sum(column["total"] for column in columns)
     activation = CrmIntakeActivation.objects.filter(organization=organization).first()
+    intake = intake_status(organization, activation)
+    if can_read_serving_runtime(request.user, organization):
+        from .services.crm_intake_wakeup import serving_runtime
+        intake["serving_runtime"] = serving_runtime(organization.pk)
     return {"leads": leads, "columns": columns,
         "page": columns[0]["page"] if columns else page.number, "pages": columns[0]["pages"] if columns else paginator.num_pages, "total": total,
         "page_size": PAGE_SIZE, "q": query, "mode": mode, "status": status,
         "can_create": capabilities["create_own_leads"],
-        "intake": intake_status(organization, activation)}
+        "intake": intake}
 
 
 def _api(view):
