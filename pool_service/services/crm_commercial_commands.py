@@ -31,7 +31,7 @@ COMMANDS = {
     "lead.edit": (CrmLead, "assignee_id", "edit_own_leads", {"title", "need"}),
     "lead.transition": (CrmLead, "assignee_id", "transition_own_leads", {"status", "reason", "follow_up_at"}),
     "deal.edit": (CrmDeal, "manager_id", "edit_own_deals", {"title"} | CARD_FIELDS),
-    "deal.transition": (CrmDeal, "manager_id", "transition_own_deals", {"stage_id", "reason"}),
+    "deal.transition": (CrmDeal, "manager_id", "transition_own_deals", {"stage_id", "reason", "confirm_manual_completion"}),
 }
 # Explicit technical bounds, independent of editable labels/positions. No tender
 # automation, contract, sending, execution, payments or closure in this release.
@@ -43,9 +43,9 @@ PREPARATORY_STAGES = {
 }
 # Manual manager progress only; never authorizes execution, payment or closure.
 from pool_service.crm_commercial_bootstrap import PROPOSED_PIPELINES
-MANUAL_STAGES = {code: tuple(key for key, _ in stages if key != "completed")
+MANUAL_STAGES = {code: tuple(key for key, _ in stages)
     for code, _, stages in PROPOSED_PIPELINES}
-FINAL_STAGE_REASON = "Успешное закрытие требует подтверждения исполнения и расчётов; ручной этап не заменяет эти факты."
+FINAL_STAGE_REASON = "Ручное завершение CRM не подтверждает выполнение работ, договорных периодов или оплату. Эти факты и задачи остаются без изменений."
 
 LEAD_STATES = ("new", "working", "qualifying", "waiting", "deferred")
 
@@ -66,6 +66,8 @@ def _normalize(command_type, changes):
     for key, value in normalized.items():
         if key == "stage_id":
             _positive_id(value)
+        elif key == "confirm_manual_completion":
+            if type(value) is not bool: raise ValidationError("Подтверждение должно быть логическим значением.")
         elif key in {"pool_id", "client_object_id"}:
             if value is not None:
                 _positive_id(value)
@@ -215,6 +217,12 @@ def _apply(subject, command_type, changes, using, actor=None):
                 raise ValidationError("The deal is already at this stage.")
             if target.position < current.position and not reason:
                 raise ValidationError("A backward transition requires a reason.")
+            if target.code == "completed" and changes.get("confirm_manual_completion") is not True:
+                raise ValidationError("Подтвердите ручное завершение: исполнение и оплата этим действием не подтверждаются.")
+            if target.code != "completed" and changes.get("confirm_manual_completion"):
+                raise ValidationError("Подтверждение завершения неприменимо к этому этапу.")
+            if current.code == "completed" or target.code == "completed":
+                diff["manual_completion_exception"] = {"before": current.code == "completed", "after": target.code == "completed"}
             diff["stage_id"] = {"before": subject.stage_id, "after": target.pk}
             subject.stage = target
     if command_type.endswith(".edit"):

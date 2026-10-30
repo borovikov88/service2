@@ -137,19 +137,26 @@ class LiveWorkspaceTests(TestCase):
             stages = next(p for p in data["pipelines"] if p["id"] == pipeline.pk)["stages"]
             task_count = ServiceTask.objects.count()
             for stage in stages:
-                self.assertEqual(stage["can_transition"], stage["code"] != "completed")
-                if stage["code"] == "completed":
-                    self.assertIn("подтверждения", stage["transition_block_reason"])
-                    continue
+                self.assertTrue(stage["can_transition"])
+                self.assertEqual(stage["requires_manual_confirmation"], stage["code"] == "completed")
                 if stage["id"] == row["stage_id"]: continue
                 response = self.post({"operation_key": str(uuid.uuid4()), "command_type": "deal.transition",
-                    "subject_id": row["id"], "expected_revision": row["revision"], "changes": {"stage_id": stage["id"]}})
+                    "subject_id": row["id"], "expected_revision": row["revision"], "changes": {"stage_id": stage["id"], **({"confirm_manual_completion":True} if stage["code"]=="completed" else {})}})
                 self.assertEqual(response.status_code, 200, response.content)
                 row = response.json()["deal"]
                 self.assertTrue(row["can_transition"])
                 self.assertEqual(row["outcome"], "open")
+                self.assertEqual(row["manual_completion"],stage["code"]=="completed")
+                if row["manual_completion"]:self.assertIn("не подтверждает",row["completion_warning"])
                 self.assertEqual(ServiceTask.objects.count(), task_count)
                 self.assertFalse(ServiceTask.objects.filter(completed_at__isnull=False).exists())
+
+    def test_legacy_final_stage_does_not_invent_manual_confirmation(self):
+        row=self.post(self.payload()).json()["deal"]
+        deal=CrmDeal.objects.get(pk=row["id"]);deal.stage=self.pipeline.stages.get(code="completed");deal.save(update_fields=["stage"])
+        data=self.client.get(self.url("crm_live_detail",deal.pk)).json()["deal"]
+        self.assertTrue(data["unverified_completion_stage"]);self.assertFalse(data["manual_completion"])
+        self.assertIn("не подтверждает",data["completion_warning"])
 
     def test_filters_and_unsupported_stages_use_canonical_server_policy(self):
         created = self.post(self.payload(title="Find this deal")).json()["deal"]

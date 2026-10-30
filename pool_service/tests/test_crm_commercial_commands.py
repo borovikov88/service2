@@ -185,7 +185,7 @@ class CommercialCommandTests(CommandFixture, TestCase):
                     changes={"stage_id": stage.pk})
                 if stage.code == "completed":
                     self.rejected(**kwargs)
-                    continue
+                    kwargs["changes"]["confirm_manual_completion"] = True
                 result = self.execute(**kwargs)
                 self.assertEqual(result, self.execute(**kwargs))
                 revision += 1
@@ -195,9 +195,21 @@ class CommercialCommandTests(CommandFixture, TestCase):
                 self.assertIsNone(deal.closed_at)
                 self.assertIsNone(deal.amount)
                 self.assertEqual(CrmEvent.objects.filter(deal=deal).count(), revision)
+            self.assertEqual(CrmEvent.objects.filter(deal=deal).last().safe_diff["manual_completion_exception"], {"before":False,"after":True})
             self.rejected(command_type="deal.transition", subject_id=deal.pk,
                 operation_key=f"manual-back-{pipeline.pk}", expected_revision=revision,
                 changes={"stage_id": stages[0].pk})
+
+    def test_manual_completion_confirmation_types_replay_and_reopen(self):
+        final=self.pipeline.stages.get(code="completed")
+        for value in (False,1,"true"):
+            self.rejected(command_type="deal.transition",subject_id=self.deal.pk,changes={"stage_id":final.pk,"confirm_manual_completion":value})
+        args=dict(command_type="deal.transition",subject_id=self.deal.pk,changes={"stage_id":final.pk,"confirm_manual_completion":True})
+        self.execute(**args)
+        self.rejected(CommercialConflict,**{**args,"changes":{"stage_id":final.pk,"confirm_manual_completion":False}})
+        self.execute(command_type="deal.transition",subject_id=self.deal.pk,operation_key="reopen",expected_revision=1,changes={"stage_id":self.stage.pk,"reason":"Synthetic explicit return"})
+        self.deal.refresh_from_db();self.assertEqual(self.deal.stage_id,self.stage.pk)
+        self.assertEqual(CrmEvent.objects.last().safe_diff["manual_completion_exception"],{"before":True,"after":False})
 
     def test_deal_transitions_use_codes_and_preserve_unknown_finance(self):
         self.next_stage.position = 999
