@@ -23,12 +23,19 @@ class GeneratedStaticDeploymentTests(unittest.TestCase):
         self.run_command("git", "init", "-b", "main", str(self.seed))
         self.write(self.seed, "requirements.txt", "")
         self.write(self.seed, "manage.py", '''import pathlib, shutil, sys
+if sys.argv[1] == "migrate":
+    assert pathlib.Path("../tmp/synthetic-gate").exists()
 if sys.argv[1] == "collectstatic":
     for source in pathlib.Path("pool_service/static").rglob("*"):
         if source.is_file():
             target = pathlib.Path("public_static") / source.relative_to("pool_service/static")
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
+''')
+        self.write(self.seed, "scripts/crm_pre_migrate_backup.py", '''from pathlib import Path
+for fd in (8, 9):
+    assert "FLOCK  ADVISORY  WRITE" in Path(f"/proc/self/fdinfo/{fd}").read_text()
+Path("../tmp/synthetic-gate").touch()
 ''')
         self.write(self.seed, "pool_service/static/assets/style.css", "current source\n")
         self.write(self.seed, "pool_service/static/assets/icon.png", "icon bytes\n")

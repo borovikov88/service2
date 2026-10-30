@@ -28,7 +28,15 @@ const {chromium} = require('playwright');
       && response.request().method() === 'GET');
     const reviewedList = async (responsePromise) => {
       const response = await responsePromise;
-      assert.equal(response.status(), 200, 'Reviewed list must load successfully');
+      const actualURL = new URL(response.url());
+      const expectedOrg = new URL(fixture.base + fixture.data).searchParams.get('org_id');
+      assert.deepEqual(actualURL.searchParams.getAll('org_id'), [expectedOrg], 'Reviewed list must preserve its explicit organization');
+      const diagnostic = {status: response.status(), path: actualURL.pathname,
+        org: actualURL.searchParams.getAll('org_id'),
+        documentOrg: await page.locator('#object-needs').getAttribute('data-org-id')};
+      // This harness permits localhost fixtures only. Keep failure evidence
+      // structural: no response body, cookies, credentials or source content.
+      assert.equal(response.status(), 200, 'Reviewed list must load successfully: ' + JSON.stringify(diagnostic));
       const data = await response.json();
       assert.equal(data.total, 1);
       const row = data.rows.find((item) => item.id === fixture.taskId);

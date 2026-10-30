@@ -9,6 +9,21 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
+  function parseMoney(value) {
+    const text = String(value ?? "").trim();
+    if (!text) return "";
+    if (!/^-?(?:[0-9]+|[0-9]{1,3}(?:[ \u00a0\u202f][0-9]{3})+)(?:[.,][0-9]{1,2})?$/.test(text)) throw new Error("Введите сумму: 1 234 567,00 (не более двух знаков после запятой).");
+    const clean = text.replace(/[ \u00a0\u202f]/g, "").replace(",", ".");
+    const [whole, fraction = ""] = clean.split(".");
+    return whole + "." + fraction.padEnd(2, "0");
+  }
+  function formatMoney(value) {
+    if (value == null || value === "") return "";
+    const [whole, fraction] = parseMoney(value).split(".");
+    return whole.replace(/\B(?=(\d{3})+(?!\d))/g, "\u00a0") + "," + fraction;
+  }
+  const moneyLabel = (amount, currency) => formatMoney(amount) + " " + (currency === "RUB" ? "₽" : currency);
+
   const sameId = (a, b) => a != null && b != null && String(a) === String(b);
   const isClosed = (deal) => deal.is_archived || ["won", "lost", "cancelled"].includes(deal.outcome);
   const freeze = (value) => {
@@ -83,7 +98,7 @@
     if (sameId(from.id, to.id)) return null;
     if (!to.can_transition) throw new Error("Этот этап пока недоступен для переноса в рабочей версии CRM.");
     const backwards = Number(to.position) < Number(from.position);
-    return {subject_id: deal.id, expected_revision: deal.revision, changes: {stage_id: to.id, reason: String(reason || "").trim()}, backwards, needsReason: backwards && !String(reason || "").trim(), from, to};
+    return {manualCompletion: Boolean(to.requires_manual_confirmation), subject_id: deal.id, expected_revision: deal.revision, changes: {stage_id: to.id, reason: String(reason || "").trim()}, backwards, needsReason: backwards && !String(reason || "").trim(), from, to};
   }
 
   function localDateTime(value, timezone) {
@@ -287,7 +302,7 @@
         if (value && !(key === "outcome" && value === "open")) url.searchParams.set(key, value);
         else url.searchParams.delete(key);
       }
-      win.history.replaceState({}, "", url);
+      win.history.replaceState(win.history.state, "", url);
     }
 
     function renderOperations() {
@@ -384,7 +399,8 @@
       main.append(title, element("p", "crm-live-card-client", deal.client?.name || "Клиент не указан"));
       const object = deal.object;
       if (object) main.append(element("p", "crm-live-card-stage", object.restricted ? "Объект недоступен" : [object.name, object.address].filter(Boolean).join(" · ")));
-      main.append(element("p", "crm-live-card-stage", (deal.amount === null ? "Сумма неизвестна" : deal.amount + " " + deal.currency) + (deal.specialization ? " · " + deal.specialization : "")));
+      main.append(element("p", "crm-live-card-stage", (deal.amount === null ? "Сумма неизвестна" : moneyLabel(deal.amount, deal.currency)) + (deal.specialization ? " · " + deal.specialization : "")));
+      if (deal.unverified_completion_stage) main.append(element("p","crm-live-pill",(deal.manual_completion ? "Завершено вручную" : "Финальный этап CRM")+" · исполнение и оплата не подтверждены"));
       if (deal.outcome !== "open") main.append(element("p", "crm-live-pill", outcomeLabel(deal.outcome)));
       if (table) main.append(element("p", "crm-live-card-stage", stageFor(deal)?.name || "Этап не указан"));
       const owner = element("div", "crm-live-card-owner");
@@ -458,10 +474,10 @@
           const count = totals.reduce((sum, row) => sum + row.count, 0);
           heading.append(element("span", "", stage.name), element("span", "crm-live-lane-count", count));
           lane.append(heading);
-          const known = totals.filter(row => row.amount !== null).map(row => row.amount + " " + (row.currency === "RUB" ? "₽" : row.currency));
+          const known = totals.filter(row => row.amount !== null).map(row => moneyLabel(row.amount, row.currency));
           const unknown = totals.reduce((sum, row) => sum + row.unknown_count, 0);
-          lane.append(element("p", "crm-live-stage-total", (known.length ? known.join(" + ") : unknown ? "Сумма неизвестна" : "0 ₽") + (unknown ? " · без суммы: " + unknown : "")));
-          if (!stage.can_transition) lane.append(element("p", "crm-live-lane-unavailable", "Перенос в этот этап пока недоступен"));
+          lane.append(element("p", "crm-live-stage-total", (known.length ? known.join(" + ") : unknown ? "Сумма неизвестна" : "0,00 ₽") + (unknown ? " · без суммы: " + unknown : "")));
+          if (!stage.can_transition) lane.append(element("p", "crm-live-lane-unavailable", stage.transition_block_reason || "Перенос в этот этап недоступен"));
           if (!deals.length) lane.append(element("p", "crm-live-lane-empty", count > 0 ? "На этой странице нет сделок этого этапа" : stage.can_transition ? "Нет сделок на этом этапе" : ""));
           else deals.forEach((deal) => lane.append(renderCard(deal, false)));
           board.append(lane);
@@ -513,7 +529,14 @@
       dialog.scrollTop = 0;
       renderOperations();
     }
-    function closeDialog() {
+    function setDealURL(id, push) {
+      const url = new URL(win.location.href);
+      if (id != null) url.searchParams.set("deal", String(id));
+      else url.searchParams.delete("deal");
+      if (url.href !== win.location.href) win.history[push ? "pushState" : "replaceState"](null, "", url);
+    }
+    function closeDialog(updateURL = true) {
+      if (updateURL) setDealURL(null, true);
       if (state.detailController) state.detailController.abort();
       if (state.clientController) state.clientController.abort();
       state.detailGeneration += 1;
@@ -538,6 +561,7 @@
       const footer = element("div", "crm-live-form-footer");
       const save = element("button", "crm-live-button crm-live-button-primary", label || "Сохранить");
       save.type = "submit";
+      save.dataset.noLoading = ""; // This async form owns its queue/error lifecycle.
       footer.append(save);
       form.append(footer);
     }
@@ -646,8 +670,8 @@
       };
       objectSearch.input.addEventListener("input", () => { win.clearTimeout(timer); if (controller) controller.abort(); timer = win.setTimeout(form.refreshObjects, 300); });
       const legacyCurrency = deal?.currency && deal.currency !== "RUB";
-      const amount = field(legacyCurrency ? "Историческая сумма · " + deal.currency : "Коммерческая сумма, ₽ (пусто = неизвестна)", "text", "amount", deal?.amount ?? "", false);
-      amount.input.inputMode = "decimal"; amount.input.maxLength = 19; amount.input.pattern = "[0-9]{1,16}([.][0-9]{1,2})?";
+      const amount = field(legacyCurrency ? "Историческая сумма · " + deal.currency : "Коммерческая сумма, ₽ (пусто = неизвестна)", "text", "amount", deal?.amount == null ? "" : formatMoney(deal.amount), false);
+      amount.input.inputMode = "decimal"; amount.input.maxLength = 40;
       const currency = document.createElement("input"); currency.type = "hidden"; currency.name = "currency"; currency.value = legacyCurrency ? deal.currency : "RUB";
       form.append(amount.wrapper, currency);
       const basis = selectField(form, "Основание суммы", "amount_basis", deal?.amount_basis || "unknown", [["unknown", "Неизвестна"], ["indicative", "Предварительная оценка"], ["agreed", "Согласовано с клиентом"]]);
@@ -667,7 +691,7 @@
     function cardChanges(values) {
       const ref = String(values.get("object_ref") || "none");
       const [kind, id] = ref.split(":");
-      const amount = String(values.get("amount") || "").trim();
+      const amount = parseMoney(values.get("amount"));
       const expected = String(values.get("expected_decision_at") || "");
       return {work_subject: String(values.get("work_subject") || "").trim(), specialization: String(values.get("specialization") || "").trim(),
         fulfillment_kind: String(values.get("fulfillment_kind") || "unknown"), object_kind: kind,
@@ -683,11 +707,38 @@
       state.drawer = {kind: "detail", id: deal.id, deal};
       dialogContent.dataset.revision = String(deal.revision);
       dialogContent.append(titleNode(deal.title));
+      if(deal.unverified_completion_stage)dialogContent.append(element("p","crm-live-completion-warning",(deal.manual_completion ? "CRM завершена вручную. " : "Финальный этап без подтверждённого итога. ")+deal.completion_warning));
+      const identity = section("Ссылка на сделку");
+      identity.append(element("p", "crm-live-deal-id", "ID сделки: " + deal.id));
+      // Share only the authorized entity locator, never search/filter contents.
+      const permalink = new URL(win.location.pathname, win.location.origin);
+      permalink.searchParams.set("org_id", String(bootstrap.organization_id));
+      permalink.searchParams.set("pipeline", String(deal.pipeline_id));
+      permalink.searchParams.set("deal", String(deal.id));
+      const link = field("Прямая ссылка", "text", "deal_permalink", permalink.href, false);
+      link.input.readOnly = true;
+      const copy = element("button", "crm-live-button crm-live-copy-link", "Скопировать ссылку");
+      copy.type = "button";
+      const feedback = element("small", "crm-live-muted"); feedback.setAttribute("role", "status");
+      copy.addEventListener("click", async () => {
+        try {
+          await win.navigator.clipboard.writeText(permalink.href);
+          if (feedback.isConnected) feedback.textContent = "Ссылка скопирована.";
+        } catch (_) {
+          if (!link.input.isConnected) return;
+          link.input.focus(); link.input.select();
+          feedback.textContent = "Не удалось скопировать автоматически. Скопируйте выделенную ссылку.";
+        }
+      });
+      byId("crm-live-dialog-caption").replaceChildren(element("span", "", "Сделка #" + deal.id), copy);
+      identity.append(link.wrapper, feedback); dialogContent.append(identity);
       const client = element("p", "crm-live-detail-client");
       const href = safeLink(deal.client?.url);
       if (href) { const link = element("a", "", deal.client.name); link.href = href; client.append(link); }
       else client.textContent = deal.client?.name || "Клиент не указан";
       dialogContent.append(client);
+      const serviceUrl = safeLink(deal.service_documents_url);
+      if (serviceUrl) { const link = element("a", "btn btn-outline-primary", "Документы обслуживания и периоды"); link.href = serviceUrl; dialogContent.append(link); }
       const meta = element("div", "crm-live-detail-meta");
       meta.append(element("span", "crm-live-pill", pipelineFor(deal.pipeline_id)?.name || ""), element("span", "crm-live-pill", stageFor(deal)?.name || ""), element("span", "crm-live-pill", deal.manager?.name || "Без ответственного"));
       dialogContent.append(meta);
@@ -696,8 +747,8 @@
       const facts = [["Предмет", deal.work_subject || "Не уточнён"], ["Специализация", deal.specialization || "Не уточнена"],
         ["Исполнение", ({unknown: "Не уточнено", construction: "Строительство / монтаж", service: "Обслуживание", retail: "Поставка", mixed: "Смешанное"})[deal.fulfillment_kind]],
         ["Объект", !object ? "Не выбран" : object.restricted ? "Недоступен" : (object.kind === "planned" ? "Планируемый: " : "") + [object.name, object.address].filter(Boolean).join(" · ")],
-        ["Сумма", deal.amount === null ? "Неизвестна" : deal.amount + " " + deal.currency + " · " + (deal.amount_basis === "agreed" ? "Согласовано" : "Предварительная оценка")],
-        ["Ожидаемое решение", deal.expected_decision_at ? dateText(deal.expected_decision_at) : "Не задано"], ["Исход", outcomeLabel(deal.outcome)]];
+        ["Сумма", deal.amount === null ? "Неизвестна" : moneyLabel(deal.amount, deal.currency) + " · " + (deal.amount_basis === "agreed" ? "Согласовано" : "Предварительная оценка")],
+        ["Ожидаемое решение", deal.expected_decision_at ? dateText(deal.expected_decision_at) : "Не задано"], ["Исход", deal.unverified_completion_stage ? (deal.manual_completion ? "CRM завершена вручную; подтверждённый итог ещё открыт" : "Итог не подтверждён") : outcomeLabel(deal.outcome)]];
       for (const [label, value] of facts) overview.append(element("p", "crm-live-fact", label + ": " + (value || "Не уточнено")));
       if (deal.closed_at) overview.append(element("p", "crm-live-fact", "Завершена: " + dateText(deal.closed_at)));
       if (deal.close_reason) overview.append(element("p", "crm-live-fact", "Причина: " + deal.close_reason));
@@ -724,11 +775,14 @@
       if (deal.can_transition && !deal.is_archived) {
         const part = section("Этап сделки");
         const form = newForm("transition", deal.id);
+        form.append(element("p", "crm-live-form-note", "Ручной этап отражает работу менеджера. Он не подтверждает оплату, документы, выполнение или разрешение на запуск работ."));
         const stages = field("Перевести на этап", "select", "stage_id", null, true);
         for (const stage of pipelineFor(deal.pipeline_id)?.stages || []) {
-          if (!stage.can_transition && !sameId(stage.id, deal.stage_id)) continue;
+
           const option = element("option", "", stage.name);
           option.value = stage.id;
+          option.disabled = !stage.can_transition && !sameId(stage.id, deal.stage_id);
+          if (option.disabled) option.textContent += " · " + (stage.transition_block_reason || "Недоступен");
           option.selected = sameId(stage.id, deal.stage_id);
           stages.input.append(option);
         }
@@ -782,7 +836,7 @@
           const item = element("li", "", event.label || "Изменение сделки");
           const actorName = typeof event.actor === "string" ? event.actor : event.actor?.name;
           item.append(element("small", "", dateText(event.at) + (actorName ? " · " + actorName : "")));
-          if (event.reason) item.append(element("p", "", event.reason));
+          if ((event.reason || "") + (event.manual_completion_exception ? " · Ручное завершение без подтверждения исполнения и оплаты" : "")) item.append(element("p", "", (event.reason || "") + (event.manual_completion_exception ? " · Ручное завершение без подтверждения исполнения и оплаты" : "")));
           list.append(item);
         });
         history.append(list);
@@ -791,7 +845,8 @@
       updateFormLocks();
     }
 
-    async function openDetail(id, keepOpen) {
+    async function openDetail(id, keepOpen, updateURL = true) {
+      if (updateURL) setDealURL(id, !keepOpen);
       const generation = ++state.detailGeneration;
       if (state.detailController) state.detailController.abort();
       const controller = new AbortController();
@@ -809,6 +864,7 @@
         renderDetail(response.deal, response.events || []);
       } catch (error) {
         if (controller.signal.aborted || generation !== state.detailGeneration) return;
+        byId("crm-live-dialog-caption").textContent = "Карточка сделки";
         state.drawer = {kind: "error", id};
         const retry = makeButton("Повторить загрузку", "open");
         retry.dataset.dealId = id;
@@ -820,6 +876,7 @@
       if (!state.data.capabilities?.create || queue.forSubject(null)) return;
       if (state.detailController) state.detailController.abort();
       state.detailGeneration += 1;
+      setDealURL(null, false);
       state.drawer = {kind: "create", selectedClient: null};
       dialogContent.replaceChildren(titleNode("Новая сделка"), element("p", "crm-live-form-note", "Выберите клиента и договоритесь о следующем шаге. Ответственным станете вы."));
       const form = newForm("create", null);
@@ -906,13 +963,14 @@
       if (state.detailController) state.detailController.abort();
       state.detailGeneration += 1;
       state.drawer = {kind: "transition", id: deal.id, deal, intent};
-      dialogContent.replaceChildren(titleNode("Вернуть на предыдущий этап"), element("p", "crm-live-detail-client", deal.title), element("p", "crm-live-form-note", intent.from.name + " → " + intent.to.name));
+      dialogContent.replaceChildren(titleNode(intent.manualCompletion ? "Завершить CRM вручную" : "Вернуть на предыдущий этап"), element("p", "crm-live-detail-client", deal.title), element("p", "crm-live-form-note", intent.from.name + " → " + intent.to.name));
       const form = newForm("transition-confirm", deal.id);
-      const reason = field("Причина возврата", "textarea", "reason", "", true);
+      const reason = field(intent.manualCompletion ? "Комментарий к ручному завершению" : "Причина возврата", "textarea", "reason", "", !intent.manualCompletion);
+      if(intent.manualCompletion){form.append(element("p","crm-live-completion-warning","Исполнение и оплата не подтверждаются. Договорные периоды, документы и открытые задачи не изменятся."));const confirm=field("Подтверждаю ручное завершение без подтверждения исполнения и оплаты", "checkbox", "confirm_manual_completion", "yes", true);form.append(confirm.wrapper);}
       reason.input.maxLength = 2000;
       reason.input.placeholder = "Что нужно уточнить или исправить";
       form.append(reason.wrapper);
-      formFooter(form, "Вернуть сделку");
+      formFooter(form, intent.manualCompletion ? "Подтвердить ручное завершение" : "Вернуть сделку");
       dialogContent.append(form);
       openDialog("Изменение этапа");
       reason.input.focus();
@@ -1021,9 +1079,11 @@
           if (deal.next_action?.version) changes.expected_task_version = deal.next_action.version;
           await send("deal.next_action", deal.id, deal.revision, changes, "Следующий шаг: «" + deal.title + "»");
         } else if (kind === "transition" || kind === "transition-confirm") {
-          const stageId = kind === "transition-confirm" ? state.drawer.intent.to.id : values.get("stage_id");
+          const stageId = kind === "transition-confirm" ? state.drawer.intent.to.id : form.elements.namedItem("stage_id").value;
           const intent = transitionIntent(deal, stageId, pipelineFor(deal.pipeline_id), values.get("reason"));
           if (!intent) { formError(form, "Сделка уже находится на выбранном этапе."); return; }
+          if(intent.manualCompletion && kind!=="transition-confirm"){transitionDialog(deal,intent);return;}
+          if(intent.manualCompletion){if(!form.elements.namedItem("confirm_manual_completion")?.checked)throw new Error("Подтвердите предупреждение.");intent.changes.confirm_manual_completion=true;}
           if (intent.needsReason) throw new Error("Укажите причину возврата на предыдущий этап.");
           await send("deal.transition", deal.id, deal.revision, intent.changes, "Перенос «" + deal.title + "» → " + intent.to.name);
         }
@@ -1133,7 +1193,7 @@
         if (queue.forSubject(deal.id)) throw new Error("Сначала проверьте результат предыдущего сохранения этой сделки.");
         const intent = transitionIntent(deal, lane.dataset.stageId, pipelineFor(deal.pipeline_id));
         if (!intent) return;
-        if (intent.needsReason) transitionDialog(deal, intent);
+        if (intent.needsReason || intent.manualCompletion) transitionDialog(deal, intent);
         else await send("deal.transition", deal.id, deal.revision, intent.changes, "Перенос «" + deal.title + "» → " + intent.to.name);
       } catch (error) { notice(friendlyError(error), true); }
     });
@@ -1154,6 +1214,9 @@
       for (const key of Object.keys(state.filters)) { state.filters[key] = current.get(key) || (key === "outcome" ? "open" : ""); byId("crm-live-" + key).value = state.filters[key]; }
       byId("crm-live-search").value = state.query;
       byId("crm-live-owner").value = state.owner;
+      const linked = current.get("deal");
+      if (linked && /^[1-9][0-9]{0,17}$/.test(linked)) openDetail(linked, false, false);
+      else closeDialog(false);
       loadData();
     });
     renderPipelines();
@@ -1161,8 +1224,8 @@
     syncURL();
     if (bootstrap.initial_notice) notice(bootstrap.initial_notice, true);
     const linkedDeal = new URL(win.location.href).searchParams.get("deal");
-    if (linkedDeal && /^[1-9][0-9]{0,17}$/.test(linkedDeal)) openDetail(linkedDeal);
+    if (linkedDeal && /^[1-9][0-9]{0,17}$/.test(linkedDeal)) openDetail(linkedDeal, false, false);
   }
 
-  return {OperationQueue, transitionIntent, deadlineISO, localDateTime, attentionFor, editableDeadline, conflictDraft, mount};
+  return {parseMoney, formatMoney, OperationQueue, transitionIntent, deadlineISO, localDateTime, attentionFor, editableDeadline, conflictDraft, mount};
 });

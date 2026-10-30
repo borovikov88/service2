@@ -1,7 +1,7 @@
 """Current, scoped HTTP adapter for lead intake and qualification.
 
-All writes enter the lead command service. Source content is never serialized by
-this adapter; the source access service supplies separately authorized locators.
+All writes enter the lead command service. Lists contain bounded source metadata. Saved call content is returned only in
+detail after the existing listening authorization; GET never starts analysis.
 """
 from functools import wraps
 import json
@@ -21,13 +21,14 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_POST
 
-from .client_queries import active_clients
+from .client_queries import active_clients, readable_clients
 from .crm_commercial_models import CrmAccess, CrmEvent, CrmIntakeActivation, CrmLead, CrmLeadTaskLink, CrmPipeline
 from .crm_live_views import _id, CommercialConflict
 from .models import Client, Organization, ServiceTask
 from .services.task_read_permissions import readable_tasks
 from .services.task_feedback import version_for, waiting_control
 from .services.crm_lead_commands import lead_column
+from .services.crm_intake_status import intake_status
 
 PAGE_SIZE = 50
 MAX_BODY_BYTES = 65536
@@ -73,7 +74,7 @@ def _capabilities(user, organization):
 
 def _queryset(user, organization):
     from .services.crm_lead_access import leads_for_user
-    return leads_for_user(user, organization).select_related("client", "assignee", "next_task")
+    return leads_for_user(user, organization).select_related("organization", "client", "assignee", "next_task")
 
 
 def _serialize(lead, user, capabilities, *, detail=False, visible_tasks=None):
@@ -99,6 +100,8 @@ def _serialize(lead, user, capabilities, *, detail=False, visible_tasks=None):
         "needs_review": lead.needs_review, "next_action": None,
         "intake_reason_label": "" if lead.assignee_id and lead.intake_reason in ROUTING_REASONS else INTAKE_REASONS.get(lead.intake_reason, ""),
         "last_activity_at": lead.last_activity_at.isoformat() if lead.last_activity_at else None}
+    if detail and row["client"] and readable_clients(user).filter(pk=lead.client_id,organization=lead.organization).exists():
+        row["client"]["url"] = reverse("client_detail",args=[lead.client_id])
     if lead.next_task_id:
         task = (visible_tasks or {}).get(lead.next_task_id)
         if not task or task.organization_id != lead.organization_id or task.client_id != lead.client_id or task.crm_item_id:
@@ -134,7 +137,14 @@ def _serialize_many(leads, user, capabilities, *, detail=False):
     for lead in leads:
         if lead.next_task_id and (lead.pk, lead.next_task_id) not in links:
             visible.pop(lead.next_task_id, None)
-    return [_serialize(lead, user, capabilities, detail=detail, visible_tasks=visible) for lead in leads]
+    from .services.crm_lead_access import source_metadata_many
+    sources = source_metadata_many(user=user, organization=leads[0].organization, leads=leads) if leads else {}
+    output = []
+    for lead in leads:
+        row = _serialize(lead, user, capabilities, detail=detail, visible_tasks=visible)
+        row["source"] = next(iter(sources.get(lead.pk, [])), None)
+        output.append(row)
+    return output
 
 
 def _data(request, organization):
@@ -192,9 +202,7 @@ def _data(request, organization):
         "page": columns[0]["page"] if columns else page.number, "pages": columns[0]["pages"] if columns else paginator.num_pages, "total": total,
         "page_size": PAGE_SIZE, "q": query, "mode": mode, "status": status,
         "can_create": capabilities["create_own_leads"],
-        "intake": {"enabled": organization.crm_intake_process,
-            "last_run_at": activation.last_run_at.isoformat() if activation and activation.last_run_at else None,
-            "needs_attention": bool(activation and activation.last_error)}}
+        "intake": intake_status(organization, activation)}
 
 
 def _api(view):
@@ -259,6 +267,35 @@ def data(request):
     return JsonResponse(_data(request, _organization(request)))
 
 
+def _saved_call_media(request, organization, sources):
+    # Reuse listening authorization; reading a card never requests analysis/status.
+    from .communication_models import PhoneCall, CallAnalysis
+    from .communication_views import _authorize_call_access
+    calls = {call.pk: call for call in PhoneCall.objects.filter(organization=organization,
+        pk__in=[source["call_id"] for source in sources if source.get("call_id")]).select_related("analysis", "connection")}
+    for source in sources:
+        call = calls.get(source.get("call_id"))
+        if not call:
+            continue
+        try:
+            _authorize_call_access(request, call)
+        except (PermissionDenied, Http404):
+            continue
+        source.update(call_result=call.result, duration_seconds=call.duration_seconds)
+        media = {"recording_url": reverse("communication_call_recording", args=[call.pk]) + "?" + urlencode({"org_id": organization.pk}) if call.recording_file else None}
+        analysis = getattr(call, "analysis", None)
+        if analysis and analysis.status == CallAnalysis.STATUS_READY:
+            media.update(transcript=analysis.transcript[:20000], transcript_truncated=len(analysis.transcript) > 20000,
+                summary=analysis.summary[:4000], facts={})
+            for key in ("client_name", "company", "phone", "address", "request"):
+                value = analysis.facts.get(key) if isinstance(analysis.facts, dict) else None
+                if isinstance(value, str):
+                    media["facts"][key] = value[:2000]
+        media["analysis_status"] = analysis.status if analysis else "none"
+        media["analysis_url"] = reverse("crm_live_lead_analysis", args=[source["lead_id"], call.pk]) + "?" + urlencode({"org_id": organization.pk}) if call.recording_file else None
+        source["media"] = media
+
+
 def _detail(request, organization, lead_id):
     from .services.crm_lead_access import can_read_lead, source_metadata
     lead = get_object_or_404(_queryset(request.user, organization), pk=lead_id)
@@ -272,12 +309,35 @@ def _detail(request, organization, lead_id):
         target = _queryset(request.user, organization).filter(pk=lead.duplicate_of_id).first()
         if target and can_read_lead(request.user, organization, target):
             duplicate = {"id": target.pk, "title": target.title}
+    from django.core import signing
+    from django.utils.dateparse import parse_datetime
+    before = None
+    cursor = request.GET.get("source_cursor")
+    if cursor:
+        try:
+            token = signing.loads(cursor, salt="crm-lead-sources", max_age=3600)
+            if token[:3] != [request.user.pk, organization.pk, lead.pk]: raise ValueError
+            before = (parse_datetime(token[3]), int(token[4]))
+            if before[0] is None: raise ValueError
+        except (signing.BadSignature, ValueError, TypeError, IndexError): raise Http404
+    sources = source_metadata(user=request.user, organization=organization, lead=lead, limit=21, before=before)
+    has_more = len(sources)>20
+    sources = sources[:20]
+    source_cursor = signing.dumps([request.user.pk, organization.pk, lead.pk, sources[-1]["received_at"], sources[-1]["id"]], salt="crm-lead-sources") if has_more else None
+    from .communication_models import ConversationMessage
+    messages = {message.pk:message for message in ConversationMessage.objects.filter(pk__in=[row["message_id"] for row in sources if row.get("message_id")])}
+    for source in sources:
+        source["lead_id"] = lead.pk
+        message = messages.get(source.get("message_id"))
+        if message:
+            source["message"] = {"body": message.body[:10000], "truncated": len(message.body)>10000, "sender":message.sender_name}
+    _saved_call_media(request, organization, sources)
     return {"lead": _serialize_many([lead], request.user, _capabilities(request.user, organization), detail=True)[0],
         "events": [{"label": EVENTS.get(event.event_type, "Изменение карточки"),
             "at": event.occurred_at.isoformat(), "reason": event.reason,
             "movement": (COLUMNS.get(event.safe_diff.get("column", {}).get("before"), "История завершённых") + " → " + COLUMNS.get(event.safe_diff.get("column", {}).get("after"), "История завершённых")) if "column" in event.safe_diff else "",
             "actor": (event.actor.get_full_name() or event.actor.username) if event.actor else "Система"} for event in events],
-        "sources": source_metadata(user=request.user, organization=organization, lead=lead), "duplicate_of": duplicate,
+        "sources": sources, "source_cursor": source_cursor, "duplicate_of": duplicate,
         "deals": [{"id": deal.pk, "title": deal.title, "pipeline_id": deal.pipeline_id,
             "url": reverse("crm_live_workspace") + "?" + urlencode({"org_id": organization.pk, "pipeline": deal.pipeline_id, "deal": deal.pk})} for deal in deals]}
 
@@ -353,3 +413,25 @@ def command(request):
         return JsonResponse({"error": "Результат сохранения сейчас недоступен. Проверьте ту же операцию.", "code": "verify_required"}, status=503)
     response["result"] = result
     return JsonResponse(response)
+
+
+@_api
+@require_POST
+def analyze_call(request, lead_id, call_id):
+    # Explicit action only; same current source/privacy checks as the card.
+    from .services.crm_lead_access import can_read_lead, _readable_sources
+    from .communication_views import _authorize_call_access, request_call_analysis, start_requested_call_analysis_worker
+    from .communication_models import PhoneCall
+    organization = _organization(request)
+    lead = get_object_or_404(_queryset(request.user, organization), pk=lead_id)
+    if not can_read_lead(request.user, organization, lead): raise Http404
+    if not _readable_sources(request.user, organization).filter(
+        lead_id__in=[lead.pk, lead.origin_lead_id], inbox__source_type="call", inbox__source_id=call_id).exists(): raise Http404
+    # Reuse existing authorization, request queue, worker and repeat protection.
+    call = get_object_or_404(PhoneCall.objects.select_related("connection"), pk=call_id, organization=organization)
+    _authorize_call_access(request, call)
+    if not call.recording_file:
+        return JsonResponse({"error": "Запись звонка пока недоступна."}, status=409)
+    queued = request_call_analysis(call.pk)
+    started = start_requested_call_analysis_worker() if queued else False
+    return JsonResponse({"requested": queued, "status": "started" if started else "queued" if queued else "already_processing"})

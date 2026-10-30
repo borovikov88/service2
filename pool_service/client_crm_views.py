@@ -18,13 +18,14 @@ from .client_crm_import import (
 )
 from .client_crm_models import (
     ClientCompanyLink,
+    ClientBusinessRole,
     ClientContact,
     ClientCRMProfile,
     ClientImportCandidate,
     ClientImportRun,
     ClientOwnedObject,
 )
-from .client_queries import active_clients
+from .client_queries import active_clients, readable_company_links
 from .client_crm_ui import card_tab, card_url, relationship_results
 from .phone_utils import format_phone
 from .client_merge import merge_clients, merge_suggestions
@@ -136,6 +137,35 @@ def client_detail(request, client_id):
             return HttpResponseForbidden()
         action = (request.POST.get("action") or "").strip()
 
+        if action in {"save_person_phone", "link_person_user"}:
+            from .services.contact_people import save_phone, link_person
+            from django.core.exceptions import PermissionDenied, ValidationError
+            from django.http import HttpResponse
+            try:
+                if action == "save_person_phone":
+                    save_phone(request.user, client.pk, value=request.POST.get("phone", ""),
+                        phone_type=request.POST.get("phone_type"), primary=request.POST.get("primary", "0"),
+                        revision=request.POST.get("contacts_revision"))
+                else:
+                    link_person(request.user, client.pk, request.POST.get("user_id"))
+            except PermissionDenied:
+                return HttpResponseForbidden()
+            except ValidationError:
+                return HttpResponse("Проверьте данные и обновите карточку перед повтором.", status=409)
+            return redirect(card_url(client.pk, "contacts"))
+
+        if action == "set_personal_call_peer":
+            from .services.owner_call_privacy import set_personal_peer
+            from django.core.exceptions import PermissionDenied, ValidationError
+            from django.http import HttpResponse
+            try:
+                set_personal_peer(request.user, client.pk, request.POST.get("enabled"), request.POST.get("privacy_revision"))
+            except PermissionDenied:
+                return HttpResponseForbidden()
+            except ValidationError:
+                return HttpResponse("Обновите карточку и проверьте номера.", status=409)
+            return redirect(card_url(client.pk, "contacts"))
+
         if action == "save_profile":
             profile, _ = ClientCRMProfile.objects.get_or_create(client=client)
 
@@ -193,6 +223,22 @@ def client_detail(request, client_id):
                 messages.success(request, "Объект клиента удалён.")
             return redirect(card_url(client.id, "objects"))
 
+        if action == "set_supplier":
+            from .services.contact_roles import set_supplier
+            from django.core.exceptions import PermissionDenied, ValidationError
+            try:
+                set_supplier(request.user, client.pk, request.POST.get("enabled"), request.POST.get("revision"))
+            except PermissionDenied:
+                return HttpResponseForbidden()
+            except ValidationError:
+                from django.http import HttpResponse
+                return HttpResponse("Карточка изменилась. Обновите её и повторите действие.", status=409)
+            return redirect(card_url(client.pk))
+
+        if action in {"add_company_link", "update_company_link", "delete_company_link"}:
+            if not active_clients().filter(pk=client.pk, client_type__in=["legal", "private"]).exists():
+                return HttpResponseForbidden()
+
         if action == "add_company_link":
             try:
                 related_id = int(request.POST.get("related_client") or 0)
@@ -227,7 +273,7 @@ def client_detail(request, client_id):
                 link.is_primary = is_primary
                 link.save(update_fields=["position", "is_primary", "updated_at"])
             if is_primary:
-                ClientCompanyLink.objects.filter(company=company).exclude(pk=link.pk).update(
+                readable_company_links(request.user).filter(company=company).exclude(pk=link.pk).update(
                     is_primary=False
                 )
             messages.success(request, "Связь добавлена.")
@@ -239,7 +285,7 @@ def client_detail(request, client_id):
             except (TypeError, ValueError):
                 link_id = 0
             link_filter = Q(company=client) if client.client_type == "legal" else Q(person=client)
-            link = ClientCompanyLink.objects.filter(link_filter, pk=link_id).first()
+            link = readable_company_links(request.user).filter(link_filter, pk=link_id).first()
             if link is None:
                 return HttpResponseForbidden()
             if action == "delete_company_link":
@@ -256,7 +302,7 @@ def client_detail(request, client_id):
             link.is_primary = request.POST.get("is_primary") == "1"
             link.save(update_fields=["position", "is_primary", "updated_at"])
             if link.is_primary:
-                ClientCompanyLink.objects.filter(company=link.company).exclude(pk=link.pk).update(
+                readable_company_links(request.user).filter(company=link.company).exclude(pk=link.pk).update(
                     is_primary=False
                 )
             messages.success(request, "Связь обновлена.")
@@ -279,14 +325,14 @@ def client_detail(request, client_id):
 
     if client.client_type == "legal":
         relationship_links = list(
-            ClientCompanyLink.objects.filter(company=client)
+            readable_company_links(request.user).filter(company=client)
             .select_related("person", "person__crm_profile")
             .order_by("-is_primary", "person__name", "id")
         )
         relationship_mode = "people"
     else:
         relationship_links = list(
-            ClientCompanyLink.objects.filter(person=client)
+            readable_company_links(request.user).filter(person=client)
             .select_related("company", "company__crm_profile")
             .order_by("-is_primary", "company__name", "id")
         )
@@ -441,6 +487,11 @@ def client_detail(request, client_id):
         client_conversations = list(Conversation.objects.filter(client=client, organization_id=client.organization_id,
             connection__channel__organization_id=client.organization_id).select_related("connection__channel").order_by("-last_message_at")[:30])
 
+    from .services.contact_people import phone_revision
+    from .client_crm_models import OrganizationPersonLink
+    from .services.call_processing_settings import settings_allowed
+    from .services.owner_call_privacy import contact_state
+    personal_call_state = contact_state(request.user, client) if client.client_type == "private" and settings_allowed(request.user, client.organization) else None
     return render(
         request,
         "pool_service/client_detail.html",
@@ -450,6 +501,9 @@ def client_detail(request, client_id):
             "profile": profile,
             "client_kind_label": client_kind_label,
             "phones": phones,
+            "phone_revision": phone_revision(client) if can_manage else "",
+            "person_user_link": OrganizationPersonLink.objects.filter(person=client, organization_id=client.organization_id).select_related("user", "employee").first() if can_manage else None,
+            "personal_call_state": personal_call_state,
             "emails": emails,
             "relationship_links": relationship_links,
             "relationship_mode": relationship_mode,
@@ -464,6 +518,7 @@ def client_detail(request, client_id):
             "calls_total": calls_total,
             "can_view_calls": can_view_calls,
             "can_manage": can_manage,
+            "supplier_role": ClientBusinessRole.objects.filter(client=client, role="supplier").first(),
             "can_view_object_finance": bool(
                 request.user.is_superuser
                 or (org_roles & {"owner", "admin", "manager"})

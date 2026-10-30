@@ -1,3 +1,4 @@
+from . import crm_service_binding_views
 from django.urls import path
 from .views import (
     home,
@@ -421,6 +422,8 @@ urlpatterns = [
     path("crm/workspace/clients/", crm_live_views.clients, name="crm_live_clients"),
     path("crm/workspace/objects/", crm_live_views.objects, name="crm_live_objects"),
     path("crm/workspace/commands/", crm_live_views.command, name="crm_live_command"),
+    path("crm/workspace/deals/<int:deal_id>/service-documents/", crm_service_binding_views.workspace, name="crm_service_bindings"),
+    path("crm/leads/<int:lead_id>/calls/<int:call_id>/analyze/", crm_lead_views.analyze_call, name="crm_live_lead_analysis"),
     path("crm/workspace/deals/<int:deal_id>/", crm_live_views.detail, name="crm_live_detail"),
     path("crm/workspace/leads/", crm_lead_views.workspace, name="crm_live_leads"),
     path("crm/workspace/leads/data/", crm_lead_views.data, name="crm_live_lead_data"),

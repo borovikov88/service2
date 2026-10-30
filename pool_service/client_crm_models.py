@@ -93,6 +93,8 @@ class ClientCRMProfile(models.Model):
 
 
 class ClientContact(models.Model):
+    PHONE_TYPES = [("work", "Рабочий"), ("personal", "Личный"), ("other", "Другой")]
+    phone_type = models.CharField(max_length=12, choices=PHONE_TYPES, default="other")
     KIND_PHONE = "phone"
     KIND_EMAIL = "email"
     KIND_CHOICES = [
@@ -382,3 +384,40 @@ class ClientImportRun(models.Model):
 
     def __str__(self):
         return f"1C client import #{self.pk} ({self.get_status_display()})"
+
+
+class ClientBusinessRole(models.Model):
+    """Explicit local classification; never an intake or access grant."""
+    client = models.ForeignKey("pool_service.Client", on_delete=models.PROTECT, related_name="business_roles")
+    role = models.CharField(max_length=20, choices=[("supplier", "Поставщик")])
+    active = models.BooleanField(default=False)
+    revision = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["client", "role"], name="client_business_role_uniq")]
+
+
+class OrganizationPersonLink(models.Model):
+    """Explicit directory identity, never a portal or communication access grant."""
+    organization = models.ForeignKey("pool_service.Organization", on_delete=models.PROTECT)
+    person = models.ForeignKey("pool_service.Client", on_delete=models.PROTECT, related_name="organization_person_links")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    employee = models.OneToOneField("pool_service.Employee", on_delete=models.PROTECT, null=True, blank=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="created_person_links")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["organization", "user"], name="org_person_user_uniq"),
+            models.UniqueConstraint(fields=["organization", "person"], name="org_person_client_uniq"),
+        ]
+
+
+class ClientBusinessRoleEvent(models.Model):
+    client = models.ForeignKey("pool_service.Client", on_delete=models.PROTECT, related_name="business_role_events")
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    role = models.CharField(max_length=20)
+    active = models.BooleanField()
+    revision = models.PositiveIntegerField()
+    source_client = models.ForeignKey("pool_service.Client", null=True, on_delete=models.PROTECT, related_name="transferred_business_role_events")
+    created_at = models.DateTimeField(auto_now_add=True)

@@ -11,6 +11,19 @@ DATABASES = {
         "NAME": ":memory:",
     }
 }
+# In-memory SQLite makes Django LiveServer share one DatabaseWrapper among
+# HTTP threads. Statement caches AND atomic session writes are unsafe there.
+# An explicit private file gives each thread its normal independent connection.
+SQLITE_LIVE_SERVER_TEST = any(os.environ.get(flag) == "1" for flag in (
+    "CRM_CARD_BROWSER_TEST", "CRM_NEEDS_BROWSER_TEST", "CRM_LEADS_BROWSER_TEST",
+    "CONTACTS_BROWSER_TEST", "CRM_NON_SALES_BROWSER_TEST",
+    "SERVICE2_SQLITE_LIVE_SERVER_TEST",
+))
+if SQLITE_LIVE_SERVER_TEST:
+    _TEST_DATABASE_DIR = tempfile.TemporaryDirectory(prefix="service2-test-db-")
+    DATABASES["default"]["TEST"] = {
+        "NAME": os.path.join(_TEST_DATABASE_DIR.name, "test.sqlite3"),
+    }
 DEBUG = True
 ALLOWED_HOSTS = ["testserver", "localhost", "127.0.0.1"]
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]

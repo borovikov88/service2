@@ -14,7 +14,7 @@ from django.utils.dateparse import parse_datetime
 
 from pool_service.crm_commercial_models import (
     CANONICAL_KEY, CrmAccess, CrmCommand, CrmDeal, CrmDealNextAction, CrmEvent, CrmLead,
-    CrmLeadDealLink, CrmLeadSource, CrmLeadTaskLink, CrmLeadThread, CrmPipeline, CrmStage,
+    CrmLeadDealLink, CrmDealTaskLink, CrmLeadSource, CrmLeadTaskLink, CrmLeadThread, CrmPipeline, CrmStage,
 )
 from pool_service.models import Client, Employee, OrganizationAccess, ServiceTask, ServiceTaskChange
 from pool_service.services.crm_commercial_commands import (
@@ -104,7 +104,7 @@ def _normalize(kind, changes):
         "lead.acknowledge": set(),
         "lead.edit": EDIT_FIELDS | {"next_action", "expected_task_version"},
         "lead.transition": {"status", "result", "reason", "follow_up_at", "target_deal_id", "target_lead_id", "next_action", "expected_task_version"},
-        "lead.qualify": {"deals", "reason"},
+        "lead.qualify": {"deals", "reason", "expected_task_version"},
         "lead.add_deal": {"deals", "reason"},
     }[kind]
     if (not changes and kind != "lead.acknowledge") or not set(changes) <= allowed:
@@ -148,12 +148,19 @@ def _normalize(kind, changes):
                 raise ValidationError("Qualification requires one to ten independent deals.")
             rows = []
             for row in value:
-                if type(row) is not dict or not {"pipeline_id", "title", "next_action"} <= set(row) or not set(row) <= {"pipeline_id", "title", "next_action", "client_id"}:
+                if type(row) is not dict or not {"pipeline_id", "title", "next_action"} <= set(row) or not set(row) <= {"pipeline_id", "title", "next_action", "client_id", "new_contact", "reuse_next_action"}:
                     raise ValidationError("Each deal requires a pipeline, title and next action.")
                 normalized = {"pipeline_id": _positive_id(row["pipeline_id"]),
                               "title": _text(row["title"], 255, True), "next_action": _next_action_values(row["next_action"])}
                 if "client_id" in row:
                     normalized["client_id"] = _positive_id(row["client_id"])
+                if "new_contact" in row:
+                    if "client_id" in row: raise ValidationError("Choose an existing or new contact, not both.")
+                    from .crm_conversion_contacts import normalize_contact
+                    normalized["new_contact"] = normalize_contact(row["new_contact"])
+                if "reuse_next_action" in row:
+                    if type(row["reuse_next_action"]) is not bool: raise ValidationError("Invalid task transfer.")
+                    normalized["reuse_next_action"] = row["reuse_next_action"]
                 rows.append(normalized)
             result[name] = rows
     if result.get("direction", "") not in {"", "construction", "service", "retail", "tender"}:
@@ -561,7 +568,18 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
             lead.status, lead.result = "closed", "qualified"
             lead.reason = values.get("reason", "")
             lead.follow_up_at = None
-            _finish_next(using, actor, lead, task)
+            transfer = any(row.get("reuse_next_action") for row in values["deals"])
+            if transfer:
+                if command_type != "lead.qualify" or len(values["deals"]) != 1 or _terminal(task): raise ValidationError("Only one deal may receive the current open step.")
+                from pool_service.services.task_feedback import version_for
+                if not task.is_editable or task.status == ServiceTask.STATUS_WAITING or values.get("expected_task_version") != version_for(task): raise CommercialConflict("Следующий шаг изменён или ожидает. Обновите карточку.")
+                _validate_task(using, lead, task, actor)
+                if values["deals"][0]["next_action"]["title"] != task.title or parse_datetime(values["deals"][0]["next_action"]["due_at"]) != task.due_at:
+                    raise ValidationError("При передаче сохраняется текущий шаг. Измените его в карточке лида до конвертации.")
+                additional["transferred_task_id"] = task.pk
+                lead.next_task = None
+            else:
+                _finish_next(using, actor, lead, task)
             lead.revision += 1
         if command_type != "lead.disposition" or values["column"] == "working":
             lead.needs_review = False
@@ -575,7 +593,11 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
         if command_type in {"lead.qualify", "lead.add_deal"}:
             ids = []
             for row in values["deals"]:
-                client = _client(using, org_id, row.get("client_id", lead.client_id))
+                if row.get("new_contact"):
+                    from .crm_conversion_contacts import create_conversion_contact
+                    client = create_conversion_contact(using, actor, organization, row["new_contact"])
+                else:
+                    client = _client(using, org_id, row.get("client_id", lead.client_id))
                 if client is None:
                     raise ValidationError("A qualified deal requires a client or preliminary client.")
                 pipeline = CrmPipeline.objects.using(using).select_for_update().filter(pk=row["pipeline_id"], organization=organization, is_active=True).first()
@@ -585,14 +607,25 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
                     raise ValidationError("Deal pipeline unavailable.")
                 deal = CrmDeal.objects.using(using).create(organization=organization, client=client,
                     pipeline=pipeline, stage=stage, manager=actor, title=row["title"], revision=1)
-                next_task, link = _new_next_task(using, actor, deal, row["next_action"])
+                CrmLeadDealLink.objects.using(using).create(organization=organization, lead=lead, deal=deal, command=command,
+                    kind="qualification" if command_type == "lead.qualify" else "additional")
+                if row.get("reuse_next_action"):
+                    command.result = {"transferred_task_id": task.pk}
+                    command.save(using=using, update_fields=["result"])
+                    task.client = client
+                    task.payload_json = {**task.payload_json, "crm_deal": {"deal_id": deal.pk}}
+                    task.save(using=using, update_fields=["client", "payload_json", "updated_at"])
+                    link = CrmDealTaskLink.objects.using(using).create(organization=organization,deal=deal,task=task,created_by=actor)
+                    next_task = task
+                    ServiceTaskChange.objects.using(using).create(task=task,changed_by=actor,action=ServiceTaskChange.ACTION_UPDATED,field_name="crm_lead_step_transferred")
+                else:
+                    next_task, link = _new_next_task(using, actor, deal, row["next_action"])
                 call_id = _single_source_call_id(using, lead)
                 if call_id:
                     next_task.payload_json = {**next_task.payload_json, "source_call_id": call_id}
                     next_task.save(update_fields=["payload_json", "updated_at"])
                 CrmDealNextAction.objects.using(using).create(organization=organization, deal=deal, task_link=link)
-                CrmLeadDealLink.objects.using(using).create(organization=organization, lead=lead, deal=deal, command=command,
-                    kind="qualification" if command_type == "lead.qualify" else "additional")
+
                 CrmEvent.objects.using(using).create(organization=organization, deal=deal, command=command,
                     actor=actor, event_type="deal.create", safe_diff={"revision": {"before": 0, "after": 1}})
                 ids.append(deal.pk)

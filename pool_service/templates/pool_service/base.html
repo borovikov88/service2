@@ -168,7 +168,7 @@
 
       {% if is_org_staff %}
       <a href="{% url 'clients_list' %}" class="desktop-sidebar__link {% if active_tab == 'clients' %}is-active{% endif %}">
-        <i class="bi bi-people"></i><span>Клиенты</span>
+        <i class="bi bi-people"></i><span>Контакты</span>
       </a>
       {% endif %}
 
@@ -375,7 +375,7 @@
                 </a>
                 <a href="{% url 'clients_list' %}" class="ui-dropdown__item {% if active_tab == 'clients' %}is-active{% endif %}">
                   <i class="bi bi-people"></i>
-                  <span>Клиенты</span>
+                  <span>Контакты</span>
                 </a>
                 {% if show_communications_menu %}<a href="{% url 'communications_conversations' %}" class="ui-dropdown__item {% if active_tab == 'communications' %}is-active{% endif %}"><i class="bi bi-chat-dots"></i><span>Коммуникации</span></a>{% endif %}
                 {% if can_manage_communication_channels %}<a href="{% url 'avito_dashboard' %}" class="ui-dropdown__item {% if active_tab == 'avito' %}is-active{% endif %}"><i class="bi bi-shop"></i><span>Авито</span></a>{% endif %}
@@ -397,7 +397,7 @@
           </a>
           {% endif %}
           {% if is_org_staff %}
-            <a class="text-decoration-none {% if active_tab == 'clients' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'clients_list' %}">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099;</a>
+            <a class="text-decoration-none {% if active_tab == 'clients' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'clients_list' %}">Контакты</a>
           {% endif %}
           {% if show_communications_menu %}<a class="text-decoration-none {% if active_tab == 'communications' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'communications_conversations' %}">Коммуникации</a>{% endif %}
           {% if can_manage_communication_channels %}<a class="text-decoration-none {% if active_tab == 'avito' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'avito_dashboard' %}">Авито</a>{% endif %}
@@ -607,7 +607,7 @@
           </a>
           {% endif %}
           {% if is_org_staff %}
-          <a href="{% url 'clients_list' %}" class="list-group-item list-group-item-action">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099;</a>
+          <a href="{% url 'clients_list' %}" class="list-group-item list-group-item-action">Контакты</a>
           {% endif %}
           {% if show_communications_menu %}
           <a href="{% url 'communications_conversations' %}" class="list-group-item list-group-item-action {% if active_tab == 'communications' %}active{% endif %}">

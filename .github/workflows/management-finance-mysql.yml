@@ -11,6 +11,20 @@ on:
       - "pool_service/communication_enrichment.py"
       - "pool_service/communication_models.py"
       - "pool_service/client_crm_models.py"
+      - "pool_service/client_crm_views.py"
+      - "pool_service/client_queries.py"
+      - "pool_service/contact_directory.py"
+      - "pool_service/services/contact_people.py"
+      - "pool_service/tests/test_contact_people*.py"
+      - "pool_service/services/contact_roles.py"
+      - "pool_service/crm_service_binding_models.py"
+      - "pool_service/services/crm_service_bindings.py"
+      - "pool_service/services/crm_service_binding_reader.py"
+      - "pool_service/crm_service_binding_views.py"
+      - "pool_service/tests/test_crm_service_binding*.py"
+      - "pool_service/services/owner_call_privacy.py"
+      - "pool_service/tests/test_owner_call_privacy*.py"
+      - "pool_service/tests/test_contacts*.py"
       - "pool_service/tests/test_contact_identity*.py"
       - "pool_service/crm_inbox_models.py"
       - "pool_service/services/crm_inbox.py"
@@ -39,6 +53,16 @@ on:
       - "pool_service/services/crm_lead_*.py"
       - "pool_service/tests/test_crm_lead_*.py"
       - "pool_service/management/commands/run_crm_intake.py"
+      - "pool_service/management/commands/crm_intake_diagnostics.py"
+      - "pool_service/services/crm_intake_status.py"
+      - "pool_service/services/crm_intake_wakeup.py"
+      - "pool_service/tests/test_crm_intake_diagnostics.py"
+      - "pool_service/tests/test_crm_intake_status.py"
+      - "pool_service/tests/test_crm_intake_wakeup.py"
+      - "scripts/crm_intake_event_wakeup.py"
+      - "scripts/crm_intake_diagnostic_receipt.py"
+      - ".github/scripts/crm_intake_worker_remote.sh"
+      - ".github/workflows/crm-intake-diagnostics.yml"
       - "pool_service/management/commands/provision_crm_lead_intake.py"
       - "pool_service/crm_pilot_views.py"
       - "pool_service/services/crm_pilot_activation.py"
@@ -83,6 +107,9 @@ on:
       - ".github/scripts/crm_pilot_db_backup_remote.sh"
       - ".github/tests/test_crm_pilot_db_backup.py"
       - "scripts/crm_pilot_db_backup.py"
+      - "scripts/crm_pre_migrate_backup.py"
+      - ".github/tests/test_crm_pre_migrate_backup.py"
+      - "update.sh"
       - "scripts/crm_pilot_db_backup_receipt.py"
   workflow_dispatch:
 
@@ -92,7 +119,10 @@ permissions:
 jobs:
   mysql-foundation:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Full suite includes historical forward/reverse migration preservation.
+    # 20-minute runs exhausted the budget while still progressing; keep a
+    # bounded limit without skipping assertions, races or migration checks.
+    timeout-minutes: 30
     services:
       mysql:
         image: mysql:8.4
@@ -178,6 +208,11 @@ jobs:
             pool_service.tests.test_conversation_clients \
             pool_service.tests.test_contact_identity \
             pool_service.tests.test_contact_identity_migrations \
+            pool_service.tests.test_owner_call_privacy \
+            pool_service.tests.test_call_privacy_enforcement \
+            pool_service.tests.test_crm_service_binding_http \
+            pool_service.tests.test_crm_service_bindings \
+            pool_service.tests.test_crm_service_binding_migration \
             pool_service.tests.test_crm_inbox \
             pool_service.tests.test_crm_inbox_migrations \
             pool_service.tests.test_crm_commercial_foundation \
@@ -186,6 +221,14 @@ jobs:
             pool_service.tests.test_crm_object_needs \
             pool_service.tests.test_crm_object_need_corrections \
             pool_service.tests.test_crm_object_need_concurrency \
+            pool_service.tests.test_contact_people \
+            pool_service.tests.test_contact_people_migration \
+            pool_service.tests.test_contact_people_concurrency \
+            pool_service.tests.test_contacts_pagination \
+            pool_service.tests.test_contacts_roles \
+            pool_service.tests.test_contacts_preservation_contract \
+            pool_service.tests.test_contacts_migration \
+            pool_service.tests.test_contacts_concurrency \
             pool_service.tests.test_crm_need_deals \
             pool_service.tests.test_crm_need_deal_concurrency \
             pool_service.tests.test_crm_need_deal_migrations \
@@ -199,7 +242,12 @@ jobs:
             pool_service.tests.test_crm_lead_commands \
             pool_service.tests.test_crm_lead_migrations \
             pool_service.tests.test_crm_lead_intake \
+            pool_service.tests.test_crm_intake_diagnostics \
+            pool_service.tests.test_crm_intake_status \
+            pool_service.tests.test_crm_intake_wakeup \
             pool_service.tests.test_crm_lead_views \
+            pool_service.tests.test_crm_lead_conversion_contacts \
+            pool_service.tests.test_crm_lead_timeline \
             pool_service.tests.test_crm_lead_activation \
             pool_service.tests.test_crm_org_scope \
             pool_service.tests.test_task_read_privacy \

@@ -8,6 +8,19 @@
   }
 })(function () {
   "use strict";
+  function intakeStatusText(intake, dateText) {
+    const parts = ["Приём обращений: " + (intake.enabled ? "включён" : "выключен")];
+    const attempted = intake.last_attempt_at || intake.last_run_at;
+    if (attempted) {
+      parts.push("Последняя попытка обработки: " + dateText(attempted));
+      if (Number.isFinite(intake.attempt_age_seconds)) parts.push("прошло " + Math.floor(intake.attempt_age_seconds / 60) + " мин");
+      parts.push(intake.last_attempt_result === "complete" ? "проход завершён без ошибки" : intake.last_attempt_result === "error" ? "ошибка обработки" : "результат неизвестен");
+    } else parts.push("попытка обработки ещё не зафиксирована");
+    if (intake.last_successful_pass_at) parts.push("Последний известный успешный проход: " + dateText(intake.last_successful_pass_at));
+    else parts.push("Время последнего успешного прохода неизвестно");
+    parts.push("Необработанные события: оценка недоступна; успешный проход не означает пустую очередь");
+    return parts.join(" · ");
+  }
   const freeze = (value) => {
     if (value && typeof value === "object") { Object.values(value).forEach(freeze); Object.freeze(value); }
     return value;
@@ -150,30 +163,50 @@
     }
     const columnLabels = {unparsed: "Не разобраны", working: "В работе", spam: "Спам", deleted: "Удалённые", restore: "Восстановить"};
     let dragged = null;
+    const conversionDrop=el("div","lead-conversion-drop","Создать сделку");conversionDrop.hidden=true;root.append(conversionDrop);
+    conversionDrop.addEventListener("dragover",e=>{if(dragged?.can_qualify){e.preventDefault();e.dataTransfer.dropEffect="move";}});
+    conversionDrop.addEventListener("drop",e=>{e.preventDefault();const lead=dragged;dragged=null;conversionDrop.hidden=true;if(lead?.can_qualify)conversionDialog(lead);});
+    win.addEventListener("keydown",e=>{if(e.key==="Escape"){dragged=null;conversionDrop.hidden=true;}});
+    win.addEventListener("blur",()=>{conversionDrop.hidden=true;});
+    function sourceLine(host, source) {
+      if (!source) return;
+      host.append(el("p", "lead-source", [source.label, source.phone || source.contact_name].filter(Boolean).join(" · ")));
+      if (source.type === "call") host.append(el("p", "lead-source", (source.caller || "Кто звонил — неизвестно") + " → " + (source.callee || "Кому — неизвестно")));
+      if (source.contact?.url) {
+        const link = el("a", "lead-contact", source.contact.name); link.href = source.contact.url; host.append(link);
+      }
+      const stamp = source.occurred_at || source.received_at;
+      if (stamp) host.append(el("p", "lead-date", (source.occurred_at ? "Событие: " : "Получено: ") + dateText(stamp) + (!source.occurred_at ? " · время события неизвестно" : "")));
+      if (source.employee) host.append(el("p", "lead-source", "Сотрудник звонка: " + source.employee));
+    }
+    function displayTitle(lead) {
+      if (!["Входящий звонок — требуется уточнение", "Входящее обращение — требуется уточнение"].includes(lead.title) || !lead.source) return lead.title;
+      return [lead.source.label, lead.client?.name || lead.source.phone || lead.source.contact_name || "Контакт не определён"].join(" · ");
+    }
     function card(lead) {
       const row = el("article", "lead-row"); row.dataset.leadId = lead.id;
       const title = el("div"), middle = el("div"), next = el("div");
-      title.append(button(lead.title, () => openLead(lead.id)), el("p", "", lead.client?.name || "Клиент пока не определён"));
-      middle.append(el("span", "lead-state", lead.status_label), el("p", "", lead.assignee?.name || "Не назначен"));
-      if (lead.result) middle.append(el("p", "", lead.result_label));
-      if (lead.intake_reason_label) middle.append(el("p", "", lead.intake_reason_label));
-      if (lead.needs_review) middle.append(el("span", "lead-state review", "Новое обращение · нужен разбор"));
+      title.append(button(lead.client?.name || lead.source?.contact?.name || lead.source?.contact_name || lead.source?.phone || lead.title,()=>openLead(lead.id)));
+      if(lead.needs_review){const mark=el("span","lead-review-marker","•");mark.title="Есть обращение для разбора";mark.setAttribute("aria-label","Есть обращение для разбора");title.append(mark);}
+      if(lead.need)title.append(el("p","lead-card-need",lead.need.slice(0,160)));
+      title.append(el("p","lead-date",[lead.source?.label,lead.source?.occurred_at?dateText(lead.source.occurred_at):lead.source?.received_at?dateText(lead.source.received_at)+" · время события неизвестно":""].filter(Boolean).join(" · ")));
+      middle.append(el("p","",lead.assignee?.name || "Не назначен"));
       const action = lead.next_action;
       next.append(el("p", "", action?.restricted ? "Следующий шаг ограничен доступом" : action?.completed ? "Предыдущий шаг завершён" : action?.title || (lead.can_take ? "Можно взять в работу" : "Следующий шаг не указан")));
       if (action?.due_at && !action.restricted) next.append(el("p", "lead-date", dateText(action.due_at)));
       row.append(title, middle, next);
       const targets = moveTargets(lead);
-      if (targets.length) {
+      if (targets.length || lead.can_qualify) {
         row.draggable = !state.loading && !operations.forSubject(lead.id);
         row.addEventListener("dragstart", (event) => {
           if (!row.draggable || operations.forSubject(lead.id)) { event.preventDefault(); return; }
-          dragged = lead; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", String(lead.id)); row.classList.add("is-dragging");
+          dragged = lead; conversionDrop.hidden=!lead.can_qualify; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", String(lead.id)); row.classList.add("is-dragging");
         });
-        row.addEventListener("dragend", () => { dragged = null; row.classList.remove("is-dragging"); root.querySelectorAll(".is-drop-target").forEach((node) => node.classList.remove("is-drop-target")); });
-        const actions = el("details", "lead-card-move"), summary = el("summary", "", "Переместить…"); actions.append(summary);
+        row.addEventListener("dragend", () => { dragged = null; conversionDrop.hidden=true; row.classList.remove("is-dragging"); root.querySelectorAll(".is-drop-target").forEach((node) => node.classList.remove("is-drop-target")); });
+        const actions = el("details", "lead-card-move"), summary = el("summary", "", "⋯"); summary.setAttribute("aria-label","Действия лида"); actions.append(summary);
         const buttons = el("div", "lead-move-options");
         for (const target of targets) buttons.append(button(columnLabels[target], () => moveLead(lead, target)));
-        actions.append(buttons); row.append(actions);
+        if(lead.can_qualify)buttons.append(button("Создать сделку",()=>conversionDialog(lead))); actions.append(buttons); row.append(actions);
       }
       return row;
     }
@@ -186,7 +219,7 @@
       byId("lead-prev").disabled = state.loading || data.page <= 1; byId("lead-next").disabled = state.loading || data.page >= data.pages;
       byId("lead-create").hidden = !data.can_create;
       const intake = data.intake || {};
-      byId("lead-intake-status").textContent = "Приём обращений: " + (!intake.enabled ? "выключен" : intake.needs_attention ? "требует проверки" : !intake.last_run_at ? "ожидает первого запуска" : "включён") + (intake.last_run_at ? " · Последний запуск: " + dateText(intake.last_run_at) : "");
+      byId("lead-intake-status").textContent = intakeStatusText(intake, dateText);
       root.querySelectorAll("[data-mode]").forEach((node) => { if (node.dataset.mode === state.mode) node.setAttribute("aria-current", "page"); else node.removeAttribute("aria-current"); });
       if (state.mode === "closed") {
         list.append(el("h2", "", "История завершённых"));
@@ -202,7 +235,7 @@
         section.append(cards);
         section.addEventListener("dragover", (event) => { if (dragged && !state.loading && moveTargets(dragged).includes(column.key)) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; section.classList.add("is-drop-target"); } });
         section.addEventListener("dragleave", (event) => { if (!section.contains(event.relatedTarget)) section.classList.remove("is-drop-target"); });
-        section.addEventListener("drop", (event) => { event.preventDefault(); section.classList.remove("is-drop-target"); const lead = dragged; dragged = null; if (lead && !state.loading && moveTargets(lead).includes(column.key)) moveLead(lead, column.key); });
+        section.addEventListener("drop", (event) => { event.preventDefault(); section.classList.remove("is-drop-target"); const lead = dragged; dragged = null; conversionDrop.hidden=true; if (lead && !state.loading && moveTargets(lead).includes(column.key)) moveLead(lead, column.key); });
         const pager = el("nav", "lead-column-pager"); pager.setAttribute("aria-label", "Страницы: " + column.label);
         const previous = button("←", () => { state.pages[column.key] = column.page - 1; loadList(); }); previous.setAttribute("aria-label", "Предыдущая страница: " + column.label); previous.disabled = state.loading || column.page <= 1;
         const next = button("→", () => { state.pages[column.key] = column.page + 1; loadList(); }); next.setAttribute("aria-label", "Следующая страница: " + column.label); next.disabled = state.loading || column.page >= column.pages;
@@ -283,20 +316,22 @@
       if (text) section.append(el("p", "lead-form-note", text)); section.append(form); host.append(section); return form;
     }
     function formSubmit(form, label, handler) {
-      const save = button(label, null, true); save.type = "submit"; form.append(save);
+      const save = button(label, null, true); save.type = "submit"; save.dataset.noLoading=""; form.append(save);
       form.addEventListener("submit", (event) => { event.preventDefault(); try { handler(); } catch (error) { errorNode(form, error); } });
     }
     function editForm(host, lead, kind = "lead.edit") {
-      const creating = kind !== "lead.edit", form = makeForm(host, creating ? kind === "lead.new_need" ? "Новая потребность" : "Новый лид" : "Потребность и следующий шаг",
-        creating ? "Телефон и клиент не обязательны. Опишите контекст и назначьте следующий шаг. Для создания сделки потребуется выбрать клиента." : "Это общие бизнес-поля лида. Приватные подробности оставляйте в исходной коммуникации.");
+      const creating = kind !== "lead.edit", form = makeForm(host, creating ? kind === "lead.new_need" ? "Новая потребность" : "Новый лид" : "Потребность",
+        creating ? "Телефон и клиент не обязательны. Опишите контекст и назначьте следующий шаг. Для создания сделки потребуется выбрать клиента." : "");
       const fields = el("div", "lead-fields"); form.append(fields);
       const title = field(fields, "Название", creating ? "" : lead.title, "text", true); title.required = true; title.maxLength = 255;
       const need = field(fields, "Что требуется / контекст", creating ? "" : lead.need, "textarea", true); need.required = true; need.maxLength = 10000;
+      if (!creating) need.dataset.leadNeed = "true";
       const client = picker(fields, "Клиент · можно уточнить позже", initial.urls.clients, "clients", creating ? null : lead.client);
       const direction = select(fields, "Направление", [["", "Пока не определено"], ...initial.pipelines.map((p) => [p.code, p.name])], creating ? "" : lead.direction);
       const specialization = field(fields, "Специализация", creating ? "" : lead.specialization); specialization.maxLength = 40;
       const location = field(fields, "Место / объект", creating ? "" : lead.location); location.maxLength = 255;
       const desired = field(fields, "Желаемый срок · " + initial.timezone, creating ? "" : localDateTime(lead.desired_at, initial.timezone), "datetime-local");
+      if(!creating){const details=el("details"), business=el("div","lead-fields");details.append(el("summary","","Уточнить сведения"),business);business.append(title.parentElement,client.element,direction.parentElement,specialization.parentElement,location.parentElement,desired.parentElement);form.append(details);}
       const extra = el("details"), more = el("div", "lead-fields"); extra.append(el("summary", "", "Источник и бюджет"), more); form.append(extra);
       const source = field(more, "Источник привлечения", creating || lead.acquisition_source === "manual" ? "Ручное обращение" : lead.acquisition_source); source.maxLength = 80;
       const channel = field(more, "Канал первого обращения", creating || lead.first_contact_channel === "manual" ? "Ручной ввод" : lead.first_contact_channel); channel.maxLength = 40;
@@ -304,7 +339,7 @@
       const minimum = field(more, "Сумма / от", creating ? "" : lead.budget_min, "number"), maximum = field(more, "До", creating ? "" : lead.budget_max, "number");
       for (const input of [minimum, maximum]) { input.min = "0"; input.step = "0.01"; }
       const currency = field(more, "Валюта", creating ? "RUB" : lead.currency || "RUB"); currency.maxLength = 3;
-      const next = el("div", "lead-fields"); form.append(next);
+      const next = el("div", "lead-fields lead-next-panel"); next.append(el("h3","","Следующее действие")); form.append(next);
       // A colleague's task stays private; editing the lead must not overwrite it.
       const canNext = creating || !(lead.next_action?.restricted || lead.next_action?.waiting);
       const nextAction = canNext ? nextFields(next, creating ? null : lead.next_action) : null;
@@ -339,70 +374,87 @@
       });
     }
     function qualificationForm(host, lead, additional = false) {
-      const form = makeForm(host, additional ? "Дополнительная самостоятельная сделка" : "Квалифицировать в сделки",
-        "Каждая строка — отдельная потребность, а не вариант одного КП. Сделки создаются один раз и получают собственный следующий шаг.");
-      const rows = el("div"), entries = []; form.append(rows);
-      function addRow() {
-        if (entries.length >= 10) return;
-        const box = el("div", "lead-deal-form"), fields = el("div", "lead-fields"); box.append(fields);
-        const title = field(fields, "Название сделки", entries.length ? "" : lead.title, "text", true); title.required = true; title.maxLength = 255;
-        const pipeline = select(fields, "Воронка", initial.pipelines.map((p) => [String(p.id), p.name]), String(initial.pipelines.find((p) => p.code === lead.direction)?.id || initial.pipelines[0]?.id || "")); pipeline.required = true;
-        const client = picker(fields, "Клиент · обязателен для сделки", initial.urls.clients, "clients", lead.client);
-        const next = nextFields(fields, null), entry = {box, value: () => { if (!client.value()) throw new Error("Выберите клиента для каждой сделки."); return {title: title.value.trim(), pipeline_id: Number(pipeline.value), client_id: client.value(), next_action: next()}; }};
-        box.append(button("Убрать эту сделку", () => { if (entries.length === 1) return; entries.splice(entries.indexOf(entry), 1); box.remove(); })); entries.push(entry); rows.append(box);
-      }
-      addRow(); form.append(button("+ Ещё одна потребность", addRow));
-      formSubmit(form, additional ? "Добавить сделки" : "Завершить квалификацию", () => submit(form, additional ? "lead.add_deal" : "lead.qualify", lead, {deals: entries.map((entry) => entry.value())}));
+      const form = makeForm(host, additional ? "Дополнительная сделка" : "Создать сделку", "Создание произойдёт только после подтверждения. Совпадения контактов требуют явного выбора.");
+      const fields=el("div","lead-fields");form.append(fields);
+      const title=field(fields,"Название сделки",lead.title,"text",true);title.required=true;title.maxLength=255;
+      const pipeline=select(fields,"Воронка",initial.pipelines.map(p=>[String(p.id),p.name]),String(initial.pipelines.find(p=>p.code===lead.direction)?.id || initial.pipelines[0]?.id || ""));pipeline.required=true;
+      const mode=select(fields,"Контакт",[["existing","Выбрать существующий"],["private","Новое физлицо"],["legal","Новая компания"],["both","Новое физлицо и компания"]],"existing");
+      const client=picker(fields,"Существующий клиент",initial.urls.clients,"clients",lead.client);
+      const fresh=el("div","lead-fields wide");fields.append(fresh);
+      const person=field(fresh,"Имя физлица"), company=field(fresh,"Название компании"), phone=field(fresh,"Телефон","","tel"),inn=field(fresh,"ИНН");
+      person.maxLength=company.maxLength=255;phone.maxLength=inn.maxLength=20;
+      const update=()=>{client.element.hidden=mode.value!=="existing";fresh.hidden=mode.value==="existing";person.parentElement.hidden=!["private","both"].includes(mode.value);company.parentElement.hidden=!["legal","both"].includes(mode.value);inn.parentElement.hidden=company.parentElement.hidden;person.required=!person.parentElement.hidden;company.required=!company.parentElement.hidden;};mode.addEventListener("change",update);update();
+      const transferable=!additional&&lead.next_action&&!lead.next_action.completed&&!lead.next_action.restricted&&!lead.next_action.waiting;
+      const reuse=transferable?field(fields,"Сохранить открытый следующий шаг","","checkbox"):null;if(reuse)reuse.checked=true;
+      const nextHost=el("div","lead-fields wide");fields.append(nextHost);const next=nextFields(nextHost,transferable?lead.next_action:null);
+      const toggle=()=>{for(const input of nextHost.querySelectorAll("input"))input.disabled=Boolean(reuse?.checked);};if(reuse)reuse.addEventListener("change",toggle);toggle();
+      formSubmit(form,"Подтвердить создание сделки",()=>{
+        const row={title:title.value.trim(),pipeline_id:Number(pipeline.value),next_action:reuse?.checked?{title:lead.next_action.title,due_at:lead.next_action.due_at}:next()};
+        if(mode.value==="existing"){if(!client.value())throw new Error("Выберите существующего клиента из результатов поиска.");row.client_id=client.value();}
+        else row.new_contact={type:mode.value,person_name:person.value.trim(),company_name:company.value.trim(),phone:phone.value.trim(),inn:inn.value.trim()};
+        const changes={deals:[row]};if(reuse?.checked){row.reuse_next_action=true;changes.expected_task_version=lead.next_action.version;}
+        submit(form,additional?"lead.add_deal":"lead.qualify",lead,changes);
+      });
     }
     function renderDetail(data) {
-      const lead = data.lead; state.detail = data; content.replaceChildren();
-      content.append(el("h2", "", lead.title)); content.firstChild.id = "lead-dialog-title";
-      content.append(el("div", "lead-summary", lead.status_label + (lead.result ? " · " + lead.result_label : "") + " · " + (lead.assignee?.name || "Не назначен")));
-      if (lead.intake_reason_label) content.append(el("p", "crm-live-muted", lead.intake_reason_label));
-      if (lead.needs_review) content.append(el("p", "lead-conflict", lead.status === "closed" ? "После разбора поступило новое обращение. Проверьте исходную коммуникацию: продолжение текущей работы или новая потребность." : "Обращение требует разбора: уточните потребность и следующий шаг."));
-      if (lead.can_acknowledge) {
-        const form = makeForm(content, "Продолжение текущей работы", "Если это уточнение уже разобранного вопроса, отметьте обращение разобранным. Новая сделка и повторная квалификация не создаются.");
-        formSubmit(form, "Отметить разобранным", () => submit(form, "lead.acknowledge", lead, {}));
+      const lead=data.lead;state.detail=data;content.replaceChildren();
+      content.append(el("h2","",lead.client?.name || lead.source?.contact?.name || lead.source?.contact_name || lead.source?.phone || lead.title));content.firstChild.id="lead-dialog-title";
+      content.append(el("p","lead-summary",[lead.status_label,lead.source?.label,lead.assignee?.name || "Не назначен"].filter(Boolean).join(" · ")));
+      const layout=el("div","lead-detail-grid"), left=el("div","lead-detail-main"), right=el("section","lead-timeline");layout.append(left,right);content.append(layout);
+      const contact=el("section","lead-panel");contact.append(el("h3","","Контакт"));
+      const person=lead.source?.contact || lead.client;
+      if(person?.url){const link=el("a","lead-contact",person.name);link.href=person.url;contact.append(link);}
+      else contact.append(el("p","",person?.name || "Контакт не определён"));
+      if(lead.client && person?.id!==lead.client.id){const company=el(lead.client.url?"a":"p","",lead.client.name);if(lead.client.url)company.href=lead.client.url;contact.append(company);}
+      if(lead.source?.phone)contact.append(el("p","",lead.source.phone));left.append(contact);
+      if(lead.can_edit)editForm(left,lead);
+      else {const need=el("section","lead-panel");need.append(el("h3","","Потребность"),el("p","",lead.need || "Пока не уточнена"));left.append(need);}
+      if(lead.can_take){
+        const form=makeForm(left,"Следующее действие","");form.classList.add("lead-next-panel");
+        const fields=el("div","lead-fields");form.append(fields);const next=nextFields(fields,null);
+        formSubmit(form,"Взять в работу",()=>submit(form,"lead.take",lead,{next_action:next()}));
+      } else if(!lead.can_edit && lead.next_action){
+        const next=el("section","lead-panel lead-next-panel");next.append(el("h3","","Следующее действие"),el("p","",lead.next_action.restricted?"Ограничено доступом":lead.next_action.title));left.append(next);
       }
-      if (lead.need) content.append(el("p", "lead-need", lead.need));
-      if (lead.reason) content.append(el("p", "", "Результат / причина: " + lead.reason));
-      if (lead.next_action) {
-        const next = lead.next_action, line = el("p", "crm-live-muted");
-        if (next.restricted) line.textContent = "Следующий шаг ограничен доступом";
-        else { line.append(el("span", "", (next.completed ? "Предыдущий шаг: " : "Следующий шаг: ") + next.title + " · " + dateText(next.due_at) + " ")); const link = el("a", "", "Открыть задачу"); link.href = next.url; line.append(link); }
-        content.append(line);
-      }
-      if (data.sources?.length) {
-        const section = el("section"), links = el("div", "lead-link-list"); section.append(el("h3", "", "Исходные обращения"), links);
-        for (const source of data.sources) {
-          const link = el("a", "", source.label || "Открыть коммуникацию"); link.href = source.url; links.append(link);
-          if (source.occurred_at || source.received_at) {
-            const timestamp = source.occurred_at ? "Событие " + dateText(source.occurred_at) : "Получено " + dateText(source.received_at) + " · время события не передано";
-            links.append(el("span", "lead-date", timestamp + (source.historical ? " · История" : "")));
-          }
+      const actions=el("details","lead-panel");actions.append(el("summary","","Действия с лидом"));
+      if(lead.can_transition)transitionForm(actions,lead);
+      if(lead.can_qualify)actions.append(button("Создать сделку",()=>conversionDialog(lead)));
+      if(lead.can_add_deal)qualificationForm(actions,lead,true);
+      if(lead.can_acknowledge){const f=makeForm(actions,"Продолжение работы","");formSubmit(f,"Отметить разобранным",()=>submit(f,"lead.acknowledge",lead,{}));}
+      if(lead.can_new_need)editForm(actions,lead,"lead.new_need");left.append(actions);
+      if(data.deals?.length){const links=el("section","lead-panel");links.append(el("h3","","Сделки"));for(const deal of data.deals){const a=el("a","",deal.title);a.href=deal.url;links.append(a);}left.append(links);}
+      right.append(el("h3","","История общения"));const filters=el("div","lead-timeline-filters"), items=el("div");right.append(filters,items);
+      let filter="all",sources=[...(data.sources||[])],cursor=data.source_cursor;
+      const paint=()=>{
+        items.replaceChildren();
+        for(const source of sources.filter(x=>filter==="all"||x.type===filter)){
+          const row=el("article","lead-communication");row.append(el("h4","",source.type==="call"?[(source.caller||"Неизвестно"),(source.callee||"Неизвестно")].join(" → "):source.message?.sender || source.contact_name || source.label));
+          row.append(el("p","lead-date",[source.label,dateText(source.occurred_at||source.received_at),!source.occurred_at?"время получения":""].filter(Boolean).join(" · ")));
+          const media=source.media;
+          if(source.type==="call"){
+            row.append(el("p","lead-call-status",(source.call_result==="missed"?"Пропущен":source.call_result==="answered"?"Отвечен":"Статус неизвестен")+(source.duration_seconds!=null?" · "+source.duration_seconds+" сек":"")));
+            if(media?.recording_url){const audio=el("audio");audio.controls=true;audio.preload="none";audio.src=media.recording_url;audio.setAttribute("aria-label","Запись разговора");row.append(audio);}
+            else row.append(el("p","lead-form-note",source.call_result==="missed"?"Разговор не состоялся; записи нет.":"Запись недоступна."));
+            if(media?.summary||media?.transcript){const text=el("details");text.append(el("summary","","Резюме и расшифровка"));if(media.summary)text.append(el("p","lead-transcript",media.summary));if(media.transcript)text.append(el("p","lead-transcript",media.transcript));row.append(text);}
+            if(media?.facts?.request && lead.can_edit)row.append(button("Предложить текст потребности",()=>{const input=content.querySelector('[data-lead-need="true"]');if(input&&(!input.value||input.value===lead.need)){input.value=media.facts.request;input.focus();}}));
+            if(media?.analysis_url){const ai=button(media.analysis_status==="ready"?"Повторить анализ":"Расшифровать",async()=>{
+              if(ai.disabled)return;ai.disabled=true;
+              try{const response=await win.fetch(media.analysis_url,{method:"POST",credentials:"same-origin",headers:{"X-CSRFToken":csrf(),Accept:"application/json"}});if(!response.ok)throw new Error("Запуск недоступен. Проверьте права и состояние записи.");ai.textContent="Запрос передан в очередь";}catch(error){if(row.isConnected){errorNode(row,error);ai.disabled=false;}}
+            });ai.title="Явный запуск существующей очереди анализа";row.append(ai);}
+          } else if(source.message){row.append(el("p","lead-message-body",source.message.body));if(source.message.truncated)row.append(el("small","","Показано начало сообщения."));}
+          const link=el("a","lead-original-link","Открыть источник");link.href=source.url;row.append(link);items.append(row);
         }
-        content.append(section);
-      }
-      if (data.deals?.length) {
-        const section = el("section"), links = el("div", "lead-link-list"); section.append(el("h3", "", "Связанные сделки"), links);
-        for (const deal of data.deals) { const link = el("a", "", deal.title); link.href = deal.url; links.append(link); } content.append(section);
-      }
-      if (data.duplicate_of) { const line = el("p", "", "Дубль обращения: "); line.append(button(data.duplicate_of.title, () => openLead(data.duplicate_of.id))); content.append(line); }
-      if (lead.can_take) {
-        const form = makeForm(content, "Взять в работу", "Просмотр карточки не назначает ответственного. Первый успешный захват закрепит обращение за вами."), fields = el("div", "lead-fields"); form.append(fields); const next = nextFields(fields, null);
-        formSubmit(form, "Взять в работу", () => submit(form, "lead.take", lead, {next_action: next()}));
-      }
-      if (moveTargets(lead).length) { const moves = el("div", "lead-actions"); for (const target of moveTargets(lead)) moves.append(button(columnLabels[target], () => moveLead(lead, target))); content.append(moves); }
-      if (lead.can_edit) editForm(content, lead);
-      if (lead.can_transition) transitionForm(content, lead);
-      if (lead.can_qualify) qualificationForm(content, lead);
-      if (lead.can_add_deal) qualificationForm(content, lead, true);
-      if (lead.can_new_need) { const details = el("details"); details.append(el("summary", "", "Новое обращение — самостоятельная потребность")); editForm(details, lead, "lead.new_need"); content.append(details); }
-      if (data.events?.length) {
-        const section = el("section"), history = el("ol", "lead-history"); section.append(el("h3", "", "История"), history);
-        for (const event of data.events) { const row = el("li", "", event.label + (event.movement ? " · " + event.movement : "") + " · " + dateText(event.at) + " · " + event.actor); if (event.reason) row.append(el("p", "", event.reason)); history.append(row); } content.append(section);
-      }
-      renderOperations();
+        if(!items.childNodes.length)items.append(el("p","lead-form-note","Нет доступных обращений этого типа."));
+      };
+      for(const [key,label] of [["all","Все"],["call","Звонки"],["message","Сообщения"]])filters.append(button(label,()=>{filter=key;paint();}));paint();
+      const more=button("Ещё обращения",async()=>{if(more.disabled||!cursor)return;more.disabled=true;const sequence=state.detailSequence;try{const page=await read(initial.urls.detail_prefix+lead.id+"/?org_id="+initial.organization_id+"&source_cursor="+encodeURIComponent(cursor));if(sequence!==state.detailSequence||!right.isConnected)return;const ids=new Set(sources.map(x=>x.id));sources.push(...page.sources.filter(x=>!ids.has(x.id)));cursor=page.source_cursor;paint();more.hidden=!cursor;}catch(error){if(right.isConnected)errorNode(right,error);}finally{more.disabled=false;}});more.hidden=!cursor;right.append(more);
+      const audit=el("details","lead-audit");audit.append(el("summary","","Служебная история"));
+      for(const event of data.events||[])audit.append(el("p","",[event.label,dateText(event.at),event.actor,event.movement,event.reason].filter(Boolean).join(" · ")));content.append(audit);renderOperations();
+    }
+    async function conversionDialog(snapshot) {
+      if(operations.forSubject(snapshot.id))return;
+      const sequence=++state.detailSequence;state.selected=snapshot.id;urlState();content.replaceChildren(el("h2","","Создать сделку"));content.firstChild.id="lead-dialog-title";if(!dialog.open)dialog.showModal();
+      try{const data=await read(initial.urls.detail_prefix+snapshot.id+"/?org_id="+initial.organization_id);if(sequence!==state.detailSequence)return;if(!data.lead.can_qualify)throw new Error("Сначала возьмите лид в работу и уточните потребность.");if(data.lead.revision!==snapshot.revision)throw new Error("Лид изменился. Откройте его повторно.");qualificationForm(content,data.lead);renderOperations();}catch(error){if(sequence===state.detailSequence)errorNode(content,error);}
     }
     async function openLead(id) {
       const sequence = ++state.detailSequence; state.selected = Number(id); urlState(); content.replaceChildren(el("p", "", "Загружаем карточку…")); if (!dialog.open) dialog.showModal();
@@ -437,5 +489,5 @@
     const selected = new URL(win.location.href).searchParams.get("lead"); renderList(); if (selected && /^\d+$/.test(selected)) openLead(Number(selected));
     return {state, operations, loadList, openLead};
   }
-  return {LeadOperations, localDateTime, deadlineISO, moveTargets, mount};
+  return {intakeStatusText, LeadOperations, localDateTime, deadlineISO, moveTargets, mount};
 });
