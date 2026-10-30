@@ -406,11 +406,34 @@ class LeadCommandConcurrencyTests(LeadFixture, TransactionTestCase):
         self.assertEqual(ServiceTask.objects.count(), 0)
 
 
+    def test_parallel_new_contact_same_phone_creates_one_identity(self):
+        first=self.create();second=self.create()
+        contact=dict(type='private',person_name='Synthetic race person',company_name='',phone='+79990004455',inn='')
+        def convert(lead):
+            try:
+                return self.command('lead.qualify',{'deals':[self.deal(new_contact={**contact,'person_name':'Synthetic race '+str(lead.pk),'phone':'+7 (999) 000-44-55' if lead.pk==first.pk else '89990004455'})]},lead)
+            except ValidationError:
+                return 'duplicate_contact'
+        results=self.parallel([lambda:convert(first),lambda:convert(second)])
+        self.assertEqual(sum(isinstance(result,dict) for result in results),1)
+        self.assertEqual(Client.objects.filter(name__startswith='Synthetic race ').count(),1)
+        self.assertEqual(CrmDeal.objects.count(),1)
+
+    def test_parallel_transfer_same_key_preserves_single_task(self):
+        lead=self.create(client_id=self.client.pk);task=lead.next_task
+        changes={'expected_task_version':version_for(task),'deals':[self.deal(client_id=self.client.pk,reuse_next_action=True,next_action=self.action())]}
+        results=self.parallel([lambda:self.command('lead.qualify',changes,lead,key='transfer-race'),lambda:self.command('lead.qualify',changes,lead,key='transfer-race')])
+        self.assertEqual(results[0],results[1]);self.assertEqual(CrmDeal.objects.count(),1)
+        self.assertEqual(ServiceTask.objects.count(),1)
+        self.assertEqual(CrmDeal.objects.get().next_action.task_link.task_id,task.pk)
+
+
 from pool_service.tests.test_crm_inbox import Fixture as InboxFixture
 from pool_service.communication_models import CommunicationAccess
 from pool_service.services.crm_inbox import claim_one, deliver_claim
 from pool_service.services.crm_lead_intake import consume_incoming
 from pool_service.services.crm_lead_access import can_read_lead, leads_for_user
+
 
 
 class SplitLeadSourcePrivacyTests(InboxFixture, TestCase):

@@ -305,7 +305,7 @@ class CrmDealTaskLink(CommercialModel):
                 or task.water_reading_id or task.pool_id
                 or task.task_type != ServiceTask.TYPE_CRM_FOLLOWUP):
             raise ValidationError("The task must belong to this deal's client and organization, without a legacy CRM link.")
-        if CrmLeadTaskLink.objects.using(using).filter(task_id=self.task_id).exists():
+        if CrmLeadTaskLink.objects.using(using).filter(task_id=self.task_id).exists() and not _confirmed_task_transfer(using, self.task_id, self.deal_id, self.organization_id):
             raise ValidationError("A deal task cannot also be a lead task.")
 
 
@@ -348,8 +348,10 @@ class CrmCommand(CommercialModel):
 
     def clean(self):
         super().clean()
-        if not isinstance(self.result, dict) or not self.result.keys() <= {"lead_id", "deal_id", "event_id", "revision", "task_id", "deal_ids", "previous_lead_id", "need_id", "review_id", "source_revision"}:
+        if not isinstance(self.result, dict) or not self.result.keys() <= {"lead_id", "deal_id", "event_id", "revision", "task_id", "deal_ids", "previous_lead_id", "need_id", "review_id", "source_revision", "transferred_task_id"}:
             raise ValidationError("Command result accepts only structural CRM identifiers.")
+        if "transferred_task_id" in self.result and (type(self.result["transferred_task_id"]) is not int or self.result["transferred_task_id"] <= 0 or self.command_type != "lead.qualify"):
+            raise ValidationError("Task transfer requires a positive identifier in a qualification command.")
         if "deal_ids" in self.result and (type(self.result["deal_ids"]) is not list
                 or not 1 <= len(self.result["deal_ids"]) <= 10
                 or any(type(value) is not int or value <= 0 for value in self.result["deal_ids"])
@@ -508,7 +510,7 @@ class CrmLeadTaskLink(LeadEvidenceModel):
         if (not task or task.organization_id != self.organization_id or task.crm_item_id
                 or task.water_reading_id or task.pool_id or task.task_type != ServiceTask.TYPE_CRM_FOLLOWUP):
             raise ValidationError("Lead tasks must be independent CRM follow-ups in this organization.")
-        if CrmDealTaskLink.objects.using(using).filter(task_id=self.task_id).exists():
+        if CrmDealTaskLink.objects.using(using).filter(task_id=self.task_id).exists() and not any(_confirmed_task_transfer(using, self.task_id, deal_id, self.organization_id) for deal_id in CrmDealTaskLink.objects.using(using).filter(task_id=self.task_id).values_list("deal_id", flat=True)):
             raise ValidationError("A lead task cannot be a deal task.")
 
 
@@ -559,3 +561,13 @@ class CrmIntakeActivation(CommercialModel):
     starts_at = models.DateTimeField(default=timezone.now)
     last_run_at = models.DateTimeField(null=True, blank=True)
     last_error = models.CharField(max_length=40, blank=True)
+
+
+def _confirmed_task_transfer(using, task_id, deal_id, organization_id):
+    """Retained lead provenance is allowed only for an audited qualification transfer."""
+    leads = CrmLeadTaskLink.objects.using(using).filter(task_id=task_id, organization_id=organization_id,
+        lead__organization_id=organization_id, lead__status="closed", lead__result="qualified", lead__next_task__isnull=True).values("lead_id")
+    return CrmLeadDealLink.objects.using(using).filter(organization_id=organization_id,lead_id__in=leads,
+        deal_id=deal_id,deal__organization_id=organization_id,kind="qualification",
+        command__organization_id=organization_id,command__command_type="lead.qualify",
+        command__result__transferred_task_id=task_id).exists()
