@@ -233,6 +233,8 @@ jobs:
             pool_service.tests.test_crm_lead_migrations \
             pool_service.tests.test_crm_lead_intake \
             pool_service.tests.test_crm_lead_views \
+            pool_service.tests.test_crm_lead_conversion_contacts \
+            pool_service.tests.test_crm_lead_timeline \
             pool_service.tests.test_crm_lead_activation \
             pool_service.tests.test_crm_org_scope \
             pool_service.tests.test_task_read_privacy \

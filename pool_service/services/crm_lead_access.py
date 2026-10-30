@@ -184,7 +184,7 @@ def can_read_lead(user, organization, lead):
     return not private_call_ids(PhoneCall.objects.filter(pk__in=call_ids, organization=organization))
 
 
-def source_metadata_many(*, user, organization, leads, limit=1):
+def source_metadata_many(*, user, organization, leads, limit=1, before=None):
     """Bounded, batched metadata from currently readable sources; no bodies/audio."""
     leads = list(leads)
     if not leads:
@@ -193,13 +193,17 @@ def source_metadata_many(*, user, organization, leads, limit=1):
     leads = [lead for lead in leads if lead.pk in allowed]
     source_leads = {pk for lead in leads for pk in (lead.pk, lead.origin_lead_id) if pk}
     limit = max(1, min(int(limit), 50))
-    rows = list(_readable_sources(user, organization).filter(lead_id__in=source_leads)
+    source_rows = _readable_sources(user, organization).filter(lead_id__in=source_leads)
+    if before:
+        stamp, source_id = before
+        source_rows = source_rows.filter(Q(inbox__received_at__lt=stamp) | Q(inbox__received_at=stamp, pk__lt=source_id))
+    rows = list(source_rows
         .select_related("inbox").annotate(_source_rank=Window(expression=RowNumber(),
             partition_by=[F("lead_id")], order_by=[F("inbox__received_at").desc(), F("pk").desc()]))
         .filter(_source_rank__lte=limit).order_by("-inbox__received_at", "-pk"))
     messages = {row.pk: row for row in ConversationMessage.objects.filter(
         pk__in=[row.inbox.source_id for row in rows if row.inbox.source_type == "message"])
-        .select_related("conversation").only("pk", "sender_name", "conversation_id", "conversation__uuid", "conversation__client_id", "conversation__provider_phone", "conversation__participant_phone")}
+        .select_related("conversation").only("pk", "sender_name", "direction", "conversation_id", "conversation__uuid", "conversation__client_id", "conversation__provider_phone", "conversation__participant_phone")}
     calls = {row.pk: row for row in PhoneCall.objects.filter(organization=organization,
         pk__in=[row.inbox.source_id for row in rows if row.inbox.source_type == "call"])
         .select_related("employee", "employee_profile").only("pk", "organization_id", "client_id", "employee_id", "peer_employee_id",
@@ -225,7 +229,7 @@ def source_metadata_many(*, user, organization, leads, limit=1):
             contact = contacts.get(message.conversation.client_id)
             metadata.update(phone=message.conversation.provider_phone or message.conversation.participant_phone or "", url=reverse("communications_conversations") + "?" + urlencode({"conversation": str(message.conversation.uuid), "org_id": organization.pk}),
                 label="Сообщение Авито" if event.provider_kind == "avito" else "Обращение с сайта",
-                contact_name=message.sender_name or "", direction="in")
+                contact_name=message.sender_name or "", direction=message.direction, message_id=message.pk)
         else:
             call = calls.get(event.source_id)
             if not call or call.pk in private_ids:
@@ -250,7 +254,7 @@ def source_metadata_many(*, user, organization, leads, limit=1):
     return result
 
 
-def source_metadata(*, user, organization, lead, limit=30):
+def source_metadata(*, user, organization, lead, limit=30, before=None):
     if not can_read_lead(user, organization, lead):
         return []
-    return source_metadata_many(user=user, organization=organization, leads=[lead], limit=limit).get(lead.pk, [])
+    return source_metadata_many(user=user, organization=organization, leads=[lead], limit=limit, before=before).get(lead.pk, [])
