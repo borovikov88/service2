@@ -67,7 +67,8 @@ class TimelineTests(LeadIntakeTests):
         protected=HttpClient(enforce_csrf_checks=True);protected.force_login(self.user)
         with patch('pool_service.communication_views.request_call_analysis') as queue:
             self.assertEqual(protected.post(url).status_code,403)
-            unknown=reverse('crm_live_lead_analysis',args=[lead.pk,call.pk+10000])+'?org_id='+str(self.org.pk)
+            unlinked=PhoneCall.objects.create(organization=self.org,connection=call.connection,external_id='synthetic-unlinked',phone_number='+79990005566',direction='in',started_at=self.now,result='answered',employee=self.user)
+            unknown=reverse('crm_live_lead_analysis',args=[lead.pk,unlinked.pk])+'?org_id='+str(self.org.pk)
             self.assertEqual(self.client.post(unknown).status_code,404)
             CallPrivateNumber.objects.create(organization=self.org,owner=self.user,phone_key=normalize_phone(call.phone_number))
             self.assertEqual(self.client.post(url).status_code,404);queue.assert_not_called()

@@ -411,12 +411,12 @@ class LeadCommandConcurrencyTests(LeadFixture, TransactionTestCase):
         contact=dict(type='private',person_name='Synthetic race person',company_name='',phone='+79990004455',inn='')
         def convert(lead):
             try:
-                return self.command('lead.qualify',{'deals':[self.deal(new_contact=contact)]},lead)
+                return self.command('lead.qualify',{'deals':[self.deal(new_contact={**contact,'person_name':'Synthetic race '+str(lead.pk),'phone':'+7 (999) 000-44-55' if lead.pk==first.pk else '89990004455'})]},lead)
             except ValidationError:
                 return 'duplicate_contact'
         results=self.parallel([lambda:convert(first),lambda:convert(second)])
         self.assertEqual(sum(isinstance(result,dict) for result in results),1)
-        self.assertEqual(Client.objects.filter(name='Synthetic race person').count(),1)
+        self.assertEqual(Client.objects.filter(name__startswith='Synthetic race ').count(),1)
         self.assertEqual(CrmDeal.objects.count(),1)
 
     def test_parallel_transfer_same_key_preserves_single_task(self):

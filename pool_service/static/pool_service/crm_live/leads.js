@@ -307,7 +307,7 @@
       form.addEventListener("submit", (event) => { event.preventDefault(); try { handler(); } catch (error) { errorNode(form, error); } });
     }
     function editForm(host, lead, kind = "lead.edit") {
-      const creating = kind !== "lead.edit", form = makeForm(host, creating ? kind === "lead.new_need" ? "Новая потребность" : "Новый лид" : "Потребность и следующий шаг",
+      const creating = kind !== "lead.edit", form = makeForm(host, creating ? kind === "lead.new_need" ? "Новая потребность" : "Новый лид" : "Потребность",
         creating ? "Телефон и клиент не обязательны. Опишите контекст и назначьте следующий шаг. Для создания сделки потребуется выбрать клиента." : "");
       const fields = el("div", "lead-fields"); form.append(fields);
       const title = field(fields, "Название", creating ? "" : lead.title, "text", true); title.required = true; title.maxLength = 255;
@@ -318,6 +318,7 @@
       const specialization = field(fields, "Специализация", creating ? "" : lead.specialization); specialization.maxLength = 40;
       const location = field(fields, "Место / объект", creating ? "" : lead.location); location.maxLength = 255;
       const desired = field(fields, "Желаемый срок · " + initial.timezone, creating ? "" : localDateTime(lead.desired_at, initial.timezone), "datetime-local");
+      if(!creating){const details=el("details"), business=el("div","lead-fields");details.append(el("summary","","Уточнить сведения"),business);business.append(title.parentElement,client.element,direction.parentElement,specialization.parentElement,location.parentElement,desired.parentElement);form.append(details);}
       const extra = el("details"), more = el("div", "lead-fields"); extra.append(el("summary", "", "Источник и бюджет"), more); form.append(extra);
       const source = field(more, "Источник привлечения", creating || lead.acquisition_source === "manual" ? "Ручное обращение" : lead.acquisition_source); source.maxLength = 80;
       const channel = field(more, "Канал первого обращения", creating || lead.first_contact_channel === "manual" ? "Ручной ввод" : lead.first_contact_channel); channel.maxLength = 40;
@@ -384,7 +385,7 @@
     }
     function renderDetail(data) {
       const lead=data.lead;state.detail=data;content.replaceChildren();
-      content.append(el("h2","",lead.client?.name || lead.source?.phone || lead.title));content.firstChild.id="lead-dialog-title";
+      content.append(el("h2","",lead.client?.name || lead.source?.contact?.name || lead.source?.contact_name || lead.source?.phone || lead.title));content.firstChild.id="lead-dialog-title";
       content.append(el("p","lead-summary",[lead.status_label,lead.source?.label,lead.assignee?.name || "Не назначен"].filter(Boolean).join(" · ")));
       const layout=el("div","lead-detail-grid"), left=el("div","lead-detail-main"), right=el("section","lead-timeline");layout.append(left,right);content.append(layout);
       const contact=el("section","lead-panel");contact.append(el("h3","","Контакт"));

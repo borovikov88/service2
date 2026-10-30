@@ -32,6 +32,8 @@ const {chromium} = require('playwright');
     await page.getByText('Резюме и расшифровка',{exact:true}).click();
     assert.ok((await page.locator('.lead-transcript').first().textContent()).includes('<script>neverExecute()</script>'));
     assert.equal(await page.locator('#lead-dialog script').count(),0);
+    assert.ok(await page.locator('#lead-dialog').evaluate(n=>n.scrollWidth<=n.clientWidth+1),'Desktop dialog must not overflow horizontally');
+    const layout=await page.locator('.lead-detail-grid').boundingBox();assert.ok(layout.width>900,'Desktop two-column card must use expanded width');
     if(process.env.CRM_SYNTHETIC_SCREENSHOTS)await page.screenshot({path:process.env.CRM_SYNTHETIC_SCREENSHOTS+'/lead-desktop.png'});
     assert.equal(await page.locator('audio').getAttribute('preload'),'none');
     assert.equal(requests.filter(r=>r.path===f.recording).length,0);
