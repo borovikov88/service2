@@ -20,7 +20,8 @@ const {chromium} = require('playwright');
     const card=()=>page.locator(`[data-lead-id="${f.leadId}"]`);
     const inColumn=async key=>{await page.locator(`[data-column="${key}"] [data-lead-id="${f.leadId}"]`).waitFor();};
     const confirm=async(next=false)=>{
-      await page.getByLabel('Причина перемещения',{exact:true}).fill('Synthetic explicit manager decision');
+      await page.locator('#lead-dialog button[type=submit]').waitFor();
+      if(await page.getByLabel('Причина перемещения',{exact:true}).count()) await page.getByLabel('Причина перемещения',{exact:true}).fill('Synthetic explicit manager decision');
       if(next){await page.getByLabel('Следующий шаг',{exact:true}).fill('Synthetic actual next step');await page.locator('#lead-dialog input[type=datetime-local]').fill('2026-11-20T12:00');}
       await page.locator('#lead-dialog button[type=submit]').click();
     };
@@ -46,16 +47,13 @@ const {chromium} = require('playwright');
     await page.reload();await inColumn('working');await noModal();
     await card().dragTo(page.locator('[data-column=spam] h2'));await confirm();await inColumn('spam');await close();
     await page.reload();await inColumn('spam');await noModal();
-    // Touch/keyboard equivalent: native details + focusable move controls.
-    assert.deepEqual(await card().locator('.lead-move-options button').allTextContents(),['Не разобраны','В работе','Удалённые']);
-    const summary=card().locator('summary');await summary.focus();
-    assert.equal(await summary.evaluate(node=>node===node.ownerDocument.activeElement),true,'Keyboard focus must reach the card summary');
-    await page.keyboard.press('Enter');
-    assert.equal(await summary.evaluate(node=>node.parentElement.open),true,'Native Enter must expand the move options');
-    const restore=card().getByRole('button',{name:'Не разобраны',exact:true});await restore.focus();
-    assert.equal(await restore.evaluate(node=>node===node.ownerDocument.activeElement),true,'Restore control must be keyboard focusable');
-    await page.keyboard.press('Enter');await confirm();await inColumn('unparsed');await close();
-    await card().locator('summary').click();await card().getByRole('button',{name:'В работе',exact:true}).click();await confirm(true);await inColumn('working');await close();
+    // Keyboard/touch movement lives in the opened card, not an ellipsis menu.
+    assert.equal(await card().locator('summary').count(),0);
+    await card().locator('button').first().focus();await page.keyboard.press('Enter');
+    await page.locator('.lead-detail-moves summary').click();
+    await page.locator('.lead-detail-moves').getByRole('button',{name:'Не разобраны',exact:true}).click();
+    await confirm();await inColumn('unparsed');await close();
+    await card().dragTo(page.locator('[data-column=working] h2'));await confirm(true);await inColumn('working');await close();
     await card().dragTo(page.locator('[data-column=deleted] h2'));await confirm();await inColumn('deleted');await close();
     await card().dragTo(page.locator('[data-column=unparsed] h2'));await confirm();await inColumn('unparsed');await close();
     await page.locator('#lead-search').fill('No matching inquiry');
@@ -64,11 +62,13 @@ const {chromium} = require('playwright');
     await page.locator('#lead-search').fill('Synthetic browser');await inColumn('unparsed');
     await page.setViewportSize({width:390,height:844});await page.emulateMedia({colorScheme:'dark'});
     await page.evaluate(()=>document.documentElement.setAttribute('data-theme','dark'));
-    await card().locator('summary').tap();await card().getByRole('button',{name:'В работе',exact:true}).tap();
-    await page.getByLabel('Причина перемещения',{exact:true}).waitFor();
-    assert.ok(await page.getByLabel('Следующий шаг',{exact:true}).isVisible());await close();
+    await card().locator('button').first().tap();await page.locator('.lead-detail-moves summary').tap();await page.locator('.lead-detail-moves').getByRole('button',{name:'В работе',exact:true}).tap();
+    await page.getByLabel('Следующий шаг',{exact:true}).waitFor({state:'visible'});assert.ok(await page.getByLabel('Следующий шаг',{exact:true}).isVisible());await close();
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1),'390px page must not overflow outside the scrollable board');
-    await page.reload();await inColumn('unparsed');await noModal();assert.deepEqual(errors,[]);
+    await page.reload();await inColumn('unparsed');await noModal();
+    await page.setViewportSize({width:1440,height:1000});await card().dragTo(page.locator('[data-column=history] h2'));
+    await page.getByText('Лид будет завершён без создания сделки. Открытый следующий шаг отменится; сделки, выполнение и оплата не изменятся.').waitFor();
+    assert.equal(await page.getByLabel('Причина перемещения',{exact:true}).count(),0);await confirm();await inColumn('history');await close();assert.deepEqual(errors,[]);
     console.log('Lead kanban: real drag, immutable replay, reload, spam/trash restore, live search, keyboard, 390px and dark passed');
   } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

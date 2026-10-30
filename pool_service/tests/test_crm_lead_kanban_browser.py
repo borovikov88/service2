@@ -61,7 +61,7 @@ class LeadKanbanBrowserTests(StaticLiveServerTestCase):
             input=json.dumps(fixture), text=True, capture_output=True, timeout=150, check=False)
         self.assertEqual(result.returncode, 0, (result.stdout + result.stderr)[-9000:])
         lead.refresh_from_db()
-        self.assertEqual((lead.status, lead.result, lead.is_archived, lead.needs_review), ("working", "", False, True))
+        self.assertEqual((lead.status, lead.result, lead.is_archived, lead.needs_review), ("closed", "no_deal", False, False))
         self.assertEqual(CrmLeadTaskLink.objects.filter(lead=lead).count(), 2)
         self.assertEqual(ServiceTask.objects.filter(is_archived=False).count(), 0)
 
@@ -153,3 +153,29 @@ class LeadConversionBrowserTests(LeadFixture,StaticLiveServerTestCase):
         code,output=_bounded_browser_process(['node',str(Path(__file__).with_name('crm_lead_conversion.browser.cjs'))],fixture)
         self.assertEqual(code,0,output);lead.refresh_from_db();deal=CrmDeal.objects.get()
         self.assertEqual((lead.result,deal.next_action.task_link.task_id),('qualified',task_id))
+
+@skipUnless(os.environ.get('CRM_LEADS_BROWSER_TEST') == '1', 'Dedicated Chromium acceptance')
+class LongLeadKanbanBrowserTests(StaticLiveServerTestCase):
+    def test_long_column_conversion_positions_and_deleted(self):
+        from pool_service.crm_commercial_bootstrap import bootstrap_commercial_settings
+        org = Organization.objects.create(name='Synthetic long board', crm_v2_read=True, crm_v2_write=True,
+            plan_type=Organization.PLAN_COMPANY_PAID, paid_until=timezone.now()+timedelta(days=30))
+        user = get_user_model().objects.create_user('synthetic-long-board')
+        OrganizationAccess.objects.create(organization=org, user=user, role='manager')
+        Employee.objects.create(organization=org, user=user, display_name='Synthetic manager')
+        CrmAccess.objects.create(organization=org, user=user, view_leads=True, take_leads=True,
+            transition_own_leads=True, create_own_leads=True, edit_own_leads=True,
+            qualify_own_leads=True, create_own_deals=True, manage_own_next_action=True)
+        bootstrap_commercial_settings(org.pk)
+        for n in range(18):
+            CrmLead.objects.create(organization=org, title=f'Synthetic long card {n}', need='Synthetic need',
+                assignee=user if n>=15 else None)
+        deleted=CrmLead.objects.create(organization=org,title='Synthetic deleted',need='Synthetic need',assignee=user,is_archived=True)
+        self.client.force_login(user)
+        fixture={'base':self.live_server_url,'workspace':reverse('crm_live_leads')+'?org_id='+str(org.pk),
+            'deletedId':deleted.pk,'sessionCookie':self.client.cookies[settings.SESSION_COOKIE_NAME].value,
+            'sessionCookieName':settings.SESSION_COOKIE_NAME}
+        code, output = _bounded_browser_process(['node', str(Path(__file__).with_name('crm_lead_long_board.browser.cjs'))],fixture)
+        self.assertEqual(code,0,output)
+        self.assertEqual(CrmLead.objects.filter(status='closed').count(),0)
+        self.assertTrue(CrmLead.objects.get(pk=deleted.pk).is_archived)

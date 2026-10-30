@@ -77,7 +77,7 @@
     if (!lead.can_move) return [];
     if (lead.is_archived) return lead.status === "closed" ? (lead.result === "spam" ? ["restore", "spam"] : ["restore", "unparsed"]) : ["restore", "unparsed", "working"];
     if (lead.status === "closed" && lead.result !== "spam") return lead.needs_review ? ["deleted"] : ["unparsed", "deleted"];
-    return ["unparsed", "working", "spam", "deleted"].filter((key) => key !== lead.column);
+    return ["unparsed", "working", ...((lead.status !== "closed") ? ["history"] : []), "spam", "deleted"].filter((key) => key !== lead.column);
   }
   function mount(doc) {
     const root = doc.getElementById("crm-leads"); if (!root) return;
@@ -161,7 +161,7 @@
         }
       } catch (error) { errorNode(form, error); }
     }
-    const columnLabels = {unparsed: "Не разобраны", working: "В работе", spam: "Спам", deleted: "Удалённые", restore: "Восстановить"};
+    const columnLabels = {unparsed: "Не разобраны", working: "В работе", history: "Завершённые", spam: "Спам", deleted: "Удалённые", restore: "Восстановить"};
     let dragged = null;
     const conversionDrop=el("div","lead-conversion-drop","Создать сделку");conversionDrop.hidden=true;root.append(conversionDrop);
     conversionDrop.addEventListener("dragover",e=>{if(dragged?.can_qualify){e.preventDefault();e.dataTransfer.dropEffect="move";}});
@@ -203,10 +203,7 @@
           dragged = lead; conversionDrop.hidden=!lead.can_qualify; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", String(lead.id)); row.classList.add("is-dragging");
         });
         row.addEventListener("dragend", () => { dragged = null; conversionDrop.hidden=true; row.classList.remove("is-dragging"); root.querySelectorAll(".is-drop-target").forEach((node) => node.classList.remove("is-drop-target")); });
-        const actions = el("details", "lead-card-move"), summary = el("summary", "", "⋯"); summary.setAttribute("aria-label","Действия лида"); actions.append(summary);
-        const buttons = el("div", "lead-move-options");
-        for (const target of targets) buttons.append(button(columnLabels[target], () => moveLead(lead, target)));
-        if(lead.can_qualify)buttons.append(button("Создать сделку",()=>conversionDialog(lead))); actions.append(buttons); row.append(actions);
+
       }
       return row;
     }
@@ -255,13 +252,17 @@
         if (lead.revision !== snapshot.revision || !moveTargets(lead).includes(target)) throw new Error("Карточка уже изменена или действие недоступно. Обновите канбан.");
         const free = !lead.assignee;
         const form = makeForm(content, columnLabels[target], free ? "Первое успешное сохранение закрепит свободный лид за вами." : "Перемещение сохранится после подтверждения. История и связи останутся в карточке.");
-        const reason = field(form, "Причина перемещения", "", "textarea"); reason.required = true; reason.maxLength = 500;
+        const ranks={unparsed:0,working:1,history:2,spam:3,deleted:4};
+        const required=["spam","deleted","restore"].includes(target)||ranks[target]<ranks[lead.column];
+        const reason = required ? field(form, "Причина перемещения", "", "textarea") : null;
+        if(reason){reason.required=true;reason.maxLength=500;}
+        if(target==="history")form.append(el("p","lead-form-note","Лид будет завершён без создания сделки. Открытый следующий шаг отменится; сделки, выполнение и оплата не изменятся."));
         let next = null;
         if (target === "working" && (!lead.next_action || lead.next_action.completed)) next = nextFields(form, null);
         if (target === "spam" || target === "deleted") form.append(el("p", "lead-form-note", "Текущий незавершённый шаг будет отменён с сохранением истории."));
         formSubmit(form, free ? "Взять на себя и переместить" : "Подтвердить перемещение", () => {
-          const changes = {column: target, reason: reason.value.trim()}; if (next) changes.next_action = next();
-          if (["spam", "deleted"].includes(target) && lead.next_action?.version && !lead.next_action.completed) changes.expected_task_version = lead.next_action.version;
+          const changes = {column: target, reason: reason ? reason.value.trim() : ""}; if (next) changes.next_action = next();
+          if (["spam", "deleted", "history"].includes(target) && lead.next_action?.version && !lead.next_action.completed) changes.expected_task_version = lead.next_action.version;
           submit(form, "lead.disposition", lead, changes);
         });
         renderOperations();
@@ -376,6 +377,9 @@
     function qualificationForm(host, lead, additional = false) {
       const form = makeForm(host, additional ? "Дополнительная сделка" : "Создать сделку", "Создание произойдёт только после подтверждения. Совпадения контактов требуют явного выбора.");
       const fields=el("div","lead-fields");form.append(fields);
+      if(!lead.assignee)form.append(el("p","lead-form-note","При подтверждении вы возьмёте свободный лид на себя."));
+      if(lead.is_archived)form.append(el("p","lead-form-note","При подтверждении лид будет восстановлен и конвертирован. История удаления сохранится."));
+      const need=additional?null:field(fields,"Потребность",lead.need||"","textarea",true);if(need){need.required=true;need.maxLength=10000;need.readOnly=!lead.can_edit_conversion_need;if(!lead.can_edit_conversion_need&&!lead.need)form.append(el("p","lead-error","Для уточнения потребности требуется право редактирования лида."));}
       const title=field(fields,"Название сделки",lead.title,"text",true);title.required=true;title.maxLength=255;
       const pipeline=select(fields,"Воронка",initial.pipelines.map(p=>[String(p.id),p.name]),String(initial.pipelines.find(p=>p.code===lead.direction)?.id || initial.pipelines[0]?.id || ""));pipeline.required=true;
       const mode=select(fields,"Контакт",[["existing","Выбрать существующий"],["private","Новое физлицо"],["legal","Новая компания"],["both","Новое физлицо и компания"]],"existing");
@@ -392,7 +396,7 @@
         const row={title:title.value.trim(),pipeline_id:Number(pipeline.value),next_action:reuse?.checked?{title:lead.next_action.title,due_at:lead.next_action.due_at}:next()};
         if(mode.value==="existing"){if(!client.value())throw new Error("Выберите существующего клиента из результатов поиска.");row.client_id=client.value();}
         else row.new_contact={type:mode.value,person_name:person.value.trim(),company_name:company.value.trim(),phone:phone.value.trim(),inn:inn.value.trim()};
-        const changes={deals:[row]};if(reuse?.checked){row.reuse_next_action=true;changes.expected_task_version=lead.next_action.version;}
+        const changes={deals:[row]};if(need)changes.need=need.value.trim();if(reuse?.checked){row.reuse_next_action=true;changes.expected_task_version=lead.next_action.version;}
         submit(form,additional?"lead.add_deal":"lead.qualify",lead,changes);
       });
     }
@@ -418,7 +422,8 @@
       }
       const actions=el("details","lead-panel");actions.append(el("summary","","Действия с лидом"));
       if(lead.can_transition)transitionForm(actions,lead);
-      if(lead.can_qualify)actions.append(button("Создать сделку",()=>conversionDialog(lead)));
+      if(lead.can_qualify)left.append(button("Создать сделку",()=>conversionDialog(lead)));
+      if(moveTargets(lead).length){const movement=el("details","lead-detail-moves");movement.append(el("summary","","Изменить этап"));for(const target of moveTargets(lead))movement.append(button(columnLabels[target],()=>moveLead(lead,target)));left.append(movement);}
       if(lead.can_add_deal)qualificationForm(actions,lead,true);
       if(lead.can_acknowledge){const f=makeForm(actions,"Продолжение работы","");formSubmit(f,"Отметить разобранным",()=>submit(f,"lead.acknowledge",lead,{}));}
       if(lead.can_new_need)editForm(actions,lead,"lead.new_need");left.append(actions);
