@@ -34,7 +34,11 @@ PHASES = frozenset(("initial", "lock", "checkout", "native_tool", "settings", "c
                    "private_directory", "schema_before", "metadata_lock", "schema_locked",
                    "options_file", "dump_stream", "schema_after", "gzip_verify", "checkout_after", "publish"))
 PHASE = "initial"
-REASONS = frozenset(("unspecified", "lock_directory_path", "lock_directory_owner_mode",
+REASONS = frozenset(("dump_raw_limit", "dump_line_limit", "dump_ddl_limit", "dump_trailing_content",
+                     "dump_schema_mismatch", "dump_unknown_table", "dump_duplicate_table",
+                     "dump_footer_missing", "dump_ddl_incomplete", "dump_table_coverage",
+                     "dump_gzip_limit", "dump_deadline",
+                     "unspecified", "lock_directory_path", "lock_directory_owner_mode",
                      "lock_file_owner_type", "lock_file_mode", "lock_file_replaced",
                      "checkout_head", "checkout_path", "checkout_dirty", "checkout_untracked",
                      "native_missing", "native_version_size", "native_version_unsupported",
@@ -232,29 +236,30 @@ class DumpCoverage:
 
     def feed(self, chunk):
         self.raw_bytes += len(chunk)
-        require(self.raw_bytes <= MAX_RAW_BYTES)
+        require(self.raw_bytes <= MAX_RAW_BYTES, "dump_raw_limit")
         self.pending += chunk
         while b"\n" in self.pending:
             line, self.pending = self.pending.split(b"\n", 1)
-            require(len(line) <= MAX_LINE_BYTES)
+            require(len(line) <= MAX_LINE_BYTES, "dump_line_limit")
             self.line(line)
-        require(len(self.pending) <= MAX_LINE_BYTES)
+        require(len(self.pending) <= MAX_LINE_BYTES, "dump_line_limit")
 
     def line(self, line):
-        require(not self.complete or not line.strip())
+        require(not self.complete or not line.strip(), "dump_trailing_content")
         if self.creating is not None:
             self.ddl.append(line)
-            require(sum(map(len, self.ddl)) <= MAX_LINE_BYTES)
+            require(sum(map(len, self.ddl)) <= MAX_LINE_BYTES, "dump_ddl_limit")
             if line.startswith(b") ") and line.endswith(b";"):
                 name = self.creating
-                require(canonical_schema(b"\n".join(self.ddl).decode("utf-8")) == self.expected[name])
+                require(canonical_schema(b"\n".join(self.ddl).decode("utf-8")) == self.expected[name], "dump_schema_mismatch")
                 self.seen[name] = True
                 self.creating, self.ddl = None, []
             return
         match = re.fullmatch(rb"CREATE TABLE `([A-Za-z0-9_$]+)` \(", line)
         if match:
             name = match[1].decode("ascii")
-            require(name in self.expected and name not in self.seen)
+            require(name in self.expected, "dump_unknown_table")
+            require(name not in self.seen, "dump_duplicate_table")
             self.creating, self.ddl = name, [line]
         if re.fullmatch(rb"-- Dump completed on [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9: ]+", line):
             self.complete = True
@@ -262,7 +267,9 @@ class DumpCoverage:
     def finish(self):
         if self.pending:
             self.line(self.pending)
-        require(self.complete and self.creating is None and set(self.seen) == set(self.expected))
+        require(self.creating is None, "dump_ddl_incomplete")
+        require(self.complete, "dump_footer_missing")
+        require(set(self.seen) == set(self.expected), "dump_table_coverage")
 
 
 def stop_child(process):
@@ -283,7 +290,7 @@ class CappedWriter:
         self.stream = stream
 
     def write(self, data):
-        require(self.stream.tell() + len(data) <= MAX_GZIP_BYTES)
+        require(self.stream.tell() + len(data) <= MAX_GZIP_BYTES, "dump_gzip_limit")
         return self.stream.write(data)
 
     def flush(self):
@@ -381,10 +388,10 @@ def dump_to_gzip(command, destination, expected, deadline, heartbeat=None):
             with os.fdopen(fd, "wb") as output:
                 with gzip.GzipFile(fileobj=CappedWriter(output), mode="wb", filename="", mtime=0) as compressed:
                     while True:
-                        require(time.monotonic() < deadline)
+                        require(time.monotonic() < deadline, "dump_deadline")
                         if heartbeat is not None:
                             heartbeat.tick()
-                        require(time.monotonic() < deadline)
+                        require(time.monotonic() < deadline, "dump_deadline")
                         wait = min(1, max(0, deadline - time.monotonic()))
                         if heartbeat is not None:
                             wait = min(wait, heartbeat.seconds_until_due())
@@ -395,16 +402,16 @@ def dump_to_gzip(command, destination, expected, deadline, heartbeat=None):
                             break
                         coverage.feed(chunk)
                         compressed.write(chunk)
-                        require(output.tell() <= MAX_GZIP_BYTES)
+                        require(output.tell() <= MAX_GZIP_BYTES, "dump_gzip_limit")
                 output.flush()
-                require(output.tell() <= MAX_GZIP_BYTES)
+                require(output.tell() <= MAX_GZIP_BYTES, "dump_gzip_limit")
                 os.fsync(output.fileno())
         returncode = process.wait(timeout=max(0.01, deadline - time.monotonic()))
         if returncode != 0:
             raise NativeFailure(returncode)
         if heartbeat is not None:
             heartbeat.tick(force=True)
-        require(time.monotonic() < deadline)
+        require(time.monotonic() < deadline, "dump_deadline")
         coverage.finish()
         return coverage.raw_bytes
     finally:
