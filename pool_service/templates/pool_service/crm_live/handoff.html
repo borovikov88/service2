@@ -1,0 +1,37 @@
+{% extends 'pool_service/base.html' %}{% load static tz %}
+{% block extra_head %}<link rel="stylesheet" href="{% static 'pool_service/crm_live/quotes.css' %}"><link rel="stylesheet" href="{% static 'pool_service/crm_live/handoff.css' %}">{% endblock %}
+{% block content %}<div class="quote-workspace container py-4" data-handoff>
+<a href="{% url 'crm_quotes' deal.pk %}?org_id={{ organization.pk }}">← КП и решения</a>
+<h1>Передача сервисной заявки</h1><h2 class="h5">{{ deal.title }}</h2>
+<p>Пакет связывает принятое КП с существующей заявкой и её задачами. Задачи, назначения, сроки и финансовые факты не изменяются. Приёмка пакета не означает выполнение работ.</p>
+<p>Строительство, создание проекта и условия регулярного договора — отдельные сценарии, пока здесь недоступны.</p>
+{% if error %}<p role="alert" class="alert alert-warning">{{ error }}</p>{% endif %}
+{% if request.GET.saved %}<p role="status" class="alert alert-success">Решение сохранено. Новые задачи не создавались.</p>{% endif %}
+{% if packet %}<section class="quote-panel"><h2>Пакет #{{ packet.pk }} · {{ packet.get_status_display }}</h2>
+{% if blocked %}<p role="alert" class="alert alert-warning">{{ blocked }}</p>{% else %}
+<p>Заявка: {{ packet_context.item.title }}. Получатель: {{ packet_context.recipient }}.</p>
+<p>Документы и условия: {{ packet.basis.document_note }}</p>
+{% include 'pool_service/crm_live/quote_rows.html' with rows=packet_context.rows %}
+<ul>{% for task in packet_context.tasks %}<li><a href="{% url 'task_edit' task.pk %}?org_id={{ organization.pk }}">{{ task.title }}</a> · {{ task.start_date|date:'d.m.Y' }} — {{ task.end_date|default:task.start_date|date:'d.m.Y' }}</li>{% endfor %}</ul>
+{% if can_accept %}<form method="post">{% csrf_token %}<input type="hidden" name="operation_key" value="{{ operation_key }}"><input type="hidden" name="revision" value="{{ packet.revision }}">
+<label>Результат проверки и основание<textarea name="evidence" required maxlength="1000"></textarea></label>
+<button name="action" value="accept" class="btn btn-primary">Принять пакет</button><button name="action" value="decline" class="btn btn-outline-secondary">Отклонить приёмку</button></form>{% endif %}
+<details><summary>История передачи</summary>{% for event in packet_context.events %}<p>{{ event.created_at|timezone:'Asia/Barnaul'|date:'d.m.Y H:i' }} · {{ event.actor }} · {% if event.action == 'submit' %}Передано{% elif event.action == 'accept' %}Принято{% else %}Отклонено{% endif %} · {{ event.evidence }}</p>{% endfor %}</details>
+{% endif %}</section>{% endif %}
+{% if can_submit %}<section class="quote-panel"><h2>Выбрать существующую заявку</h2>
+<form method="get"><input type="hidden" name="org_id" value="{{ organization.pk }}"><label>Заявка<select name="item" required>{% for item in items %}<option value="{{ item.pk }}" {% if selected.pk == item.pk %}selected{% endif %}>#{{ item.pk }} · {{ item.title }}</option>{% endfor %}</select></label><button class="btn btn-outline-primary">Показать задачи заявки</button></form>
+<nav>{% if items.has_previous %}<a href="{{ base }}&page={{ items.previous_page_number }}">← Предыдущие</a>{% endif %} {{ items.number }} / {{ items.paginator.num_pages }} {% if items.has_next %}<a href="{{ base }}&page={{ items.next_page_number }}">Следующие →</a>{% endif %}</nav>
+{% if selected %}<form method="post">{% csrf_token %}<input type="hidden" name="action" value="preview"><input type="hidden" name="item_id" value="{{ selected.pk }}">
+<fieldset><legend>Существующие задачи</legend>{% for task in tasks %}<label><input type="checkbox" name="task_id" value="{{ task.pk }}"> {{ task.title }} · {{ task.start_date|date:'d.m.Y' }} — {{ task.end_date|default:task.start_date|date:'d.m.Y' }}</label>{% empty %}<p>Доступных задач нет.</p>{% endfor %}</fieldset>
+<label>Получатель — существующий участник задач<select name="recipient_id" required>{% for recipient in recipients %}<option value="{{ recipient.pk }}">{{ recipient }}</option>{% endfor %}</select></label>
+<p>Получатель должен уже иметь доступ к КП и каждой выбранной задаче. Эта форма не выдаёт права и не назначает исполнителей.</p>
+<label>Проверенные документы и условия передачи<textarea name="document_note" required maxlength="1000">{{ request.POST.document_note }}</textarea></label>
+<button class="btn btn-primary">Проверить пакет</button></form>{% endif %}</section>{% endif %}
+{% if preview %}<section class="quote-panel" data-handoff-preview><h2>Подтверждение передачи</h2>
+<p>КП #{{ preview.data.quote }} · вариант {{ preview.data.variant }} · заявка #{{ preview.data.item }} · получатель #{{ preview.data.recipient }}.</p>
+<ul>{% for id, task in preview.data.tasks.items %}<li>{{ task.title }} · {{ task.start_date }} — {{ task.end_date|default:task.start_date }}</li>{% endfor %}</ul>
+<p>{{ preview.data.document_note }}</p>
+<form method="post">{% csrf_token %}<input type="hidden" name="action" value="submit"><input type="hidden" name="selection" value="{{ preview.token }}"><input type="hidden" name="operation_key" value="{{ preview.key }}">
+<label>Основание передачи<textarea name="evidence" required maxlength="1000"></textarea></label><label><input type="checkbox" name="confirm" required> Подтверждаю выбранные КП, заявку, задачи, получателя, сроки и документы</label>
+<button class="btn btn-primary">Передать пакет</button><a href="{{ base }}">Отмена</a></form></section>{% endif %}
+</div>{% endblock %}
