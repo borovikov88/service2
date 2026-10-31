@@ -361,10 +361,11 @@
     function transitionForm(host, lead) {
       const form = makeForm(host, "Результат разбора / ожидание"), fields = el("div", "lead-fields"); form.append(fields);
       const status = select(fields, "Состояние", [["working", "В работе"], ["qualifying", "Уточнение"], ["waiting", "Ожидание"], ["deferred", "Отложен"], ["closed", "Разбор завершён"]], lead.status === "new" ? "working" : lead.status);
-      const result = select(fields, "Результат завершения", [["non_target", "Нецелевой"], ["spam", "Спам"], ["duplicate", "Дубль другого лида"], ["no_deal", "Закрыт без сделки"], ["linked", "Относится к существующей сделке"]]);
+      const result = select(fields, "Результат завершения", [["non_target", "Нецелевой"], ["spam", "Спам"], ["duplicate", "Продолжение существующей потребности"], ["no_deal", "Закрыт без сделки"], ["linked", "Относится к существующей сделке"]]);
       const reason = field(fields, "Причина / пояснение", "", "textarea", true); reason.maxLength = 500;
       const follow = field(fields, "Когда вернуться · " + initial.timezone, localDateTime(lead.follow_up_at, initial.timezone), "datetime-local");
-      const targets = picker(fields, "Связанный лид / сделка · для дубля или текущей работы", initial.urls.targets, "targets", null, () => result.value === "linked" ? "deal" : "lead");
+      fields.append(el("p", "lead-field wide lead-form-note", "Подтвердите, что это та же потребность: телефон сам по себе не основание для связи. История сохранится, открытый шаг исходного лида отменится. Задачи и сделки выбранной работы не изменятся. Доступны ваши активные независимые лиды."));
+      const targets = picker(fields, "Подтверждённая потребность / сделка", initial.urls.targets + "&exclude_id=" + lead.id, "targets", null, () => result.value === "linked" ? "deal" : "lead");
       const update = () => { result.parentElement.hidden = status.value !== "closed"; follow.parentElement.hidden = !["waiting", "deferred"].includes(status.value); targets.element.hidden = status.value !== "closed" || !["duplicate", "linked"].includes(result.value); targets.clear(); };
       status.addEventListener("change", update); result.addEventListener("change", update); update();
       formSubmit(form, "Сохранить состояние", () => {
@@ -427,6 +428,7 @@
       if(lead.can_add_deal)qualificationForm(actions,lead,true);
       if(lead.can_acknowledge){const f=makeForm(actions,"Продолжение работы","");formSubmit(f,"Отметить разобранным",()=>submit(f,"lead.acknowledge",lead,{}));}
       if(lead.can_new_need)editForm(actions,lead,"lead.new_need");left.append(actions);
+      if(data.duplicate_of){const related=el("section","lead-panel");related.append(el("h3","","Продолжение потребности"),button(data.duplicate_of.title,()=>openLead(data.duplicate_of.id)));left.append(related);}
       if(data.deals?.length){const links=el("section","lead-panel");links.append(el("h3","","Сделки"));for(const deal of data.deals){const a=el("a","",deal.title);a.href=deal.url;links.append(a);}left.append(links);}
       right.append(el("h3","","История общения"));const filters=el("div","lead-timeline-filters"), items=el("div");right.append(filters,items);
       let filter="all",sources=[...(data.sources||[])],cursor=data.source_cursor;

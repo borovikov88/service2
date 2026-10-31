@@ -179,3 +179,23 @@ class LongLeadKanbanBrowserTests(StaticLiveServerTestCase):
         self.assertEqual(code,0,output)
         self.assertEqual(CrmLead.objects.filter(status='closed').count(),0)
         self.assertTrue(CrmLead.objects.get(pk=deleted.pk).is_archived)
+
+
+@skipUnless(os.environ.get('CRM_LEADS_BROWSER_TEST') == '1', 'Dedicated Chromium acceptance')
+class LeadContinuationBrowserTests(LeadFixture, StaticLiveServerTestCase):
+    def test_manual_choice_cancel_confirm_navigation_mobile(self):
+        from django.test import Client as HttpClient
+        from pool_service.crm_commercial_models import CrmEvent
+        self.org.plan_type = Organization.PLAN_COMPANY_PAID
+        self.org.paid_until = timezone.now() + timedelta(days=30); self.org.save()
+        original = self.create(title="Synthetic continuation target")
+        incoming = self.create(title="Synthetic incoming context")
+        http = HttpClient(); http.force_login(self.user)
+        fixture = dict(base=self.live_server_url, workspace=reverse('crm_live_leads')+'?org_id='+str(self.org.pk),
+            leadId=incoming.pk, targetId=original.pk, command=reverse('crm_live_lead_command'),
+            sessionCookie=http.cookies[settings.SESSION_COOKIE_NAME].value, sessionCookieName=settings.SESSION_COOKIE_NAME)
+        code, output = _bounded_browser_process(['node', str(Path(__file__).with_name('crm_lead_continuation.browser.cjs'))], fixture)
+        self.assertEqual(code, 0, output)
+        incoming.refresh_from_db(); original.refresh_from_db()
+        self.assertEqual((incoming.result, incoming.duplicate_of_id, original.revision), ('duplicate', original.pk, 2))
+        self.assertEqual(CrmEvent.objects.filter(event_type='lead.continuation').count(), 1)

@@ -11,6 +11,30 @@ class TimelineTests(LeadIntakeTests):
     mapped_call=LeadIntakeTests.mapped_call
     deliver=LeadIntakeTests.deliver
 
+    def test_continuation_private_contributor_cannot_leak_or_queue_analysis(self):
+        from pool_service.services.crm_lead_commands import execute_lead_command
+        from pool_service.call_processing_models import CallPrivateNumber
+        from pool_service.phone_utils import normalize_phone
+        self.mapped_call(); self.deliver('call')
+        incoming = CrmLead.objects.get(); call = PhoneCall.objects.get()
+        original = CrmLead.objects.create(organization=self.org, assignee=self.user, title='Synthetic independent target')
+        self.grant.transition_own_leads = True; self.grant.save()
+        execute_lead_command(actor=self.user, organization=self.org, operation_key='synthetic-private-continuation',
+            command_type='lead.transition', subject_id=incoming.pk, expected_revision=incoming.revision,
+            changes={'status':'closed', 'result':'duplicate', 'target_lead_id':original.pk})
+        self.client.force_login(self.user)
+        detail = reverse('crm_live_lead_detail',args=[original.pk])+'?org_id='+str(self.org.pk)
+        analysis = reverse('crm_live_lead_analysis',args=[original.pk,call.pk])+'?org_id='+str(self.org.pk)
+        self.assertEqual(len(self.client.get(detail).json()['sources']), 1)
+        CommunicationAccess.objects.filter(user=self.user,organization=self.org).update(can_listen_calls=True)
+        with patch('pool_service.communication_views.request_call_analysis') as queue:
+            CallPrivateNumber.objects.create(organization=self.org,owner=self.user,phone_key=normalize_phone(call.phone_number))
+            response = self.client.get(detail)
+            self.assertEqual(response.status_code, 200, 'Independent target remains readable')
+            self.assertEqual(response.json()['sources'], [])
+            self.assertEqual(self.client.post(analysis).status_code, 404)
+            queue.assert_not_called()
+
     def test_message_body_only_in_authorized_detail(self):
         self.incoming(participant_name='Synthetic sender');self.deliver();lead=CrmLead.objects.get()
         self.client.force_login(self.user)

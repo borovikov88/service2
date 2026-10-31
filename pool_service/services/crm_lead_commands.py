@@ -291,14 +291,14 @@ def _visible(using, actor, organization, lead):
         _client(using, organization.pk, lead.client_id)
 
 
-def _existing_target(using, actor, organization, lead, values):
+def _existing_target(using, actor, organization, lead, values, *, replay=False):
     result = values.get("result", "")
     if result == "linked":
         if "target_deal_id" not in values or "target_lead_id" in values:
             raise ValidationError("Select the existing deal explicitly.")
         from pool_service.services.crm_commercial_access import deals_for_user
         target = deals_for_user(actor, organization).using(using).select_for_update().filter(pk=values["target_deal_id"]).first()
-        if not target or target.is_archived or target.outcome != "open":
+        if not target or (not replay and (target.is_archived or target.outcome != "open")):
             raise PermissionDenied("Existing deal unavailable.")
         target.full_clean()
         lead.linked_deal = target
@@ -306,9 +306,13 @@ def _existing_target(using, actor, organization, lead, values):
         if "target_lead_id" not in values or "target_deal_id" in values:
             raise ValidationError("Select the original lead explicitly.")
         target = CrmLead.objects.using(using).select_for_update().filter(pk=values["target_lead_id"], organization=organization).first()
-        if not target or target.pk == lead.pk or target.is_archived or target.result == "duplicate":
+        if not target or target.pk == lead.pk or (not replay and (target.is_archived or target.status == "closed")):
             raise ValidationError("Original lead unavailable.")
         _visible(using, actor, organization, target)
+        if not replay and target.assignee_id != actor.pk:
+            raise PermissionDenied("Only own target leads may receive a continuation.")
+        if not replay and (lead.origin_lead_id or target.origin_lead_id or CrmLead.objects.using(using).filter(duplicate_of=lead).exists()):
+            raise ValidationError("Связанные цепочки требуют отдельного разбора; выберите независимую потребность.")
         lead.duplicate_of = target
     elif {"target_lead_id", "target_deal_id"} & set(values):
         raise ValidationError("Unexpected resolution target.")
@@ -367,7 +371,7 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
             if replay_lead.assignee_id != actor.pk:
                 raise PermissionDenied("Lead ownership changed.")
             if command_type == "lead.transition" and values.get("result") in {"linked", "duplicate"}:
-                _existing_target(using, actor, organization, replay_lead, values)
+                _existing_target(using, actor, organization, replay_lead, values, replay=True)
             if replay_lead.next_task_id:
                 _validate_task(using, replay_lead, tasks.get(replay_lead.next_task_id), actor)
                 if replay_lead.next_task_id not in tasks:
@@ -660,6 +664,22 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
                     actor=actor, event_type="deal.create", safe_diff={"revision": {"before": 0, "after": 1}})
                 ids.append(deal.pk)
             additional["deal_ids"] = ids
+        if command_type == "lead.transition" and lead.result == "duplicate":
+            # Explicit confirmation only. Preserve immutable source evidence on
+            # the original card; subsequent revisions/messages use this pointer.
+            target = lead.duplicate_of
+            for thread in CrmLeadThread.objects.using(using).select_for_update().filter(organization=organization, lead=lead).order_by("pk"):
+                thread.lead = target
+                thread.save(using=using)
+            old_revision = target.revision
+            target.revision += 1
+            target.needs_review = True
+            if lead.last_activity_at and (not target.last_activity_at or lead.last_activity_at > target.last_activity_at):
+                target.last_activity_at = lead.last_activity_at
+            target.save(using=using)
+            CrmEvent.objects.using(using).create(organization=organization, lead=target, command=command,
+                actor=actor, event_type="lead.continuation", safe_diff={
+                    "revision": {"before": old_revision, "after": target.revision}})
         if command_type == "lead.transition" and lead.result == "linked":
             CrmLeadDealLink.objects.using(using).create(organization=organization, lead=lead, deal=lead.linked_deal,
                 command=command, kind="existing")

@@ -38,7 +38,8 @@ EVENTS = {"lead.create": "Лид создан", "lead.take": "Обращение
     "lead.edit": "Карточка изменена", "lead.disposition": "Лид перемещён", "lead.transition": "Состояние изменено",
     "lead.qualify": "Квалификация завершена", "lead.add_deal": "Добавлена сделка",
     "lead.new_need": "Открыта новая потребность", "lead.incoming": "Поступило обращение",
-    "lead.acknowledge": "Новое обращение разобрано как продолжение текущей работы"}
+    "lead.acknowledge": "Новое обращение разобрано как продолжение текущей работы",
+    "lead.continuation": "Подтверждено продолжение потребности"}
 INTAKE_REASONS = {"unassigned": "Требуется ответственный", "missed_call": "Пропущенный звонок",
     "employee_unmapped": "Принявший сотрудник не сопоставлен", "employee_ambiguous": "Неоднозначное сопоставление сотрудника",
     "employee_unavailable": "Принявший сотрудник недоступен", "needs_qualification": "Требуется квалификация"}
@@ -380,10 +381,13 @@ def targets(request):
     if len(query) < 3:
         return JsonResponse({"targets": []})
     if kind == "lead":
-        queryset = _queryset(request.user, organization)
+        queryset = _queryset(request.user, organization).filter(is_archived=False, assignee=request.user, origin_lead__isnull=True).exclude(status="closed")
     else:
         from .services.crm_commercial_access import deals_for_user
-        queryset = deals_for_user(request.user, organization)
+        queryset = deals_for_user(request.user, organization).filter(is_archived=False, outcome="open")
+    exclude_id = request.GET.get("exclude_id")
+    if exclude_id and kind == "lead":
+        queryset = queryset.exclude(pk=_id(exclude_id))
     return JsonResponse({"targets": list(queryset.filter(title__icontains=query).order_by("-pk").values("id", "title")[:20])})
 
 
@@ -424,14 +428,14 @@ def command(request):
 @require_POST
 def analyze_call(request, lead_id, call_id):
     # Explicit action only; same current source/privacy checks as the card.
-    from .services.crm_lead_access import can_read_lead, _readable_sources
+    from .services.crm_lead_access import can_read_lead, _readable_sources, source_family
     from .communication_views import _authorize_call_access, request_call_analysis, start_requested_call_analysis_worker
     from .communication_models import PhoneCall
     organization = _organization(request)
     lead = get_object_or_404(_queryset(request.user, organization), pk=lead_id)
     if not can_read_lead(request.user, organization, lead): raise Http404
     if not _readable_sources(request.user, organization).filter(
-        lead_id__in=[lead.pk, lead.origin_lead_id], inbox__source_type="call", inbox__source_id=call_id).exists(): raise Http404
+        lead_id__in=source_family(request.user, organization, lead), inbox__source_type="call", inbox__source_id=call_id).exists(): raise Http404
     # Reuse existing authorization, request queue, worker and repeat protection.
     call = get_object_or_404(PhoneCall.objects.select_related("connection"), pk=call_id, organization=organization)
     _authorize_call_access(request, call)
