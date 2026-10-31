@@ -110,6 +110,40 @@ class CoverageTests(unittest.TestCase):
             with patch.object(B, cap, 8), self.assertRaises(B.Blocked):
                 B.DumpCoverage(SCHEMA).feed(b'x' * 9)
 
+    def test_stream_rejections_have_distinct_safe_reasons(self):
+        cases = [
+            (SQL.split(b'-- Dump')[0], SCHEMA, 'dump_footer_missing'),
+            (SQL.replace(b'`id` int', b'`id` bigint'), SCHEMA, 'dump_schema_mismatch'),
+            (SQL + b'PRIVATE\n', SCHEMA, 'dump_trailing_content'),
+            (SQL.replace(b'`synthetic` (', b'`other` ('), SCHEMA, 'dump_unknown_table'),
+            ((DDL + ';\n').encode() + SQL, SCHEMA, 'dump_duplicate_table'),
+            (b'CREATE TABLE `synthetic` (\n', SCHEMA, 'dump_ddl_incomplete'),
+            (SQL, {**SCHEMA, 'missing': SCHEMA['synthetic']}, 'dump_table_coverage'),
+        ]
+        for data, expected, reason in cases:
+            with self.subTest(reason=reason):
+                check = B.DumpCoverage(expected)
+                with self.assertRaises(B.Blocked) as caught:
+                    check.feed(data)
+                    check.finish()
+                self.assertEqual(caught.exception.reason, reason)
+                diagnostic = B.safe_failure(caught.exception)
+                self.assertNotIn('PRIVATE', diagnostic)
+                self.assertIn('reason=' + reason + ' ', diagnostic)
+                self.assertIn(reason, R.HELPER_REASONS)
+        for cap, reason in [('MAX_RAW_BYTES', 'dump_raw_limit'), ('MAX_LINE_BYTES', 'dump_line_limit')]:
+            with patch.object(B, cap, 8), self.assertRaises(B.Blocked) as caught:
+                B.DumpCoverage(SCHEMA).feed(b'x' * 9)
+            self.assertEqual(caught.exception.reason, reason)
+        with patch.object(B, 'MAX_LINE_BYTES', 40), self.assertRaises(B.Blocked) as caught:
+            B.DumpCoverage(SCHEMA).feed(b'CREATE TABLE `synthetic` (\n' + b'x' * 20 + b'\n')
+        self.assertEqual(caught.exception.reason, 'dump_ddl_limit')
+        with tempfile.TemporaryFile() as stream, patch.object(B, 'MAX_GZIP_BYTES', 8):
+            with self.assertRaises(B.Blocked) as caught:
+                B.CappedWriter(stream).write(b'x' * 9)
+            self.assertEqual(caught.exception.reason, 'dump_gzip_limit')
+        self.assertEqual(B.REASONS, R.HELPER_REASONS)
+
     def test_nontransactional_or_unsupported_schema_fails_closed(self):
         class Cursor:
             def __enter__(self): return self
