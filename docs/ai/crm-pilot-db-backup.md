@@ -42,7 +42,7 @@ No SQL, table names, personal data, credentials or database contents leave the h
 Only the aggregate allowlisted receipt is returned over SSH; raw output/errors are
 captured privately and never echoed. Errors return fixed sanitized messages.
 
-Limits: 300 seconds total, 1 GiB raw SQL, 512 MiB compressed, 8 MiB per SQL line
+Limits: 300 seconds total, 2 GiB raw SQL, 512 MiB compressed, 8 MiB per SQL line
 or CREATE TABLE statement, 16 MiB total schema, 2,000 tables. Missing tools/privileges, unsupported
 scope, dirty app files, contention, schema mismatch, timeout, size cap, nonzero
 dump exit, absent native completion footer or invalid gzip all fail closed.
