@@ -3303,3 +3303,5 @@ from . import crm_inbox_models  # noqa: E402,F401
 from . import crm_object_need_models  # noqa: E402,F401
 
 from . import crm_service_binding_models  # noqa: E402,F401
+
+from . import crm_quote_models  # noqa: E402,F401

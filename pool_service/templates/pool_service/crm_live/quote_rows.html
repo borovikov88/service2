@@ -1,0 +1,2 @@
+{% load crm_money %}
+<div class="quote-table"><table><thead><tr><th>Позиция</th><th>Количество</th><th>Цена</th><th>Сумма</th></tr></thead><tbody>{% for row in rows %}<tr><td>{{ row.name }}</td><td>{{ row.quantity|default_if_none:'Не указано' }}</td><td>{% if row.price is None %}Не указано{% else %}{{ row.price|crm_money }}{% endif %}</td><td>{% if row.amount is None %}Не указано{% else %}{{ row.amount|crm_money }}{% endif %}</td></tr>{% endfor %}</tbody></table></div>
