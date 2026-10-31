@@ -54,6 +54,18 @@ class LeadWorkspaceTests(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         return response.json()["lead"]
 
+    def test_continuation_candidates_filter_before_limit_and_exclude_self(self):
+        source = self.create(title="Synthetic candidate source")
+        target = self.create(title="Synthetic candidate target")
+        for n in range(25):
+            CrmLead.objects.create(organization=self.org, assignee=self.actor,
+                title=f"Synthetic candidate closed {n}", status="closed", result="non_target")
+        CrmLead.objects.create(organization=self.org, title="Synthetic candidate unassigned")
+        response = self.client.get(self.url("crm_live_lead_targets")+
+            "&q=Synthetic%20candidate&kind=lead&exclude_id="+str(source["id"]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row["id"] for row in response.json()["targets"]], [target["id"]])
+
     def test_serving_runtime_uses_web_settings_and_administrative_policy(self):
         from django.test import override_settings
         from pool_service.services.crm_intake_wakeup import MODULE_LOADED_AT

@@ -64,6 +64,41 @@ class LeadFixture:
 
 
 class LeadCommandTests(LeadFixture, TestCase):
+    def test_continuation_preserves_target_task_and_replays_after_close(self):
+        original, incoming = self.create(), self.create()
+        CrmLeadThread.objects.create(organization=self.org, lead=incoming, context_key="a" * 64)
+        target_task, target_owner = original.next_task_id, original.assignee_id
+        changes = {"status": "closed", "result": "duplicate", "target_lead_id": original.pk}
+        result = self.command("lead.transition", changes, incoming, key="confirmed-continuation")
+        original.refresh_from_db(); incoming.refresh_from_db()
+        self.assertEqual((original.revision, original.next_task_id, original.assignee_id), (2, target_task, target_owner))
+        self.assertTrue(original.needs_review)
+        self.assertEqual(CrmLeadThread.objects.get().lead_id, original.pk)
+        self.assertEqual(CrmEvent.objects.filter(lead=original, event_type="lead.continuation").count(), 1)
+        self.command("lead.transition", {"status": "closed", "result": "no_deal", "reason": "Synthetic completed review"}, original)
+        before = self.state()
+        self.assertEqual(result, self.command("lead.transition", changes, incoming,
+            key="confirmed-continuation", expected_revision=1))
+        self.assertEqual(before, self.state())
+
+    def test_continuation_requires_target_write_authority_and_rejects_chains(self):
+        original, incoming = self.create(), self.create()
+        other = get_user_model().objects.create_user("synthetic-other-target-owner")
+        OrganizationAccess.objects.create(organization=self.org, user=other, role="manager")
+        original.assignee = other
+        original.save()
+        changes = {"status": "closed", "result": "duplicate", "target_lead_id": original.pk}
+        before = self.state()
+        with self.assertRaises(PermissionDenied):
+            self.command("lead.transition", changes, incoming)
+        self.assertEqual(before, self.state())
+        original.assignee = self.user; original.save()
+        self.command("lead.transition", changes, incoming)
+        third = self.create()
+        original.refresh_from_db()
+        with self.assertRaises(ValidationError):
+            self.command("lead.transition", {**changes, "target_lead_id": third.pk}, original)
+
     def test_manual_no_client_no_phone_unknown_budget_real_private_next_action(self):
         lead = self.create()
         self.assertEqual((lead.assignee_id, lead.status, lead.result, lead.revision), (self.user.pk, "working", "", 1))
@@ -345,6 +380,42 @@ class LeadCommandConcurrencyTests(LeadFixture, TransactionTestCase):
                 close_old_connections()
         with ThreadPoolExecutor(max_workers=len(functions)) as executor:
             return list(executor.map(run, functions))
+
+    def test_continuation_and_target_close_are_serialized_without_partial_history(self):
+        original, incoming = self.create(), self.create()
+        CrmLeadThread.objects.create(organization=self.org, lead=incoming, context_key="c" * 64)
+        def link():
+            try:
+                return self.command("lead.transition", {"status":"closed", "result":"duplicate", "target_lead_id":original.pk}, incoming)
+            except ValidationError:
+                return "ValidationError"
+        results = self.parallel([link, lambda: self.command("lead.transition",
+            {"status":"closed", "result":"no_deal", "reason":"Synthetic target close"}, original)])
+        incoming.refresh_from_db(); original.refresh_from_db()
+        if isinstance(results[0], dict):
+            self.assertEqual(results[1], "CommercialConflict")
+            self.assertEqual(CrmLeadThread.objects.get().lead_id, original.pk)
+            self.assertEqual(CrmEvent.objects.filter(event_type="lead.continuation").count(), 1)
+            self.assertEqual(incoming.result, "duplicate")
+        else:
+            self.assertEqual(results[0], "ValidationError")
+            self.assertIsInstance(results[1], dict)
+            self.assertEqual(CrmLeadThread.objects.get().lead_id, incoming.pk)
+            self.assertEqual(CrmEvent.objects.filter(event_type="lead.continuation").count(), 0)
+            self.assertEqual(incoming.result, "")
+        self.assertEqual(original.revision, 2)
+
+    def test_continuation_replay_race_moves_thread_once(self):
+        original, incoming = self.create(), self.create()
+        CrmLeadThread.objects.create(organization=self.org, lead=incoming, context_key="b" * 64)
+        changes = {"status": "closed", "result": "duplicate", "target_lead_id": original.pk}
+        results = self.parallel([lambda: self.command("lead.transition", changes, incoming, key="same-continuation") for _ in range(2)])
+        self.assertEqual(results[0], results[1])
+        self.assertIsInstance(results[0], dict)
+        original.refresh_from_db()
+        self.assertEqual(original.revision, 2)
+        self.assertEqual(CrmLeadThread.objects.get().lead_id, original.pk)
+        self.assertEqual(CrmEvent.objects.filter(event_type="lead.continuation").count(), 1)
 
     def test_two_managers_convert_free_lead_once(self):
         lead = CrmLead.objects.create(organization=self.org, title="Free conversion race", need="Synthetic need")

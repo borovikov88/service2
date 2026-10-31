@@ -18,7 +18,12 @@ const {chromium} = require('playwright');
     });
     const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
     const card=()=>page.locator(`[data-lead-id="${f.leadId}"]`);
-    const inColumn=async key=>{await page.locator(`[data-column="${key}"] [data-lead-id="${f.leadId}"]`).waitFor();};
+    const commandResults=[];
+    page.on('response',async response=>{if(new URL(response.url()).pathname===f.command&&response.request().method()==='POST'){
+      try{const data=await response.json();commandResults.push({status:response.status(),code:data.code,error:data.error,lead:data.lead&&{status:data.lead.status,result:data.lead.result,revision:data.lead.revision}});}catch(_){}
+    }});
+    const inColumn=async key=>{try{await page.locator(`[data-column="${key}"] [data-lead-id="${f.leadId}"]`).waitFor();}
+      catch(error){throw new Error(error.message+'\nSynthetic command results: '+JSON.stringify(commandResults)+'\nSynthetic navigation: '+JSON.stringify({url:page.url(),title:await page.title(),text:(await page.locator('body').innerText()).slice(0,1800),errors}));}};
     const confirm=async(next=false)=>{
       await page.locator('#lead-dialog button[type=submit]').waitFor();
       if(await page.getByLabel('Причина перемещения',{exact:true}).count()) await page.getByLabel('Причина перемещения',{exact:true}).fill('Synthetic explicit manager decision');
