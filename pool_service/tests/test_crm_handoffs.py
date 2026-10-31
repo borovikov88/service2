@@ -11,7 +11,7 @@ from django.test import TestCase, TransactionTestCase, skipUnlessDBFeature
 from django.urls import reverse
 from django.utils import timezone
 from pool_service.tests.test_crm_quotes import QuoteFixture
-from pool_service.models import Pool, CrmItem, ServiceTask, OrganizationAccess, Client
+from pool_service.models import Pool, CrmItem, ServiceTask, Organization, OrganizationAccess, Client
 from pool_service.crm_handoff_models import CrmHandoff, CrmHandoffTask, CrmHandoffEvent
 from pool_service.communication_models import PhoneCall, TelephonyConnection
 from pool_service.call_processing_models import CallPrivateNumber
@@ -141,6 +141,18 @@ class HandoffTests(HandoffFixture,TestCase):
         response=self.http.post(self.handoff_url,dict(action='submit',selection=token,operation_key='stale-source',
             confirm='on',evidence='Synthetic'))
         self.assertEqual(response.status_code,409);self.assertEqual(CrmHandoff.objects.count(),0)
+
+    def test_other_organization_role_and_foreign_task_are_not_authority(self):
+        foreign=Organization.objects.create(name='Synthetic unrelated organization')
+        OrganizationAccess.objects.create(organization=foreign,user=self.recipient,role='admin')
+        self.submit()
+        OrganizationAccess.objects.filter(organization=self.org,user=self.recipient).delete()
+        with self.assertRaises(PermissionDenied):self.accept_packet()
+        self.assertEqual(CrmHandoff.objects.get().status,'pending')
+        response=self.http.get(reverse('crm_handoff',args=[self.deal.pk])+'?org_id='+str(foreign.pk))
+        self.assertEqual(response.status_code,403)
+        self.task.organization=foreign;self.task.save()
+        with self.assertRaises(PermissionDenied):service.current_packet(self.user,self.org,CrmHandoff.objects.get())
 
     def test_construction_and_contract_identity_not_guessed(self):
         self.deal.fulfillment_kind='construction';self.deal.save()
