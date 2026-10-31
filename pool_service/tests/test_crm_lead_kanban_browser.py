@@ -7,6 +7,9 @@ import subprocess
 import signal
 import sys
 import tempfile
+import traceback
+from collections import deque
+from django.core.signals import got_request_exception
 from unittest import skipUnless
 
 from django.conf import settings
@@ -22,23 +25,38 @@ from pool_service.models import Employee, Organization, OrganizationAccess, Serv
 
 def _bounded_browser_process(command, payload, timeout=150):
     """Bound process wait and cleanup; no pipe EOF or unbounded Popen.__exit__."""
-    with tempfile.TemporaryFile(mode='w+') as log, tempfile.TemporaryFile(mode='w+') as source:
-        source.write(json.dumps(payload)); source.seek(0)
-        process = subprocess.Popen(command, stdin=source, stdout=log, stderr=log,
-            text=True, start_new_session=True)
-        try:
-            code = process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired as error:
-            # Only the child session created above, including its browser children.
+    server_errors = deque(maxlen=3)
+    def capture_server_exception(sender, **kwargs):
+        # Test-process only, synthetic fixture requests. No request payload,
+        # headers, settings, frame locals or SQL parameter logging.
+        error_type, _, tb = sys.exc_info()
+        server_errors.append((error_type.__name__ if error_type else 'UnknownError') + '\n' +
+            '\n'.join(f'{frame.filename}:{frame.lineno} in {frame.name}' for frame in traceback.extract_tb(tb, limit=-16)))
+    got_request_exception.connect(capture_server_exception, weak=False)
+    try:
+        with tempfile.TemporaryFile(mode='w+') as log, tempfile.TemporaryFile(mode='w+') as source:
+            source.write(json.dumps(payload)); source.seek(0)
+            process = subprocess.Popen(command, stdin=source, stdout=log, stderr=log,
+                text=True, start_new_session=True)
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait(timeout=5)
+                code = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired as error:
+                # Only the child session created above, including its browser children.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=5)
+                log.seek(0)
+                raise subprocess.TimeoutExpired(command, timeout, output=log.read()[-9000:]) from error
             log.seek(0)
-            raise subprocess.TimeoutExpired(command, timeout, output=log.read()[-9000:]) from error
-        log.seek(0)
-        return code, log.read()[-9000:]
+            output = log.read()[-7000:]
+        if code and server_errors:
+            output += '\nSynthetic Django exceptions (no request data):\n' + '\n'.join(server_errors)[-5000:]
+        return code, output
+    finally:
+        got_request_exception.disconnect(capture_server_exception)
+
 
 
 @skipUnless(os.environ.get("CRM_LEADS_BROWSER_TEST") == "1", "Dedicated Chromium acceptance step enables this test")
@@ -133,6 +151,23 @@ class BrowserProcessBoundTests(SimpleTestCase):
             _bounded_browser_process([sys.executable, '-c', 'import time; time.sleep(60)'], {}, timeout=0.1)
         self.assertEqual(len(children), 1)
         self.assertIsNotNone(children[0].returncode, 'Timed-out child must be reaped')
+
+    def test_failed_browser_captures_exception_frames_without_payload_or_message(self):
+        from unittest.mock import patch
+        real_popen = subprocess.Popen
+        def launch(*args, **kwargs):
+            try:
+                raise ValueError('SYNTHETIC-PRIVATE-EXCEPTION-MESSAGE')
+            except ValueError:
+                got_request_exception.send(sender=None, request='SYNTHETIC-PRIVATE-REQUEST')
+            return real_popen(*args, **kwargs)
+        with patch('subprocess.Popen', side_effect=launch):
+            code, output = _bounded_browser_process([sys.executable, '-c', 'raise SystemExit(1)'], {})
+        self.assertEqual(code, 1)
+        self.assertIn('ValueError', output)
+        self.assertNotIn('SYNTHETIC-PRIVATE-REQUEST', output)
+        # Frame source can contain literals; do not render source lines either.
+        self.assertNotIn('SYNTHETIC-PRIVATE-EXCEPTION-MESSAGE', output)
 
     def test_success_returns_terminal_status_and_output(self):
         code, output = _bounded_browser_process([sys.executable, '-c', 'print("synthetic browser complete")'], {})
