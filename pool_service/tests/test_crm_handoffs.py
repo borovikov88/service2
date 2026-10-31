@@ -110,7 +110,7 @@ class HandoffTests(HandoffFixture,TestCase):
     def test_private_source_and_unrelated_task_blocked_without_new_permissions(self):
         connection=TelephonyConnection.objects.create(organization=self.org,external_id='synthetic-handoff')
         call=PhoneCall.objects.create(organization=self.org,connection=connection,source_kind='telephony',
-            external_id='synthetic-call',employee=self.user,phone_number='+79990000099')
+            external_id='synthetic-call',employee=self.user,phone_number='+79990000099',started_at=timezone.now())
         self.task.payload_json={'source_call_id':call.pk};self.task.save()
         self.submit()
         CallPrivateNumber.objects.create(organization=self.org,owner=self.user,phone_key='9990000099',label='Synthetic privacy')
