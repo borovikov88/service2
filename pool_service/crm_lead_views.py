@@ -428,14 +428,13 @@ def command(request):
 @require_POST
 def analyze_call(request, lead_id, call_id):
     # Explicit action only; same current source/privacy checks as the card.
-    from .services.crm_lead_access import can_read_lead, _readable_sources, source_family
+    from .services.crm_lead_access import can_read_lead, has_readable_family_call
     from .communication_views import _authorize_call_access, request_call_analysis, start_requested_call_analysis_worker
     from .communication_models import PhoneCall
     organization = _organization(request)
     lead = get_object_or_404(_queryset(request.user, organization), pk=lead_id)
     if not can_read_lead(request.user, organization, lead): raise Http404
-    if not _readable_sources(request.user, organization).filter(
-        lead_id__in=source_family(request.user, organization, lead), inbox__source_type="call", inbox__source_id=call_id).exists(): raise Http404
+    if not has_readable_family_call(request.user, organization, lead, call_id): raise Http404
     # Reuse existing authorization, request queue, worker and repeat protection.
     call = get_object_or_404(PhoneCall.objects.select_related("connection"), pk=call_id, organization=organization)
     _authorize_call_access(request, call)
