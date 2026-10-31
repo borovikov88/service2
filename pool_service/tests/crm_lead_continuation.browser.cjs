@@ -27,6 +27,24 @@ const {chromium} = require('playwright');
    await page.locator('.lead-picker-results').getByRole('button',{name:'Synthetic continuation target',exact:true}).click();
   }
   await choose();assert.equal(posts.length,0,'Selecting a candidate must not save');
+  let captured, release, completed;
+  const capturedRequest=new Promise(resolve=>{captured=resolve;});
+  const releaseResponse=new Promise(resolve=>{release=resolve;});
+  const completedResponse=new Promise(resolve=>{completed=resolve;});
+  await context.route('**/*',async route=>{
+   const url=new URL(route.request().url());
+   if(url.searchParams.get('q')!=='Synthetic delayed')return route.fallback();
+   captured();await releaseResponse;
+   try{await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({targets:[{id:f.targetId,title:'Stale synthetic candidate'}]})});}catch(_){}finally{completed();}
+  });
+  await page.getByLabel('Подтверждённая потребность / сделка',{exact:true}).fill('Synthetic delayed');
+  await capturedRequest;
+  await page.locator('#lead-dialog label').filter({has:page.getByText('Результат завершения',{exact:true})}).locator('select').selectOption('linked');
+  release();await completedResponse;
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  assert.equal(await page.getByRole('button',{name:'Stale synthetic candidate',exact:true}).count(),0,'Changing target kind must discard delayed candidates');
+  assert.equal(posts.length,0);
+
   await page.keyboard.press('Escape');
   assert.equal(posts.length,0,'Cancelling must not save');
   await choose();

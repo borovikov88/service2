@@ -305,7 +305,7 @@
           } catch (error) { if (error.name !== "AbortError" && sequence === current) chosen.textContent = error.message; }
         }, 300);
       });
-      return {element: wrap, value: () => selected?.id ?? null, clear: () => { selected = null; input.value = ""; chosen.textContent = "Не выбрано"; results.replaceChildren(); }};
+      return {element: wrap, value: () => selected?.id ?? null, clear: () => { ++sequence; win.clearTimeout(timer); if (controller) controller.abort(); selected = null; input.value = ""; chosen.textContent = "Не выбрано"; results.replaceChildren(); }};
     }
     function nextFields(host, current) {
       const title = field(host, "Следующий шаг", current?.restricted || current?.completed ? "" : current?.title); title.required = true; title.maxLength = 255;
