@@ -17,7 +17,7 @@ const {chromium} = require('playwright');
   const page=await context.newPage(),errors=[],posts=[];
   page.on('pageerror',e=>errors.push(e.message));
   page.on('request',r=>{if(r.method()==='POST')posts.push(r);});
-  await page.goto(f.base+f.workspace);
+  const response=await page.goto(f.base+f.workspace);assert.equal(await page.locator('#crm-leads').count(),1,JSON.stringify({status:response.status(),contentType:response.headers()['content-type'],url:page.url(),text:(await page.locator('body').innerText()).slice(0,1800)}));
   async function choose(){
    await page.locator(`[data-lead-id="${f.leadId}"] button`).first().click();
    await page.getByText('Действия с лидом',{exact:true}).click();

@@ -23,7 +23,7 @@ const {chromium} = require('playwright');
       try{const data=await response.json();commandResults.push({status:response.status(),code:data.code,error:data.error,lead:data.lead&&{status:data.lead.status,result:data.lead.result,revision:data.lead.revision}});}catch(_){}
     }});
     const inColumn=async key=>{try{await page.locator(`[data-column="${key}"] [data-lead-id="${f.leadId}"]`).waitFor();}
-      catch(error){throw new Error(error.message+'\nSynthetic command results: '+JSON.stringify(commandResults)+'\nOperations: '+await page.locator('#lead-operations').innerText());}};
+      catch(error){throw new Error(error.message+'\nSynthetic command results: '+JSON.stringify(commandResults)+'\nSynthetic navigation: '+JSON.stringify({url:page.url(),title:await page.title(),text:(await page.locator('body').innerText()).slice(0,1800),errors}));}};
     const confirm=async(next=false)=>{
       await page.locator('#lead-dialog button[type=submit]').waitFor();
       if(await page.getByLabel('Причина перемещения',{exact:true}).count()) await page.getByLabel('Причина перемещения',{exact:true}).fill('Synthetic explicit manager decision');
