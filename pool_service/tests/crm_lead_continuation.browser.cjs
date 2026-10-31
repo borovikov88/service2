@@ -41,8 +41,8 @@ const {chromium} = require('playwright');
   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
   if(process.env.CRM_SYNTHETIC_SCREENSHOTS)await page.screenshot({path:process.env.CRM_SYNTHETIC_SCREENSHOTS+'/continuation-mobile.png'});
   await related.click();
-  await page.waitForFunction(()=>document.querySelector('#lead-dialog')?.textContent.includes('Synthetic continuation target'));
-  await page.reload();await page.locator('#lead-dialog[open]').waitFor();
+  await page.locator('#lead-dialog h2').filter({hasText:'Synthetic continuation target'}).waitFor();
+  await page.reload();await page.locator('#lead-dialog[open] h2').filter({hasText:'Synthetic continuation target'}).waitFor();
   assert.match(await page.locator('#lead-dialog').innerText(),/Synthetic continuation target/);
   assert.deepEqual(errors,[]);console.log('PASS continuation explicit choice/cancel/save/linked navigation/reload/desktop/mobile');
  }finally{await browser.close();}
