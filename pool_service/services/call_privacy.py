@@ -79,7 +79,7 @@ def _counterpart_keys(call, usernames):
     }
 
 
-def private_call_ids(calls):
+def private_call_ids(calls, *, for_update=False):
     """Return explicit private matches without exposing labels or phone values."""
     calls = list(calls)
     if not calls:
@@ -92,12 +92,13 @@ def private_call_ids(calls):
         return set()
 
     organization_ids = {call.organization_id for call in calls if call.organization_id}
-    rows = list(
-        CallPrivateNumber.objects.filter(
+    privacy_query = CallPrivateNumber.objects.filter(
             organization_id__in=organization_ids,
             owner_id__in=participant_ids,
-        ).values_list("organization_id", "owner_id", "phone_key")
-    )
+        )
+    if for_update:
+        privacy_query = privacy_query.select_for_update()
+    rows = list(privacy_query.values_list("organization_id", "owner_id", "phone_key"))
     if not rows:
         return set()
 
@@ -109,10 +110,10 @@ def private_call_ids(calls):
 
     # Usernames are a useful phone identity for internal calls in Service2.
     # Fetch them in one query; never return them from this privacy service.
-    usernames = dict(
-        User.objects.filter(pk__in=participant_ids)
-        .values_list("id", "username")
-    )
+    users_query = User.objects.filter(pk__in=participant_ids)
+    if for_update:
+        users_query = users_query.select_for_update()
+    usernames = dict(users_query.values_list("id", "username"))
 
     hidden = set()
     for call in calls:
@@ -174,7 +175,7 @@ def task_source_is_private(task):
     return is_private_call(call) if call else False
 
 
-def private_source_task_ids(tasks):
+def private_source_task_ids(tasks, *, for_update=False):
     """Batch-classify existing tasks whose source call is now explicitly private."""
     tasks = list(tasks)
     task_calls = {}
@@ -193,8 +194,11 @@ def private_source_task_ids(tasks):
     if not call_ids:
         return set()
 
-    calls = list(PhoneCall.objects.filter(pk__in=call_ids))
-    hidden_calls = private_call_ids(calls)
+    calls_query = PhoneCall.objects.filter(pk__in=call_ids)
+    if for_update:
+        calls_query = calls_query.select_for_update()
+    calls = list(calls_query)
+    hidden_calls = private_call_ids(calls, for_update=for_update)
     call_orgs = {call.pk: call.organization_id for call in calls}
     return {
         task_id

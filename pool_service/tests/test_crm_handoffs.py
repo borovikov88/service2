@@ -1,12 +1,12 @@
 """Synthetic existing-task handoff: consent is not execution or payment."""
 from datetime import timedelta
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
+from threading import Barrier, Event
 from uuid import uuid4
 from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.db import close_old_connections
+from django.db import close_old_connections, connection
 from django.test import TestCase, TransactionTestCase, skipUnlessDBFeature
 from django.urls import reverse
 from django.utils import timezone
@@ -159,6 +159,51 @@ class HandoffTests(HandoffFixture,TestCase):
 
 
 class HandoffConcurrencyTests(HandoffFixture,TransactionTestCase):
+    def _repeatable_read_change(self, change, exception):
+        if connection.vendor!='mysql': self.skipTest('Native MySQL REPEATABLE READ required')
+        basis=self.preview();observed=Event();changed=Event();original=service.lock_crm_graph
+        original_date=self.task.end_date;stale_dates=[]
+        def pause(*args,**kwargs):
+            # execute's initial ordinary reads have established its RR snapshot.
+            ServiceTask.objects.get(pk=self.task.pk)
+            observed.set()
+            if not changed.wait(15): raise AssertionError('Concurrent update did not finish')
+            stale_dates.append(ServiceTask.objects.get(pk=self.task.pk).end_date)
+            return original(*args,**kwargs)
+        def worker():
+            close_old_connections()
+            try:
+                connection.ensure_connection()
+                with connection.cursor() as cursor:cursor.execute('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ')
+                with patch.object(service,'lock_crm_graph',side_effect=pause):
+                    try:self.submit(basis=basis,operation_key='rr-change')
+                    except (PermissionDenied,ValidationError) as exc:return type(exc)
+                return None
+            finally:close_old_connections()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future=executor.submit(worker)
+            try:
+                self.assertTrue(observed.wait(15))
+                change()
+            finally:changed.set()
+            self.assertEqual(future.result(timeout=25),exception)
+        self.assertEqual(stale_dates,[original_date])
+        self.assertEqual(CrmHandoff.objects.count(),0)
+
+    @skipUnlessDBFeature('has_select_for_update')
+    def test_rr_changed_task_after_snapshot_is_rejected(self):
+        self._repeatable_read_change(lambda:ServiceTask.objects.filter(pk=self.task.pk).update(
+            end_date=self.task.end_date+timedelta(days=1)),CommercialConflict)
+
+    @skipUnlessDBFeature('has_select_for_update')
+    def test_rr_revoked_recipient_role_after_snapshot_is_rejected(self):
+        self._repeatable_read_change(lambda:OrganizationAccess.objects.filter(
+            organization=self.org,user=self.recipient).delete(),PermissionDenied)
+
+    @skipUnlessDBFeature('has_select_for_update')
+    def test_rr_removed_task_participant_after_snapshot_is_rejected(self):
+        self._repeatable_read_change(lambda:self.task.responsibles.remove(self.recipient),PermissionDenied)
+
     @skipUnlessDBFeature('has_select_for_update')
     def test_simultaneous_submit_then_accept_is_one_packet_and_decision(self):
         basis=self.preview();barrier=Barrier(2)

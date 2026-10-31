@@ -1,2 +1,3 @@
 [data-handoff] .quote-table table{min-width:520px}
 [data-handoff] .quote-table th:not(:first-child),[data-handoff] .quote-table td:not(:first-child){white-space:nowrap}
+@media(max-width:600px){[data-handoff]{padding-bottom:110px!important}}

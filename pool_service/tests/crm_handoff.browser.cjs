@@ -39,6 +39,9 @@ const {readFileSync}=require('node:fs');
  assert.match(await page.locator('[data-handoff]').innerText(),/Synthetic recipient checked agreed scope/);
  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1));
  await page.screenshot({path:'/tmp/crm-handoff-mobile-dark.png',fullPage:true});
+ await page.locator('.quote-table').evaluate(el=>{el.scrollLeft=el.scrollWidth;});
+ assert.equal(await page.locator('.quote-table td').nth(2).evaluate(el=>getComputedStyle(el).whiteSpace),'nowrap');
+ await page.screenshot({path:'/tmp/crm-handoff-mobile-money.png',fullPage:true});
  await page.reload();assert.equal(await page.getByRole('button',{name:'Принять пакет',exact:true}).count(),0);
  assert.deepEqual(errors,[]);console.log('handoff cancel/keyboard submit/distinct recipient/mobile/reload PASS');
  } finally {await browser.close();}
