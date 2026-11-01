@@ -177,6 +177,8 @@ jobs:
       - name: Verify Avito date precision and read-only tools on MySQL
         run: |
           python manage.py test \
+            pool_service.tests.test_avito_owner_dashboard \
+            pool_service.tests.test_avito_owner_overview \
             pool_service.tests.test_avito_placement_continuity \
             pool_service.tests.test_avito_mcp \
             --verbosity 2
@@ -194,8 +196,6 @@ jobs:
             pool_service.tests_communications.CommunicationsTests.test_owner_can_create_and_edit_megafon_line_with_safe_recording_hosts \
             pool_service.tests_communications.CommunicationsTests.test_megafon_account_sync_auto_matches_employee_and_backfills_calls \
             pool_service.tests_communications.CommunicationsTests.test_megafon_accounts_repairs_legacy_api_endpoint_without_redirect \
-            pool_service.tests.test_avito_owner_dashboard \
-            pool_service.tests.test_avito_owner_overview \
             pool_service.tests.test_avito_daily_statistics \
             pool_service.tests.test_avito_period_statistics \
             pool_service.tests.test_avito_decision_report \

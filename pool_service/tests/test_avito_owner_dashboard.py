@@ -246,3 +246,58 @@ class OwnerSummaryTests(TestCase):
         self.assertEqual(result["ads"][0]["id"], "91")
         self.assertEqual(result["ads"][0]["title"], "")
         self.assertEqual(result["ads"][0]["views"], "7")
+
+    def test_selected_known_ad_has_real_trend_when_account_coverage_is_incomplete(self):
+        self.fact(dimensions={"91": {}, "92": {}})
+        account = self.read()
+        self.assertIsNone(account["kpis"][0]["value"])
+        selected = self.read(identifier="91")
+        self.assertEqual(selected["selected_ad"], "91")
+        self.assertEqual(selected["chart"]["views"], [7.0])
+        self.assertEqual(selected["chart"]["cost_view"], [2.5])
+        self.assertEqual(selected["kpis"][0]["value"], "7")
+        self.assertEqual([ad["id"] for ad in selected["ads"]], ["91"])
+        self.assertEqual({item["id"] for item in selected["ad_choices"]}, {"91", "92"})
+
+    def test_unowned_or_invalid_selector_never_falls_back_to_account_metrics(self):
+        self.fact()
+        for identifier in ("999", "not-an-id", "../91", True):
+            with self.subTest(identifier=identifier):
+                result = self.read(identifier=identifier)
+                self.assertTrue(result["selection_error"])
+                self.assertTrue(all(card["value"] is None for card in result["kpis"]))
+                self.assertEqual(result["chart"]["views"], [None])
+                self.assertEqual(result["ads"], [])
+                self.assertIsNone(result["fallback"])
+
+    def test_selected_ad_comparison_ignores_other_ad_cohort_changes(self):
+        self.fact(dimensions={"91": {}, "92": {}}, views="7", contacts="2", spending="17.50")
+        self.fact(day=self.day-timedelta(days=1), dimensions={"91": {}, "93": {}},
+            views="4", contacts="1", spending="10")
+        result = self.read(identifier="91")
+        cards = {card["key"]: card for card in result["kpis"]}
+        self.assertEqual(cards["views"]["delta"], "3")
+        self.assertEqual(cards["cost_view"]["value"], "2.50")
+        self.assertEqual(cards["cost_view"]["delta"], "0.00")
+        self.assertEqual(result["source"]["expected_ads"], 1)
+
+    def test_selected_ad_period_snapshot_does_not_use_other_ad_or_totals(self):
+        first = self.day-timedelta(days=6)
+        def report():
+            values = owner._values({"views": "12", "contacts": "3", "spending": "22.50"})
+            selected = owner._values({"views": "7", "contacts": "2", "spending": "17.50"})
+            other = owner._values({"views": "5", "contacts": "1", "spending": "5"})
+            return {"date_from": first.isoformat(), "date_to": self.day.isoformat(),
+                "metric_values": values, "group_count": 2, "metrics": [],
+                "received_at_display": self.now, "ids": ["91", "92"],
+                "ads": [{"avito_id": "91", "metric_values": selected},
+                        {"avito_id": "92", "metric_values": other}]}
+        with patch.object(owner.periods, "display", return_value={"reports": [report()]}):
+            result = owner.display(self.connection, self.actor, period="7", identifier="91", now=self.now)
+        self.assertEqual(result["kpis"][0]["value"], "7")
+        self.assertEqual(result["kpis"][2]["value"], "17.50")
+        self.assertEqual(result["source"]["expected_ads"], 1)
+        self.assertEqual([ad["id"] for ad in result["ads"]], ["91"])
+        self.assertEqual(result["chart"]["views"], [None]*7)
+        snapshot = {"grouping": "totals", "values": owner._values({"views": "999"})}
+        self.assertIsNone(owner._snapshot_ad(snapshot, "91"))

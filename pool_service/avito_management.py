@@ -303,7 +303,8 @@ def avito_dashboard(request):
     owner_connection = selected["connection"] if selected else None
     owner_dashboard = owner_display(owner_connection, request.user,
         period=request.GET.get("owner_period", "30"),
-        date_from=request.GET.get("owner_from", ""), date_to=request.GET.get("owner_to", ""))
+        date_from=request.GET.get("owner_from", ""), date_to=request.GET.get("owner_to", ""),
+        identifier=request.GET.get("owner_ad", ""))
     owner_operations, owner_actions = owner_operations_display(owner_connection, request.user, workspace)
     return render(request, "pool_service/avito/dashboard.html", {
         "active_tab": "avito",
@@ -464,10 +465,10 @@ def avito_refresh_data(request, connection_id):
         channel__organization=organization, channel__kind=CommunicationChannel.KIND_AVITO,
     )
     redirect_params = {"account": connection.pk}
-    for key in ("date_from", "date_to", "q", "owner_period", "owner_from", "owner_to"):
+    for key in ("date_from", "date_to", "q", "owner_period", "owner_from", "owner_to", "owner_ad"):
         value = request.POST.get(key, "")
         if value:
-            redirect_params[key] = value[:200 if key == "q" else 10]
+            redirect_params[key] = value[:200 if key == "q" else 32 if key == "owner_ad" else 10]
     destination = reverse("avito_dashboard") + "?" + urlencode(redirect_params)
     form = WorkspaceRefreshForm(request.POST)
     if not form.is_valid():

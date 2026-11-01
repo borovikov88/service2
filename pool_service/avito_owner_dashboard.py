@@ -109,7 +109,7 @@ def _aggregate(rows, runs, start, end, identifier=None):
             continue
         entries = [row for row in rows if row.day == day and row.source_run_id == run.pk]
         identifiers = daily._expected_ids(run) | {row.avito_id for row in entries}
-        cohorts.append(identifiers)
+        cohorts.append(identifiers if identifier is None else ({identifier} if identifier in identifiers else set()))
         if identifier is not None:
             identifiers = {identifier}
         expected.update((day, item) for item in identifiers)
@@ -141,11 +141,11 @@ def _aggregate(rows, runs, start, end, identifier=None):
         "cohort_stable": pages_complete and bool(cohorts) and all(group == cohorts[0] for group in cohorts)}
 
 
-def _chart(rows, runs, first, last):
+def _chart(rows, runs, first, last, identifier=None):
     result = {"labels": [], **{key: [] for key, _, _ in CARDS}}
     for index in range((last-first).days+1):
         day = first+timedelta(days=index)
-        summary = _aggregate(rows, runs, day, day)
+        summary = _aggregate(rows, runs, day, day, identifier)
         result["labels"].append(day.isoformat())
         for key, _, _ in CARDS:
             value = summary["values"][key]
@@ -229,13 +229,44 @@ def _fallback(connection, actor, *, first=None, last=None, now=None):
                 "values": _values(report["metric_values"]), "expected": report["group_count"],
                 "known": _known(entries),
                 "received_at": report["received_at_display"], "pages_complete": True,
-                "ids": report["ids"], "grouping": "item", "source": periods.SOURCE,
+                "ids": report["ids"], "known_ids": sorted({identifier for item in reports for identifier in item["ids"]}),
+                "grouping": "item", "source": periods.SOURCE,
                 "entries": entries}
     snapshot = _manual_snapshot(connection)
     return snapshot if snapshot is None or snapshot["received_at"] is None or snapshot["received_at"] <= (now or timezone.now()) else None
 
 
-def display(connection, actor, *, period="30", date_from="", date_to="", now=None):
+def _ad_choices(connection, rows, runs, snapshot):
+    """Only IDs from this already-scoped history/cache; never resolve arbitrary IDs."""
+    identifiers = {row.avito_id for row in rows}
+    for run in runs.values():
+        identifiers.update(daily._expected_ids(run))
+    titles = {row.avito_id: workspace_api._text(row.title, 300) for row in rows}
+    section = _workspace(connection).get("items")
+    data = section.get("data") if type(section) is dict else None
+    listed = data.get("rows") if type(data) is dict else None
+    for row in listed if type(listed) is list else []:
+        if type(row) is dict:
+            identifier = workspace_api._identifier(row.get("id"))
+            if identifier:
+                identifiers.add(identifier)
+                titles[identifier] = workspace_api._text(row.get("title"), 300)
+    if snapshot is not None and snapshot.get("grouping") == "item":
+        identifiers.update(snapshot.get("known_ids", snapshot.get("ids", [])))
+    valid = sorted({workspace_api._identifier(value) for value in identifiers if workspace_api._identifier(value)})
+    return valid, titles
+
+
+def _snapshot_ad(snapshot, identifier):
+    if snapshot is None or snapshot["grouping"] != "item":
+        return None
+    entries = [entry for entry in snapshot["entries"] if entry["id"] == identifier]
+    return {**snapshot, "entries": entries, "values": entries[0]["values"] if entries else _values({}),
+        "expected": 1, "reported": len(entries), "known": _known(entries),
+        "ids": [identifier] if entries else []}
+
+
+def display(connection, actor, *, period="30", date_from="", date_to="", identifier="", now=None):
     """Return only display-safe facts after fresh organization and account checks."""
     authenticated = getattr(actor, "is_authenticated", False)
     actor = get_user_model().objects.filter(pk=getattr(actor, "pk", None), is_active=True).first()
@@ -254,10 +285,20 @@ def display(connection, actor, *, period="30", date_from="", date_to="", now=Non
     length = (last-first).days+1
     previous_from, previous_to = first-timedelta(days=length), first-timedelta(days=1)
     rows, runs = _history(current, previous_from, last, now)
-    summary = _aggregate(rows, runs, first, last)
-    previous = _aggregate(rows, runs, previous_from, previous_to)
+    snapshot = _fallback(current, actor, first=first, last=last, now=now)
+    known_ids, titles = _ad_choices(current, rows, runs, snapshot)
+    selected_id = workspace_api._identifier(identifier) if identifier else ""
+    invalid_selection = bool(identifier) and (not selected_id or selected_id not in known_ids)
+    selection_error = "Объявление не найдено в сохранённых данных выбранного аккаунта." if invalid_selection else ""
+    if invalid_selection:
+        selected_id = ""
+        rows, runs, snapshot = [], {}, None
+    elif selected_id:
+        snapshot = _snapshot_ad(snapshot, selected_id)
+    summary = _aggregate(rows, runs, first, last, selected_id or None)
+    previous = _aggregate(rows, runs, previous_from, previous_to, selected_id or None)
     same_cohort = (summary["cohort_stable"] and previous["cohort_stable"]
-                   and summary["ids"] == previous["ids"])
+                   and summary["ids"] == previous["ids"] and summary["rows_complete"] and previous["rows_complete"])
     kpis = _cards(summary["values"], summary["known"], summary["expected"],
                   previous["values"] if same_cohort else None)
     source = {"kind": "daily", "label": "Сохранённая суточная статистика Авито",
@@ -266,44 +307,40 @@ def display(connection, actor, *, period="30", date_from="", date_to="", now=Non
         "completed_dates": summary["completed_dates"], "total_dates": summary["total_dates"],
         "reported_ads": summary["reported"], "expected_ads": summary["expected"],
         "coverage_label": f"Даты: {summary['completed_dates']}/{summary['total_dates']}; строки: {summary['reported']}/{summary['expected']}"}
-    fallback = _fallback(current, actor, first=first, last=last, now=now)
     fallback_output, exact_snapshot = None, None
-    if fallback is not None:
-        fallback_output = {"from": fallback["from"], "to": fallback["to"],
-            "received_at": fallback["received_at"], "label": "Отдельный сохранённый отчёт за период",
-            "source": fallback["source"], "pages_complete": fallback["pages_complete"],
-            "coverage_label": f"Группы: {fallback['expected']}; все страницы получены",
-            "kpis": _cards(fallback["values"], fallback["known"], fallback["expected"])}
+    if snapshot is not None:
+        reported = snapshot.get("reported", snapshot["expected"])
+        coverage = (f"Строки: {reported}/{snapshot['expected']}; все страницы получены"
+            if selected_id else f"Группы: {snapshot['expected']}; все страницы получены")
+        fallback_output = {"from": snapshot["from"], "to": snapshot["to"],
+            "received_at": snapshot["received_at"], "label": "Отдельный сохранённый отчёт за период",
+            "source": snapshot["source"], "pages_complete": snapshot["pages_complete"],
+            "coverage_label": coverage,
+            "kpis": _cards(snapshot["values"], snapshot["known"], snapshot["expected"])}
         # Exact-period snapshot is an independent valid KPI source, not a daily repair.
-        if fallback["from"] == first.isoformat() and fallback["to"] == last.isoformat() and not summary["rows_complete"]:
+        if snapshot["from"] == first.isoformat() and snapshot["to"] == last.isoformat() and not summary["rows_complete"]:
             kpis = fallback_output["kpis"]
-            exact_snapshot = fallback
+            exact_snapshot = snapshot
             source.update(kind="period", label="Сохранённый отчёт за выбранный период",
-                received_at=fallback["received_at"], pages_complete=True,
-                reported_ads=fallback["expected"] if fallback["grouping"] == "item" else None,
-                expected_ads=fallback["expected"] if fallback["grouping"] == "item" else None,
-                coverage_label=fallback_output["coverage_label"])
+                received_at=snapshot["received_at"], pages_complete=True,
+                reported_ads=reported if snapshot["grouping"] == "item" else None,
+                expected_ads=snapshot["expected"] if snapshot["grouping"] == "item" else None,
+                coverage_label=coverage)
             fallback_output = None
     ads = []
-    titles = {row.avito_id: workspace_api._text(row.title, 300) for row in rows}
-    for identifier in summary["ids"][:200]:
-        item = _aggregate(rows, runs, first, last, identifier)
-        ads.append({"id": identifier, "title": titles.get(identifier, ""),
+    for item_id in summary["ids"][:200]:
+        item = _aggregate(rows, runs, first, last, item_id)
+        ads.append({"id": item_id, "title": titles.get(item_id, ""),
             **{key: _text(value) for key, value in item["values"].items()},
             "coverage_label": f"{item['reported']}/{item['total_dates']} дат"})
     if exact_snapshot is not None and exact_snapshot["grouping"] == "item":
-        item_section = _workspace(current).get("items")
-        item_data = item_section.get("data") if type(item_section) is dict else None
-        listed = item_data.get("rows", []) if type(item_data) is dict else []
-        for item in listed if type(listed) is list else []:
-            if type(item) is dict:
-                identifier = workspace_api._identifier(item.get("id"))
-                if identifier:
-                    titles[identifier] = workspace_api._text(item.get("title"), 300)
         ads = [{"id": entry["id"], "title": titles.get(entry["id"], ""),
             **{key: _text(value) for key, value in entry["values"].items()},
             "coverage_label": f"Период {first:%d.%m.%Y}–{last:%d.%m.%Y}; строка отчёта получена"}
             for entry in exact_snapshot["entries"][:200]]
+    choices = known_ids[:200]
+    if selected_id and selected_id not in choices:
+        choices = [*choices[:199], selected_id]
     final = ChannelConnection.objects.select_related("channel__organization").filter(pk=current.pk).first()
     if (final is None or daily._stamp(final) != binding or not final.is_active or not final.channel.is_active
             or organization_access(actor, final.channel.organization) is None
@@ -313,7 +350,10 @@ def display(connection, actor, *, period="30", date_from="", date_to="", now=Non
         "title": "Услуги" if current.pk == 4 and str(current.external_id) == daily.ACCOUNT else "Товары",
         "connection_id": current.pk, "account_id": str(current.external_id),
         "date_from": first.isoformat(), "date_to": last.isoformat(), "period": period_info,
-        "kpis": kpis, "chart": _chart(rows, runs, first, last), "source": source,
+        "selected_ad": selected_id, "selected_ad_title": titles.get(selected_id, ""),
+        "selection_error": selection_error,
+        "ad_choices": [{"id": item_id, "title": titles.get(item_id, "")} for item_id in choices],
+        "kpis": kpis, "chart": _chart(rows, runs, first, last, selected_id or None), "source": source,
         "fallback": fallback_output, "ads": ads,
         "available": any(card["value"] is not None for card in kpis),
         "limitations": ["Контакты Авито не равны уникальным клиентам, заявкам и заказам.",

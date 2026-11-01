@@ -77,12 +77,13 @@ class OwnerOverviewTests(TestCase):
         with patch("pool_service.avito_management.access_token") as token:
             response = self.client.post(reverse("avito_refresh_data", args=[1]), {
                 "section": "invalid-section", "owner_period": "custom",
-                "owner_from": "2030-01-01", "owner_to": "2030-01-07"})
+                "owner_from": "2030-01-01", "owner_to": "2030-01-07", "owner_ad": "1234567890"})
         self.assertEqual(response.status_code, 302)
         params = parse_qs(urlsplit(response["Location"]).query)
         self.assertEqual(params["owner_period"], ["custom"])
         self.assertEqual(params["owner_from"], ["2030-01-01"])
         self.assertEqual(params["owner_to"], ["2030-01-07"])
+        self.assertEqual(params["owner_ad"], ["1234567890"])
         token.assert_not_called()
 
     def test_unknown_crm_source_is_a_review_task_not_a_confirmed_order(self):

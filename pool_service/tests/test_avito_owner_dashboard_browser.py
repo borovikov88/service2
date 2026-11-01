@@ -43,9 +43,9 @@ class AvitoOwnerDashboardBrowserTests(StaticLiveServerTestCase):
                             "checked_at": timezone.now().isoformat(),
                             "data": {
                                 "rows": [
-                                    {"id": "91001", "title": "Synthetic Water", "status": "active",
+                                    {"id": "91", "title": "Synthetic Water", "status": "active",
                                      "status_label": "Активно", "price": "12.00", "address": "Synthetic City"},
-                                    {"id": "91002", "title": "Synthetic Pool", "status": "active",
+                                    {"id": "92", "title": "Synthetic Pool", "status": "active",
                                      "status_label": "Активно", "price": "18.00", "address": "Synthetic City"},
                                 ],
                                 "page": 1, "per_page": 50, "total": 2,
@@ -73,6 +73,7 @@ class AvitoOwnerDashboardBrowserTests(StaticLiveServerTestCase):
             if connection is None:
                 return None
             is_services = connection.pk == 4
+            selected_ad = str(options.get("identifier") or "") if is_services else ""
             chart = {
                 "labels": labels,
                 "views": [10, 12, None, 18, 0, 15, 20],
@@ -81,6 +82,8 @@ class AvitoOwnerDashboardBrowserTests(StaticLiveServerTestCase):
                 "cost_view": [10, 8.33, None, 11.11, None, 6.67, 10],
                 "cost_contact": [100, None, None, 100, None, 100, 100],
             }
+            if selected_ad == "91":
+                chart["views"][0] = 5
             if not is_services:
                 chart = {key: labels if key == "labels" else [None] * len(labels) for key in chart}
             raw_period = options.get("period", "30")
@@ -97,6 +100,9 @@ class AvitoOwnerDashboardBrowserTests(StaticLiveServerTestCase):
                 "available": is_services,
                 "kind": "services" if is_services else "goods",
                 "title": "Услуги" if is_services else "Товары",
+                "selected_ad": selected_ad,
+                "selected_ad_title": "Synthetic Water" if selected_ad == "91" else "",
+                "ad_choices": [{"id": "91", "title": "Synthetic Water"}, {"id": "92", "title": "Synthetic Pool"}] if is_services else [],
                 "period": {"key": raw_period, "from": source_from, "to": source_to,
                            "label": f"{source_from}–{source_to}", "error": ""},
                 "kpis": [
@@ -112,7 +118,7 @@ class AvitoOwnerDashboardBrowserTests(StaticLiveServerTestCase):
                     "from": source_from, "to": source_to, "received_at": timezone.now(),
                     "provider_timezone": "unknown", "pages_complete": is_services,
                     "completed_dates": 7 if is_services else 0, "total_dates": 7,
-                    "reported_ads": 2 if is_services else 0, "expected_ads": 2,
+                    "reported_ads": (1 if selected_ad else 2) if is_services else 0, "expected_ads": 1 if selected_ad else 2,
                     "coverage_label": "Страницы: 7/7; просмотры известны: 6/7" if is_services else "Нет сохранённых данных",
                 },
                 "fallback": None,

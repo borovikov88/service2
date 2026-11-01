@@ -23,16 +23,18 @@
     <div>
       <h2>Результат рекламы</h2>
       <p>{{ owner_dashboard.period.label|default:"Выбранный период" }} · {{ owner_dashboard.period.from }}–{{ owner_dashboard.period.to }}</p>
+      <p data-owner-selection-label>{% if owner_dashboard.selected_ad %}Показатели: {{ owner_dashboard.selected_ad_title|default:"Объявление" }} · ID {{ owner_dashboard.selected_ad }}{% else %}Показатели: все объявления аккаунта{% endif %}</p>
     </div>
     <div class="avito-owner-period-controls" aria-label="Период статистики">
       <div class="avito-owner-segments">
-        <a data-owner-period="7" href="?account={{ selected.connection.pk }}&amp;owner_period=7" {% if owner_dashboard.period.key == '7' %}aria-current="true"{% endif %}>7 дат</a>
-        <a data-owner-period="30" href="?account={{ selected.connection.pk }}&amp;owner_period=30" {% if owner_dashboard.period.key == '30' %}aria-current="true"{% endif %}>30 дат</a>
+        <a data-owner-period="7" href="?account={{ selected.connection.pk }}&amp;owner_period=7&amp;owner_ad={{ owner_dashboard.selected_ad|urlencode }}" {% if owner_dashboard.period.key == '7' %}aria-current="true"{% endif %}>7 дат</a>
+        <a data-owner-period="30" href="?account={{ selected.connection.pk }}&amp;owner_period=30&amp;owner_ad={{ owner_dashboard.selected_ad|urlencode }}" {% if owner_dashboard.period.key == '30' %}aria-current="true"{% endif %}>30 дат</a>
       </div>
       <details class="avito-owner-custom" {% if owner_dashboard.period.key == 'custom' %}open{% endif %}>
         <summary>Свой период</summary>
         <form method="get" action="{% url 'avito_dashboard' %}" class="avito-owner-custom__form" data-avito-submit>
           <input type="hidden" name="account" value="{{ selected.connection.pk }}"><input type="hidden" name="owner_period" value="custom">
+          <input type="hidden" name="owner_ad" value="{{ owner_dashboard.selected_ad }}">
           <label>С <input type="date" class="form-control form-control-sm" name="owner_from" value="{{ owner_dashboard.period.from }}" required></label>
           <label>По <input type="date" class="form-control form-control-sm" name="owner_to" value="{{ owner_dashboard.period.to }}" required></label>
           <button class="btn btn-sm btn-outline-primary" type="submit">Показать</button>
@@ -40,6 +42,21 @@
       </details>
     </div>
   </div>
+  <form method="get" action="{% url 'avito_dashboard' %}" class="row g-2 align-items-end mb-3" data-owner-ad-form data-avito-submit>
+    <input type="hidden" name="account" value="{{ selected.connection.pk }}">
+    <input type="hidden" name="owner_period" value="{{ owner_dashboard.period.key|default:'30' }}">
+    <input type="hidden" name="owner_from" value="{{ owner_dashboard.period.from }}">
+    <input type="hidden" name="owner_to" value="{{ owner_dashboard.period.to }}">
+    <div class="col-12 col-md-8 col-xl-6">
+      <label for="avito-owner-ad" class="small text-muted mb-1">Показатели и графики объявления</label>
+      <select id="avito-owner-ad" class="form-select form-select-sm" name="owner_ad">
+        <option value="" {% if not owner_dashboard.selected_ad %}selected{% endif %}>Все объявления</option>
+        {% for choice in owner_dashboard.ad_choices %}<option value="{{ choice.id }}" {% if choice.id == owner_dashboard.selected_ad %}selected{% endif %}>{{ choice.title|default:"Объявление" }} · {{ choice.id }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="col-auto"><button class="btn btn-sm btn-outline-primary" type="submit">Показать</button></div>
+  </form>
+  {% if owner_dashboard.selection_error %}<p class="avito-section-notice avito-section-notice--stale" role="status">{{ owner_dashboard.selection_error }}</p>{% endif %}
   {% if owner_dashboard.period.error %}<p class="avito-section-notice avito-section-notice--stale" role="status">{{ owner_dashboard.period.error }}</p>{% endif %}
   <div class="avito-owner-kpis">
     {% for metric in owner_dashboard.kpis %}

@@ -62,6 +62,16 @@ const {chromium} = require('playwright');
     await page.keyboard.press('Enter');
     assert.equal(await page.locator('[data-owner-cost="spending"]').getAttribute('aria-pressed'), 'true');
 
+    const adForm = page.locator('form[data-owner-ad-form]');
+    await adForm.locator('select[name="owner_ad"]').selectOption('91');
+    await Promise.all([
+      page.waitForURL(url => url.searchParams.get('owner_ad') === '91'),
+      adForm.getByRole('button', {name: 'Показать', exact: true}).click(),
+    ]);
+    assert.equal(await adForm.locator('select[name="owner_ad"]').inputValue(), '91');
+    assert.ok((await page.locator('[data-owner-selection-label]').innerText()).includes('Synthetic Water'));
+    assert.equal(JSON.parse(await page.locator('#avito-owner-chart-data').textContent()).views[0], 5);
+
     await page.locator('#avito-listings-details > summary').click();
     await page.locator('[data-avito-search]').fill('Synthetic Water');
     await page.waitForFunction(() => {
@@ -76,6 +86,8 @@ const {chromium} = require('playwright');
       page.locator('[data-owner-period="7"]').click(),
     ]);
     assert.equal(new URL(page.url()).searchParams.get('account'), String(fixture.servicesId));
+    assert.equal(new URL(page.url()).searchParams.get('owner_ad'), '91');
+    assert.equal(await adForm.locator('select[name="owner_ad"]').inputValue(), '91');
     await page.locator('.avito-owner-custom > summary').click();
     const customForm = page.locator('.avito-owner-custom__form');
     await customForm.locator('[name="owner_from"]').fill('2026-01-02');
@@ -86,6 +98,7 @@ const {chromium} = require('playwright');
       customForm.locator('button[type="submit"]').click(),
     ]);
     assert.equal(new URL(page.url()).searchParams.get('owner_period'), 'custom');
+    assert.equal(new URL(page.url()).searchParams.get('owner_ad'), '91');
 
     for (const colorScheme of ['dark', 'light']) {
       await page.emulateMedia({colorScheme});
@@ -103,11 +116,20 @@ const {chromium} = require('playwright');
     await page.setViewportSize({width: 1440, height: 1000});
     await page.locator('#avito-account').selectOption(String(fixture.goodsId));
     const [goodsResponse] = await Promise.all([
-      page.waitForNavigation(),
+      page.waitForResponse(response => {
+        const url = new URL(response.url());
+        const request = response.request();
+        return url.origin === fixture.base && url.pathname === fixture.url
+          && url.searchParams.get('account') === String(fixture.goodsId)
+          && request.method() === 'GET' && request.isNavigationRequest()
+          && request.resourceType() === 'document';
+      }),
       page.locator('form.avito-account-picker button[type="submit"]').click(),
     ]);
     assert.equal(goodsResponse.status(), 200);
+    await page.waitForURL(url => url.searchParams.get('account') === String(fixture.goodsId));
     assert.equal(new URL(page.url()).searchParams.get('account'), String(fixture.goodsId));
+    assert.notEqual(new URL(page.url()).searchParams.get('owner_ad'), '91');
     await page.locator('[data-avito-owner]').waitFor();
     assert.ok((await page.locator('[data-owner-kpi="views"]').innerText()).includes('—'));
     assert.ok((await page.locator('[data-owner-kpi="spending"]').innerText()).includes('—'));
