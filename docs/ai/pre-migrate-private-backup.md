@@ -24,7 +24,7 @@ other databases and invisible objects are not included. This is no new ledger.
 
 Before starting, the actual private destination filesystem must have at least
 512MiB (existing compressed cap) plus64MiB reserve free. A concurrent space loss
-still fails closed. Existing limits remain: 1GiB raw SQL,512MiB gzip,300s internal
+still fails closed. Existing limits remain: 2GiB raw SQL,512MiB gzip,300s internal
 deadline; the deploy call adds a TERM330s/KILL+10s watchdog. Native children are
 terminated/reaped on helper failure. The single-threaded Linux helper also sets
 PR_SET_PDEATHSIG(SIGKILL) before native exec and checks the parent PID race, so

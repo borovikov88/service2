@@ -113,7 +113,7 @@ def normalize(text, expected):
         raise ValueError()
     if value["expected_sha"] != expected or value["integrity_verified"] is not True or value["restore_verified"] is not False:
         raise ValueError()
-    for name, limit in (("table_count", 2000), ("size_bytes", 512 * 1024 ** 2), ("uncompressed_bytes", 1024 ** 3)):
+    for name, limit in (("table_count", 2000), ("size_bytes", 512 * 1024 ** 2), ("uncompressed_bytes", 2 * 1024 ** 3)):
         if type(value[name]) is not int or not 0 < value[name] <= limit:
             raise ValueError()
     for name in ("sha256", "schema_sha256"):
