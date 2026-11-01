@@ -1,6 +1,8 @@
 # CRM + leads: bounded cursor loading — LOCAL, not published
 
-Public base2cc4e2e; dependency PR477 UI headf9d805b9 preserved separately.
+Current public base99d96caf includes PR477. Local sync from f03a5324 changes only
+the already-public MySQL workflow timeout; application/tests are byte-identical.
+Original base2cc4e2e and dependency UI f9d805b9 remain preserved ancestors.
 Both boards show initial50 per column, then50 per explicit request. No200-card
 ceiling and no need to open a table for card201. Deal table and closed-lead history
 retain existing page pagination. Initial board work is proportional to configured

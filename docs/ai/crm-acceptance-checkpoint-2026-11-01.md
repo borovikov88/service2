@@ -1,7 +1,8 @@
 # CRM acceptance checkpoint — 2026-11-01, LOCAL source review
 
 Source: `CRM_Aqualine_TZ_v0_4.md`, Library `libfile_83c4d48b69c08191b25419bb1e8a2dba`, version3,
-§18 lines608–683 (AC01–AC70). Fresh fetched main: `2cc4e2e26b61ee169abd2c1ce56370a7d6abc3de`.
+§18 lines608–683 (AC01–AC70). Initial audited main: `2cc4e2e26b61ee169abd2c1ce56370a7d6abc3de`.
+Final LOCAL base: `99d96caf767af8cea935cd34125996e9fe5ee580` (PR477 compact UI; no new business logic).
 The old audit in spec§1–3 is not a description of today's code.
 This is a bounded source/test inventory, not a new execution of all70 acceptance
 scenarios or production acceptance. Deployed does not imply verified live write UX.
