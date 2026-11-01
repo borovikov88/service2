@@ -109,6 +109,7 @@ class StagedMaterialMigrationTests(TransactionTestCase):
         before=[('pool_service','0169_crm_board_epoch')]
         after=[('pool_service','0171_merge_materials_board')]
         try:
+            executor=MigrationExecutor(connection);executor.migrate([('pool_service','0168_crm_recurring_reminder_receipts')])
             executor=MigrationExecutor(connection);executor.migrate(before)
             apps=executor.loader.project_state(before).apps
             org=apps.get_model('pool_service','Organization').objects.create(name='Synthetic staged release')
