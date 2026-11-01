@@ -200,7 +200,6 @@
       loading: false, dataController: null, detailController: null, clientController: null,
       dataGeneration: 0, detailGeneration: 0, clientGeneration: 0,
       drawer: null, dragging: null, suppressClickUntil: 0,
-      boardLimits: {}, boardScope: null,
     };
     const dialog = byId("crm-live-dialog");
     const dialogContent = byId("crm-live-dialog-content");
@@ -480,12 +479,12 @@
           const window = (state.data.column_windows || []).find(item => sameId(item.stage_id, stage.id));
           if (window?.has_more) {
             lane.append(element("p", "crm-live-lane-progress", "Загружено " + deals.length + " из " + count));
-            if (window.can_expand) {
+            if (window.cursor) {
               const more = makeButton("Показать ещё 50", "column-more");
               more.dataset.stageId = stage.id;
               more.disabled = state.loading;
               lane.append(more);
-            } else lane.append(element("p", "crm-live-lane-progress", window.limit_reason === "column" ? "Показаны первые 200. Уточните поиск или откройте таблицу для остальных сделок." : "Достигнут предел доски. Уточните поиск или откройте таблицу для остальных сделок."));
+            }
           }
           board.append(lane);
         }
@@ -495,8 +494,9 @@
     }
 
     async function loadData(options) {
-      const scope = JSON.stringify([String(state.pipelineId), state.query, state.owner, state.attention, state.filters, state.view]);
-      if (scope !== state.boardScope) { state.boardLimits = {}; state.boardScope = scope; }
+      const more = options?.moreStage == null ? null : (state.data.column_windows || []).find(item => sameId(item.stage_id, options.moreStage));
+      if (options?.moreStage != null && (!more?.cursor || state.loading)) return;
+      const previous = state.data;
       const generation = ++state.dataGeneration;
       if (state.dataController) state.dataController.abort();
       const controller = new AbortController();
@@ -508,7 +508,7 @@
       url.searchParams.set("page", state.page);
       if (state.view === "kanban") {
         url.searchParams.set("layout", "board");
-        url.searchParams.set("column_limits", JSON.stringify(state.boardLimits));
+        if (more) { url.searchParams.set("board_column", more.stage_id); url.searchParams.set("cursor", more.cursor); }
       }
       url.searchParams.set("q", state.query);
       url.searchParams.set("owner", state.owner);
@@ -519,7 +519,12 @@
         const response = await requestJSON(url, {headers: {"Accept": "application/json"}}, controller.signal);
         if (generation !== state.dataGeneration) return;
         if (!Array.isArray(response.deals) || !Array.isArray(response.pipelines)) throw new Error("Сервер вернул неполные данные CRM.");
-        state.data = response;
+        if (more) {
+          const rows = new Map((previous.deals || []).map(row => [String(row.id), row]));
+          for (const row of response.deals) rows.set(String(row.id), row);
+          state.data = {...response, deals: Array.from(rows.values()), column_windows: previous.column_windows.map(item =>
+            (response.column_windows || []).find(next => sameId(next.stage_id, item.stage_id)) || item)};
+        } else state.data = response;
         state.pipelineId = response.selected_pipeline_id;
         state.page = response.page || 1;
         state.attention = response.attention || "all";
@@ -528,6 +533,12 @@
         if (!options?.keepNotice) notice("");
       } catch (error) {
         if (controller.signal.aborted || generation !== state.dataGeneration) return;
+        if (error.code === "reset_required") {
+          state.data = {...state.data, deals: [], column_windows: [], stage_totals: []};
+          notice("Доска изменилась. Загружаем актуальные первые порции; продолжите загрузку заново.", true);
+          await loadData({keepNotice:true}); return;
+        }
+        if ([401,403,404].includes(error.status)) { state.data = {...state.data, deals: [], column_windows: [], stage_totals: []}; state.dataError = friendlyError(error); }
         state.attention = state.data.attention || "all"; syncURL();
         if (error.status === 400) state.dataError = friendlyError(error);
         notice("Не удалось обновить сделки. " + friendlyError(error) + " Нажмите кнопку обновления.", true);
@@ -1127,9 +1138,8 @@
         loadData();
       } else if (button.dataset.action === "column-more") {
         const window = (state.data.column_windows || []).find(item => sameId(item.stage_id, button.dataset.stageId));
-        if (state.loading || !window?.has_more || !window.can_expand) return;
-        state.boardLimits[String(window.stage_id)] = window.limit + 50;
-        loadData();
+        if (state.loading || !window?.cursor) return;
+        loadData({moreStage:window.stage_id});
       } else if (button.dataset.action === "page-prev" || button.dataset.action === "page-next") {
         state.page = Math.max(1, state.page + (button.dataset.action === "page-next" ? 1 : -1)); loadData();
       } else if (button.dataset.action === "open") {
@@ -1160,6 +1170,7 @@
     byId("crm-live-search").value = state.query;
     byId("crm-live-search").addEventListener("input", (event) => {
       state.query = event.target.value.trim(); state.page = 1;
+      if(state.dataController)state.dataController.abort(); ++state.dataGeneration; state.loading=true; renderContent();
       win.clearTimeout(searchTimer);
       if (state.dataController) state.dataController.abort();
       searchTimer = win.setTimeout(loadData, 300);
@@ -1234,7 +1245,6 @@
       else closeDialog(false);
       loadData();
     });
-    state.boardScope = JSON.stringify([String(state.pipelineId), state.query, state.owner, state.attention, state.filters, state.view]);
     renderPipelines();
     renderContent();
     syncURL();

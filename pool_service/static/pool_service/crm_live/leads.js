@@ -100,14 +100,14 @@
       for (const [key, value, base] of [["q", state.q, ""], ["mode", state.mode, "all"], ["status", state.status, ""], ["page", String(state.mode === "closed" ? state.page : 1), "1"]]) {
         if (value && value !== base) url.searchParams.set(key, value); else url.searchParams.delete(key);
       }
-      for (const key of ["unparsed", "working", "history", "spam", "deleted"]) { const page = state.pages[key] || 1; if (page > 1) url.searchParams.set("page_" + key, page); else url.searchParams.delete("page_" + key); }
+      for (const key of ["unparsed", "working", "history", "spam", "deleted"]) url.searchParams.delete("page_" + key);
       if (state.selected) url.searchParams.set("lead", state.selected); else url.searchParams.delete("lead");
       win.history.replaceState({}, "", url);
     }
     async function read(url, signal) {
       const response = await win.fetch(url, {credentials: "same-origin", headers: {Accept: "application/json"}, signal});
       let body; try { body = await response.json(); } catch (_error) { throw new Error("Ответ сервера недоступен. Обновите данные."); }
-      if (!response.ok) throw new Error(body.error || "Не удалось загрузить данные.");
+      if (!response.ok) { const error = new Error(body.error || "Не удалось загрузить данные."); error.status=response.status; error.code=body.code; throw error; }
       return body;
     }
     const csrf = () => root.querySelector("[name=csrfmiddlewaretoken]").value;
@@ -208,7 +208,7 @@
       return row;
     }
     function renderList() {
-      const data = state.data, list = byId("lead-list"); list.replaceChildren(); list.setAttribute("aria-busy", String(state.loading));
+      const data = state.data, list = byId("lead-list"), scrollLeft = list.scrollLeft; list.replaceChildren(); list.setAttribute("aria-busy", String(state.loading));
       list.className = state.mode === "closed" ? "lead-history-list" : "lead-board";
       byId("lead-count").textContent = state.loading ? "Обновляем…" : "Найдено: " + data.total;
       byId("lead-page").textContent = `${data.page} / ${data.pages}`;
@@ -233,11 +233,14 @@
         section.addEventListener("dragover", (event) => { if (dragged && !state.loading && moveTargets(dragged).includes(column.key)) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; section.classList.add("is-drop-target"); } });
         section.addEventListener("dragleave", (event) => { if (!section.contains(event.relatedTarget)) section.classList.remove("is-drop-target"); });
         section.addEventListener("drop", (event) => { event.preventDefault(); section.classList.remove("is-drop-target"); const lead = dragged; dragged = null; conversionDrop.hidden=true; if (lead && !state.loading && moveTargets(lead).includes(column.key)) moveLead(lead, column.key); });
-        const pager = el("nav", "lead-column-pager"); pager.setAttribute("aria-label", "Страницы: " + column.label);
-        const previous = button("←", () => { state.pages[column.key] = column.page - 1; loadList(); }); previous.setAttribute("aria-label", "Предыдущая страница: " + column.label); previous.disabled = state.loading || column.page <= 1;
-        const next = button("→", () => { state.pages[column.key] = column.page + 1; loadList(); }); next.setAttribute("aria-label", "Следующая страница: " + column.label); next.disabled = state.loading || column.page >= column.pages;
-        pager.append(previous, el("span", "", `${column.page} / ${column.pages}`), next); section.append(pager); list.append(section);
+        section.append(el("p", "lead-column-progress", `Загружено ${column.leads.length} из ${column.total}`));
+        if (column.cursor) {
+          const more = button("Показать ещё 50", () => loadList({column:column.key}));
+          more.dataset.action="column-more"; more.disabled=state.loading; section.append(more);
+        }
+        list.append(section);
       }
+      list.scrollLeft=scrollLeft;
       renderOperations();
     }
     async function moveLead(snapshot, target) {
@@ -268,15 +271,36 @@
         renderOperations();
       } catch (error) { if (sequence === state.detailSequence) content.append(el("p", "lead-error", error.message)); }
     }
-    async function loadList() {
+    async function loadList(options) {
+      const more=options?.column ? (state.data.columns || []).find(c=>c.key===options.column) : null;
+      if (options?.column && (!more?.cursor || state.loading)) return;
+      const previous=state.data;
       if (state.listController) state.listController.abort();
       const controller = new AbortController(), sequence = ++state.sequence; state.listController = controller; state.loading = true; renderList(); urlState();
       const url = new URL(initial.urls.data, win.location.origin);
       for (const [key, value] of Object.entries({q: state.q, mode: state.mode, status: state.status, page: state.mode === "closed" ? state.page : 1})) url.searchParams.set(key, value);
-      for (const [key, page] of Object.entries(state.pages)) url.searchParams.set("page_" + key, page);
-      try { const data = await read(url, controller.signal); if (sequence !== state.sequence) return; state.data = data; state.page = data.page; state.pages = Object.fromEntries((data.columns || []).map((column) => [column.key, column.page])); urlState(); }
-      catch (error) { if (error.name !== "AbortError" && sequence === state.sequence) notice(error.message); }
-      finally { if (sequence === state.sequence) { state.loading = false; renderList(); } }
+      if(state.mode!=="closed") url.searchParams.set("layout","board");
+      if(more){url.searchParams.set("board_column",more.key);url.searchParams.set("cursor",more.cursor);}
+      try {
+        const data = await read(url, controller.signal); if (sequence !== state.sequence) return;
+        if(more){
+          const replacement=data.columns.find(c=>c.key===more.key);
+          const rows=new Map(more.leads.map(row=>[String(row.id),row]));
+          for(const row of replacement.leads) rows.set(String(row.id),row);
+          const columns=previous.columns.map(c=>c.key===more.key?{...replacement,leads:Array.from(rows.values())}:c);
+          state.data={...data,columns,leads:columns.flatMap(c=>c.leads)};
+        }else state.data=data;
+        state.page=data.page; urlState(); if(!options?.keepNotice) notice("");
+      } catch(error) {
+        if(error.name==="AbortError" || sequence!==state.sequence) return;
+        if(error.code==="reset_required"){
+          state.data={...state.data,leads:[],columns:[],total:0};
+          notice("Доска изменилась. Загружаем актуальные первые порции; продолжите загрузку заново.");
+          await loadList({keepNotice:true});return;
+        }
+        if([401,403,404].includes(error.status)) state.data={...state.data,leads:[],columns:[],total:0,can_create:false};
+        notice(error.message);
+      } finally { if(sequence===state.sequence){state.loading=false;renderList();} }
     }
     function field(host, label, value = "", type = "text", wide = false) {
       const wrap = el("label", "lead-field" + (wide ? " wide" : "")), input = el(type === "textarea" ? "textarea" : "input");
@@ -487,12 +511,21 @@
     byId("lead-refresh").addEventListener("click", loadList);
     let searchTimer;
     byId("lead-search").value = state.q; byId("lead-status").value = state.status;
-    byId("lead-search").addEventListener("input", (event) => { state.q = event.target.value; state.page = 1; state.pages = {}; win.clearTimeout(searchTimer); searchTimer = win.setTimeout(loadList, 300); });
+    byId("lead-search").addEventListener("input", (event) => { state.q = event.target.value; state.page = 1; state.pages = {}; if(state.listController)state.listController.abort(); ++state.sequence; state.loading=true; renderList(); win.clearTimeout(searchTimer); searchTimer = win.setTimeout(loadList, 300); });
     byId("lead-status").addEventListener("change", (event) => { state.status = event.target.value; state.page = 1; state.pages = {}; loadList(); });
     byId("lead-modes").addEventListener("click", (event) => { const target = event.target.closest("[data-mode]"); if (target) { state.mode = target.dataset.mode; state.page = 1; state.pages = {}; loadList(); } });
     byId("lead-prev").addEventListener("click", () => { if (state.page > 1) { state.page -= 1; loadList(); } });
     byId("lead-next").addEventListener("click", () => { if (state.page < state.data.pages) { state.page += 1; loadList(); } });
     win.addEventListener("beforeunload", (event) => { if (operations.pending().length) { event.preventDefault(); event.returnValue = ""; } });
+    win.addEventListener("popstate",()=>{
+      const params=new URL(win.location.href).searchParams;
+      state.q=params.get("q") || ""; state.mode=params.get("mode") || "all"; state.status=params.get("status") || "";
+      state.page=Number(params.get("page")) || 1; state.pages={};
+      byId("lead-search").value=state.q; byId("lead-status").value=state.status;
+      const selected=params.get("lead"); state.selected=null;
+      if(dialog.open) dialog.close(); loadList();
+      if(selected && /^\d+$/.test(selected)) openLead(Number(selected));
+    });
     const selected = new URL(win.location.href).searchParams.get("lead"); renderList(); if (selected && /^\d+$/.test(selected)) openLead(Number(selected));
     return {state, operations, loadList, openLead};
   }

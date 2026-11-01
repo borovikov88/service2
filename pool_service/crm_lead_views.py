@@ -13,6 +13,8 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.paginator import Paginator
 from django.db.models import Q
+from django.db import transaction
+from .services.crm_board_cursor import BoardReset, epoch, portion
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
@@ -149,7 +151,13 @@ def _serialize_many(leads, user, capabilities, *, detail=False):
     return output
 
 
-def _data(request, organization):
+@transaction.atomic
+def _data(request, organization, *, board=None):
+    board=request.GET.get('layout')=='board' if board is None else board
+    if board:
+        organization=Organization.objects.select_for_update().get(pk=organization.pk)
+        from .services.crm_lead_access import can_view_leads
+        if not can_view_leads(request.user,organization): raise PermissionDenied
     capabilities = _capabilities(request.user, organization)
     mode = request.GET.get("mode", "all")
     status = request.GET.get("status", "")
@@ -191,14 +199,27 @@ def _data(request, organization):
             "spam": Q(is_archived=False) & spam,
             "deleted": Q(is_archived=True),
         }
+        requested=request.GET.get('board_column','') if board else ''
+        if board and (requested and requested not in COLUMNS or request.GET.get('cursor') and not requested): raise BoardReset()
+        revision=epoch(organization.pk) if board else None
+        scope={'kind':'leads','actor':request.user.pk,'org':organization.pk,'mode':mode,'status':status,'q':query}
+        totals={key:ordered.filter(predicate).count() for key,predicate in predicates.items()}
         for key, label in COLUMNS.items():
-            paginator = Paginator(ordered.filter(predicates[key]), PAGE_SIZE)
-            page = paginator.get_page(page_number("page_" + key))
-            columns.append({"key": key, "label": label, "page": page.number,
-                "pages": paginator.num_pages, "total": paginator.count,
-                "leads": _serialize_many(page, request.user, capabilities)})
+            if requested and requested!=key: continue
+            subset=ordered.filter(predicates[key])
+            if board:
+                rows,cursor=portion(subset,scope=scope,column=key,revision=revision,
+                    cursor=request.GET.get('cursor','') if requested else '',chronological=True)
+                columns.append({'key':key,'label':label,'page':1,'pages':1,'total':totals[key],
+                    'cursor':cursor,'leads':_serialize_many(rows,request.user,capabilities)})
+            else:
+                paginator = Paginator(subset, PAGE_SIZE)
+                page = paginator.get_page(page_number("page_" + key))
+                columns.append({"key": key, "label": label, "page": page.number,
+                    "pages": paginator.num_pages, "total": paginator.count,
+                    "leads": _serialize_many(page, request.user, capabilities)})
         leads = [lead for column in columns for lead in column["leads"]]
-        total = sum(column["total"] for column in columns)
+        total = sum(totals.values())
     activation = CrmIntakeActivation.objects.filter(organization=organization).first()
     intake = intake_status(organization, activation)
     if can_read_serving_runtime(request.user, organization):
@@ -223,6 +244,8 @@ def _api(view):
             return JsonResponse({"error": "Доступ к этому действию сейчас отсутствует.", "code": "forbidden"}, status=403)
         except Http404:
             return JsonResponse({"error": "Карточка недоступна.", "code": "not_found"}, status=404)
+        except BoardReset as exc:
+            return JsonResponse({"error":exc.messages[0],"code":"reset_required"},status=409)
         except CommercialConflict:
             return JsonResponse({"error": "Карточка уже изменена. Обновите её и проверьте введённые данные.", "code": "conflict"}, status=409)
         except ValidationError as exc:
@@ -243,7 +266,7 @@ def workspace(request):
     if blocked:
         return blocked
     try:
-        data = _data(request, organization)
+        data = _data(request, organization, board=True)
     except ValidationError:
         # Bad URL state must not silently open a different organization or list.
         return JsonResponse({"error": "Некорректные фильтры лидов."}, status=400)

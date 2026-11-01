@@ -13,8 +13,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.db.models import Count, F, Q, Sum, OuterRef, Subquery, Window, Case, When, Value, IntegerField
-from django.db.models.functions import RowNumber
+from django.db.models import Count, F, Q, Sum, OuterRef, Subquery
+from django.db import transaction
+from .services.crm_board_cursor import BoardReset, epoch, portion, cursor_time
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -36,8 +37,6 @@ from .services.task_read_permissions import readable_tasks
 
 
 PAGE_SIZE = 50
-BOARD_COLUMN_MAX = 200
-BOARD_TOTAL_MAX = 2000
 MAX_BODY_BYTES = 16384
 EVENT_LABELS = {
     "deal.create": "Сделка создана",
@@ -117,7 +116,7 @@ def _task_for(deal):
 ATTENTION_CANDIDATE_LIMIT = 1000
 
 
-def _attention_ids(queryset, user, organization, attention):
+def _attention_ids(queryset, user, organization, attention, as_of=None):
     """Classify one explicitly bounded business-visible set before pagination.
 
     The sentinel check precedes task loading/privacy/timing. Reuse the current
@@ -132,7 +131,7 @@ def _attention_ids(queryset, user, organization, attention):
     task_ids = {task.pk for task, invalid in pairs.values() if task and not invalid}
     visible = {task.pk: task for task in readable_tasks(
         ServiceTask.objects.filter(pk__in=task_ids, organization=organization), user)}
-    now = timezone.now()
+    now = as_of or timezone.now()
     zone = ZoneInfo(getattr(settings, "COMMUNICATION_TIME_ZONE", "Asia/Barnaul"))
     today = now.astimezone(zone).date()
     matched = []
@@ -255,7 +254,12 @@ def _serialize_deals(deals, user, organization, grant, *, detail=False):
     return rows
 
 
+@transaction.atomic
 def _workspace_data(request, organization, *, board=None):
+    board = request.GET.get("layout") == "board" if board is None else board
+    if board:
+        organization = Organization.objects.select_for_update().get(pk=organization.pk)
+        if not can_view_team_deals(request.user, organization): raise PermissionDenied
     grant = _grant(request.user, organization)
     pipelines = list(CrmPipeline.objects.filter(organization=organization, is_active=True).prefetch_related("stages"))
     pipeline_id = _id(request.GET["pipeline"]) if request.GET.get("pipeline") else (pipelines[0].pk if pipelines else None)
@@ -314,9 +318,10 @@ def _workspace_data(request, organization, *, board=None):
     attention = request.GET.get("attention", "all")
     if attention not in {"all", "today", "overdue", "missing"}:
         raise ValidationError("Некорректный фильтр следующего действия.")
+    as_of = cursor_time(request.GET.get('cursor',''), timezone.now()) if board else None
     attention_total = None
     if attention != "all":
-        matched_ids = _attention_ids(queryset, request.user, organization, attention)
+        matched_ids = _attention_ids(queryset, request.user, organization, attention, as_of=as_of)
         attention_total = len(matched_ids)
         queryset = queryset.filter(pk__in=matched_ids)
     stage_totals = [{"stage_id": row["stage_id"], "currency": row["currency"],
@@ -324,46 +329,28 @@ def _workspace_data(request, organization, *, board=None):
         "count": row["count"], "unknown_count": row["count"] - row["known_count"]}
         for row in queryset.order_by().values("stage_id", "currency").annotate(
             amount_total=Sum("amount"), count=Count("pk"), known_count=Count("amount"))]
-    # A board reload replaces bounded prefixes, never appends offset pages.
-    # Inserts, moves and deletions between requests therefore cannot shift an
-    # offset and silently skip a card. The table retains its existing pagination.
-    board = request.GET.get("layout") == "board" if board is None else board
     column_windows = []
     if board:
-        try:
-            raw = request.GET.get("column_limits", "{}")
-            if len(raw) > 4096:
-                raise ValueError
-            limits = json.loads(raw)
-            stage_ids = [item.pk for pipeline in pipelines if pipeline.pk == pipeline_id for item in pipeline.stages.all()]
-            if not isinstance(limits, dict) or any(
-                key not in {str(pk) for pk in stage_ids} or type(value) is not int
-                or value < PAGE_SIZE or value > BOARD_COLUMN_MAX or value % PAGE_SIZE
-                for key, value in limits.items()
-            ) or sum(limits.get(str(pk), PAGE_SIZE) for pk in stage_ids) > BOARD_TOTAL_MAX:
-                raise ValueError
-        except (ValueError, TypeError):
-            raise ValidationError("Некорректный объём колонок. Уточните фильтры или обновите доску.")
-        budget = sum(limits.get(str(pk), PAGE_SIZE) for pk in stage_ids)
-        # One SQL statement establishes membership in ALL columns. Separate
-        # SELECTs could read the same card twice during a concurrent stage move.
-        take = Case(*[When(stage_id=pk, then=Value(limits.get(str(pk), PAGE_SIZE) + 1))
-            for pk in stage_ids], default=Value(PAGE_SIZE + 1), output_field=IntegerField())
-        selected = list(queryset.filter(stage_id__in=stage_ids).annotate(
-            _board_row=Window(expression=RowNumber(), partition_by=[F("stage_id")], order_by=F("pk").desc()),
-            _board_take=take,
-        ).filter(_board_row__lte=F("_board_take")).order_by("stage_id", "-pk"))
-        deals = []
+        revision=epoch(organization.pk)
+        stage_ids=[item.pk for pipeline in pipelines if pipeline.pk==pipeline_id for item in pipeline.stages.all()]
+        requested=request.GET.get('board_column','')
+        if requested and requested not in {str(pk) for pk in stage_ids}: raise BoardReset()
+        if request.GET.get('cursor') and not requested: raise BoardReset()
+        scope={'kind':'deals','actor':request.user.pk,'org':organization.pk,'pipeline':pipeline_id,
+            'q':query,'owner':owner,'outcome':outcome,'object':object_kind,'stage':stage,
+            'specialization':specialization,'attention':attention,'as_of':as_of.isoformat(),
+            'from':request.GET.get('decision_from',''),'to':request.GET.get('decision_to','')}
+        deals=[]
         for stage_id in stage_ids:
-            limit = limits.get(str(stage_id), PAGE_SIZE)
-            rows = [row for row in selected if row.stage_id == stage_id]
-            deals.extend(rows[:limit])
-            column_windows.append({"stage_id": stage_id, "limit": limit, "loaded": min(len(rows), limit),
-                "has_more": len(rows) > limit, "can_expand": limit < BOARD_COLUMN_MAX and budget + PAGE_SIZE <= BOARD_TOTAL_MAX,
-                "limit_reason": "column" if limit >= BOARD_COLUMN_MAX else "board"})
+            if requested and requested!=str(stage_id): continue
+            rows,cursor=portion(queryset.filter(stage_id=stage_id),scope=scope,column=stage_id,
+                revision=revision,cursor=request.GET.get('cursor','') if requested else '',as_of=as_of)
+            deals.extend(rows)
+            column_windows.append({'stage_id':stage_id,'cursor':cursor,'loaded':len(rows),'has_more':bool(cursor)})
     else:
-        offset = (page - 1) * PAGE_SIZE
-        deals = list(queryset.order_by("-pk")[offset:offset + PAGE_SIZE + 1])
+        offset=(page-1)*PAGE_SIZE
+        deals=list(queryset.order_by('-pk')[offset:offset+PAGE_SIZE+1])
+
     return {
         "organization_id": organization.pk, "organization_name": organization.name, "actor_id": request.user.pk,
         "capabilities": {"create": _write_capability(grant, organization, "create_own_deals")
@@ -379,7 +366,7 @@ def _workspace_data(request, organization, *, board=None):
         "selected_pipeline_id": pipeline_id, "has_more": not board and len(deals) > PAGE_SIZE,
         "page": 1 if board else page, "has_previous": not board and page > 1,
         "page_size": PAGE_SIZE, "q": query, "owner": owner, "stage_totals": stage_totals,
-        "attention": attention, "attention_total": attention_total,
+        "attention": attention, "attention_total": attention_total, "attention_as_of": as_of.isoformat() if as_of else None,
         "outcome": outcome, "object": object_kind, "stage": stage, "specialization": specialization,
         "decision_from": request.GET.get("decision_from", ""), "decision_to": request.GET.get("decision_to", ""),
     }
@@ -397,6 +384,8 @@ def _api(view):
             return JsonResponse({"error": "Доступ к этому действию сейчас отсутствует.", "code": "forbidden"}, status=403)
         except Http404:
             return JsonResponse({"error": "Карточка или воронка недоступна.", "code": "not_found"}, status=404)
+        except BoardReset as exc:
+            return JsonResponse({"error":exc.messages[0],"code":"reset_required"},status=409)
         except CommercialConflict:
             return JsonResponse({"error": "Карточка или задача уже изменена. Обновите её и проверьте данные перед сохранением.", "code": "conflict"}, status=409)
         except ValidationError as exc:

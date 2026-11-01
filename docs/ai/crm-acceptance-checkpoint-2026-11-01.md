@@ -17,7 +17,7 @@ scenarios or production acceptance. Deployed does not imply verified live write 
 | AC12,13 and limited14 | `services/crm_quotes.py`, `tests/test_crm_quotes.py` | Immutable accepted version/variant, explicit sent/accepted/rejected/replaced exist. Printing is not sent. Actual channel delivery of quotes is not implemented by this lifecycle; unknown manual send is not delivery proof. |
 | AC18,49 | `services/crm_handoffs.py`, `crm_construction.py`; respective tests/browser modules | Existing service request/tasks, personal acceptance; existing construction project with explicit launch authority. No duplicate execution container or advance gate. Real project launch is not performed by this task. |
 | AC24,53,54,57,60 | `crm_service_bindings.py`, `crm_service_binding_reader.py`, `test_crm_service_bindings.py` | Document identity/version, explicit months and partial quantities, reconciliation guards exist. Universal bindings are not actual verified allocation of any real customer's documents. Negative corrections and full financial closure remain incomplete. |
-| AC30,32 | `crm_live_views._workspace_data`, workspace JS and browser tests | Existing filter totals cover full authorized query. General page hides stages with older deals; local column-loading draft addresses that narrow gap. No hosting p95 claim. |
+| AC30,32 | `crm_live_views._workspace_data`, workspace JS and browser tests | Existing filter totals cover full authorized query. General page hides stages with older deals; local cursor-loading draft for both boards addresses that narrow gap. No hosting p95 claim. |
 | AC37,38,39,51 | `services/crm_object_needs.py`, corrections/need-deal services and tests | Versioned source need and reviewed per-position modes exist. This is NOT a quantitative warehouse issue/delivery/return journal. |
 | AC53,56,58,60 (partial) | `crm_recurring_terms.py`, `crm_recurring_drafts.py`, `crm_recurring_effective.py`, `crm_recurring_reminders.py` and tests | Explicit dated contractual obligations, same-deal renewal, protected effective terms and retained reminder policy exist. They do not prove realization coverage or full payment. |
 
@@ -38,7 +38,7 @@ scenarios or production acceptance. Deployed does not imply verified live write 
 
 ## Next order
 
-1. Review local bounded column loading (AC30/32 and owner's Nov1 UI request), separately from PR477; leads pagination remains another small slice.
+1. Review local signed cursor loading for both boards (AC30/32 and owner's Nov1 UI request), separately from PR477; migration0169 adds one invalidation table, not business data.
 2. Quantitative materials issue journal (AC61/52/69) with no invented delivery/financial facts; then partial delivery/return and reassignment (AC62/63/70), then monthly aggregates/contracts (AC64–68).
 3. Contract financial completeness/reconciliation and real mapping after explicit verified evidence; quote actual delivery separately.
 4. Intake natural-event proof remains separate ops work; tender auto-selection waits for owner criteria. None blocks independent LOCAL development.
