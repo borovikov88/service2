@@ -56,4 +56,5 @@ def protect_form_fields(form):
             if name in form.fields:
                 form.initial[name] = getattr(form.instance, name)
                 form.fields[name].disabled = True
+                form.fields[name].label += ' (прежнее значение; текущие условия — в договоре)'
                 form.fields[name].help_text = 'Сохранённое прежнее значение. Текущие условия — в договоре; изменение только через новую редакцию.'

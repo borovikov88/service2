@@ -112,6 +112,15 @@ class ConfirmedTests(ConfirmedFixture,TestCase):
         with self.assertNumQueries(0):terms_as_of(self.pool,self.day)
         Pool.objects.filter(pk=self.pool.pk).update(service_frequency=self.pool.service_frequency)
 
+    def test_future_confirmation_preserves_legacy_move_before_start(self):
+        import json
+        Pool.objects.filter(pk=self.pool.pk).update(service_frequency='weekly')
+        self.prepare_confirmed()
+        response=self.http.post(reverse('visit_plan_move'),data=json.dumps(dict(pool_ids=[self.pool.pk],source_week_start='2029-12-17',planned_date='2029-12-19')),content_type='application/json')
+        self.assertEqual(response.status_code,200,response.content)
+        response=self.http.post(reverse('visit_plan_move'),data=json.dumps(dict(pool_ids=[self.pool.pk],source_week_start='2029-12-17',planned_date='2030-01-01')),content_type='application/json')
+        self.assertEqual(response.status_code,409)
+
     def test_future_confirmation_retains_legacy_notifications_until_effective(self):
         from datetime import datetime
         from pool_service.management.commands import generate_notifications as module
@@ -182,7 +191,10 @@ class ConfirmedTests(ConfirmedFixture,TestCase):
         plan=ServiceVisitPlan.objects.create(pool=self.pool,week_start=date(2029,12,31),planned_date=date(2030,1,4),created_by=self.user)
         response=self.http.get(reverse('readings_all'),{'month':'2030-01'})
         items=[item for day in response.context['calendar_days'] for item in day['items'] if item.get('item_type')=='auto']
-        self.assertEqual(sum(item.get('plan_id')==plan.pk for item in items),1)
+        planned=[item for item in items if item['date']==date(2030,1,4)]
+        self.assertEqual(len(planned),1)
+        self.assertEqual(planned[0]['source_week_start'],'2029-12-31')
+        self.assertEqual(planned[0]['pool_ids'],[self.pool.pk])
         response=self.http.post(reverse('visit_plan_move'),data=json.dumps(dict(pool_ids=[self.pool.pk],source_week_start='2029-12-31',planned_date='2030-01-05')),content_type='application/json')
         self.assertEqual(response.status_code,200,response.content)
         plan.refresh_from_db();self.assertEqual(plan.planned_date,date(2030,1,5))

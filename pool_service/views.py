@@ -9077,8 +9077,13 @@ def visit_plan_move(request):
             return JsonResponse({'ok': False, 'error': 'contract_source_date_required'}, status=409)
         records = contract_confirmations(pool, min(source_week, planned_date), max(source_week + timedelta(days=6), planned_date))
         if records:
-            dates = contract_due_dates(pool, source_week, source_week + timedelta(days=6), records)
             existing_plan = ServiceVisitPlan.objects.filter(pool=pool, week_start=source_week).first()
+            first_effective = records[0].effective_from
+            legacy_source = existing_plan.planned_date if existing_plan else source_week + timedelta(days=6)
+            if legacy_source < first_effective and planned_date < first_effective:
+                effective_pools.append(pool)
+                continue
+            dates = contract_due_dates(pool, source_week, source_week + timedelta(days=6), records)
             source_date = dates[0] if len(dates) == 1 else existing_plan.planned_date if existing_plan else None
             if source_date is None:
                 return JsonResponse({'ok': False, 'error': 'contract_source_date_required'}, status=409)
