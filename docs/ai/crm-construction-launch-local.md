@@ -1,6 +1,7 @@
 # Existing construction project: local launch package
 
-Base: verified service handoff 2d6baf60 on deployed main 095bf71d. Original
+Base: main 9b1f4c08 (merged service handoff PR472 and Avito PR471).
+Synchronized from verified construction b11dc254 without runtime changes. Original
 read-only preview 10085cc remains unchanged on its own branch. This is a separate,
 unpublished package; no production authority, data, configuration or deployment.
 
