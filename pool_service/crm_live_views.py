@@ -13,7 +13,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.db.models import Count, F, Q, Sum, OuterRef, Subquery
+from django.db.models import Count, F, Q, Sum, OuterRef, Subquery, Window, Case, When, Value, IntegerField
+from django.db.models.functions import RowNumber
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -343,13 +344,23 @@ def _workspace_data(request, organization, *, board=None):
                 raise ValueError
         except (ValueError, TypeError):
             raise ValidationError("Некорректный объём колонок. Уточните фильтры или обновите доску.")
+        budget = sum(limits.get(str(pk), PAGE_SIZE) for pk in stage_ids)
+        # One SQL statement establishes membership in ALL columns. Separate
+        # SELECTs could read the same card twice during a concurrent stage move.
+        take = Case(*[When(stage_id=pk, then=Value(limits.get(str(pk), PAGE_SIZE) + 1))
+            for pk in stage_ids], default=Value(PAGE_SIZE + 1), output_field=IntegerField())
+        selected = list(queryset.filter(stage_id__in=stage_ids).annotate(
+            _board_row=Window(expression=RowNumber(), partition_by=[F("stage_id")], order_by=F("pk").desc()),
+            _board_take=take,
+        ).filter(_board_row__lte=F("_board_take")).order_by("stage_id", "-pk"))
         deals = []
         for stage_id in stage_ids:
             limit = limits.get(str(stage_id), PAGE_SIZE)
-            rows = list(queryset.filter(stage_id=stage_id).order_by("-pk")[:limit + 1])
+            rows = [row for row in selected if row.stage_id == stage_id]
             deals.extend(rows[:limit])
             column_windows.append({"stage_id": stage_id, "limit": limit, "loaded": min(len(rows), limit),
-                "has_more": len(rows) > limit, "can_expand": limit < BOARD_COLUMN_MAX})
+                "has_more": len(rows) > limit, "can_expand": limit < BOARD_COLUMN_MAX and budget + PAGE_SIZE <= BOARD_TOTAL_MAX,
+                "limit_reason": "column" if limit >= BOARD_COLUMN_MAX else "board"})
     else:
         offset = (page - 1) * PAGE_SIZE
         deals = list(queryset.order_by("-pk")[offset:offset + PAGE_SIZE + 1])

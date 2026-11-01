@@ -484,7 +484,7 @@
               more.dataset.stageId = stage.id;
               more.disabled = state.loading;
               lane.append(more);
-            } else lane.append(element("p", "crm-live-lane-progress", "Показаны первые 200. Уточните поиск или откройте таблицу для остальных сделок."));
+            } else lane.append(element("p", "crm-live-lane-progress", window.limit_reason === "column" ? "Показаны первые 200. Уточните поиск или откройте таблицу для остальных сделок." : "Достигнут предел доски. Уточните поиск или откройте таблицу для остальных сделок."));
           }
           board.append(lane);
         }

@@ -1,11 +1,14 @@
 const assert=require('node:assert/strict');
 const {chromium}=require('playwright');
+const {readFileSync}=require('node:fs');
 (async()=>{
  const f=JSON.parse(require('node:fs').readFileSync(0,'utf8'));
+ assert.match(f.base,/^http:\/\/(localhost|127\.0\.0\.1):[0-9]+$/);
  const browser=await chromium.launch({headless:true});
  try{
- const context=await browser.newContext({viewport:{width:1440,height:900}});
+ const context=await browser.newContext({viewport:{width:1440,height:900},serviceWorkers:'block'});
  await context.addCookies([{name:f.sessionCookieName,value:f.sessionCookie,url:f.base}]);
+ await context.route('**/*',r=>r.request().url()==='https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js'?r.fulfill({contentType:'application/javascript',body:readFileSync(require.resolve('bootstrap/dist/js/bootstrap.bundle.min.js'),'utf8')}):new URL(r.request().url()).origin===f.base?r.continue():r.abort());
  const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
  const url=`${f.base}/crm/workspace/?org_id=${f.org}&pipeline=${f.pipeline}`;
  await page.goto(url);const lane=id=>page.locator(`.crm-live-lane[data-stage-id="${id}"]`);

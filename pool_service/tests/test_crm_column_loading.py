@@ -1,5 +1,8 @@
 """Bounded board prefixes; no production fixtures or writes outside test DB."""
 import json
+from unittest.mock import patch
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from datetime import timedelta
 from decimal import Decimal
 from django.test import TestCase
@@ -84,3 +87,19 @@ class ColumnLoadingTests(PilotFixture, TestCase):
             response=self.client.get(reverse('crm_live_workspace'),{'org_id':self.org.pk,'pipeline':self.pipeline.pk,'view':view})
             self.assertEqual(response.status_code,200)
             self.assertEqual(response.context['crm_bootstrap']['layout'],layout)
+
+    def test_one_membership_statement_and_global_budget(self):
+        with CaptureQueriesContext(connection) as queries:
+            result=self.data().json()
+        membership=[q['sql'] for q in queries if 'ROW_NUMBER() OVER' in q['sql']]
+        self.assertEqual(len(membership),1, 'All columns must share ONE membership SELECT')
+        self.assertIn('PARTITION BY',membership[0])
+        self.assertEqual(len(result['deals']),len({r['id'] for r in result['deals']}))
+        stage_count=self.pipeline.stages.count()
+        with patch('pool_service.crm_live_views.BOARD_TOTAL_MAX',stage_count*50):
+            result=self.data().json()
+            window=next(w for w in result['column_windows'] if w['stage_id']==self.stage.pk)
+            self.assertTrue(window['has_more']); self.assertFalse(window['can_expand'])
+            self.assertEqual(window['limit_reason'],'board')
+        page=self.client.get(reverse('crm_live_workspace'),{'org_id':self.org.pk,'pipeline':self.pipeline.pk})
+        self.assertContains(page,'workspace.js?v=20261101-columns')

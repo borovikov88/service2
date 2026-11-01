@@ -11,12 +11,13 @@ changes abort stale requests; current command/revision/reason gates retained.
 
 Implementation: `layout=board` in existing authenticated data route. Strict
 `column_limits` only for selected pipeline stages,50/100/150/200, total budget2000;
-query slices limit+1 before serialization. Fresh prefixes replace all displayed
+one SQL window query selects limit+1 per stage before serialization. Card membership
+across stages comes from one statement, avoiding a double read during a move. Fresh prefixes replace all displayed
 rows; IDs are not accumulated from stale pages. Existing per-row next-task privacy
 projection reused. Initial HTML uses board for kanban and page for table.
 
 A deliberate cap200 per stage is displayed explicitly; remaining cards are reachable
-with search/table. This is not infinite scrolling or a database snapshot. A concurrent
+with search/table. This is not infinite scrolling or a cross-query database snapshot. A concurrent
 change after a read is visible on next refresh; current write revision guards still
 reject stale commands. Refresh preserves expanded limits within same scope; search,
 owner, stage filters, pipeline and view reset limits. A browser reload starts50 again;

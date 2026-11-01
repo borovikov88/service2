@@ -105,7 +105,7 @@ const {chromium} = require('playwright');
       expectedDealId = dealId;
       phase = 'commercial edit';
       assert.equal(await page.locator('#crm-live-dialog-caption .crm-live-copy-link').isVisible(), true);
-      assert.match(await page.locator('script[src*="crm_live/workspace.js"]').getAttribute('src'), /v=20261101-compact/);
+      assert.match(await page.locator('script[src*="crm_live/workspace.js"]').getAttribute('src'), /v=20261101-columns/);
       let edit = page.locator('[data-command-form="edit"]');
       await edit.waitFor();
       await edit.locator('[name="work_subject"]').fill('Browser synthetic installation');
