@@ -4,18 +4,32 @@
 {% block extra_head %}
 <link rel="stylesheet" href="{% static 'assets/css/avito-dashboard.css' %}?v=4">
 <script src="{% static 'assets/js/avito-dashboard.js' %}?v=3" defer></script>
-<link rel="stylesheet" href="{% static 'assets/css/avito-owner-dashboard.css' %}?v=1">
-<script src="{% static 'assets/js/avito-owner-dashboard.js' %}?v=1" defer></script>
+<link rel="stylesheet" href="{% static 'assets/css/avito-owner-dashboard.css' %}?v=2">
+<script src="{% static 'assets/js/avito-owner-dashboard.js' %}?v=2" defer></script>
 {% endblock %}
 {% block content %}
 <div class="avito-admin" data-avito-dashboard data-avito-timezone="{{ local_analytics.timezone }}">
-  <div class="d-flex flex-wrap align-items-start justify-content-between gap-3 mb-4">
-    <div>
+  <div class="avito-owner-page-header">
+    <div class="avito-owner-title-block">
       <div class="avito-kicker mb-2">Маркетинг · Каналы продаж</div>
-      <h1 class="avito-heading mb-1">Авито{% if selected.connection.pk == 4 %} · Услуги{% elif selected.connection.pk == 1 %} · Товары{% endif %}</h1>
-      <p class="text-muted mb-0">Размещение, обращения и стоимость результата.</p>
+      <div class="avito-owner-title-row">
+        <h1 class="avito-heading mb-0">Авито{% if selected.connection.pk == 4 %} · Услуги{% elif selected.connection.pk == 1 %} · Товары{% endif %}</h1>
+        {% if selected %}<nav class="avito-owner-account-tabs" data-owner-account-tabs aria-label="Аккаунт Авито">
+          {% for account in accounts %}{% if account.connection.pk == 1 %}<a data-owner-account="{{ account.connection.pk }}" href="{% url 'avito_dashboard' %}?account={{ account.connection.pk }}&amp;owner_period={{ owner_dashboard.period.key|default:'30'|urlencode }}&amp;owner_from={{ owner_dashboard.period.from|urlencode }}&amp;owner_to={{ owner_dashboard.period.to|urlencode }}&amp;date_from={{ local_analytics.start|urlencode }}&amp;date_to={{ local_analytics.end|urlencode }}" {% if account.connection.pk == selected.connection.pk %}aria-current="page"{% endif %}>Товары</a>{% endif %}{% endfor %}
+          {% for account in accounts %}{% if account.connection.pk == 4 %}<a data-owner-account="{{ account.connection.pk }}" href="{% url 'avito_dashboard' %}?account={{ account.connection.pk }}&amp;owner_period={{ owner_dashboard.period.key|default:'30'|urlencode }}&amp;owner_from={{ owner_dashboard.period.from|urlencode }}&amp;owner_to={{ owner_dashboard.period.to|urlencode }}&amp;date_from={{ local_analytics.start|urlencode }}&amp;date_to={{ local_analytics.end|urlencode }}" {% if account.connection.pk == selected.connection.pk %}aria-current="page"{% endif %}>Услуги</a>{% endif %}{% endfor %}
+          {% for account in accounts %}{% if account.connection.pk != 1 and account.connection.pk != 4 %}<a data-owner-account="{{ account.connection.pk }}" href="{% url 'avito_dashboard' %}?account={{ account.connection.pk }}&amp;owner_period={{ owner_dashboard.period.key|default:'30'|urlencode }}&amp;owner_from={{ owner_dashboard.period.from|urlencode }}&amp;owner_to={{ owner_dashboard.period.to|urlencode }}&amp;date_from={{ local_analytics.start|urlencode }}&amp;date_to={{ local_analytics.end|urlencode }}" {% if account.connection.pk == selected.connection.pk %}aria-current="page"{% endif %}>{{ account.connection.name }}</a>{% endif %}{% endfor %}
+        </nav>{% endif %}
+      </div>
+      <p class="text-muted mb-0 mt-2">Размещение, обращения и стоимость результата.</p>
     </div>
-    <div class="d-flex flex-wrap gap-2">
+    <div class="avito-owner-header-actions">
+      {% if selected %}<form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" data-avito-submit>
+        {% include 'pool_service/avito/_refresh_fields.html' %}
+        <input type="hidden" name="section" value="all">
+        <input type="hidden" name="page" value="{{ workspace.items.data.page|default:1 }}">
+        <input type="hidden" name="status" value="{{ workspace.items.data.status|default:'' }}">
+        <button type="submit" class="btn btn-primary" {% if not selected.has_credentials %}disabled{% endif %}><i class="bi bi-arrow-clockwise me-1" aria-hidden="true"></i>Обновить данные</button>
+      </form>{% endif %}
       {% if local_analytics.available %}<a class="btn btn-outline-secondary" href="{% url 'communications_conversations' %}"><i class="bi bi-chat-dots me-1" aria-hidden="true"></i>Все диалоги</a>{% endif %}
       {% if selected.connection.pk == 4 %}<a class="btn btn-outline-primary" href="{% url 'avito_services_feed' selected.connection.pk %}">Редактор услуг</a>{% endif %}
       {% if selected %}<a class="btn btn-outline-secondary" href="{% url 'communication_connection_edit' selected.connection.pk %}"><i class="bi bi-gear me-1" aria-hidden="true"></i>Настройки подключения</a>{% else %}<a class="btn btn-outline-secondary" href="{% url 'communications_channels' %}">Подключения</a>{% endif %}
@@ -24,32 +38,6 @@
   <div class="visually-hidden" role="status" aria-live="polite" data-avito-progress></div>
 
   {% if selected %}
-    <div class="avito-account-bar">
-      <form method="get" action="{% url 'avito_dashboard' %}" class="avito-account-picker" data-avito-submit>
-        <label for="avito-account" class="small fw-semibold mb-2">Аккаунт Авито</label>
-        <div class="d-flex gap-2">
-          <select class="form-select" id="avito-account" name="account">
-            {% for account in accounts %}<option value="{{ account.connection.pk }}" {% if account.connection.pk == selected.connection.pk %}selected{% endif %}>{{ account.connection.name }}</option>{% endfor %}
-          </select>
-          <input type="hidden" name="owner_period" value="{{ owner_dashboard.period.key|default:'30' }}">
-          <input type="hidden" name="owner_from" value="{{ owner_dashboard.period.from }}">
-          <input type="hidden" name="owner_to" value="{{ owner_dashboard.period.to }}">
-          <input type="hidden" name="date_from" value="{{ local_analytics.start }}">
-          <input type="hidden" name="date_to" value="{{ local_analytics.end }}">
-          <button type="submit" class="btn btn-outline-secondary">Открыть</button>
-        </div>
-      </form>
-      <div class="d-flex flex-wrap align-items-center gap-3">
-
-        <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" data-avito-submit>
-          {% include 'pool_service/avito/_refresh_fields.html' %}
-          <input type="hidden" name="section" value="all">
-          <input type="hidden" name="page" value="{{ workspace.items.data.page|default:1 }}">
-          <input type="hidden" name="status" value="{{ workspace.items.data.status|default:'' }}">
-          <button type="submit" class="btn btn-primary" {% if not selected.has_credentials %}disabled{% endif %}><i class="bi bi-arrow-clockwise me-1" aria-hidden="true"></i>Обновить данные</button>
-        </form>
-      </div>
-    </div>
     {% if not selected.has_credentials %}
       <div class="alert alert-warning d-flex flex-wrap align-items-center justify-content-between gap-2" role="status">
         <span>У этого подключения нет сохранённых ключей Авито. Добавьте их, чтобы загрузить данные.</span>
