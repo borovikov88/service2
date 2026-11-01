@@ -203,7 +203,9 @@ def monthly(*,actor,organization_id,month,before=None):
         if not restricted:
             current=in_month.filter(issue=row)
             entry['cancelled']=row.movements.filter(kind='void').exists()
-            entry['quantities']=list(current.filter(kind__in=['delivery','return'],reversal__isnull=True).values('pool_id','pool__address','kind').annotate(quantity=Sum('quantity')).order_by('pool_id','kind'))
+            entry['quantities']=list(current.filter(kind__in=['delivery','return'],reversal__isnull=True).values('pool_id','pool__address','kind').annotate(quantity=Sum('quantity')).order_by('pool_id','kind')[:21])
+            entry['more_quantities']=len(entry['quantities'])>20
+            entry['quantities']=entry['quantities'][:20]
             history=list(current.select_related('pool','created_by','reversal').order_by('-pk')[:21])
             entry['events']=history[:20];entry['more_events']=len(history)>20
         groups.append(entry)

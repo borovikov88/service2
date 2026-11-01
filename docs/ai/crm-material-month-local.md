@@ -3,7 +3,8 @@
 Source CRM_Aqualine_TZ_v0_4 version3 §7 lines293–320, AC50/52/64/65/70.
 Extends the existing journal route with GET month=YYYY-MM; POST to this mode405.
 Same flags/access/current object scope. No grants, activation or new tables.
-25 issue groups/page,20 events/group with detail link; totals query all current
+25 issue groups/page,20 events and20 destination/kind groups per issue with explicit
+truncation notices and the full paginated detail-history link; totals query all current
 eligible month events for that ONE issue and destination/kind. Original unit and
 packaging preserved; never sum distinct issue identities from matching names.
 Delivery uses occurred_on, not issue date or entered-at. Corrections in later months
