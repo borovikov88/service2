@@ -442,7 +442,10 @@ def workspace(request):
                 from django.http import QueryDict
                 request.GET = QueryDict(mutable=True)
                 request.GET["org_id"] = str(organization.pk)
-                data = _workspace_data(request, organization, board=request.GET.get("view") != "table")
+                # Even a configured pipeline with too many stages must open a
+                # usable bounded table, not fail its board budget repeatedly.
+                data = _workspace_data(request, organization, board=False)
+                data["initial_view"] = "table"
         finally:
             request.GET = original
         message = exc.messages[0] if exc.messages else "Проверьте условия поиска."

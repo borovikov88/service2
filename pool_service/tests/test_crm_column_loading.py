@@ -103,3 +103,13 @@ class ColumnLoadingTests(PilotFixture, TestCase):
             self.assertEqual(window['limit_reason'],'board')
         page=self.client.get(reverse('crm_live_workspace'),{'org_id':self.org.pk,'pipeline':self.pipeline.pk})
         self.assertContains(page,'workspace.js?v=20261101-columns')
+
+    def test_initial_board_budget_failure_opens_bounded_table_not_500(self):
+        with patch('pool_service.crm_live_views.BOARD_TOTAL_MAX',1):
+            self.assertEqual(self.data().status_code,400)
+            page=self.client.get(reverse('crm_live_workspace'),{'org_id':self.org.pk,'pipeline':self.pipeline.pk})
+        self.assertEqual(page.status_code,200)
+        data=page.context['crm_bootstrap']
+        self.assertEqual((data['initial_view'],data['layout']),('table','page'))
+        self.assertEqual(len(data['deals']),50)
+        self.assertTrue(data['initial_notice'])

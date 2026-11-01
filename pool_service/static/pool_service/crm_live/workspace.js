@@ -186,6 +186,7 @@
     };
     const params = new URL(win.location.href).searchParams;
     if (bootstrap.initial_notice) {
+      if (bootstrap.initial_view === "table") params.set("view", "table");
       for (const key of ["q", "owner", "attention", "outcome", "object", "stage", "specialization", "decision_from", "decision_to"]) {
         params.set(key, bootstrap[key] == null ? "" : String(bootstrap[key]));
       }
