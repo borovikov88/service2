@@ -51,6 +51,29 @@ class HandoffFixture(QuoteFixture):
 
 
 class HandoffTests(HandoffFixture,TestCase):
+    def test_second_page_selection_preserves_page_and_scope(self):
+        for index in range(21):
+            CrmItem.objects.create(organization=self.org,client=self.customer,pool=self.pool,
+                direction='service',stage='srv_new',title=f'Synthetic page request {index}')
+        response=self.http.get(self.handoff_url+'&page=2')
+        self.assertEqual(response.status_code,200)
+        items=response.context['items']
+        self.assertEqual(items.number,2)
+        self.assertEqual(len(items),2)
+        selected=items[0]
+        response=self.http.get(self.handoff_url+f'&page=2&item={selected.pk}')
+        self.assertEqual(response.context['selected'].pk,selected.pk)
+        self.assertEqual(response.context['items'].number,2)
+        self.assertContains(response,'name="page" value="2"')
+        self.assertEqual(CrmHandoff.objects.count(),0)
+        self.task.crm_item=selected;self.task.save()
+        response=self.http.post(self.handoff_url,dict(action='preview',page='2',item_id=selected.pk,
+            task_id=[self.task.pk],recipient_id=self.recipient.pk,document_note='Synthetic page note'))
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.context['items'].number,2)
+        self.assertEqual(response.context['selected'].pk,selected.pk)
+        self.assertEqual(CrmHandoff.objects.count(),0)
+
     def test_submit_accept_replay_preserve_tasks_deal_and_history(self):
         old_task=ServiceTask.objects.filter(pk=self.task.pk).values().get()
         self.deal.refresh_from_db();old_deal=type(self.deal).objects.filter(pk=self.deal.pk).values().get()
@@ -171,6 +194,31 @@ class HandoffTests(HandoffFixture,TestCase):
 
 
 class HandoffConcurrencyTests(HandoffFixture,TransactionTestCase):
+    @skipUnlessDBFeature('has_select_for_update')
+    def test_competing_distinct_commands_preserve_single_packet_and_decision(self):
+        basis=self.preview()
+        def race(actions):
+            barrier=Barrier(2)
+            def worker(pair):
+                action,key=pair
+                close_old_connections()
+                try:
+                    barrier.wait(timeout=10)
+                    try:
+                        if action=='submit':self.submit(operation_key=key,basis=basis)
+                        else:self.accept_packet(action=action,operation_key=key)
+                        return 'saved'
+                    except CommercialConflict:return 'conflict'
+                finally:close_old_connections()
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                return sorted(executor.map(worker,actions))
+        self.assertEqual(race([('submit','distinct-submit-a'),('submit','distinct-submit-b')]),['conflict','saved'])
+        self.assertEqual(race([('accept','distinct-accept'),('decline','distinct-decline')]),['conflict','saved'])
+        self.assertEqual(CrmHandoff.objects.count(),1)
+        self.assertEqual(CrmHandoffTask.objects.count(),1)
+        self.assertEqual(CrmHandoffEvent.objects.count(),2)
+        self.assertEqual(ServiceTask.objects.count(),1)
+
     def _repeatable_read_change(self, change, exception):
         if connection.vendor!='mysql': self.skipTest('Native MySQL REPEATABLE READ required')
         basis=self.preview();observed=Event();changed=Event();original=service.lock_crm_graph

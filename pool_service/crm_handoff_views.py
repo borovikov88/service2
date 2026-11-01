@@ -66,7 +66,7 @@ def workspace(request,deal_id):
     item_query=crm_items_for_user(request.user,org).filter(client_id=deal.client_id,pool_id=deal.pool_id,
         direction=CrmItem.DIRECTION_SERVICE,is_archived=False).exclude(stage=CrmItem.STAGE_SERVICE_DONE).order_by('pk')
     if not supported: item_query=item_query.none()
-    items=Paginator(item_query,20).get_page(request.GET.get('page'))
+    items=Paginator(item_query,20).get_page(request.POST.get('page') or request.GET.get('page'))
     selected=None;tasks=[];recipients=[]
     try:
         item_id=request.POST.get('item_id') or request.GET.get('item')
