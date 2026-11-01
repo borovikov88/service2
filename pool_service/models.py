@@ -3351,3 +3351,5 @@ from . import crm_handoff_models  # noqa: E402,F401
 from . import crm_construction_models  # noqa: E402,F401
 
 from . import crm_recurring_models  # noqa: E402,F401
+
+from . import crm_material_models  # noqa: F401,E402
