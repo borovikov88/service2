@@ -22,7 +22,7 @@
   <div class="avito-owner-heading">
     <div>
       <h2>Результат рекламы</h2>
-      <p>{{ owner_dashboard.period.label|default:"Выбранный период" }} · {{ owner_dashboard.period.from }}–{{ owner_dashboard.period.to }}</p>
+      <p>{{ owner_dashboard.period.label|default:"Выбранный период" }}</p>
       <p data-owner-selection-label>{% if owner_dashboard.selected_ad %}Показатели: {{ owner_dashboard.selected_ad_title|default:"Объявление" }} · ID {{ owner_dashboard.selected_ad }}{% else %}Показатели: все объявления аккаунта{% endif %}</p>
     </div>
     <div class="avito-owner-period-controls" aria-label="Период статистики">
@@ -42,38 +42,59 @@
       </details>
     </div>
   </div>
-  <form method="get" action="{% url 'avito_dashboard' %}" class="row g-2 align-items-end mb-3" data-owner-ad-form data-avito-submit>
+  {% if owner_dashboard.ad_choices %}
+  {% if owner_dashboard.available or owner_dashboard.fallback or owner_dashboard.source.completed_dates %}
+  <form method="get" action="{% url 'avito_dashboard' %}" class="avito-owner-ad-filter" data-owner-ad-form data-avito-submit>
     <input type="hidden" name="account" value="{{ selected.connection.pk }}">
     <input type="hidden" name="owner_period" value="{{ owner_dashboard.period.key|default:'30' }}">
     <input type="hidden" name="owner_from" value="{{ owner_dashboard.period.from }}">
     <input type="hidden" name="owner_to" value="{{ owner_dashboard.period.to }}">
-    <div class="col-12 col-md-8 col-xl-6">
+    <div class="avito-owner-ad-filter__field">
       <label for="avito-owner-ad" class="small text-muted mb-1">Показатели и графики объявления</label>
       <select id="avito-owner-ad" class="form-select form-select-sm" name="owner_ad">
         <option value="" {% if not owner_dashboard.selected_ad %}selected{% endif %}>Все объявления</option>
         {% for choice in owner_dashboard.ad_choices %}<option value="{{ choice.id }}" {% if choice.id == owner_dashboard.selected_ad %}selected{% endif %}>{{ choice.title|default:"Объявление" }} · {{ choice.id }}</option>{% endfor %}
       </select>
     </div>
-    <div class="col-auto"><button class="btn btn-sm btn-outline-primary" type="submit">Показать</button></div>
+    <div class="avito-owner-ad-filter__submit"><button class="btn btn-sm btn-outline-primary" type="submit">Показать</button></div>
   </form>
+  {% endif %}
+  {% endif %}
   {% if owner_dashboard.selection_error %}<p class="avito-section-notice avito-section-notice--stale" role="status">{{ owner_dashboard.selection_error }}</p>{% endif %}
   {% if owner_dashboard.period.error %}<p class="avito-section-notice avito-section-notice--stale" role="status">{{ owner_dashboard.period.error }}</p>{% endif %}
+  {% if owner_dashboard.available %}
   <div class="avito-owner-kpis">
     {% for metric in owner_dashboard.kpis %}
       <article class="avito-owner-kpi" data-owner-kpi="{{ metric.key }}">
         <div class="avito-owner-kpi__label">{{ metric.label }}</div>
         <strong>{% if metric.value != None %}{{ metric.value }}{% if metric.unit %}<small>{{ metric.unit }}</small>{% endif %}{% else %}<span title="{{ metric.reason|default:'Недостаточно данных' }}">—</span>{% endif %}</strong>
         {% if metric.delta != None %}<span class="avito-owner-kpi__comparison">К предыдущему равному периоду: {{ metric.delta }} {{ metric.unit }}</span>{% endif %}
-        <span class="avito-owner-kpi__coverage">{% if metric.reason %}{{ metric.reason }}{% elif metric.expected != None %}Известно {{ metric.known }}/{{ metric.expected }}{% endif %}</span>
+        <span class="avito-owner-kpi__coverage">{% if metric.reason %}<span title="{{ metric.reason }}">Данных недостаточно</span>{% elif metric.expected != None %}Известно {{ metric.known }}/{{ metric.expected }}{% endif %}</span>
       </article>
     {% endfor %}
   </div>
+  {% else %}
+    <div class="avito-owner-empty-summary" data-owner-no-statistics role="status">
+      <strong>За выбранный период нет полного результата.</strong>
+      <span>{% if selected.connection.pk == 1 and not owner_dashboard.source.completed_dates %}Суточная статистика товаров за эти даты ещё не сохранена.{% else %}Не все показатели объявлений получены.{% endif %} Пропуски не считаются нулями.</span>
+      {% if not owner_dashboard.fallback %}<a href="#avito-analytics-details">Проверить доступную статистику</a>{% endif %}
+    </div>
+  {% endif %}
   <div class="avito-owner-source">
     <span>{{ owner_dashboard.source.label|default:"Сохранённые данные Авито" }} · {{ owner_dashboard.source.coverage_label|default:"Покрытие не подтверждено" }}</span>
     <span>{% if owner_dashboard.source.received_at %}{% timezone "Asia/Barnaul" %}Получено {{ owner_dashboard.source.received_at|date:"d.m.Y H:i" }} · Барнаул{% endtimezone %}{% else %}Время получения не подтверждено{% endif %}</span>
   </div>
 
-  <div class="avito-owner-charts">
+  {% if owner_dashboard.fallback %}
+    <details class="avito-owner-fallback" data-owner-period-fallback {% if not owner_dashboard.available %}open{% endif %}>
+      <summary>Есть отдельный сохранённый отчёт: {{ owner_dashboard.fallback.from }}–{{ owner_dashboard.fallback.to }}</summary>
+      <p class="small text-muted mt-2">Этот отчёт относится к своему периоду и не заполняет пропуски графиков. {{ owner_dashboard.fallback.coverage_label }}.{% if owner_dashboard.fallback.received_at %}{% timezone "Asia/Barnaul" %} Получен {{ owner_dashboard.fallback.received_at|date:"d.m.Y H:i" }} · Барнаул.{% endtimezone %}{% endif %}</p>
+      <div class="avito-owner-fallback__metrics">{% for metric in owner_dashboard.fallback.kpis %}<span>{{ metric.label }}: <strong>{{ metric.value|default_if_none:"—" }} {{ metric.unit }}</strong></span>{% endfor %}</div>
+    </details>
+  {% endif %}
+
+  <p class="avito-owner-empty-summary avito-owner-empty-summary--chart" data-owner-charts-empty hidden>Суточная динамика за выбранный период не получена. <a href="#avito-analytics-details">Посмотреть доступные отчёты</a></p>
+  <div class="avito-owner-charts" data-owner-charts hidden>
     <section class="avito-panel avito-owner-chart-panel" aria-labelledby="avito-owner-volume-heading">
       <div class="avito-owner-chart-heading"><h3 id="avito-owner-volume-heading">Просмотры и контакты</h3><a href="#avito-owner-data-table" class="small">Числа по датам</a></div>
       <figure class="avito-owner-plot">
@@ -99,14 +120,6 @@
   </div>
   <p class="avito-owner-chart-note">Даты источника · часовой пояс статистики уточняется. Пропуски — неизвестные значения. Контакты Авито не равны уникальным клиентам или заказам.</p>
   <noscript><p class="small text-muted">Для графиков включите JavaScript. Показатели периода и таблица объявлений доступны ниже.</p></noscript>
-
-  {% if owner_dashboard.fallback %}
-    <details class="avito-owner-fallback" {% if not owner_dashboard.available %}open{% endif %}>
-      <summary>Есть отдельный сохранённый отчёт: {{ owner_dashboard.fallback.from }}–{{ owner_dashboard.fallback.to }}</summary>
-      <p class="small text-muted mt-2">Этот отчёт относится к своему периоду и не заполняет пропуски графиков. {{ owner_dashboard.fallback.coverage_label }}.{% if owner_dashboard.fallback.received_at %}{% timezone "Asia/Barnaul" %} Получен {{ owner_dashboard.fallback.received_at|date:"d.m.Y H:i" }} · Барнаул.{% endtimezone %}{% endif %}</p>
-      <div class="avito-owner-fallback__metrics">{% for metric in owner_dashboard.fallback.kpis %}<span>{{ metric.label }}: <strong>{{ metric.value|default_if_none:"—" }} {{ metric.unit }}</strong></span>{% endfor %}</div>
-    </details>
-  {% endif %}
 
   {% if owner_actions %}
     <section class="avito-owner-actions" aria-labelledby="avito-owner-actions-heading">
