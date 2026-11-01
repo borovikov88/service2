@@ -114,6 +114,16 @@ class MaterialTests(MaterialFixture,TestCase):
         merge_clients(source.pk,self.client_record.pk,organization_id=self.org.pk,actor=self.user)
         row.refresh_from_db();self.assertEqual(row.client_id,self.client_record.pk)
 
+    def test_invalid_detail_identifier_never_falls_back_to_creation(self):
+        self.client.force_login(self.user)
+        payload=dict(operation_key='invalid-detail-post',pool_id=self.pool.pk,item_name='Synthetic invalid route',unit='шт',packaging='1 шт',quantity='1',occurred_on=self.issue_day.isoformat(),source='Synthetic',confirmed='on')
+        for invalid in [0,999999999999999999999]:
+            url=reverse('crm_material_detail',args=[invalid])+'?org_id='+str(self.org.pk)
+            self.assertEqual(self.client.get(url).status_code,404)
+            self.assertEqual(self.client.post(url,payload).status_code,404)
+        self.assertFalse(CrmMaterialIssue.objects.exists())
+        self.assertFalse(CrmMaterialMovement.objects.exists())
+
     def test_units_are_literal_and_invalid_values_or_future_dates_refused(self):
         for invalid in ['0','-1','NaN','Infinity','1.0001','100000000000']:
             with self.assertRaises(ValidationError):self.issue(quantity=invalid)

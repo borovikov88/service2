@@ -3,7 +3,7 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError,PermissionDenied
 from django.db import transaction
 from django.db.models import Q
-from django.http import HttpResponseBadRequest
+from django.http import HttpResponseBadRequest,Http404
 from django.shortcuts import render,redirect
 from django.urls import reverse
 from django.views.decorators.cache import never_cache
@@ -26,6 +26,9 @@ def workspace(request,issue_id=None):
         if len(request.GET.getlist('org_id'))!=1:raise PermissionDenied
         org_id=integer(request.GET['org_id'])
     except (ValidationError,KeyError):raise PermissionDenied
+    if issue_id is not None:
+        try:issue_id=integer(issue_id)
+        except ValidationError:raise Http404('Запись не найдена.')
     before=request.GET.get('before')
     try:before=integer(before) if before else None
     except ValidationError:return HttpResponseBadRequest('Некорректная страница.')
