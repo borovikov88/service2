@@ -175,3 +175,36 @@ def read(*,actor,organization_id,issue_id=None,before=None):
         return org,grant,row,balances(row),list(history[:21]),restricted
     if before:rows=rows.filter(pk__lt=before)
     return org,grant,list(rows.order_by('-pk')[:51])
+
+
+@transaction.atomic
+def monthly(*,actor,organization_id,month,before=None):
+    """Bounded read projection of the same journal, not a billing ledger/snapshot."""
+    if not re.fullmatch(r'[0-9]{4}-[0-9]{2}',str(month)):
+        raise ValidationError('Выберите месяц в формате ГГГГ-ММ.')
+    try:
+        year,number=map(int,month.split('-'))
+        if not 1900<=year<=9998:raise ValueError
+        start=date(year,number,1)
+        end=date(year+1,1,1) if number==12 else date(year,number+1,1)
+    except ValueError:raise ValidationError('Некорректный месяц.')
+    org,user,grant=authority(actor,organization_id)
+    pools,_=object_querysets(user,org.pk)
+    events=CrmMaterialMovement.objects.filter(organization=org,pool__in=pools,client_id=F('pool__client_id'))
+    in_month=events.filter(occurred_on__gte=start,occurred_on__lt=end)
+    rows=visible(user,org,grant).annotate(month_event=Exists(in_month.filter(issue_id=OuterRef('pk')))).filter(
+        Q(occurred_on__gte=start,occurred_on__lt=end)|Q(month_event=True)).select_related('pool','holder').order_by('-pk')
+    if before:rows=rows.filter(pk__lt=before)
+    rows=list(rows[:26]);groups=[]
+    for row in rows[:25]:
+        allowed=events.filter(issue=row)
+        restricted=row.movements.exclude(pk__in=allowed.values('pk')).exists()
+        entry=dict(issue=row,restricted=restricted,issued=row.quantity if start<=row.occurred_on<end else None)
+        if not restricted:
+            current=in_month.filter(issue=row)
+            entry['cancelled']=row.movements.filter(kind='void').exists()
+            entry['quantities']=list(current.filter(kind__in=['delivery','return'],reversal__isnull=True).values('pool_id','pool__address','kind').annotate(quantity=Sum('quantity')).order_by('pool_id','kind'))
+            history=list(current.select_related('pool','created_by','reversal').order_by('-pk')[:21])
+            entry['events']=history[:20];entry['more_events']=len(history)>20
+        groups.append(entry)
+    return org,grant,groups,rows[24].pk if len(rows)>25 else None

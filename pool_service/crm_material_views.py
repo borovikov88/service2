@@ -3,7 +3,7 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError,PermissionDenied
 from django.db import transaction
 from django.db.models import Q
-from django.http import HttpResponseBadRequest
+from django.http import HttpResponseBadRequest,HttpResponseNotAllowed
 from django.shortcuts import render,redirect
 from django.urls import reverse
 from django.views.decorators.cache import never_cache
@@ -29,6 +29,13 @@ def workspace(request,issue_id=None):
     before=request.GET.get('before')
     try:before=integer(before) if before else None
     except ValidationError:return HttpResponseBadRequest('Некорректная страница.')
+    if 'month' in request.GET and not issue_id:
+        with transaction.atomic():service.authority(request.user,org_id)
+        if request.method!='GET':return HttpResponseNotAllowed(['GET'])
+        if len(request.GET.getlist('month'))!=1:return HttpResponseBadRequest('Укажите один месяц.')
+        try:org,grant,groups,next_before=service.monthly(actor=request.user,organization_id=org_id,month=request.GET['month'],before=before)
+        except ValidationError as exc:return HttpResponseBadRequest('; '.join(exc.messages))
+        return render(request,'pool_service/crm_live/material_month.html',dict(organization=org,groups=groups,month=request.GET['month'],next_before=next_before))
     values=request.POST if request.method=='POST' else {}
     operation_key=values.get('operation_key') or uuid4().hex
     base=reverse('crm_materials')+'?org_id='+str(org_id)

@@ -159,6 +159,52 @@ class MaterialTests(MaterialFixture,TestCase):
         self.assertEqual(self.client.get(reverse('crm_material_detail',args=[row.pk])+'?org_id=99999').status_code,403)
 
 
+class MaterialMonthTests(MaterialFixture,TestCase):
+    def month(self,value='2026-09',**kwargs):
+        return svc.monthly(actor=self.user,organization_id=self.org.pk,month=value,**kwargs)
+
+    def test_actual_month_reassignment_units_and_later_correction(self):
+        row=self.issue(occurred_on=date(2026,8,31))
+        event=self.move(row,pool_id=self.other_pool.pk,reason='Synthetic reassignment',occurred_on=date(2026,9,1))
+        group=self.month()[2][0]
+        self.assertIsNone(group['issued']);self.assertEqual(group['quantities'][0]['pool_id'],self.other_pool.pk)
+        self.assertEqual(group['quantities'][0]['quantity'],2)
+        other=self.issue(operation_key='other-unit-issue',unit='кг',packaging='1 кг',occurred_on=date(2026,9,1))
+        self.assertEqual(len(self.month()[2]),2)  # identical text does not merge units/issuances
+        row.refresh_from_db();self.move(row,kind='correction',quantity='2',reverses_id=event.pk,reason='Synthetic mistake',occurred_on=date(2026,10,1),operation_key='later-correction')
+        group=next(g for g in self.month()[2] if g['issue'].pk==row.pk)
+        self.assertEqual(group['quantities'],[]);self.assertEqual(group['events'][0].reversal.kind,'correction')
+        self.assertEqual(self.month('2026-10')[2][0]['events'][0].kind,'correction')
+        self.assertEqual(self.month('2026-08')[2][0]['issued'],3)
+
+    def test_scope_masking_read_only_and_invalid_month(self):
+        row=self.issue(occurred_on=date(2026,9,1));self.move(row,pool_id=self.other_pool.pk,reason='Synthetic reassignment',occurred_on=date(2026,9,2))
+        different=Client.objects.create(organization=self.org,name='Synthetic changed recipient')
+        self.other_pool.client=different;self.other_pool.save(update_fields=['client'])
+        group=self.month()[2][0];self.assertTrue(group['restricted']);self.assertNotIn('events',group);self.assertNotIn('quantities',group)
+        self.client.force_login(self.user);url=reverse('crm_materials')+'?org_id='+str(self.org.pk)+'&month=2026-09'
+        counts=(CrmMaterialIssue.objects.count(),CrmMaterialMovement.objects.count())
+        response=self.client.get(url);self.assertEqual(response.status_code,200);self.assertNotContains(response,'Synthetic witnessed delivery')
+        self.assertEqual(self.client.post(url,{'confirmed':'on'}).status_code,405)
+        self.assertEqual(counts,(CrmMaterialIssue.objects.count(),CrmMaterialMovement.objects.count()))
+        self.assertEqual(self.client.get(url+'&month=2026-10').status_code,400)
+        for bad in ['2026-00','2026-13','1-1','9999-12','2026-09<script>']:
+            with self.assertRaises(ValidationError):self.month(bad)
+        self.assertEqual(self.client.get(url.replace('org_id='+str(self.org.pk),'org_id=999999')).status_code,403)
+        self.access.delete();self.assertEqual(self.client.get(url).status_code,403)
+
+    def test_bounded_issue_and_event_pages_no_duplicate_rows(self):
+        for n in range(27):self.issue(operation_key='page-issue-'+str(n),occurred_on=date(2026,9,1))
+        first=self.month();second=self.month(before=first[3])
+        self.assertEqual(len(first[2]),25);self.assertEqual(len(second[2]),2)
+        self.assertFalse({g['issue'].pk for g in first[2]} & {g['issue'].pk for g in second[2]})
+        row=first[2][0]['issue']
+        for n in range(21):
+            self.move(row,quantity='.001',occurred_on=date(2026,9,2),operation_key='event-page-'+str(n));row.refresh_from_db()
+        group=self.month()[2][0];self.assertEqual(len(group['events']),20);self.assertTrue(group['more_events'])
+        self.assertEqual(group['quantities'][0]['quantity'],Decimal('.021'))
+
+
 class MaterialRaceTests(MaterialFixture,TransactionTestCase):
     @skipUnlessDBFeature('has_select_for_update')
     def test_historical_object_change_after_snapshot_blocks_write(self):
