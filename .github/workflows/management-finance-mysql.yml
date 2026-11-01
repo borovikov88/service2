@@ -38,6 +38,10 @@ on:
       - "pool_service/services/crm_quotes.py"
       - "pool_service/tests/test_crm_quote*.py"
       - "pool_service/tests/test_crm_handoff*.py"
+      - "pool_service/tests/test_crm_construction*.py"
+      - "pool_service/services/crm_construction.py"
+      - "pool_service/crm_construction_models.py"
+      - "pool_service/crm_construction_views.py"
       - "pool_service/services/crm_handoffs.py"
       - "pool_service/crm_handoff_models.py"
       - "pool_service/crm_handoff_views.py"
@@ -231,6 +235,7 @@ jobs:
             pool_service.tests.test_crm_commercial_commands \
             pool_service.tests.test_crm_quotes \
             pool_service.tests.test_crm_quote_migration \
+            pool_service.tests.test_crm_construction \
             pool_service.tests.test_crm_handoffs \
             pool_service.tests.test_crm_handoff_migration \
             pool_service.tests.test_crm_commercial_card \

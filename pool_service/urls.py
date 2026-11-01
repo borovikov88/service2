@@ -1,3 +1,4 @@
+from . import crm_construction_views
 from . import crm_quote_views
 from . import crm_handoff_views
 from . import crm_service_binding_views
@@ -425,6 +426,7 @@ urlpatterns = [
     path("crm/workspace/objects/", crm_live_views.objects, name="crm_live_objects"),
     path("crm/workspace/commands/", crm_live_views.command, name="crm_live_command"),
     path("crm/workspace/deals/<int:deal_id>/quotes/", crm_quote_views.workspace, name="crm_quotes"),
+    path("crm/workspace/deals/<int:deal_id>/construction/", crm_construction_views.workspace, name="crm_construction"),
     path("crm/workspace/deals/<int:deal_id>/handoff/", crm_handoff_views.workspace, name="crm_handoff"),
     path("crm/workspace/deals/<int:deal_id>/service-documents/", crm_service_binding_views.workspace, name="crm_service_bindings"),
     path("crm/leads/<int:lead_id>/calls/<int:call_id>/analyze/", crm_lead_views.analyze_call, name="crm_live_lead_analysis"),

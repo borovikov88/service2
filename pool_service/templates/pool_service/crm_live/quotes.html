@@ -4,6 +4,7 @@
 {% block content %}
 <div class="quote-workspace container py-4" data-quote-workspace>
 <a href="{% url 'crm_live_workspace' %}?org_id={{ organization.pk }}&deal={{ deal.pk }}">← К сделке</a>
+{% if deal.fulfillment_kind == 'construction' %}<p><a href="{% url 'crm_construction' deal.pk %}?org_id={{ organization.pk }}">Подготовить запуск существующего проекта</a></p>{% endif %}
 <h1>КП: версии и решения</h1><h2 class="h5">{{ deal.title }}</h2>
 <p>Клиент сделки: {{ deal.client|default:'Не указан' }}. Принятие КП не запускает работы и не подтверждает оплату.</p>
 {% if error %}<p role="alert" class="alert alert-warning">{{ error }}</p>{% endif %}
