@@ -4,6 +4,22 @@ assert.match(f.base,/^http:\/\/(localhost|127\.0\.0\.1):[0-9]+$/);const browser=
 try{const context=await browser.newContext({viewport:{width:1440,height:1000},serviceWorkers:'block'});
 await context.addCookies([{name:f.sessionCookieName,value:f.senderCookie,url:f.base}]);
 await context.route('**/*',r=>new URL(r.request().url()).origin===f.base?r.continue():r.abort());const page=await context.newPage();
+if(f.blocked){
+ let writes=0;page.on('request',r=>{if(r.method()==='POST')writes++;});
+ assert.equal((await page.goto(f.base+f.path)).status(),200);
+ const response=page.waitForResponse(r=>new URL(r.url()).pathname.includes('/recurring/'));
+ await page.getByRole('link',{name:'Договор обслуживания',exact:true}).click();
+ assert.equal((await response).status(),200);await page.locator('[data-recurring-blocked]').waitFor();
+ for(const width of [1440,390]){
+  await page.setViewportSize({width,height:850});await page.evaluate(t=>document.documentElement.setAttribute('data-theme',t),width===390?'dark':'light');
+  assert.equal(await page.locator('[data-draft-form],[data-confirm-panel]').count(),0);
+  assert.equal(await page.locator('main form').count(),0);
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
+ }
+ await page.getByRole('link',{name:'Вернуться к карточке сделки',exact:true}).click();
+ await page.waitForURL(u=>u.pathname==='/crm/workspace/'&&u.searchParams.has('deal'));
+ assert.equal(writes,0);return;
+}
 await page.goto(f.base+f.path);await page.locator('[data-recurring]').waitFor();
 await page.locator('[name=contract_basis]').fill('Synthetic recurring browser agreement');
 await page.locator('[name=start]').fill('2030-01-01');await page.locator('[name=end]').fill('2030-12-31');

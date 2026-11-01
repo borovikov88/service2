@@ -244,6 +244,7 @@ jobs:
             pool_service.tests.test_crm_recurring_terms \
             pool_service.tests.test_crm_recurring_drafts \
             pool_service.tests.test_crm_recurring_confirmed \
+            pool_service.tests.test_crm_recurring_get \
             pool_service.tests.test_crm_recurring_reminders \
             pool_service.tests.test_crm_handoffs \
             pool_service.tests.test_crm_handoff_migration \
