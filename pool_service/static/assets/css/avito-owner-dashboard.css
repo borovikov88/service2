@@ -1,0 +1,94 @@
+/* Owner overview reuses the application's light/dark theme and isolated Avito tokens. */
+.avito-owner { --owner-blue: var(--bs-primary, #247cff); --owner-teal: #168b94; margin-bottom: 1rem; }
+html[data-theme="dark"] .avito-owner { --owner-blue: #5c9fff; --owner-teal: #46c6cb; }
+.avito-owner-status { display:flex; align-items:center; justify-content:space-between; gap:.8rem 1.5rem; flex-wrap:wrap; padding:.8rem 1rem; background:var(--avito-surface); border:1px solid var(--avito-border); border-radius:.85rem; margin-bottom:1.2rem; font-size:.83rem; }
+.avito-owner-status__placement { display:flex; gap:.45rem .7rem; align-items:center; flex-wrap:wrap; }
+.avito-owner-dot { display:inline-block; width:.5rem; height:.5rem; border-radius:50%; background:var(--avito-muted); flex-shrink:0; }
+.avito-owner-attention { color:var(--bs-warning-text-emphasis, #85620b); }
+html[data-theme="dark"] .avito-owner-attention { color:#e9c66e; }
+.avito-owner-stamp { display:block; color:var(--avito-muted); font-size:.68rem; font-weight:400; line-height:1.5; }
+.avito-owner-funds { display:flex; align-items:start; flex-wrap:wrap; gap:.65rem 1.2rem; }
+.avito-owner-funds a { text-decoration:none; color:inherit; font-size:.76rem; }
+.avito-owner-funds a:hover strong { text-decoration:underline; }
+.avito-owner-funds strong { margin-left:.25rem; font-weight:650; }
+.avito-owner-heading { display:flex; align-items:center; justify-content:space-between; gap:.8rem 1.5rem; flex-wrap:wrap; margin-bottom:.75rem; }
+.avito-owner-heading h2 { font-size:1.13rem; letter-spacing:-.02em; margin:0 0 .25rem; font-weight:700; }
+.avito-owner-heading p { font-size:.76rem; margin:0; color:var(--avito-muted); }
+.avito-owner-period-controls { display:flex; align-items:start; flex-wrap:wrap; gap:.6rem; }
+.avito-owner-segments { display:inline-flex; gap:.1rem; padding:.2rem; border:1px solid var(--avito-border); border-radius:.6rem; background:var(--avito-soft); }
+.avito-owner-segments a,.avito-owner-segments button { background:transparent; border:0; border-radius:.4rem; padding:.4rem .65rem; color:var(--avito-muted); font-size:.77rem; text-decoration:none; white-space:nowrap; cursor:pointer; font-weight:550; }
+.avito-owner-segments [aria-current="true"],.avito-owner-segments [aria-pressed="true"] { background:var(--bs-primary,#247cff); color:#fff; }
+.avito-owner-segments a:hover,.avito-owner-segments button:hover { color:var(--bs-body-color); background:var(--avito-border); }
+.avito-owner-segments [aria-current="true"]:hover,.avito-owner-segments [aria-pressed="true"]:hover { color:#fff; background:var(--bs-primary,#247cff); }
+.avito-owner :is(a,button,summary):focus-visible { outline:2px solid var(--owner-blue); outline-offset:3px; }
+.avito-owner-custom { padding:.5rem .65rem; border:1px solid var(--avito-border); border-radius:.6rem; background:var(--avito-surface); font-size:.77rem; }
+.avito-owner-custom summary { cursor:pointer; }
+.avito-owner-custom__form { display:flex; flex-wrap:wrap; gap:.5rem; align-items:end; padding-top:.65rem; }
+.avito-owner-custom__form label { color:var(--avito-muted); font-size:.73rem; }
+.avito-owner-custom__form input { max-width:160px; margin-top:.2rem; }
+.avito-owner-kpis { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:.7rem; }
+.avito-owner-kpi { padding:1rem; border:1px solid var(--avito-border); border-radius:.85rem; background:var(--avito-surface); min-width:0; }
+.avito-owner-kpi__label { font-size:.76rem; color:var(--avito-muted); margin-bottom:.5rem; }
+.avito-owner-kpi > strong { display:block; font-size:clamp(1.45rem,2vw,2rem); line-height:1.2; letter-spacing:-.025em; font-weight:750; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.avito-owner-kpi strong small { font-size:.8rem; margin-left:.35rem; font-weight:500; color:var(--avito-muted); letter-spacing:0; }
+.avito-owner-kpi__comparison,.avito-owner-kpi__coverage { display:block; font-size:.67rem; line-height:1.45; margin-top:.4rem; color:var(--avito-muted); }
+.avito-owner-source { display:flex; justify-content:space-between; flex-wrap:wrap; gap:.3rem .75rem; font-size:.7rem; color:var(--avito-muted); margin:.55rem .1rem .9rem; }
+.avito-owner-charts { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.9rem; }
+.avito-admin .avito-owner-chart-panel { padding:.9rem 1rem .5rem; min-width:0; }
+.avito-owner-chart-heading { display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.6rem; }
+.avito-owner-chart-heading h3 { font-size:1rem; margin:0; font-weight:700; letter-spacing:-.015em; }
+.avito-owner-chart-heading a { white-space:nowrap; font-size:.7rem; }
+.avito-owner-plot { margin:0 0 .25rem; }
+.avito-owner-plot figcaption { font-size:.75rem; font-weight:550; display:flex; align-items:center; gap:.35rem; margin-bottom:.1rem; }
+.avito-owner-legend { display:inline-block; border-radius:50%; width:.45rem; height:.45rem; background:var(--owner-blue); }
+.avito-owner-legend--contacts { background:var(--owner-teal); }
+.avito-owner-svg-wrap { position:relative; min-height:100px; }
+.avito-owner-svg-wrap svg { width:100%; height:auto; display:block; overflow:visible; }
+.avito-owner-svg-wrap > p { position:absolute; inset:30% 12%; text-align:center; color:var(--avito-muted); font-size:.8rem; margin:0; background:var(--avito-surface); padding:.4rem; border-radius:.4rem; }
+.avito-owner-cost-switch { margin-bottom:.6rem; max-width:100%; flex-wrap:wrap; }
+.avito-owner-cost-plot { min-height:200px; }
+.avito-owner-chart-readout { display:block; font-size:.7rem; color:var(--avito-muted); min-height:1.6rem; margin-top:.25rem; }
+.avito-owner-chart-note { font-size:.7rem; line-height:1.5; color:var(--avito-muted); margin:.5rem .1rem 1rem; }
+.avito-owner-chart-grid { stroke:var(--avito-border); stroke-width:1; }
+.avito-owner-chart-label { fill:var(--avito-muted); font-size:11px; font-family:inherit; }
+.avito-owner-chart-line { fill:none; stroke:var(--owner-blue); stroke-width:2.5; stroke-linecap:round; stroke-linejoin:round; }
+.avito-owner-chart-point { fill:var(--avito-surface); stroke:var(--owner-blue); stroke-width:2; cursor:pointer; }
+.avito-owner-chart-point:focus { outline:none; stroke-width:4; r:5; }
+.avito-owner-chart-bars { fill:var(--owner-teal); }
+.avito-owner-chart-point--contacts { stroke:var(--owner-teal); }
+.avito-owner-actions { padding:.85rem 1rem; border:1px solid var(--avito-border); border-radius:.85rem; margin:1rem 0; background:var(--avito-surface); }
+.avito-owner-actions h3 { font-size:.9rem; margin:0 0 .65rem; font-weight:700; }
+.avito-owner-actions h3 i { color:var(--bs-warning,#dbac43); margin-right:.3rem; }
+.avito-owner-action-list { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.7rem; }
+.avito-owner-action { display:block; color:var(--bs-body-color); text-decoration:none; padding:.1rem .8rem .1rem 0; }
+.avito-owner-action + .avito-owner-action { border-left:1px solid var(--avito-border); padding-left:.9rem; }
+.avito-owner-action strong { display:block; font-weight:600; font-size:.83rem; }
+.avito-owner-action > span { display:block; color:var(--avito-muted); font-size:.73rem; margin-top:.3rem; }
+.avito-owner-action .avito-owner-action__link { color:var(--owner-blue); font-weight:600; }
+.avito-owner-ad-title { font-size:.8rem !important; text-transform:none !important; letter-spacing:0 !important; background:transparent !important; font-weight:600 !important; min-width:210px; max-width:400px; }
+.avito-owner-ad-title span { display:block; font-size:.67rem; font-weight:400; color:var(--avito-muted); margin-top:.2rem; }
+.avito-owner-performance td { font-variant-numeric:tabular-nums; white-space:nowrap; }
+.avito-owner-daily-table,.avito-owner-limitations,.avito-owner-fallback { margin:.7rem 0; border:1px solid var(--avito-border); background:var(--avito-surface); border-radius:.65rem; padding:.6rem .8rem; }
+.avito-owner-daily-table summary,.avito-owner-limitations summary,.avito-owner-fallback summary { cursor:pointer; font-size:.78rem; color:var(--avito-muted); }
+.avito-owner-fallback__metrics { display:flex; flex-wrap:wrap; gap:.5rem 1.2rem; font-size:.8rem; }
+.avito-owner-daily-table table { font-size:.76rem; margin:.6rem 0 0; }
+.avito-owner-daily-table th,.avito-owner-daily-table td { padding:.4rem .6rem; white-space:nowrap; }
+@media (max-width:1199px) {
+  .avito-owner-kpis { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  .avito-owner-charts { grid-template-columns:1fr; }
+}
+@media (max-width:575px) {
+  .avito-owner-status { padding:.7rem; }
+  .avito-owner-funds { width:100%; border-top:1px solid var(--avito-border); padding-top:.6rem; gap:.6rem; }
+  .avito-owner-funds a { flex:1 1 100px; }
+  .avito-owner-kpis { grid-template-columns:repeat(2,minmax(0,1fr)); gap:.5rem; }
+  .avito-owner-kpi { padding:.75rem; }
+  .avito-owner-heading { align-items:start; }
+  .avito-owner-custom__form input { max-width:100%; }
+  .avito-owner-custom__form label { flex:1 1 120px; }
+  .avito-admin .avito-owner-chart-panel { padding:.75rem .55rem .35rem; }
+  .avito-owner-chart-heading h3 { font-size:.92rem; }
+  .avito-owner-action-list { grid-template-columns:1fr; }
+  .avito-owner-action + .avito-owner-action { border-left:0; border-top:1px solid var(--avito-border); padding:.6rem 0 0; }
+  .avito-owner-cost-switch button { font-size:.72rem; padding:.35rem .5rem; }
+}

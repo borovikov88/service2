@@ -298,8 +298,18 @@ def avito_dashboard(request):
     expanded_item_id = requested_item if requested_item and requested_item in known_ids else fallback_item
     detail_in_items = bool(expanded_item_id and expanded_item_id in listed_ids)
     local_analytics = _local_analytics(request, selected["connection"] if selected else None)
+    from .avito_owner_dashboard import display as owner_display
+    from .avito_owner_overview import build as owner_operations_display
+    owner_connection = selected["connection"] if selected else None
+    owner_dashboard = owner_display(owner_connection, request.user,
+        period=request.GET.get("owner_period", "30"),
+        date_from=request.GET.get("owner_from", ""), date_to=request.GET.get("owner_to", ""))
+    owner_operations, owner_actions = owner_operations_display(owner_connection, request.user, workspace)
     return render(request, "pool_service/avito/dashboard.html", {
         "active_tab": "avito",
+        "owner_dashboard": owner_dashboard,
+        "owner_operations": owner_operations,
+        "owner_actions": owner_actions,
         "status_monitor_state": avito_status_monitor.display_state(selected["connection"] if selected else None, request.user),
         "autoload_auto_state": avito_autoload_auto.display_state(selected["connection"] if selected else None, request.user),
         "advance_monitor_state": avito_advance.display_state(selected["connection"] if selected else None, request.user),
