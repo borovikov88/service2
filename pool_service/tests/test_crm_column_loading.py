@@ -1,5 +1,7 @@
 """Cursor portions, tracked invalidation, current authority and unchanged table."""
 from datetime import timedelta
+from copy import deepcopy
+import time
 from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.core import signing
@@ -40,12 +42,30 @@ class ColumnLoadingTests(PilotFixture, TestCase):
         total=next(r for r in first['stage_totals'] if r['stage_id']==self.stage.pk)
         self.assertEqual((total['count'],total['amount']),(211,'2112.11'))
         seen={r['id'] for r in first['deals']}
+        issued=int(time.time())
+        def authenticated_content(value):
+            result=deepcopy(value)
+            for part in result['column_windows']:
+                if part['cursor']:
+                    part['cursor']=signing.loads(part['cursor'],salt='crm-board-keyset-v1',max_age=3600)
+            return result
         for window in first['column_windows']:
             token=window['cursor']
             while token:
                 args={'board_column':window['stage_id'],'cursor':token}
-                response=self.data(**args);self.assertEqual(response.status_code,200,response.content)
-                data=response.json();self.assertEqual(data,self.data(**args).json())
+                # Reissuing a valid token in another second changes its envelope,
+                # not its authenticated keyset/scope or the returned cards.
+                with patch.object(signing.TimestampSigner,'timestamp',return_value=signing.b62_encode(issued)):
+                    response=self.data(**args)
+                self.assertEqual(response.status_code,200,response.content)
+                data=response.json()
+                with patch.object(signing.TimestampSigner,'timestamp',return_value=signing.b62_encode(issued+2)):
+                    replay=self.data(**args)
+                self.assertEqual(replay.status_code,200,replay.content)
+                repeated=replay.json()
+                self.assertEqual(authenticated_content(data),authenticated_content(repeated))
+                if data['column_windows'][0]['cursor']:
+                    self.assertNotEqual(data['column_windows'][0]['cursor'],repeated['column_windows'][0]['cursor'])
                 self.assertLessEqual(len(data['deals']),50)
                 ids={r['id'] for r in data['deals']};self.assertFalse(seen & ids);seen|=ids
                 token=data['column_windows'][0]['cursor']
