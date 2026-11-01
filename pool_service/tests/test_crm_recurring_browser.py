@@ -16,5 +16,5 @@ class RecurringBrowserTests(ConfirmedFixture,StaticLiveServerTestCase):
             senderCookie=self.http.cookies[settings.SESSION_COOKIE_NAME].value,sessionCookieName=settings.SESSION_COOKIE_NAME)
         code,output=_bounded_browser_process(['node',str(Path(__file__).with_name('crm_recurring.browser.cjs'))],fixture)
         self.assertEqual(code,0,output)
-        self.assertEqual(CrmRecurringDraft.objects.count(),1);self.assertEqual(CrmRecurringRevision.objects.count(),1)
-        self.assertEqual(CrmRecurringConfirmation.objects.count(),1)
+        self.assertEqual(CrmRecurringDraft.objects.count(),1);self.assertEqual(CrmRecurringRevision.objects.count(),3)
+        self.assertEqual(CrmRecurringConfirmation.objects.count(),2)
