@@ -50,7 +50,7 @@
                         </div>
                         <div class="pool-object-fact">
                             <div class="pool-object-fact__label">Частота</div>
-                            <div class="pool-object-fact__value">{{ pool.get_service_frequency_display|default:"Не задана" }}</div>
+                            <div class="pool-object-fact__value">{{ pool.contractual_service.label|default:"Не задана" }}</div>
                         </div>
                     </div>
                 </div>

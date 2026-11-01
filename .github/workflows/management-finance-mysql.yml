@@ -41,7 +41,9 @@ on:
       - "pool_service/tests/test_crm_construction*.py"
       - "pool_service/services/crm_construction.py"
       - "pool_service/crm_construction_models.py"
-      - "pool_service/crm_recurring_models.py"
+      - "pool_service/crm_recurring*.py"
+      - "pool_service/recurring_pool_guard.py"
+      - "pool_service/templates/pool_service/crm_live/recurring.html"
       - "pool_service/services/crm_recurring_*.py"
       - "pool_service/tests/test_crm_recurring*.py"
       - "pool_service/crm_construction_views.py"
@@ -241,6 +243,7 @@ jobs:
             pool_service.tests.test_crm_construction \
             pool_service.tests.test_crm_recurring_terms \
             pool_service.tests.test_crm_recurring_drafts \
+            pool_service.tests.test_crm_recurring_confirmed \
             pool_service.tests.test_crm_handoffs \
             pool_service.tests.test_crm_handoff_migration \
             pool_service.tests.test_crm_commercial_card \

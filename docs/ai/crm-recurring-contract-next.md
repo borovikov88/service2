@@ -24,85 +24,75 @@ Manual final CRM stage with warning is allowed; it is not accounting completion.
 - Quote lifecycle (0163) and service handoff (0164) are available, but handoff to
   an existing request/tasks is not a regular-service contract lifecycle.
 
-## Implemented in this local slice
+## Local implementation and accepted policy
 
-`crm_recurring_terms.preview_terms` is a pure, immutable draft validator, with no
-ORM, endpoint, permissions changes or writes. Inputs explicitly specify term,
-months, quantity, unit, agreed amount (including unknown), completeness and renewal
-review date. Seasonal gaps and partial-month quantities remain explicit. It rejects
-repeated/out-of-term months, malformed values and sub-kopeck sums. It neither
-prorates partial months nor invents future months or prices. Amounts are agreed RUB
-inputs; no currency conversion or historic currency rewriting occurs.
+Same-contract renewal appends a dated revision in the existing deal. After explicit
+confirmation, effective price/frequency come from that revision, never from a
+conflicting Pool edit. Unconfirmed objects retain their existing behavior. No
+existing contract is automatically confirmed or imported.
 
-The listed-period subtotal is distinct from the whole-contract total. A total is
-available only for a finite term with an explicitly complete list and all amounts
-known. Decimal sums/hash do not depend on caller precision or ordering. This is
-only a proposed contractual amount, never recognized revenue or payment.
-`can_activate` is always false. No allocation or source status is used as authority.
-Technical bound: 1200 explicitly supplied rows; not a rule limiting contract duration.
+- 0166: immutable deal/object/payer/basis container and append-only draft revisions.
+- 0167: separate immutable confirmation with actor/time/effective date. No backfill.
+- Own-service-deal UI: prepare/revise/renew, explicit monthly Decimal quantity/unit
+  and agreed RUB amount, unknown amount distinct from zero, explicit visit anchor,
+  known/unknown frequency, renewal review date, confirmation and paginated history.
+- Pure validator bounds 1200 explicit periods, rejects duplicates/out-of-term dates
+  and sub-kopeck amounts. A finite complete known-price list can have a total;
+  indefinite contracts are never annualized. Its `can_activate=False` means a pure
+  preview is not authority: a separate locked confirmation command is required.
+- Commands recheck active user, organization, own-deal capability, current payer and
+  object scope. Org/deal/Pool locks serialize revision/confirmation and conflicting
+  Pool writes. Replay does not create another revision/confirmation.
+- Effective date cannot be retroactive. Same-term revisions preserve past rows;
+  partial-month amount changes need explicit allocation, so are rejected here.
+  Renewal keeps earlier versions, real documents and payments untouched.
+- Object/client/list read projections and calendar derive dated terms in batches.
+  Unknown/missing months never fall back to stale legacy prices. Existing visit
+  plans and actual readings remain; reading evidence cannot cross a revision.
+- Model save/clean, default/base queryset update, bulk update and upsert guards
+  cover ORM API/admin/import paths. Independent fields remain editable. Existing
+  forms disable protected fields and preserve stored legacy values. Raw SQL is not
+  an application API and this package does not claim database-trigger protection.
+  Expression/bulk changes of protected fields fail closed, even if a caller intends
+  a no-op; constant unchanged values are allowed.
 
-The follow-on local slice adds 0166 (two additive tables): one immutable draft
-container per existing deal and append-only revisions. `save_draft` supports
-prepare, same-term revise and explicitly confirmed same-contract renew; all
-versions remain inactive drafts. A renewed term must follow the previous finite
-term without reusing its calendar months. Unknown amounts remain unknown. Current
-organization/own-deal/payer/object rights and revisions are checked under locks;
-replay rechecks current rights and cannot create a second container/version.
-History reads are bounded to 20 versions and deliberately use the same own-deal
-write scope; broader team/read-only UI is not introduced by this internal service.
+## Explicit limits and next slices
 
-No UI, activation, operational update or auto task is implemented. No 1C locator
-is created or reassigned. The draft contract basis is explicit text, not verified
-external contract identity: duplicates across other deals must be reconciled at
-future activation, never auto-matched by text. This is not a finished active
-contract feature. On application rollback keep 0166 evidence tables if populated;
-no production migration/reverse/restore has been performed.
+One authoritative contract lineage per Pool: a different contract/deal on an
+already confirmed Pool is blocked pending explicit transfer/reconciliation. No
+matching by textual contract number. ClientOwnedObject drafts can be prepared,
+confirmation currently requires Pool. This is deliberately narrower than a full
+external contract registry. History UI currently uses own-deal editing rights and
+requires an open service deal; no broader team access is granted.
 
-## Minimal next vertical package and acceptance
+The existing calendar supports one visit per object/week. Two dates in a revision
+transition week are rejected, not collapsed. Explicit first visit is required for
+a known frequency; quantity never supplies that date. Cross-revision manual moves
+require reconciliation. Calendar does not rewrite stored visit plans or readings.
+Legacy broad-period missed-visit notifications remain unchanged until the first
+terms effective date, then are suppressed for that object because they cannot
+prove contractual lateness. The dated calendar remains available; replacement
+contract-aware reminder delivery is a separate slice and is stated in the UI.
 
-1. Append-only contractual versions for an existing service deal and its single
-   object, with payer/party references, signed basis, explicit period obligations,
-   work/inclusions/exclusions/seasonality/calculation rules, responsible and review
-   date. Draft→explicit confirmation, author/time/revision/idempotency and org lock.
-   Do not require an imported realization merely to register a signed contract.
-2. Separate authoritative terms from the existing 1C locator; reuse the locator,
-   never create a duplicate financial ledger. Verify party/object/contract identity
-   at any connection to 0162. Do not infer a real mapping from name/date/quantity.
-3. One source of effective price/frequency must be defined before activation.
-   Existing Pool editing and calendar/forecast readers must either derive the
-   effective value or reject conflicting edits; no silently divergent second field.
-4. Period table shows agreed obligation separately from current valid realization
-   allocations. Missing/stale/foreign/future/changed evidence remains unknown or
-   reconciliation-required. Payment remains unverified until separately supported
-   by existing finance source completeness/explicit purpose. No closing/payment fact.
-5. Renewal review date is explicit (no invented lead time); no auto-renewal/new lead
-   or 12 duplicate tasks. Once renewal semantics are approved, stable operation keys
-   and lineage preserve old periods and prevent overlapping double obligations.
-6. Tests: org/role/private source denial, manager read vs own-write, inactive actor,
-   concurrent version updates/retries, period duplicates/gaps, unknown/zero amounts,
-   2 units and 0.5 quantity without inferred months, immutable old versions, changed
-   1C source, unrelated chemical debts. Native MySQL migration/races for DB changes;
-   browser mobile/dark/cancel/retry/stale version for the future UI.
+History shows contractual obligations separately from unverified realizations and
+payments. This package neither wires in 0162 allocation coverage nor proves payment,
+creates money plans, closes contracts, sends messages or generates tasks. Full
+scope/inclusions/exclusions, automatic renewal reminders and completeness-aware
+realization/payment comparison remain subsequent work. Review date is stored, not
+an automatic renewal action. Payer selector is bounded to the first 100 authorized
+clients plus the current payer; a general searchable picker is not included.
 
-## Rights and source boundaries
+On application rollback preserve 0166/0167 tables and evidence. Do not reverse
+populated migrations. Older application code cannot enforce these new ORM guards:
+a rollback after real confirmations requires holding conflicting object edits
+until compatible code is restored. No production migration or rollback was run.
 
-A future UI reuses current CRM organization read rights; writes require current
-own-deal capability, ownership, company access and revision. No role grants.
-Financial document inspection keeps existing additional finance/1C rights;
-ordinary CRM read must not reveal restricted document payloads. Pure DTO validation
-is not authorization. No production data, source calls, bindings, sends or cron.
+## Acceptance evidence
 
-## Owner decisions needed before activation/renewal
-
-- RESOLVED by the owner's reply “1”: renewal of the same contract appends a dated
-  revision in the same deal. A genuinely new contract is not silently merged.
-  Draft renewal is implemented; this does not confirm activation or external
-  source identity. Existing 0162 locator ownership remains unchanged.
-- Can confirmed effective contract terms become the single source for Pool price
-  and frequency, with changes through a new dated version and conflicting direct
-  Pool edits blocked? Until decided, draft validation does not alter active Pool
-  fields/calendar/forecast. No automatic proration for partial months is proposed:
-  each agreed amount must be entered explicitly.
-
-Actual payment reconciliation, correction policy, multiple visits in one week,
-materials ledger and real customer document mapping remain separate work.
+Synthetic tests cover dated unknown/zero behavior, same-lineage renewal, source
+history preservation, canceled/unsubmitted forms, repeat commands, rights denial,
+Pool ORM guards, additive migrations, MySQL locks/retries and calendar boundary
+cases. Browser scenario covers desktop/light and mobile/dark, keyboard submit,
+reload/cancel/replay. Local system Chromium differs from the CI-pinned binary;
+final local receipt records the actual executable and test results. No live UI or
+real contract/data acceptance is implied. Publication requires a separate grant.

@@ -162,7 +162,47 @@ class Client(models.Model):
         return self.name
 
 
+from .recurring_pool_guard import PoolQuerySet
+
+
 class Pool(models.Model):
+    objects = PoolQuerySet.as_manager()
+
+    class Meta:
+        base_manager_name = "objects"
+
+    def clean(self):
+        super().clean()
+        if self.pk:
+            from .recurring_pool_guard import check_change, FIELDS
+            old = type(self).objects.filter(pk=self.pk).values(*FIELDS, "organization_id", "client_id").first()
+            if old:
+                check_change(self, old, FIELDS | {"organization_id", "client_id"}, lock=False)
+
+    def save(self, *args, **kwargs):
+        from django.db import transaction, router
+        from .recurring_pool_guard import check_change, FIELDS
+        using = kwargs.get("using") or router.db_for_write(type(self), instance=self)
+        with transaction.atomic(using=using):
+            if self.pk:
+                old = type(self).objects.using(using).select_for_update().filter(pk=self.pk).values(*FIELDS, "organization_id", "client_id").first()
+                if old:
+                    check_change(self, old, kwargs.get("update_fields") or FIELDS | {"organization_id", "client_id"})
+            result = super().save(*args, **kwargs)
+            self.__dict__.pop("_contractual_service_cache", None)
+            self.__dict__.pop("_recurring_range", None)
+            return result
+
+    @property
+    def contractual_service(self):
+        from .services.crm_recurring_effective import terms_as_of
+        from django.utils import timezone
+        day = timezone.localdate()
+        cached = getattr(self, "_contractual_service_cache", None)
+        if cached is None or cached[0] != day:
+            self._contractual_service_cache = (day, terms_as_of(self, day))
+        return self._contractual_service_cache[1]
+
     uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     OBJECT_TYPE_POOL = "pool"
     OBJECT_TYPE_WATER = "water"

@@ -1405,6 +1405,8 @@ def pool_list(request):
     page_number = request.GET.get("page")
 
     pools_page = paginator.get_page(page_number)
+    from .services.crm_recurring_effective import attach_terms
+    attach_terms(pools_page.object_list, timezone.localdate(), timezone.localdate())
 
     query_params = request.GET.copy()
 
@@ -6980,7 +6982,7 @@ def pool_detail(request, pool_uuid):
         "can_add_reading": can_add_reading,
 
         "can_view_service_details": can_view_service_details,
-        "service_monthly_price_display": format_money(pool.service_monthly_price or 0) if pool.service_monthly_price else None,
+        "service_monthly_price_display": format_money(pool.contractual_service["price"]) if pool.contractual_service["price"] is not None else None,
         "audit_logs": audit_logs,
 
         "pagination_query": query_params.urlencode(),
@@ -7056,7 +7058,7 @@ def pool_service_details(request, pool_uuid):
 
         "form": form,
 
-        "service_monthly_price_display": format_money(pool.service_monthly_price or 0) if pool.service_monthly_price else None,
+        "service_monthly_price_display": format_money(pool.contractual_service["price"]) if pool.contractual_service["price"] is not None else None,
 
         "page_title": None,
 
@@ -8352,7 +8354,8 @@ def readings_all(request):
             readings = readings_by_pool_week.get(pool.id, {}).get(key, [])
         else:
             readings = readings_by_pool_month.get(pool.id, {}).get(key, [])
-        available = [reading for reading in readings if reading.id not in used_reading_ids]
+        from .services.crm_recurring_effective import reading_matches_segment
+        available = [reading for reading in readings if reading.id not in used_reading_ids and reading_matches_segment(pool, reading._calendar_date)]
         if not available:
             return None
         chosen = min(
@@ -8420,7 +8423,52 @@ def readings_all(request):
             }
         )
 
+    from copy import copy
+    from .services.crm_recurring_effective import confirmations as contract_confirmations, terms_as_of, due_dates as contract_due_dates
+    from .services.crm_recurring_effective import attach_terms, projected_pool
+    attach_terms(pool_list, range_start, range_end)
+    original_range_end = range_end
     for pool in pool_list:
+        range_end = original_range_end
+        records = contract_confirmations(pool, range_start, range_end)
+        seen_plan_ids = set()
+        if records and records[0].effective_from <= range_end:
+            first_effective = records[0].effective_from
+            contract_start = max(range_start, first_effective)
+            candidates = []
+            seen_plan_ids = set()
+            seen_weeks = set()
+            for due in ([] if pool.service_suspended else contract_due_dates(pool, contract_start, range_end, records)):
+                week = _week_start(due)
+                if week in seen_weeks:
+                    continue
+                seen_weeks.add(week)
+                plan = plan_by_pool_week.get((pool.id, week))
+                if plan: seen_plan_ids.add(plan.pk)
+                candidates.append((week, due, plan.planned_date if plan else due, plan))
+            for (pid, source_week), plan in plan_by_pool_week.items():
+                if pid == pool.id and plan.pk not in seen_plan_ids and contract_start <= plan.planned_date <= range_end:
+                    seen_plan_ids.add(plan.pk)
+                    candidates.append((source_week, plan.planned_date, plan.planned_date, plan))
+            for source_week, due, planned, plan in candidates:
+                projected = projected_pool(pool, due, records)
+                actual = _select_reading(projected, planned)
+                _record_pool_event(projected, source_week, due, planned, plan.id if plan else None,
+                    'done' if actual else ('overdue' if source_week + timedelta(days=6) < today else 'planned'),
+                    actual._calendar_date if actual else None)
+            # Facts remain visible even in gaps, unknown-frequency periods and expired terms.
+            for readings in readings_by_pool_week.get(pool.id, {}).values():
+                for reading in readings:
+                    if reading.id in used_reading_ids or not contract_start <= reading._calendar_date <= range_end:
+                        continue
+                    state = terms_as_of(pool, reading._calendar_date, records); projected = copy(pool)
+                    projected.service_frequency = state['frequency']; projected.service_interval_days = state['interval']
+                    _record_pool_event(projected, _week_start(reading._calendar_date), reading._calendar_date,
+                        None, None, 'done', reading._calendar_date, group_key=reading._calendar_date, is_extra=True)
+                    used_reading_ids.add(reading.id)
+            if range_start >= first_effective:
+                continue
+            range_end = first_effective - timedelta(days=1)
         if getattr(pool, "service_suspended", False):
             paused_pools.append(pool)
             continue
@@ -8451,6 +8499,13 @@ def readings_all(request):
                 week_key = _week_start(due_date)
                 plan = plan_by_pool_week.get((pool.id, week_key))
                 planned_date = plan.planned_date if plan else due_date
+                if plan and plan.pk in seen_plan_ids:
+                    if interval_days:
+                        due_date = due_date + timedelta(days=interval_days)
+                    else:
+                        step += 1
+                        due_date = _shift_from_weekend(_add_month(anchor_date, interval_months * step))
+                    continue
                 actual_reading = _select_reading(pool, planned_date)
 
                 if actual_reading:
@@ -8493,6 +8548,13 @@ def readings_all(request):
                 week_key = _week_start(due_date)
                 plan = plan_by_pool_week.get((pool.id, week_key))
                 planned_date = plan.planned_date if plan else due_date
+                if plan and plan.pk in seen_plan_ids:
+                    if interval_days:
+                        due_date = due_date + timedelta(days=interval_days)
+                    else:
+                        step += 1
+                        due_date = _shift_from_weekend(_add_month(anchor_date, interval_months * step))
+                    continue
                 actual_reading = _select_reading(pool, planned_date)
 
                 if actual_reading:
@@ -8524,13 +8586,15 @@ def readings_all(request):
                 step += 1
                 due_date = _shift_from_weekend(_add_month(anchor_date, interval_months * step))
 
+    range_end = original_range_end
     unscheduled_ids = {pool.id for pool in unscheduled_pools}
     paused_ids = {pool.id for pool in paused_pools}
     extra_seen = set()
     for pool in pool_list:
-        if pool.id in unscheduled_ids or pool.id in paused_ids:
+        contract_records = contract_confirmations(pool, range_start, range_end)
+        if (pool.id in unscheduled_ids or pool.id in paused_ids) and not contract_records:
             continue
-        period_kind = _period_kind(pool)
+        period_kind = "week" if contract_records else _period_kind(pool)
         if period_kind == "week":
             period_map = readings_by_pool_week.get(pool.id, {})
         else:
@@ -8544,8 +8608,9 @@ def readings_all(request):
                 if extra_key in extra_seen:
                     continue
                 extra_seen.add(extra_key)
+                event_pool = projected_pool(pool, actual_date, contract_records) if contract_records else pool
                 _record_pool_event(
-                    pool,
+                    event_pool,
                     _week_start(actual_date),
                     actual_date,
                     None,
@@ -9003,7 +9068,29 @@ def visit_plan_move(request):
             Pool.SERVICE_FREQ_TWICE_MONTHLY,
         }
 
-    allow_month_move = all(_allow_month_move(pool) for pool in pools)
+    from .services.crm_recurring_effective import confirmations as contract_confirmations, terms_as_of, due_dates as contract_due_dates
+    from copy import copy
+    effective_pools = []
+    for pool in pools:
+        source_week = pool_week_map.get(pool.id)
+        if source_week is None:
+            return JsonResponse({'ok': False, 'error': 'contract_source_date_required'}, status=409)
+        records = contract_confirmations(pool, min(source_week, planned_date), max(source_week + timedelta(days=6), planned_date))
+        if records:
+            dates = contract_due_dates(pool, source_week, source_week + timedelta(days=6), records)
+            existing_plan = ServiceVisitPlan.objects.filter(pool=pool, week_start=source_week).first()
+            source_date = dates[0] if len(dates) == 1 else existing_plan.planned_date if existing_plan else None
+            if source_date is None:
+                return JsonResponse({'ok': False, 'error': 'contract_source_date_required'}, status=409)
+            source_state = terms_as_of(pool, source_date)
+            target_state = terms_as_of(pool, planned_date, records)
+            if source_state.get('revision') != target_state.get('revision') or target_state['state'] != 'confirmed':
+                return JsonResponse({'ok': False, 'error': 'contract_boundary_requires_review'}, status=409)
+            projected = copy(pool); projected.service_frequency = source_state['frequency']; projected.service_interval_days = source_state['interval']
+            effective_pools.append(projected)
+        else:
+            effective_pools.append(pool)
+    allow_month_move = all(_allow_month_move(pool) for pool in effective_pools)
 
     if allow_month_move:
         if not source_month:

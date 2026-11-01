@@ -1,4 +1,4 @@
-"""Draft-only regular service contract lineage; no operational activation."""
+"""Immutable terms evidence and separate explicit dated confirmations."""
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -49,3 +49,21 @@ class CrmRecurringRevision(LeadEvidenceModel):
             raise ValidationError('Draft must belong to the revision organization.')
         if not isinstance(self.payload, dict) or self.payload.get('state') != 'draft' or self.payload.get('operational_effect') != 'none':
             raise ValidationError('Only inactive draft evidence can be stored.')
+
+
+class CrmRecurringConfirmation(LeadEvidenceModel):
+    immutable_scope = ('organization_id','revision_id','pool_id','effective_from','actor_id','created_at')
+    organization = models.ForeignKey('Organization', on_delete=models.PROTECT)
+    revision = models.OneToOneField(CrmRecurringRevision, on_delete=models.PROTECT)
+    pool = models.ForeignKey('Pool', on_delete=models.PROTECT)
+    effective_from = models.DateField()
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    def clean(self):
+        super().clean()
+        if not CrmRecurringRevision.objects.filter(pk=self.revision_id, organization_id=self.organization_id).exists():
+            raise ValidationError('Confirmation scope mismatch.')
+        from pool_service.models import Pool
+        if not Pool.objects.filter(pk=self.pool_id, organization_id=self.organization_id).exists():
+            raise ValidationError('Confirmation object scope mismatch.')

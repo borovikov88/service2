@@ -1,6 +1,6 @@
-"""Append-only preparation and renewal, never active price/frequency or finance.
+"""Append-only dated terms, explicit confirmation and same-contract renewal.
 
-No HTTP API yet. A new real contract must use a separately chosen deal, never an
+Confirmation changes read projections only, never finance or stored legacy values. A new real contract must use a separately chosen deal, never an
 automatic identity match. Existing 1C bindings are neither created nor reassigned.
 """
 from datetime import date
@@ -35,11 +35,11 @@ def _scope(actor, organization_id, deal_id):
 @transaction.atomic
 def save_draft(*, actor, organization_id, deal_id, expected_deal_revision, expected_revision,
                operation_key, action, contract_basis, payer_id, terms, reason,
-               same_contract_confirmed=False):
+               same_contract_confirmed=False, schedule=None):
     """Write a draft version only. Renewal preserves the same draft/deal/object.
 
-    No activate/confirm action is available until operational-source policy is
-    decided. Explicit future dates remain proposed obligations, not completed work.
+    Confirmation is a separate explicit command. Draft dates remain proposed
+    obligations, not completed work.
     """
     if type(operation_key) is not str or not 1 <= len(operation_key) <= 100:
         raise ValidationError('Некорректный ключ операции.')
@@ -57,6 +57,18 @@ def save_draft(*, actor, organization_id, deal_id, expected_deal_revision, expec
         raise ValidationError('Явно подтвердите продление того же договора.')
     if type(terms) is not dict or set(terms) != {'start','end','periods','complete_period_list','renewal_review_on'}:
         raise ValidationError('Нужен полный явно заданный проект условий.')
+    from pool_service.models import Pool
+    if schedule is None: schedule={'frequency':None,'first_visit':None}
+    if type(schedule) is not dict or set(schedule)!={'frequency','first_visit'}:
+        raise ValidationError('Нужны явные параметры графика.')
+    if schedule['frequency'] not in {None, *dict(Pool.SERVICE_FREQUENCY_CHOICES)}:
+        raise ValidationError('Неизвестная периодичность.')
+    if schedule['frequency'] and type(schedule['first_visit']) is not date:
+        raise ValidationError('Укажите первую плановую дату визита, без автоматического назначения.')
+    if not schedule['frequency'] and schedule['first_visit'] is not None:
+        raise ValidationError('Дата первого визита требует периодичности.')
+    if schedule['first_visit'] and (schedule['first_visit']<terms['start'] or (terms['end'] and schedule['first_visit']>terms['end'])):
+        raise ValidationError('Первая дата визита вне срока.')
     proposed = preview_terms(**terms)
     actor, org, deal = _scope(actor,organization_id,deal_id)
     from pool_service.client_queries import active_clients, readable_clients
@@ -71,9 +83,9 @@ def save_draft(*, actor, organization_id, deal_id, expected_deal_revision, expec
         complete_period_list=terms['complete_period_list'],renewal_review_on=terms['renewal_review_on'].isoformat(),
         proposal_hash=proposed.proposal_hash,periods=[dict(month=r.month.isoformat(),quantity=str(r.quantity),
             unit=r.unit,agreed_amount=None if r.agreed_amount is None else str(r.agreed_amount)) for r in proposed.periods],
-        state='draft',operational_effect='none')
+        state='draft',operational_effect='none',schedule=dict(frequency=schedule['frequency'],first_visit=schedule['first_visit'].isoformat() if schedule['first_visit'] else None))
     command_hash = digest(dict(actor=actor.pk,deal=deal.pk,action=action,contract_basis=contract_basis.strip(),payer=payer_id,
-        proposal=proposed.proposal_hash,reason=reason.strip(),expected_revision=expected_revision,
+        proposal=proposed.proposal_hash,schedule=payload['schedule'],reason=reason.strip(),expected_revision=expected_revision,
         expected_deal_revision=expected_deal_revision,same_contract_confirmed=same_contract_confirmed))
     previous = CrmRecurringRevision.objects.select_for_update().filter(organization=org,operation_key=operation_key).first()
     if previous:
@@ -118,3 +130,68 @@ def read_history(*, actor, organization_id, deal_id, before_revision=None):
         if type(before_revision) is not int or before_revision <= 0: raise ValidationError('Некорректная страница.')
         rows=rows.filter(revision__lt=before_revision)
     return list(rows[:20])
+
+
+@transaction.atomic
+def confirm(*, actor, organization_id, deal_id, revision_id, expected_revision, effective_from, confirm_effect=False):
+    from django.utils import timezone
+    from zoneinfo import ZoneInfo
+    from pool_service.models import Pool
+    from pool_service.crm_recurring_models import CrmRecurringConfirmation
+    if confirm_effect is not True or type(effective_from) is not date:
+        raise ValidationError('Явно подтвердите применение условий с выбранной даты.')
+    actor,org,deal=_scope(actor,organization_id,deal_id)
+    draft=CrmRecurringDraft.objects.select_for_update().filter(deal=deal).first()
+    if not draft or deal.object_kind!='pool' or draft.client_id!=deal.client_id or draft.object_scope!=_object(deal):
+        raise CommercialConflict('Подтверждение поддерживает только неизменный существующий объект Pool.')
+    from pool_service.client_queries import readable_clients
+    if not readable_clients(actor).filter(pk=draft.payer_id,organization=org).exists():raise PermissionDenied
+    pool=Pool.objects.select_for_update().get(pk=deal.pool_id,organization=org,client_id=deal.client_id)
+    revision=CrmRecurringRevision.objects.select_for_update().filter(pk=revision_id,draft=draft).first()
+    if not revision:raise PermissionDenied
+    existing=CrmRecurringConfirmation.objects.select_for_update().filter(revision=revision).first()
+    if existing:
+        if existing.effective_from!=effective_from or existing.actor_id!=actor.pk:raise CommercialConflict('Подтверждение уже существует.')
+        return existing
+    latest=CrmRecurringRevision.objects.select_for_update().filter(draft=draft).order_by('-revision').first()
+    if latest.pk!=revision.pk or revision.revision!=expected_revision:raise CommercialConflict('Нужна последняя редакция.')
+    today=timezone.localdate(timezone.now(),ZoneInfo('Asia/Barnaul'))
+    if effective_from<today or effective_from<date.fromisoformat(revision.payload['start']) or (revision.payload['end'] and effective_from>date.fromisoformat(revision.payload['end'])):
+        raise ValidationError('Применение только с явно выбранной текущей/будущей даты внутри срока.')
+    if 'schedule' not in revision.payload:raise ValidationError('Подготовьте новую редакцию с явным графиком.')
+    records=list(CrmRecurringConfirmation.objects.select_for_update().filter(pool=pool).select_related('revision__draft').order_by('effective_from'))
+    # One authoritative lineage per object until explicit transfer/reconciliation exists.
+    if any(r.revision.draft_id!=draft.pk for r in records):
+        raise CommercialConflict('У объекта уже подтверждён другой договор; нужна отдельная сверка, автоматического объединения нет.')
+    if records:
+        previous=records[-1]
+        if effective_from<=previous.effective_from:raise CommercialConflict('Датированные подтверждения должны идти вперёд.')
+        old={r['month']:r for r in previous.revision.payload['periods']}
+        if revision.kind != 'renew':
+            new_rows={r['month']:r for r in revision.payload['periods']}
+            for month,row in old.items():
+                if month<effective_from.replace(day=1).isoformat() and new_rows.get(month)!=row:
+                    raise CommercialConflict('Исторические договорные месяцы нельзя удалять или переписывать.')
+        for row in revision.payload['periods']:
+            if row['month']<effective_from.replace(day=1).isoformat() and row['month'] in old and row!=old[row['month']]:
+                raise CommercialConflict('Исторические договорные месяцы нельзя переписывать.')
+        month=effective_from.replace(day=1).isoformat()
+        new=next((r for r in revision.payload['periods'] if r['month']==month),None)
+        if effective_from.day!=1 and month in old and new!=old[month]:
+            raise ValidationError('Изменение месячного объёма/цены внутри месяца требует отдельного распределения.')
+    # ServiceVisitPlan supports one obligation per pool/week. Never silently
+    # collapse two visits when a revision changes the schedule inside a week.
+    if records:
+        from datetime import timedelta
+        from .crm_recurring_effective import due_dates
+        candidate=CrmRecurringConfirmation(organization=org,revision=revision,pool=pool,effective_from=effective_from,actor=actor)
+        week=effective_from-timedelta(days=effective_from.weekday())
+        dates=due_dates(pool,week,week+timedelta(days=6),records+[candidate])
+        if len(dates)>1:
+            raise CommercialConflict('В неделе перехода получаются два визита. Выберите границу недели или явно согласуйте график: календарь поддерживает один визит объекта в неделю.')
+    return CrmRecurringConfirmation.objects.create(organization=org,revision=revision,pool=pool,effective_from=effective_from,actor=actor)
+
+
+@transaction.atomic
+def _scope_read_ui(actor, organization_id, deal_id):
+    return _scope(actor,organization_id,deal_id)

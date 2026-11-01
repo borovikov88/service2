@@ -567,3 +567,6 @@ urlpatterns = [
     path("clients/<int:client_id>/edit/", client_edit, name="client_edit"),
     path("clients/<int:client_id>/delete/", client_delete, name="client_delete"),
 ]
+
+from . import crm_recurring_views
+urlpatterns += [path("crm/workspace/deals/<int:deal_id>/recurring/", crm_recurring_views.workspace, name="crm_recurring")]
