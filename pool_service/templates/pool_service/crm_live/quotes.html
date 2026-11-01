@@ -1,7 +1,7 @@
 {% extends 'pool_service/base.html' %}
 {% load static crm_money tz %}
 {% block extra_head %}<link rel="stylesheet" href="{% static 'pool_service/crm_live/quotes.css' %}?v=1">{% endblock %}
-{% block content %}
+{% block content %}{% if deal.fulfillment_kind == "service" %}<a href="{% url 'crm_recurring' deal.pk %}?org_id={{ organization.pk }}">Договор обслуживания</a>{% endif %}
 <div class="quote-workspace container py-4" data-quote-workspace>
 <a href="{% url 'crm_live_workspace' %}?org_id={{ organization.pk }}&deal={{ deal.pk }}">← К сделке</a>
 {% if deal.fulfillment_kind == 'construction' %}<p><a href="{% url 'crm_construction' deal.pk %}?org_id={{ organization.pk }}">Подготовить запуск существующего проекта</a></p>{% endif %}

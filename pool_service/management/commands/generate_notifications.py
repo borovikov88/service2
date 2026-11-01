@@ -111,10 +111,19 @@ class Command(BaseCommand):
             organization__isnull=False,
         ).select_related("organization")
 
+        pools=list(pools)
+        from pool_service.services.crm_recurring_effective import attach_terms
+        attach_terms(pools,today,today)
         for pool in pools:
             if pool.service_suspended:
                 continue
             if not pool.organization.notify_missed_visits and not pool.organization.notify_missed_visits_push:
+                continue
+            from pool_service.services.crm_recurring_effective import confirmations
+            from pool_service.services.crm_recurring_reminders import generate_for_pool
+            records=confirmations(pool,today,today)
+            if records and records[0].effective_from<=today:
+                generate_for_pool(pool.pk,today,self._period_bounds)
                 continue
             frequency = pool.service_frequency or self._map_interval_to_frequency(pool.service_interval_days)
             if not frequency:

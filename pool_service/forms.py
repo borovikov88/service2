@@ -893,6 +893,8 @@ class PoolForm(forms.ModelForm):
             mapped = _map_interval_to_frequency(interval)
             if mapped:
                 self.initial["service_frequency"] = mapped
+        from .recurring_pool_guard import protect_form_fields
+        protect_form_fields(self)
         if user:
             service_details_roles = {"owner", "admin", "manager", "accountant"}
             can_edit_service_details = user.is_superuser
