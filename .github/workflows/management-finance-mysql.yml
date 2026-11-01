@@ -33,6 +33,11 @@ on:
       - "pool_service/communication_avito.py"
       - "pool_service/crm_source_*.py"
       - "pool_service/crm_commercial_*.py"
+      - "pool_service/crm_quote*.py"
+      - "pool_service/services/crm_quotes.py"
+      - "pool_service/tests/test_crm_quote*.py"
+      - "pool_service/tests/crm_quote.browser.cjs"
+      - "pool_service/templates/pool_service/crm_live/quote*.html"
       - "pool_service/client_merge.py"
       - "pool_service/tests/test_client_merge.py"
       - "pool_service/tests/test_conversation_clients.py"
@@ -219,6 +224,8 @@ jobs:
             pool_service.tests.test_crm_inbox_migrations \
             pool_service.tests.test_crm_commercial_foundation \
             pool_service.tests.test_crm_commercial_commands \
+            pool_service.tests.test_crm_quotes \
+            pool_service.tests.test_crm_quote_migration \
             pool_service.tests.test_crm_commercial_card \
             pool_service.tests.test_crm_object_needs \
             pool_service.tests.test_crm_object_need_corrections \

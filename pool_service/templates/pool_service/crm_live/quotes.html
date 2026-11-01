@@ -1,0 +1,58 @@
+{% extends 'pool_service/base.html' %}
+{% load static crm_money tz %}
+{% block extra_head %}<link rel="stylesheet" href="{% static 'pool_service/crm_live/quotes.css' %}?v=1">{% endblock %}
+{% block content %}
+<div class="quote-workspace container py-4" data-quote-workspace>
+<a href="{% url 'crm_live_workspace' %}?org_id={{ organization.pk }}&deal={{ deal.pk }}">← К сделке</a>
+<h1>КП: версии и решения</h1><h2 class="h5">{{ deal.title }}</h2>
+<p>Клиент сделки: {{ deal.client|default:'Не указан' }}. Принятие КП не запускает работы и не подтверждает оплату.</p>
+{% if error %}<p role="alert" class="alert alert-warning">{{ error }}</p>{% endif %}
+{% if request.GET.saved %}<p role="status" class="alert alert-success">Решение сохранено. Сообщения не отправлялись, задачи не создавались.</p>{% endif %}
+{% if writable %}<section class="quote-panel"><h2>Связать сохранённый расчёт</h2>
+<p>Выберите конкретную версию и один вариант. Новые цены не изменят это предложение.</p>
+<a href="{% url 'pool_estimate_page' %}?organization={{ organization.pk }}">Открыть калькулятор</a>
+<form method="get"><input type="hidden" name="org_id" value="{{ organization.pk }}">
+<label>Версия расчёта<select name="version" required>{% for version in versions %}<option value="{{ version.pk }}">{{ version.estimate.title }} · версия {{ version.number }}</option>{% endfor %}</select></label>
+<label>Вариант<select name="variant">{% for key, label in variants.items %}<option value="{{ key }}">{{ label.0 }}</option>{% endfor %}</select></label>
+<button class="btn btn-primary">Просмотреть перед связыванием</button></form>
+<nav aria-label="Версии расчётов">{% if versions.has_previous %}<a href="{{ base }}&versions_page={{ versions.previous_page_number }}">← Предыдущие</a>{% endif %} {{ versions.number }} / {{ versions.paginator.num_pages }} {% if versions.has_next %}<a href="{{ base }}&versions_page={{ versions.next_page_number }}">Следующие →</a>{% endif %}</nav>
+</section>{% endif %}
+{% if preview %}<section class="quote-panel" data-preview><h2>Проверка предложения</h2>
+<p>{{ preview.version.estimate.title }} · версия {{ preview.version.number }} · {{ preview.variant }} · {{ preview.amount|crm_money }} ₽</p>
+<p>Клиент в документе: {{ preview.documents.client_name|default:'Не указан' }}. Объект в документе: {{ preview.documents.object_address|default:'Не указан' }}.</p>
+{% for message in preview.errors %}<p class="alert alert-warning">{{ message }}</p>{% endfor %}
+<p>Неполный расчёт можно подготовить, но нельзя отметить отправленным или принятым до исправления новой версией.</p>
+{% include 'pool_service/crm_live/quote_rows.html' with rows=preview.rows %}
+<form method="post">{% csrf_token %}<input type="hidden" name="action" value="prepare"><input type="hidden" name="operation_key" value="{{ preview.key }}"><input type="hidden" name="selection" value="{{ preview.selection }}">
+<label><input type="checkbox" name="confirm_scope" required> Я проверил клиента, объект сделки и выбранный вариант расчёта</label>
+<button class="btn btn-primary">Связать версию КП</button> <a href="{{ base }}">Отмена</a></form></section>{% endif %}
+{% for quote in quotes %}<article class="quote-panel" data-quote-id="{{ quote.pk }}">
+<h2>КП #{{ quote.pk }} · {{ quote.get_variant_display }}</h2>
+<p>Версия {{ quote.version.number }} · {{ quote.amount|crm_money }} ₽ · <strong>{{ quote.get_status_display }}</strong></p>
+{% if quote.blocked %}<p role="alert" class="alert alert-warning">{{ quote.blocked }}</p>{% else %}
+<a href="{{ quote.document_url }}">Открыть документ выбранной версии</a><p class="small">Просмотр и печать не считаются отправкой.</p>
+<details><summary>Согласуемый состав</summary>{% include 'pool_service/crm_live/quote_rows.html' with rows=quote.rows %}</details>
+{% if quote.ready %}<section class="quote-ready"><h3>Основание для подготовки передачи</h3><p>Выбранная версия и вариант приняты. Работы ещё не запущены. Передача в проект, договор или существующую заявку — отдельное действие; аванс этим КП не требуется.</p></section>{% endif %}
+{% if quote.actionable %}
+<details><summary>Зафиксировать отправку вне системы</summary>
+<form method="post">{% csrf_token %}<input type="hidden" name="action" value="send"><input type="hidden" name="quote_id" value="{{ quote.pk }}"><input type="hidden" name="revision" value="{{ deal.revision }}"><input type="hidden" name="operation_key" value="{{ quote.keys.send }}">
+<label>Адресат<input name="recipient" required maxlength="500"></label><label>Способ / канал<input name="channel" required maxlength="100"></label>
+<label>Дата и время · Asia/Barnaul<input type="datetime-local" name="occurred_at" required></label>
+<label>Факт<select name="outcome"><option value="unknown">Результат неизвестен</option><option value="sent">Отправлено — подтверждаю вручную</option></select></label>
+<label>ID внешнего сообщения, если известен<input name="external_message_id" maxlength="500"></label><label>Основание / доказательство<textarea name="evidence" required maxlength="1000"></textarea></label>
+<button class="btn btn-outline-primary">Сохранить факт отправки</button></form></details>
+<details><summary>Принятие, отказ или замена</summary>
+<form method="post">{% csrf_token %}<input type="hidden" name="action" value="accept"><input type="hidden" name="quote_id" value="{{ quote.pk }}"><input type="hidden" name="revision" value="{{ deal.revision }}"><input type="hidden" name="operation_key" value="{{ quote.keys.accept }}"><input type="hidden" name="replace_quote_id" value="{{ current.pk|default:'' }}">
+{% if current %}<p>Это заменит принятое КП #{{ current.pk }}. Его история останется.</p>{% endif %}
+<label>Основание принятия<textarea name="evidence" required maxlength="1000"></textarea></label>
+<label><input type="checkbox" name="confirm_amount" required> Подтверждаю принятие и согласованную сумму сделки {{ quote.amount|crm_money }} ₽ только по этому варианту</label>
+<button class="btn btn-primary">Подтвердить принятие КП</button></form>
+<form method="post">{% csrf_token %}<input type="hidden" name="action" value="reject"><input type="hidden" name="quote_id" value="{{ quote.pk }}"><input type="hidden" name="revision" value="{{ deal.revision }}"><input type="hidden" name="operation_key" value="{{ quote.keys.reject }}">
+<label>Причина отказа<textarea name="evidence" required maxlength="1000"></textarea></label><button class="btn btn-outline-secondary">Зафиксировать отказ</button></form>
+<form method="post">{% csrf_token %}<input type="hidden" name="action" value="replace"><input type="hidden" name="quote_id" value="{{ quote.pk }}"><input type="hidden" name="revision" value="{{ deal.revision }}"><input type="hidden" name="operation_key" value="{{ quote.keys.replace }}">
+<label>Номер другого подготовленного КП этой сделки<input type="number" min="1" name="replacement_id" required></label><label>Основание замены<textarea name="evidence" required maxlength="1000"></textarea></label><button class="btn btn-outline-secondary">Заменить подготовленное КП</button></form>
+</details>{% endif %}
+{% endif %}<details><summary>История решений · последние 30</summary>{% for event in quote.history %}<p>{{ event.created_at|timezone:'Asia/Barnaul'|date:'d.m.Y H:i' }} · Барнаул · {{ event.actor }} · {{ event.action_label }} · {{ event.before_label }} → {{ event.after_label }}<br>{% if not quote.blocked %}{{ event.evidence.evidence }}{% if event.evidence.recipient %}<br>{{ event.evidence.recipient }} · {{ event.evidence.channel }} · {{ event.evidence.occurred_at }} · {{ event.outcome_label }}{% endif %}{% endif %}</p>{% endfor %}</details>
+</article>{% empty %}<p>Сохранённые версии КП ещё не связаны.</p>{% endfor %}
+<nav aria-label="КП">{% if quotes.has_previous %}<a href="{{ base }}&page={{ quotes.previous_page_number }}">← Предыдущие</a>{% endif %} {{ quotes.number }} / {{ quotes.paginator.num_pages }} {% if quotes.has_next %}<a href="{{ base }}&page={{ quotes.next_page_number }}">Следующие →</a>{% endif %}</nav>
+</div>{% endblock %}

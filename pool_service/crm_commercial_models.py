@@ -348,8 +348,10 @@ class CrmCommand(CommercialModel):
 
     def clean(self):
         super().clean()
-        if not isinstance(self.result, dict) or not self.result.keys() <= {"lead_id", "deal_id", "event_id", "revision", "task_id", "deal_ids", "previous_lead_id", "need_id", "review_id", "source_revision", "transferred_task_id"}:
+        if not isinstance(self.result, dict) or not self.result.keys() <= {"lead_id", "deal_id", "event_id", "revision", "task_id", "deal_ids", "previous_lead_id", "need_id", "review_id", "source_revision", "transferred_task_id", "quote_id"}:
             raise ValidationError("Command result accepts only structural CRM identifiers.")
+        if "quote_id" in self.result and (type(self.result["quote_id"]) is not int or self.result["quote_id"] <= 0 or self.command_type not in {"quote.prepare", "quote.send", "quote.accept", "quote.reject", "quote.replace"}):
+            raise ValidationError("Quote identifiers require a quote command.")
         if "transferred_task_id" in self.result and (type(self.result["transferred_task_id"]) is not int or self.result["transferred_task_id"] <= 0 or self.command_type != "lead.qualify"):
             raise ValidationError("Task transfer requires a positive identifier in a qualification command.")
         if "deal_ids" in self.result and (type(self.result["deal_ids"]) is not list

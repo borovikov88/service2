@@ -737,6 +737,8 @@
       if (href) { const link = element("a", "", deal.client.name); link.href = href; client.append(link); }
       else client.textContent = deal.client?.name || "Клиент не указан";
       dialogContent.append(client);
+      const quoteUrl = safeLink(deal.quotes_url);
+      if (quoteUrl) { const link = element("a", "btn btn-outline-primary", "КП: версии и решения"); link.href = quoteUrl; dialogContent.append(link); }
       const serviceUrl = safeLink(deal.service_documents_url);
       if (serviceUrl) { const link = element("a", "btn btn-outline-primary", "Документы обслуживания и периоды"); link.href = serviceUrl; dialogContent.append(link); }
       const meta = element("div", "crm-live-detail-meta");
