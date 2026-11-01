@@ -199,6 +199,7 @@
       loading: false, dataController: null, detailController: null, clientController: null,
       dataGeneration: 0, detailGeneration: 0, clientGeneration: 0,
       drawer: null, dragging: null, suppressClickUntil: 0,
+      boardLimits: {}, boardScope: null,
     };
     const dialog = byId("crm-live-dialog");
     const dialogContent = byId("crm-live-dialog-content");
@@ -297,7 +298,7 @@
         if (value === defaultValue) url.searchParams.delete(key);
         else url.searchParams.set(key, value);
       }
-      if (state.page > 1) url.searchParams.set("page", state.page); else url.searchParams.delete("page");
+      if (state.view === "table" && state.page > 1) url.searchParams.set("page", state.page); else url.searchParams.delete("page");
       for (const [key, value] of Object.entries(state.filters)) {
         if (value && !(key === "outcome" && value === "open")) url.searchParams.set(key, value);
         else url.searchParams.delete(key);
@@ -418,10 +419,10 @@
       for (const kind of ["all", "today", "overdue", "missing"]) {
         root.querySelector(`[data-attention="${kind}"]`).setAttribute("aria-pressed", String(state.attention === kind));
       }
-      byId("crm-live-result-status").textContent = state.loading ? "Обновляем…" : "На странице: " + filtered.length + (state.data.attention_total == null ? "" : " · по фильтру: " + state.data.attention_total);
+      byId("crm-live-result-status").textContent = state.loading ? "Обновляем…" : (state.view === "kanban" ? "Загружено: " : "На странице: ") + filtered.length + (state.data.attention_total == null ? "" : " · по фильтру: " + state.data.attention_total);
       byId("crm-live-linked-filters").hidden = !Object.entries(state.filters).some(([key, value]) => value && !(key === "outcome" && value === "open"));
       byId("crm-live-limit").hidden = !state.data.has_more;
-      root.querySelector(".crm-live-pagination").hidden = !state.data.has_more && !state.data.has_previous;
+      root.querySelector(".crm-live-pagination").hidden = state.view !== "table" || (!state.data.has_more && !state.data.has_previous);
       byId("crm-live-page-prev").disabled = state.loading || !state.data.has_previous;
       byId("crm-live-page-next").disabled = state.loading || !state.data.has_more;
       byId("crm-live-page-label").textContent = "Страница " + state.page;
@@ -475,6 +476,16 @@
           if (!stage.can_transition) lane.append(element("p", "crm-live-lane-unavailable", stage.transition_block_reason || "Перенос в этот этап недоступен"));
           if (!deals.length) lane.append(element("p", "crm-live-lane-empty", count > 0 ? "На этой странице нет сделок этого этапа" : stage.can_transition ? "Нет сделок на этом этапе" : ""));
           else deals.forEach((deal) => lane.append(renderCard(deal, false)));
+          const window = (state.data.column_windows || []).find(item => sameId(item.stage_id, stage.id));
+          if (window?.has_more) {
+            lane.append(element("p", "crm-live-lane-progress", "Загружено " + deals.length + " из " + count));
+            if (window.can_expand) {
+              const more = makeButton("Показать ещё 50", "column-more");
+              more.dataset.stageId = stage.id;
+              more.disabled = state.loading;
+              lane.append(more);
+            } else lane.append(element("p", "crm-live-lane-progress", "Показаны первые 200. Уточните поиск или откройте таблицу для остальных сделок."));
+          }
           board.append(lane);
         }
         container.append(board);
@@ -483,6 +494,8 @@
     }
 
     async function loadData(options) {
+      const scope = JSON.stringify([String(state.pipelineId), state.query, state.owner, state.attention, state.filters, state.view]);
+      if (scope !== state.boardScope) { state.boardLimits = {}; state.boardScope = scope; }
       const generation = ++state.dataGeneration;
       if (state.dataController) state.dataController.abort();
       const controller = new AbortController();
@@ -492,6 +505,10 @@
       const url = scopedURL(bootstrap.urls.data);
       if (state.pipelineId != null) url.searchParams.set("pipeline", state.pipelineId);
       url.searchParams.set("page", state.page);
+      if (state.view === "kanban") {
+        url.searchParams.set("layout", "board");
+        url.searchParams.set("column_limits", JSON.stringify(state.boardLimits));
+      }
       url.searchParams.set("q", state.query);
       url.searchParams.set("owner", state.owner);
       url.searchParams.set("attention", state.attention);
@@ -1103,9 +1120,14 @@
         loadData();
       } else if (button.dataset.view) {
         state.view = button.dataset.view;
-        renderPipelines(); renderContent(); syncURL();
+        state.page = 1; renderPipelines(); loadData();
       } else if (button.dataset.attention) {
         state.attention = button.dataset.attention; state.page = 1;
+        loadData();
+      } else if (button.dataset.action === "column-more") {
+        const window = (state.data.column_windows || []).find(item => sameId(item.stage_id, button.dataset.stageId));
+        if (state.loading || !window?.has_more || !window.can_expand) return;
+        state.boardLimits[String(window.stage_id)] = window.limit + 50;
         loadData();
       } else if (button.dataset.action === "page-prev" || button.dataset.action === "page-next") {
         state.page = Math.max(1, state.page + (button.dataset.action === "page-next" ? 1 : -1)); loadData();
@@ -1211,6 +1233,7 @@
       else closeDialog(false);
       loadData();
     });
+    state.boardScope = JSON.stringify([String(state.pipelineId), state.query, state.owner, state.attention, state.filters, state.view]);
     renderPipelines();
     renderContent();
     syncURL();

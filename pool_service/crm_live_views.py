@@ -35,6 +35,8 @@ from .services.task_read_permissions import readable_tasks
 
 
 PAGE_SIZE = 50
+BOARD_COLUMN_MAX = 200
+BOARD_TOTAL_MAX = 2000
 MAX_BODY_BYTES = 16384
 EVENT_LABELS = {
     "deal.create": "Сделка создана",
@@ -252,7 +254,7 @@ def _serialize_deals(deals, user, organization, grant, *, detail=False):
     return rows
 
 
-def _workspace_data(request, organization):
+def _workspace_data(request, organization, *, board=None):
     grant = _grant(request.user, organization)
     pipelines = list(CrmPipeline.objects.filter(organization=organization, is_active=True).prefetch_related("stages"))
     pipeline_id = _id(request.GET["pipeline"]) if request.GET.get("pipeline") else (pipelines[0].pk if pipelines else None)
@@ -321,8 +323,36 @@ def _workspace_data(request, organization):
         "count": row["count"], "unknown_count": row["count"] - row["known_count"]}
         for row in queryset.order_by().values("stage_id", "currency").annotate(
             amount_total=Sum("amount"), count=Count("pk"), known_count=Count("amount"))]
-    offset = (page - 1) * PAGE_SIZE
-    deals = list(queryset.order_by("-pk")[offset:offset + PAGE_SIZE + 1])
+    # A board reload replaces bounded prefixes, never appends offset pages.
+    # Inserts, moves and deletions between requests therefore cannot shift an
+    # offset and silently skip a card. The table retains its existing pagination.
+    board = request.GET.get("layout") == "board" if board is None else board
+    column_windows = []
+    if board:
+        try:
+            raw = request.GET.get("column_limits", "{}")
+            if len(raw) > 4096:
+                raise ValueError
+            limits = json.loads(raw)
+            stage_ids = [item.pk for pipeline in pipelines if pipeline.pk == pipeline_id for item in pipeline.stages.all()]
+            if not isinstance(limits, dict) or any(
+                key not in {str(pk) for pk in stage_ids} or type(value) is not int
+                or value < PAGE_SIZE or value > BOARD_COLUMN_MAX or value % PAGE_SIZE
+                for key, value in limits.items()
+            ) or sum(limits.get(str(pk), PAGE_SIZE) for pk in stage_ids) > BOARD_TOTAL_MAX:
+                raise ValueError
+        except (ValueError, TypeError):
+            raise ValidationError("Некорректный объём колонок. Уточните фильтры или обновите доску.")
+        deals = []
+        for stage_id in stage_ids:
+            limit = limits.get(str(stage_id), PAGE_SIZE)
+            rows = list(queryset.filter(stage_id=stage_id).order_by("-pk")[:limit + 1])
+            deals.extend(rows[:limit])
+            column_windows.append({"stage_id": stage_id, "limit": limit, "loaded": min(len(rows), limit),
+                "has_more": len(rows) > limit, "can_expand": limit < BOARD_COLUMN_MAX})
+    else:
+        offset = (page - 1) * PAGE_SIZE
+        deals = list(queryset.order_by("-pk")[offset:offset + PAGE_SIZE + 1])
     return {
         "organization_id": organization.pk, "organization_name": organization.name, "actor_id": request.user.pk,
         "capabilities": {"create": _write_capability(grant, organization, "create_own_deals")
@@ -333,9 +363,10 @@ def _workspace_data(request, organization):
                 "requires_manual_confirmation": stage.code == "completed",
                 "transition_block_reason": "Этап отключён" if not stage.is_active else ""}
                 for stage in pipeline.stages.all()]} for pipeline in pipelines],
-        "deals": _serialize_deals(deals[:PAGE_SIZE], request.user, organization, grant),
-        "selected_pipeline_id": pipeline_id, "has_more": len(deals) > PAGE_SIZE,
-        "page": page, "has_previous": page > 1,
+        "deals": _serialize_deals(deals if board else deals[:PAGE_SIZE], request.user, organization, grant),
+        "column_windows": column_windows, "layout": "board" if board else "page",
+        "selected_pipeline_id": pipeline_id, "has_more": not board and len(deals) > PAGE_SIZE,
+        "page": 1 if board else page, "has_previous": not board and page > 1,
         "page_size": PAGE_SIZE, "q": query, "owner": owner, "stage_totals": stage_totals,
         "attention": attention, "attention_total": attention_total,
         "outcome": outcome, "object": object_kind, "stage": stage, "specialization": specialization,
@@ -386,7 +417,7 @@ def workspace(request):
     if blocked:
         return blocked
     try:
-        data = _workspace_data(request, organization)
+        data = _workspace_data(request, organization, board=request.GET.get("view") != "table")
     except ValidationError as exc:
         # A saved invalid/too-wide filter must still open a usable filter shell.
         # Access errors and unavailable pipeline/card 404s remain unchanged.
@@ -395,12 +426,12 @@ def workspace(request):
             request.GET = original.copy()
             request.GET["attention"], request.GET["page"] = "all", "1"
             try:
-                data = _workspace_data(request, organization)
+                data = _workspace_data(request, organization, board=request.GET.get("view") != "table")
             except ValidationError:
                 from django.http import QueryDict
                 request.GET = QueryDict(mutable=True)
                 request.GET["org_id"] = str(organization.pk)
-                data = _workspace_data(request, organization)
+                data = _workspace_data(request, organization, board=request.GET.get("view") != "table")
         finally:
             request.GET = original
         message = exc.messages[0] if exc.messages else "Проверьте условия поиска."
