@@ -3307,3 +3307,5 @@ from . import crm_service_binding_models  # noqa: E402,F401
 from . import crm_quote_models  # noqa: E402,F401
 
 from . import crm_handoff_models  # noqa: E402,F401
+
+from . import crm_construction_models  # noqa: E402,F401

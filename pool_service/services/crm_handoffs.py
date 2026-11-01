@@ -70,7 +70,7 @@ def eligible_context(actor, organization, deal_id, item_id, task_ids, recipient_
     return deal,quote,item,sorted(tasks,key=lambda t:t.pk),recipient
 
 
-def _locked_context(actor_id, org, deal_id, item_id, task_ids, recipient_id, graph):
+def _locked_context(actor_id, org, deal_id, item_id, task_ids, recipient_id, graph, *, construction=False):
     """Current locking reads, never a prior MySQL REPEATABLE READ snapshot.
 
     Policy equivalent to read_deal/allowed_organizations/readable_clients and
@@ -89,7 +89,7 @@ def _locked_context(actor_id, org, deal_id, item_id, task_ids, recipient_id, gra
                 or any(e.user_id==uid and (not e.is_active or e.employment_status==Employee.STATUS_DISMISSED) for e in employees)):
             raise PermissionDenied('Текущие права на КП недоступны.')
     deal=CrmDeal.objects.select_for_update().filter(pk=deal_id,organization=org).first()
-    if not deal or deal.fulfillment_kind!='service' or deal.is_archived or deal.outcome!='open' or deal.object_kind!='pool':
+    if not deal or deal.fulfillment_kind!=('construction' if construction else 'service') or deal.is_archived or deal.outcome!='open' or deal.object_kind!='pool':
         raise CommercialConflict('Контекст сервисной сделки изменился.')
     client=Client.objects.select_for_update().filter(pk=deal.client_id,organization=org).first()
     profile=ClientCRMProfile.objects.select_for_update().filter(client_id=deal.client_id).first()
@@ -106,11 +106,11 @@ def _locked_context(actor_id, org, deal_id, item_id, task_ids, recipient_id, gra
     all_tasks,items=graph
     item=next((row for row in items if row.pk==item_id),None)
     if (not item or item.organization_id!=org.pk or item.client_id!=deal.client_id or item.pool_id!=deal.pool_id
-            or item.direction!='service' or item.is_archived or item.stage==CrmItem.STAGE_SERVICE_DONE
+            or item.direction!=('project' if construction else 'service') or item.is_archived or (not construction and item.stage==CrmItem.STAGE_SERVICE_DONE)
             or any(t.organization_id!=org.pk for t in all_tasks)):
         raise PermissionDenied('Контекст заявки изменился.')
     tasks=sorted((t for t in all_tasks if t.pk in task_ids),key=lambda t:t.pk)
-    if not tasks or len(tasks)!=len(set(task_ids)) or len(tasks)>50: raise PermissionDenied
+    if (not construction and not tasks) or len(tasks)!=len(set(task_ids)) or len(tasks)>50: raise PermissionDenied
     for task in tasks:
         task._handoff_responsibles=sorted(task.responsibles.through.objects.select_for_update()
             .filter(servicetask_id=task.pk).values_list('user_id',flat=True))

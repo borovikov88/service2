@@ -1,0 +1,35 @@
+{% extends 'pool_service/base.html' %}{% load static tz %}
+{% block extra_head %}<link rel="stylesheet" href="{% static 'pool_service/crm_live/quotes.css' %}"><link rel="stylesheet" href="{% static 'pool_service/crm_live/handoff.css' %}">{% endblock %}
+{% block content %}<div class="quote-workspace container py-4" data-construction>
+<a href="{% url 'crm_quotes' deal.pk %}?org_id={{ organization.pk }}">← КП и решения</a>
+<h1>Передать строительство в работу</h1><h2 class="h5">{{ deal.title }}</h2>
+<p>Запуск связывает принятое КП с существующим проектом. Оплата и выполнение работ не подтверждаются. Задачи и их исполнители не меняются.</p>
+{% if error %}<p role="alert" class="alert alert-warning">{{ error }}</p>{% endif %}
+{% if blocked %}<p role="alert">{{ blocked }}</p>{% endif %}
+{% if record and details %}<section class="quote-panel" data-launch-record><h2>Запуск зарегистрирован #{{ record.pk }}</h2>
+<p>Это история решения на момент запуска, не подтверждение текущего выполнения.</p>
+{% if details.changed %}<p role="alert" class="alert alert-warning">Ответственный или состав задач изменились после запуска. Нужна сверка; сохранённое основание не перезаписывается.</p>{% endif %}
+<p>Проект: {{ details.project.title }}. Ответственный запуска: {{ details.recipient }}.</p>
+<p>План: {{ record.basis.planned_start }} — {{ record.basis.planned_end }}. Это плановые сроки пакета, а не факт выполнения.</p>
+{% include 'pool_service/crm_live/quote_rows.html' with rows=details.rows %}
+<details><summary>История запуска</summary><p>{{ record.created_at|timezone:'Asia/Barnaul'|date:'d.m.Y H:i' }} · {{ record.actor }} · {{ record.evidence }}</p><p>{{ record.basis.document_note }}</p></details>
+</section>{% endif %}
+{% if not record and not can_launch %}<p role="status">Персональное право запуска не настроено либо контекст сделки не поддерживается. Роль администратора сама по себе не разрешает запуск.</p>{% endif %}
+{% if can_launch %}<section class="quote-panel"><h2>Существующий проект</h2>
+<form method="get"><input type="hidden" name="org_id" value="{{ organization.pk }}"><input type="hidden" name="page" value="{{ items.number }}"><label>Проект<select name="project" required>{% for item in items %}<option value="{{ item.pk }}" {% if selected.pk == item.pk %}selected{% endif %}>#{{ item.pk }} · {{ item.title }}</option>{% endfor %}</select></label><button class="btn btn-outline-primary">Показать состав</button></form>
+<nav>{% if items.has_previous %}<a href="{{ base }}&page={{ items.previous_page_number }}">← Предыдущие</a>{% endif %} {{ items.number }} / {{ items.paginator.num_pages }} {% if items.has_next %}<a href="{{ base }}&page={{ items.next_page_number }}">Следующие →</a>{% endif %}</nav>
+{% if selected %}<form method="post">{% csrf_token %}<input type="hidden" name="action" value="preview"><input type="hidden" name="project_id" value="{{ selected.pk }}"><input type="hidden" name="page" value="{{ items.number }}">
+<fieldset><legend>Задачи согласованного состава</legend>{% for task in tasks %}<label><input type="checkbox" name="task_id" value="{{ task.pk }}"> {{ task.title }}</label>{% empty %}<p>Можно подготовить проект без создания фиктивных задач.</p>{% endfor %}</fieldset>
+<label>Ответственный проекта<select name="recipient_id" required>{% for recipient in recipients %}<option value="{{ recipient.pk }}">{{ recipient }}</option>{% endfor %}</select></label>
+<p>Ответственный должен уже иметь доступ к КП и выбранным задачам и участвовать в них. Новые права не выдаются.</p>
+<label>Плановое начало<input type="date" name="planned_start" required value="{{ request.POST.planned_start }}"></label><label>Плановое окончание<input type="date" name="planned_end" required value="{{ request.POST.planned_end }}"></label>
+<label>Проверенные документы и условия<textarea name="document_note" required maxlength="1000">{{ request.POST.document_note }}</textarea></label>
+<button class="btn btn-primary">Проверить запуск</button></form>{% endif %}</section>{% endif %}
+{% if preview %}<section class="quote-panel" data-construction-preview><h2>Подтверждение запуска</h2>
+<p>Проект #{{ preview.data.project }} · КП #{{ preview.data.quote }} · версия #{{ preview.data.version }} · {{ preview.data.variant }} · ответственный #{{ preview.data.recipient }}.</p>
+<p>План {{ preview.data.planned_start }} — {{ preview.data.planned_end }}.</p><ul>{% for id, task in preview.data.tasks.items %}<li>{{ task.title }}</li>{% endfor %}</ul><p>{{ preview.data.document_note }}</p>
+<p>Проект перейдёт в строительство. Его ответственный будет установлен явно; назначения и сроки существующих задач сохранятся.</p>
+<form method="post">{% csrf_token %}<input type="hidden" name="action" value="launch"><input type="hidden" name="selection" value="{{ preview.token }}"><input type="hidden" name="operation_key" value="{{ preview.key }}">
+<label>Основание решения<textarea name="evidence" maxlength="1000" required></textarea></label><label><input type="checkbox" name="confirm" required> Проверил историю: это первый запуск проекта. Подтверждаю КП, состав, ответственного и сроки.</label>
+<button class="btn btn-primary">Передать в работу</button><a href="{{ base }}">Отмена</a></form></section>{% endif %}
+</div>{% endblock %}
