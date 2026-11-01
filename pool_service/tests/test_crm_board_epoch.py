@@ -102,3 +102,25 @@ class BoardEpochMigrationTests(TransactionTestCase):
             MigrationExecutor(connection).migrate(after)
         finally:
             executor=MigrationExecutor(connection);executor.migrate(executor.loader.graph.leaf_nodes())
+
+
+class StagedMaterialMigrationTests(TransactionTestCase):
+    def test_cursor_then_materials_preserves_epoch_and_does_not_enable_access(self):
+        before=[('pool_service','0169_crm_board_epoch')]
+        after=[('pool_service','0171_merge_materials_board')]
+        try:
+            executor=MigrationExecutor(connection);executor.migrate(before)
+            apps=executor.loader.project_state(before).apps
+            org=apps.get_model('pool_service','Organization').objects.create(name='Synthetic staged release')
+            apps.get_model('pool_service','CrmBoardEpoch').objects.create(organization_id=org.pk,revision=7)
+            executor=MigrationExecutor(connection)
+            plan=executor.migration_plan(after)
+            self.assertEqual([(m.name,backward) for m,backward in plan],[('0170_crm_material_journal',False),('0171_merge_materials_board',False)])
+            executor.migrate(after);apps=executor.loader.project_state(after).apps
+            self.assertEqual(apps.get_model('pool_service','CrmBoardEpoch').objects.get(organization_id=org.pk).revision,7)
+            self.assertFalse(apps.get_model('pool_service','Organization').objects.get(pk=org.pk).crm_materials)
+            for name in ['CrmMaterialAccess','CrmMaterialIssue','CrmMaterialMovement']:
+                self.assertFalse(apps.get_model('pool_service',name).objects.exists())
+            executor=MigrationExecutor(connection);self.assertEqual(executor.migration_plan(after),[])
+        finally:
+            executor=MigrationExecutor(connection);executor.migrate(executor.loader.graph.leaf_nodes())
