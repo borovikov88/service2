@@ -1,6 +1,6 @@
 # Compact CRM board — local UI slice
 
-Base: e0ead14e. Separate from recurring contracts PR475; no migrations or backend permission changes.
+Base: 2cc4e2e26b61ee169abd2c1ce56370a7d6abc3de (includes recurring contracts PR475 and GET hotfix PR476). Original UI commit 4bd22330 is preserved. This delta adds no migrations or backend permission changes.
 
 The CRM pipeline selector moves into the heading between CRM and New deal on desktop; on narrow screens it occupies its own horizontally scrollable heading row. Search, owner, view switching and existing next-action controls remain. Outcome/stage/object/specialization/date controls are removed. Existing filtered URLs/API behavior stays compatible, with an explicit linked-filter notice and a reset that preserves the remaining context.
 
