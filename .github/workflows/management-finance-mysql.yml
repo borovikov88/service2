@@ -182,6 +182,8 @@ jobs:
       - name: Verify Avito date precision and read-only tools on MySQL
         run: |
           python manage.py test \
+            pool_service.tests.test_avito_owner_dashboard \
+            pool_service.tests.test_avito_owner_overview \
             pool_service.tests.test_avito_placement_continuity \
             pool_service.tests.test_avito_mcp \
             --verbosity 2

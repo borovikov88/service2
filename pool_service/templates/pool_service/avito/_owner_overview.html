@@ -1,0 +1,132 @@
+{% load tz %}
+<section class="avito-owner" data-avito-owner aria-label="Сводка владельца">
+  <div class="avito-owner-status">
+    <div class="avito-owner-status__placement">
+      <span class="avito-owner-dot" aria-hidden="true"></span>
+      <strong>{% if owner_operations.active_count != None %}{{ owner_operations.active_count }} активных{% else %}Активные: —{% endif %}</strong>
+      <span class="small text-muted">{{ owner_operations.active_scope_label|default:"Полнота списка не подтверждена" }}</span>
+      {% if owner_operations.attention_summary %}<span class="avito-owner-attention">{{ owner_operations.attention_summary }}</span>{% endif %}
+      {% if owner_operations.checked_at %}<span class="avito-owner-stamp">{% timezone "Asia/Barnaul" %}Проверка {{ owner_operations.checked_at|date:"d.m H:i" }} · Барнаул{% endtimezone %}{% if owner_operations.stale %} · сохранённые данные{% endif %}</span>{% endif %}
+    </div>
+    <div class="avito-owner-funds">
+      <a href="#avito-finance-details" class="{% if workspace.advance.data and workspace.advance.data.kopeks <= 10000 %}avito-owner-attention{% endif %}">Аванс <strong>{% if workspace.advance.data.amount != None %}{{ workspace.advance.data.amount }} ₽{% else %}—{% endif %}</strong>
+        <span class="avito-owner-stamp">{% if workspace.advance.success_at %}<time datetime="{{ workspace.advance.success_at }}" data-avito-time>{{ workspace.advance.success_at }}</time>{% else %}Не получен{% endif %}{% if workspace.advance.stale %} · сохранённый{% endif %}{% if workspace.advance.status == 'error' or workspace.advance.status == 'denied' %} · ошибка обновления{% endif %}</span>
+      </a>
+      <a href="#avito-finance-details">Кошелёк <strong>{% if workspace.balance.data.real != None %}{{ workspace.balance.data.real }} {{ workspace.balance.data.currency }}{% else %}—{% endif %}</strong>
+        <span class="avito-owner-stamp">{% if workspace.balance.success_at %}<time datetime="{{ workspace.balance.success_at }}" data-avito-time>{{ workspace.balance.success_at }}</time>{% else %}Не получен{% endif %}{% if workspace.balance.stale %} · сохранённый{% endif %}{% if workspace.balance.status == 'error' or workspace.balance.status == 'denied' %} · ошибка обновления{% endif %}</span>
+      </a>
+      <a href="#avito-tariff">Тариф <strong>{% if tariff_reminder_state.expires_on %}{{ tariff_reminder_state.expires_on|date:"d.m.Y" }}{% else %}дата не задана{% endif %}</strong>{% if tariff_reminder_state.expires_on %}<span class="avito-owner-stamp">Дата введена вручную</span>{% endif %}</a>
+    </div>
+  </div>
+
+  <div class="avito-owner-heading">
+    <div>
+      <h2>Результат рекламы</h2>
+      <p>{{ owner_dashboard.period.label|default:"Выбранный период" }} · {{ owner_dashboard.period.from }}–{{ owner_dashboard.period.to }}</p>
+      <p data-owner-selection-label>{% if owner_dashboard.selected_ad %}Показатели: {{ owner_dashboard.selected_ad_title|default:"Объявление" }} · ID {{ owner_dashboard.selected_ad }}{% else %}Показатели: все объявления аккаунта{% endif %}</p>
+    </div>
+    <div class="avito-owner-period-controls" aria-label="Период статистики">
+      <div class="avito-owner-segments">
+        <a data-owner-period="7" href="?account={{ selected.connection.pk }}&amp;owner_period=7&amp;owner_ad={{ owner_dashboard.selected_ad|urlencode }}" {% if owner_dashboard.period.key == '7' %}aria-current="true"{% endif %}>7 дат</a>
+        <a data-owner-period="30" href="?account={{ selected.connection.pk }}&amp;owner_period=30&amp;owner_ad={{ owner_dashboard.selected_ad|urlencode }}" {% if owner_dashboard.period.key == '30' %}aria-current="true"{% endif %}>30 дат</a>
+      </div>
+      <details class="avito-owner-custom" {% if owner_dashboard.period.key == 'custom' %}open{% endif %}>
+        <summary>Свой период</summary>
+        <form method="get" action="{% url 'avito_dashboard' %}" class="avito-owner-custom__form" data-avito-submit>
+          <input type="hidden" name="account" value="{{ selected.connection.pk }}"><input type="hidden" name="owner_period" value="custom">
+          <input type="hidden" name="owner_ad" value="{{ owner_dashboard.selected_ad }}">
+          <label>С <input type="date" class="form-control form-control-sm" name="owner_from" value="{{ owner_dashboard.period.from }}" required></label>
+          <label>По <input type="date" class="form-control form-control-sm" name="owner_to" value="{{ owner_dashboard.period.to }}" required></label>
+          <button class="btn btn-sm btn-outline-primary" type="submit">Показать</button>
+        </form>
+      </details>
+    </div>
+  </div>
+  <form method="get" action="{% url 'avito_dashboard' %}" class="row g-2 align-items-end mb-3" data-owner-ad-form data-avito-submit>
+    <input type="hidden" name="account" value="{{ selected.connection.pk }}">
+    <input type="hidden" name="owner_period" value="{{ owner_dashboard.period.key|default:'30' }}">
+    <input type="hidden" name="owner_from" value="{{ owner_dashboard.period.from }}">
+    <input type="hidden" name="owner_to" value="{{ owner_dashboard.period.to }}">
+    <div class="col-12 col-md-8 col-xl-6">
+      <label for="avito-owner-ad" class="small text-muted mb-1">Показатели и графики объявления</label>
+      <select id="avito-owner-ad" class="form-select form-select-sm" name="owner_ad">
+        <option value="" {% if not owner_dashboard.selected_ad %}selected{% endif %}>Все объявления</option>
+        {% for choice in owner_dashboard.ad_choices %}<option value="{{ choice.id }}" {% if choice.id == owner_dashboard.selected_ad %}selected{% endif %}>{{ choice.title|default:"Объявление" }} · {{ choice.id }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="col-auto"><button class="btn btn-sm btn-outline-primary" type="submit">Показать</button></div>
+  </form>
+  {% if owner_dashboard.selection_error %}<p class="avito-section-notice avito-section-notice--stale" role="status">{{ owner_dashboard.selection_error }}</p>{% endif %}
+  {% if owner_dashboard.period.error %}<p class="avito-section-notice avito-section-notice--stale" role="status">{{ owner_dashboard.period.error }}</p>{% endif %}
+  <div class="avito-owner-kpis">
+    {% for metric in owner_dashboard.kpis %}
+      <article class="avito-owner-kpi" data-owner-kpi="{{ metric.key }}">
+        <div class="avito-owner-kpi__label">{{ metric.label }}</div>
+        <strong>{% if metric.value != None %}{{ metric.value }}{% if metric.unit %}<small>{{ metric.unit }}</small>{% endif %}{% else %}<span title="{{ metric.reason|default:'Недостаточно данных' }}">—</span>{% endif %}</strong>
+        {% if metric.delta != None %}<span class="avito-owner-kpi__comparison">К предыдущему равному периоду: {{ metric.delta }} {{ metric.unit }}</span>{% endif %}
+        <span class="avito-owner-kpi__coverage">{% if metric.reason %}{{ metric.reason }}{% elif metric.expected != None %}Известно {{ metric.known }}/{{ metric.expected }}{% endif %}</span>
+      </article>
+    {% endfor %}
+  </div>
+  <div class="avito-owner-source">
+    <span>{{ owner_dashboard.source.label|default:"Сохранённые данные Авито" }} · {{ owner_dashboard.source.coverage_label|default:"Покрытие не подтверждено" }}</span>
+    <span>{% if owner_dashboard.source.received_at %}{% timezone "Asia/Barnaul" %}Получено {{ owner_dashboard.source.received_at|date:"d.m.Y H:i" }} · Барнаул{% endtimezone %}{% else %}Время получения не подтверждено{% endif %}</span>
+  </div>
+
+  <div class="avito-owner-charts">
+    <section class="avito-panel avito-owner-chart-panel" aria-labelledby="avito-owner-volume-heading">
+      <div class="avito-owner-chart-heading"><h3 id="avito-owner-volume-heading">Просмотры и контакты</h3><a href="#avito-owner-data-table" class="small">Числа по датам</a></div>
+      <figure class="avito-owner-plot">
+        <figcaption><span class="avito-owner-legend avito-owner-legend--views"></span>Просмотры</figcaption>
+        <div class="avito-owner-svg-wrap"><svg data-owner-chart="views" role="img" aria-label="Динамика просмотров по датам источника" viewBox="0 0 600 130"></svg><p data-owner-empty="views" hidden>Просмотры по датам не получены</p></div>
+      </figure>
+      <figure class="avito-owner-plot">
+        <figcaption><span class="avito-owner-legend avito-owner-legend--contacts"></span>Контакты Авито</figcaption>
+        <div class="avito-owner-svg-wrap"><svg data-owner-chart="contacts" role="img" aria-label="Динамика контактов по датам источника" viewBox="0 0 600 130"></svg><p data-owner-empty="contacts" hidden>Контакты по датам не получены</p></div>
+      </figure>
+      <output data-owner-chart-output="volume" class="avito-owner-chart-readout" aria-live="polite">Выберите точку для просмотра значения</output>
+    </section>
+    <section class="avito-panel avito-owner-chart-panel" aria-labelledby="avito-owner-cost-heading">
+      <div class="avito-owner-chart-heading"><h3 id="avito-owner-cost-heading">Стоимость результата</h3></div>
+      <div class="avito-owner-segments avito-owner-cost-switch" role="group" aria-label="Показатель стоимости">
+        <button type="button" data-owner-cost="cost_view" aria-pressed="true">₽ / просмотр</button>
+        <button type="button" data-owner-cost="cost_contact" aria-pressed="false">₽ / контакт</button>
+        <button type="button" data-owner-cost="spending" aria-pressed="false">Расходы</button>
+      </div>
+      <div class="avito-owner-svg-wrap avito-owner-cost-plot"><svg data-owner-chart="cost" role="img" aria-label="Динамика стоимости просмотра по датам источника" viewBox="0 0 600 288"></svg><p data-owner-empty="cost" hidden>Для этой динамики недостаточно данных</p></div>
+      <output data-owner-chart-output="cost" class="avito-owner-chart-readout" aria-live="polite">Выберите точку для просмотра значения</output>
+    </section>
+  </div>
+  <p class="avito-owner-chart-note">Даты источника · часовой пояс статистики уточняется. Пропуски — неизвестные значения. Контакты Авито не равны уникальным клиентам или заказам.</p>
+  <noscript><p class="small text-muted">Для графиков включите JavaScript. Показатели периода и таблица объявлений доступны ниже.</p></noscript>
+
+  {% if owner_dashboard.fallback %}
+    <details class="avito-owner-fallback" {% if not owner_dashboard.available %}open{% endif %}>
+      <summary>Есть отдельный сохранённый отчёт: {{ owner_dashboard.fallback.from }}–{{ owner_dashboard.fallback.to }}</summary>
+      <p class="small text-muted mt-2">Этот отчёт относится к своему периоду и не заполняет пропуски графиков. {{ owner_dashboard.fallback.coverage_label }}.{% if owner_dashboard.fallback.received_at %}{% timezone "Asia/Barnaul" %} Получен {{ owner_dashboard.fallback.received_at|date:"d.m.Y H:i" }} · Барнаул.{% endtimezone %}{% endif %}</p>
+      <div class="avito-owner-fallback__metrics">{% for metric in owner_dashboard.fallback.kpis %}<span>{{ metric.label }}: <strong>{{ metric.value|default_if_none:"—" }} {{ metric.unit }}</strong></span>{% endfor %}</div>
+    </details>
+  {% endif %}
+
+  {% if owner_actions %}
+    <section class="avito-owner-actions" aria-labelledby="avito-owner-actions-heading">
+      <h3 id="avito-owner-actions-heading"><i class="bi bi-exclamation-circle" aria-hidden="true"></i> Требует решения</h3>
+      <div class="avito-owner-action-list">{% for action in owner_actions|slice:":3" %}<a class="avito-owner-action" href="{{ action.url }}"><strong>{{ action.label }}</strong><span>{{ action.detail }}</span><span class="avito-owner-action__link">Открыть <i class="bi bi-arrow-right" aria-hidden="true"></i></span></a>{% endfor %}</div>
+    </section>
+  {% endif %}
+
+  <section class="avito-panel avito-owner-performance" aria-labelledby="avito-owner-performance-heading">
+    <div class="avito-panel__header"><h3 class="avito-panel__title" id="avito-owner-performance-heading">Эффективность объявлений</h3><a class="small" href="#avito-listings-details">Статусы и действия</a></div>
+    <div class="table-responsive"><table class="table avito-listings">
+      <caption class="visually-hidden">Результат объявлений за {{ owner_dashboard.period.from }}–{{ owner_dashboard.period.to }}. Неизвестные значения показаны прочерком.</caption>
+      <thead><tr><th scope="col">{% if selected.connection.pk == 4 %}Услуга / город{% else %}Объявление{% endif %}</th><th scope="col">Просмотры</th><th scope="col">Контакты</th><th scope="col">Расходы, ₽</th><th scope="col">₽ / просмотр</th><th scope="col">₽ / контакт</th></tr></thead>
+      <tbody>{% for ad in owner_dashboard.ads %}<tr>
+        <th scope="row" class="avito-owner-ad-title">{{ ad.title|default:"Название не получено" }}<span>ID {{ ad.id }} · {{ ad.coverage_label }}</span></th>
+        <td>{{ ad.views|default_if_none:"—" }}</td><td>{{ ad.contacts|default_if_none:"—" }}</td><td>{{ ad.spending|default_if_none:"—" }}</td><td>{{ ad.cost_view|default_if_none:"—" }}</td><td>{{ ad.cost_contact|default_if_none:"—" }}</td>
+      </tr>{% empty %}<tr><td colspan="6" class="text-muted">Показатели объявлений за выбранный период не получены. Отсутствие данных не означает отсутствие обращений.</td></tr>{% endfor %}</tbody>
+    </table></div>
+  </section>
+  <details class="avito-owner-daily-table" id="avito-owner-data-table"><summary>Числа на графиках по датам</summary><div class="table-responsive" data-owner-daily-table></div></details>
+  {% if owner_dashboard.limitations %}<details class="avito-owner-limitations"><summary>Полнота данных и ограничения</summary><ul class="small mt-2">{% for limitation in owner_dashboard.limitations %}<li>{{ limitation }}</li>{% endfor %}</ul></details>{% endif %}
+  {{ owner_dashboard.chart|json_script:"avito-owner-chart-data" }}
+</section>
