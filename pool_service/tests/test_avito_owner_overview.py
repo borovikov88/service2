@@ -3,7 +3,7 @@ from datetime import timedelta
 from unittest.mock import patch
 from django.contrib.auth.models import User
 from django.db import transaction
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from pool_service.models import Organization, OrganizationAccess
@@ -102,6 +102,7 @@ class OwnerOverviewTests(TestCase):
         self.goods.refresh_from_db()
         self.assertEqual(self.goods.name, "Synthetic goods")
 
+    @override_settings(ALLOWED_HOSTS=["service2.aqualine22.ru", "testserver"])
     def test_private_runtime_receipt_renders_both_scoped_screens_without_content(self):
         with patch("pool_service.avito_services_workplace_setup._actor", return_value=self.owner), \
                 patch("pool_service.avito_workspace._get") as provider:
