@@ -331,7 +331,8 @@ class AvitoCompactDashboardTests(TestCase):
             self.assertFalse(parsed.sections[identifier])
         self.assertIn("SYNTHETIC_CRITICAL", html)
         self.assertIn("SYNTHETIC_WARNING", html)
-        self.assertLess(html.index('id="avito-advance"'), html.index('id="avito-items-heading"'))
+        self.assertLess(html.index('data-avito-owner'), html.index('id="avito-items-heading"'))
+        self.assertIn('id="avito-finance-details"', html)
         self.assertLess(html.index('id="avito-items-heading"'), html.index('id="avito-technical-details"'))
 
 
