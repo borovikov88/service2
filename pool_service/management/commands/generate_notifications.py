@@ -120,10 +120,10 @@ class Command(BaseCommand):
             if not pool.organization.notify_missed_visits and not pool.organization.notify_missed_visits_push:
                 continue
             from pool_service.services.crm_recurring_effective import confirmations
+            from pool_service.services.crm_recurring_reminders import generate_for_pool
             records=confirmations(pool,today,today)
             if records and records[0].effective_from<=today:
-                # Contract dates are shown in the explicit calendar. Legacy broad-period
-                # reminders cannot safely declare an overdue contract visit.
+                generate_for_pool(pool.pk,today,self._period_bounds)
                 continue
             frequency = pool.service_frequency or self._map_interval_to_frequency(pool.service_interval_days)
             if not frequency:

@@ -67,3 +67,21 @@ class CrmRecurringConfirmation(LeadEvidenceModel):
         from pool_service.models import Pool
         if not Pool.objects.filter(pk=self.pool_id, organization_id=self.organization_id).exists():
             raise ValidationError('Confirmation object scope mismatch.')
+
+
+class CrmRecurringReminder(models.Model):
+    """Per-recipient delivery receipt, not an obligation or accounting event."""
+    organization = models.ForeignKey('Organization', on_delete=models.PROTECT)
+    pool = models.ForeignKey('Pool', on_delete=models.PROTECT)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    revision = models.ForeignKey(CrmRecurringRevision, on_delete=models.PROTECT)
+    occurrence_key = models.CharField(max_length=64)
+    due_date = models.DateField()
+    created_at = models.DateTimeField(default=timezone.now)
+    attempted_revision = models.ForeignKey(CrmRecurringRevision, on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    attempted_due_date = models.DateField(null=True, blank=True)
+    push_attempted_at = models.DateTimeField(null=True, blank=True)
+    push_result = models.CharField(max_length=24, default='pending')
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['pool','user','occurrence_key'],name='crm_recurring_reminder_uq')]

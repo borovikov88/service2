@@ -69,10 +69,34 @@ The existing calendar supports one visit per object/week. Two dates in a revisio
 transition week are rejected, not collapsed. Explicit first visit is required for
 a known frequency; quantity never supplies that date. Cross-revision manual moves
 require reconciliation. Calendar does not rewrite stored visit plans or readings.
-Legacy broad-period missed-visit notifications remain unchanged until the first
-terms effective date, then are suppressed for that object because they cannot
-prove contractual lateness. The dated calendar remains available; replacement
-contract-aware reminder delivery is a separate slice and is stated in the UI.
+Missed-visit control keeps the existing Friday-after-noon schedule, organization
+switches, personal preferences and SERVICE_NOTIFICATION_ROLES audience. Future
+confirmations keep legacy control until effective. Confirmed objects use explicit
+visit dates/manual plan identities and nondeleted organizational WaterReading
+facts in the same dated revision; one reading cannot complete two obligations.
+Amounts, shipments and payments are not visit evidence. No tasks are generated.
+
+The existing frequency reporting period is retained. The previous six days are
+also considered so a Sunday/month-end due date is still checked on the next
+Friday, without historical replay. Manually moved dates are filtered after the
+move, not discarded by the original month. Unknown frequency produces a clearly
+labelled schedule-review warning for the explicit current month, not an invented
+missed visit. No new SLA, escalation, recipient group or delivery channel is added.
+
+0168 adds per-user/pool/occurrence delivery receipts (four new tables total across
+0166–0168). Stable week identity prevents duplicate visit warnings across price
+revisions/renewals; schedule-review uses an explicit month key. Existing legacy
+in-app period notices are recognized. In-app creation is atomic with the receipt;
+push-only preference does not force an in-app record. A known pending/unattempted
+push can resume after a callback crash. Transport attempts are claimed durably
+before sending; uncertain/no-confirmed-delivery outcomes are never blindly resent.
+Initial revision/date and attempted revision/date are recorded separately. This is
+at-most-one transport attempt, not a guarantee of device delivery; a crash between
+the durable attempt claim and the transport can leave an undelivered push without
+automatic retry. In-app evidence remains independently durable. Recipient
+rights/preferences and remaining visit evidence are rechecked before the attempt.
+No real sends or production scheduling changes were performed during development.
+
 
 History shows contractual obligations separately from unverified realizations and
 payments. This package neither wires in 0162 allocation coverage nor proves payment,
@@ -82,7 +106,7 @@ realization/payment comparison remain subsequent work. Review date is stored, no
 an automatic renewal action. Payer selector is bounded to the first 100 authorized
 clients plus the current payer; a general searchable picker is not included.
 
-On application rollback preserve 0166/0167 tables and evidence. Do not reverse
+On application rollback preserve 0166/0167/0168 tables and evidence. Do not reverse
 populated migrations. Older application code cannot enforce these new ORM guards:
 a rollback after real confirmations requires holding conflicting object edits
 until compatible code is restored. No production migration or rollback was run.
