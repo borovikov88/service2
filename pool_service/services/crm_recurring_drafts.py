@@ -107,7 +107,7 @@ def read_history(*, actor, organization_id, deal_id, before_revision=None):
 
     Internal preparation service, bounded 20 versions, no document payload joins.
     """
-    _,org,deal = _scope(actor,organization_id,deal_id)
+    actor,org,deal = _scope(actor,organization_id,deal_id)
     draft=CrmRecurringDraft.objects.select_for_update().filter(deal=deal,organization=org).first()
     if not draft: return []
     if draft.client_id != deal.client_id or draft.object_scope != _object(deal): raise PermissionDenied

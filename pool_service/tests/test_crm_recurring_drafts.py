@@ -7,7 +7,7 @@ from django.core.exceptions import PermissionDenied,ValidationError
 from django.db import close_old_connections, connection
 from django.test import TestCase,TransactionTestCase,skipUnlessDBFeature
 from pool_service.tests.test_crm_handoffs import HandoffFixture
-from pool_service.models import Pool,ServiceTask,Client
+from pool_service.models import Pool,ServiceTask,Client,OrganizationAccess
 from pool_service.crm_commercial_models import CrmDeal,CrmAccess
 from pool_service.crm_recurring_models import CrmRecurringDraft,CrmRecurringRevision
 from pool_service.services.crm_recurring_terms import ServicePeriodDraft as P
@@ -75,7 +75,8 @@ class DraftTests(DraftFixture,TestCase):
         with self.assertRaises(ValidationError):self.renewal(action='revise',expected_revision=2)
 
     def test_rights_revoked_replay_and_foreign_scope(self):
-        self.save();CrmAccess.objects.filter(user=self.user,organization=self.org).update(edit_own_deals=False)
+        self.save();grant=CrmAccess.objects.get(user=self.user,organization=self.org)
+        grant.edit_own_deals=False;grant.save()
         with self.assertRaises(PermissionDenied):self.save()
         with self.assertRaises(PermissionDenied):service.read_history(actor=self.user,organization_id=self.org.pk,deal_id=self.deal.pk)
 
@@ -88,6 +89,18 @@ class DraftTests(DraftFixture,TestCase):
         self.deal.pool=new;self.deal.save()
         with self.assertRaises(CommercialConflict):self.renewal()
         with self.assertRaises(PermissionDenied):service.read_history(actor=self.user,organization_id=self.org.pk,deal_id=self.deal.pk)
+
+    def test_history_reloads_actor_after_superuser_revocation(self):
+        self.save()
+        self.user.is_superuser=True;self.user.save()
+        stale=self.user
+        type(self.user).objects.filter(pk=self.user.pk).update(is_superuser=False)
+        membership=OrganizationAccess.objects.get(user=self.user,organization=self.org)
+        membership.role='accountant';membership.save()
+        grant=CrmAccess.objects.get(user=self.user,organization=self.org)
+        grant.view_team_deals=True;grant.save()
+        with self.assertRaises(PermissionDenied):
+            service.read_history(actor=stale,organization_id=self.org.pk,deal_id=self.deal.pk)
 
     def test_initial_failure_rolls_back_container_and_stale_deal_rejected(self):
         with patch.object(CrmRecurringRevision,'save',side_effect=RuntimeError('synthetic failure')):
