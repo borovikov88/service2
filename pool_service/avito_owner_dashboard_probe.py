@@ -50,7 +50,7 @@ def runtime_evidence():
                     "chart_dates": len(chart.get("labels", [])),
                     "known_view_dates": sum(v is not None for v in chart.get("views", [])),
                     "known_contact_dates": sum(v is not None for v in chart.get("contacts", [])),
-                    "source": source.get("kind"), "source_received_at": source.get("received_at"),
+                    "source": source.get("kind"), "source_received_at": source["received_at"].isoformat() if hasattr(source.get("received_at"), "isoformat") else None,
                     "pages_complete": source.get("pages_complete") is True})
         return {"state": "rendered_saved_data", "checked_at": timezone.now().isoformat(),
             "provider_request_performed": False, "database_write_performed": False, "screens": rows}

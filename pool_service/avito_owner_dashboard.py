@@ -162,6 +162,13 @@ def _workspace(connection):
     return sections if type(sections) is dict else {}
 
 
+def _known(entries):
+    dependencies = {"cost_view": ("spending", "views"), "cost_contact": ("spending", "contacts")}
+    return {key: sum(all(entry["values"].get(part) is not None
+                       for part in dependencies.get(key, (key,))) for entry in entries)
+            for key, _, _ in CARDS}
+
+
 def _manual_snapshot(connection):
     """One complete saved page only; never declare a first page to be the account."""
     section = _workspace(connection).get("statistics")
@@ -196,7 +203,7 @@ def _manual_snapshot(connection):
     values = _values({key: sum(entry["values"][key] for entry in entries)
         if entries and all(entry["values"][key] is not None for entry in entries) else None for key in CORE})
     return {"from": start.isoformat(), "to": end.isoformat(), "values": values,
-        "known": {key: sum(entry["values"].get(key) is not None for entry in entries) for key, _, _ in CARDS},
+        "known": _known(entries),
         "expected": len(entries), "received_at": periods._time(section.get("success_at")),
         "pages_complete": True, "ids": sorted(identifiers) if grouping == "item" else [],
         "grouping": grouping, "entries": entries, "source": "saved_workspace_statistics"}
@@ -217,12 +224,13 @@ def _fallback(connection, actor, *, first=None, last=None, now=None):
                     is not None for key in CORE)), None)
         if reports:
             report = exact or weekly or reports[0]
+            entries = [{"id": ad["avito_id"], "values": _values(ad["metric_values"])} for ad in report["ads"]]
             return {"from": report["date_from"], "to": report["date_to"],
                 "values": _values(report["metric_values"]), "expected": report["group_count"],
-                "known": {row["slug"]: row["known_groups"] for row in report["metrics"]},
+                "known": _known(entries),
                 "received_at": report["received_at_display"], "pages_complete": True,
                 "ids": report["ids"], "grouping": "item", "source": periods.SOURCE,
-                "entries": [{"id": ad["avito_id"], "values": _values(ad["metric_values"])} for ad in report["ads"]]}
+                "entries": entries}
     snapshot = _manual_snapshot(connection)
     return snapshot if snapshot is None or snapshot["received_at"] is None or snapshot["received_at"] <= (now or timezone.now()) else None
 
@@ -259,7 +267,7 @@ def display(connection, actor, *, period="30", date_from="", date_to="", now=Non
         "reported_ads": summary["reported"], "expected_ads": summary["expected"],
         "coverage_label": f"Даты: {summary['completed_dates']}/{summary['total_dates']}; строки: {summary['reported']}/{summary['expected']}"}
     fallback = _fallback(current, actor, first=first, last=last, now=now)
-    fallback_output = None
+    fallback_output, exact_snapshot = None, None
     if fallback is not None:
         fallback_output = {"from": fallback["from"], "to": fallback["to"],
             "received_at": fallback["received_at"], "label": "Отдельный сохранённый отчёт за период",
@@ -269,6 +277,7 @@ def display(connection, actor, *, period="30", date_from="", date_to="", now=Non
         # Exact-period snapshot is an independent valid KPI source, not a daily repair.
         if fallback["from"] == first.isoformat() and fallback["to"] == last.isoformat() and not summary["rows_complete"]:
             kpis = fallback_output["kpis"]
+            exact_snapshot = fallback
             source.update(kind="period", label="Сохранённый отчёт за выбранный период",
                 received_at=fallback["received_at"], pages_complete=True,
                 reported_ads=fallback["expected"] if fallback["grouping"] == "item" else None,
@@ -282,6 +291,19 @@ def display(connection, actor, *, period="30", date_from="", date_to="", now=Non
         ads.append({"id": identifier, "title": titles.get(identifier, ""),
             **{key: _text(value) for key, value in item["values"].items()},
             "coverage_label": f"{item['reported']}/{item['total_dates']} дат"})
+    if exact_snapshot is not None and exact_snapshot["grouping"] == "item":
+        item_section = _workspace(current).get("items")
+        item_data = item_section.get("data") if type(item_section) is dict else None
+        listed = item_data.get("rows", []) if type(item_data) is dict else []
+        for item in listed if type(listed) is list else []:
+            if type(item) is dict:
+                identifier = workspace_api._identifier(item.get("id"))
+                if identifier:
+                    titles[identifier] = workspace_api._text(item.get("title"), 300)
+        ads = [{"id": entry["id"], "title": titles.get(entry["id"], ""),
+            **{key: _text(value) for key, value in entry["values"].items()},
+            "coverage_label": f"Период {first:%d.%m.%Y}–{last:%d.%m.%Y}; строка отчёта получена"}
+            for entry in exact_snapshot["entries"][:200]]
     final = ChannelConnection.objects.select_related("channel__organization").filter(pk=current.pk).first()
     if (final is None or daily._stamp(final) != binding or not final.is_active or not final.channel.is_active
             or organization_access(actor, final.channel.organization) is None

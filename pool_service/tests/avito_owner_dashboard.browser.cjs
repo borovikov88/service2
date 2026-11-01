@@ -77,9 +77,9 @@ const {chromium} = require('playwright');
     ]);
     assert.equal(new URL(page.url()).searchParams.get('account'), String(fixture.servicesId));
     await page.locator('.avito-owner-custom > summary').click();
-    await page.locator('[name="owner_from"]').fill('2026-01-02');
-    await page.locator('[name="owner_to"]').fill('2026-01-06');
-    const customForm = page.locator('[name="owner_from"]').locator('xpath=ancestor::form');
+    const customForm = page.locator('.avito-owner-custom__form');
+    await customForm.locator('[name="owner_from"]').fill('2026-01-02');
+    await customForm.locator('[name="owner_to"]').fill('2026-01-06');
     await Promise.all([
       page.waitForURL(url => url.searchParams.get('owner_from') === '2026-01-02'
         && url.searchParams.get('owner_to') === '2026-01-06'),
@@ -101,8 +101,13 @@ const {chromium} = require('playwright');
     }
 
     await page.setViewportSize({width: 1440, height: 1000});
-    response = await page.goto(fixture.base + fixture.url + '?account=' + fixture.goodsId);
-    assert.equal(response.status(), 200);
+    await page.locator('#avito-account').selectOption(String(fixture.goodsId));
+    const [goodsResponse] = await Promise.all([
+      page.waitForNavigation(),
+      page.locator('form.avito-account-picker button[type="submit"]').click(),
+    ]);
+    assert.equal(goodsResponse.status(), 200);
+    assert.equal(new URL(page.url()).searchParams.get('account'), String(fixture.goodsId));
     await page.locator('[data-avito-owner]').waitFor();
     assert.ok((await page.locator('[data-owner-kpi="views"]').innerText()).includes('—'));
     assert.ok((await page.locator('[data-owner-kpi="spending"]').innerText()).includes('—'));

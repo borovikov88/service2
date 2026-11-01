@@ -2,7 +2,7 @@
 from datetime import timedelta
 from unittest.mock import patch
 from django.contrib.auth.models import User
-from django.db import connection as database
+from django.db import transaction
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -71,10 +71,19 @@ class OwnerOverviewTests(TestCase):
         self.goods.refresh_from_db()
         self.assertEqual(self.goods.settings, before)
 
+    def test_unknown_crm_source_is_a_review_task_not_a_confirmed_order(self):
+        with patch("pool_service.avito_crm_coverage.coverage", return_value={"ad_source_unknown_dialogs": 2}):
+            _, actions = build(self.services, self.owner, {})
+        self.assertEqual(len(actions), 1)
+        self.assertIn("источник", actions[0]["label"])
+        self.assertIn("не подтверждает заказ", actions[0]["detail"])
+        self.assertEqual(actions[0]["url"], reverse("avito_crm_attribution", args=[4]))
+
     def test_read_only_probe_refuses_writes_before_execution(self):
         with self.assertRaises(RuntimeError):
-            with _reads_only():
-                ChannelConnection.objects.filter(pk=1).update(name="Do not change")
+            with transaction.atomic():
+                with _reads_only():
+                    ChannelConnection.objects.filter(pk=1).update(name="Do not change")
         self.goods.refresh_from_db()
         self.assertEqual(self.goods.name, "Synthetic goods")
 

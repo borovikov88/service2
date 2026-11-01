@@ -88,6 +88,14 @@ def build(connection, actor, workspace, *, now=None):
             if near:
                 add(f"Проверить сроки: {near}", "Близкая или прошедшая сохранённая дата требует проверки статуса. Бесплатное восстановление не подтверждено.",
                     reverse("avito_services_feed", args=[connection.pk]))
+    if connection.pk == 4 and str(connection.external_id) == "446312402":
+        from .avito_crm_coverage import coverage
+        crm = coverage(connection, actor, now=now) or {}
+        unknown = _count(crm.get("ad_source_unknown_dialogs"))
+        if unknown:
+            add(f"Проверить источник обращений: {unknown}",
+                "В CRM подтвердить объявление-источник, оценку качества и следующий шаг. Диалог сам по себе не подтверждает заказ.",
+                reverse("avito_crm_attribution", args=[connection.pk]), "info")
     if connection.pk == 1 and complete_audit:
         stock = audit.get("active_source_audit", {})
         if isinstance(stock, dict) and stock.get("complete") is True:

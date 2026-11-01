@@ -222,6 +222,11 @@ class OwnerSummaryTests(TestCase):
         self.assertEqual(result["kpis"][0]["value"], "7")
         self.assertEqual(result["chart"]["views"], [None]*7)
         self.assertIsNone(result["fallback"])
+        self.assertEqual(result["ads"][0]["id"], "91")
+        self.assertEqual(result["ads"][0]["views"], "7")
+        self.assertIn("Период", result["ads"][0]["coverage_label"])
+        self.assertEqual({card["key"]: card["known"] for card in result["kpis"]},
+            {"views": 1, "contacts": 1, "spending": 1, "cost_view": 1, "cost_contact": 1})
         with patch.object(owner.periods, "display", return_value={"reports": reports}):
             result = owner.display(self.connection, self.actor, period="30", now=self.now)
         self.assertEqual(result["fallback"]["from"], first.isoformat())
@@ -231,3 +236,13 @@ class OwnerSummaryTests(TestCase):
         run = self.fact()
         AvitoStatisticsRun.objects.filter(pk=run.pk).update(finished_at=self.now+timedelta(days=1))
         self.assertEqual(self.read()["chart"]["views"], [None])
+
+    def test_malformed_cached_item_titles_cannot_break_valid_period_summary(self):
+        self.cache()
+        self.goods.settings["avito_workspace"]["sections"]["items"] = ["invalid"]
+        self.goods.save()
+        result = owner.display(self.goods, self.actor, period="custom",
+            date_from=self.day.isoformat(), date_to=self.day.isoformat(), now=self.now)
+        self.assertEqual(result["ads"][0]["id"], "91")
+        self.assertEqual(result["ads"][0]["title"], "")
+        self.assertEqual(result["ads"][0]["views"], "7")
