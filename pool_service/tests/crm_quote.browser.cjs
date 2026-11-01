@@ -10,6 +10,11 @@ const {readFileSync}=require('node:fs');
  await context.addCookies([{name:f.sessionCookieName,value:f.sessionCookie,url:f.base}]);
  const bootstrap=readFileSync(require.resolve('bootstrap/dist/js/bootstrap.bundle.min.js'),'utf8');
  await context.route('**/*',r=>r.request().url()==='https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js'?r.fulfill({status:200,contentType:'application/javascript',body:bootstrap}):new URL(r.request().url()).origin===f.base?r.continue():r.abort());
+ if(f.denied){
+ const page=await context.newPage();const response=await page.goto(f.base+f.path);
+ assert.equal(response.status(),403);assert.equal(await page.locator('[data-quote-workspace]').count(),0);
+ assert.ok(!(await page.content()).includes('Synthetic quote customer'));return;
+ }
  const page=await context.newPage();const errors=[];let writes=0;
  page.on('pageerror',e=>errors.push(e.message));page.on('request',r=>{if(r.method()==='POST')writes++;});
  await page.goto(f.base+f.path);await page.getByRole('heading',{name:'КП: версии и решения',exact:true}).waitFor();
@@ -30,6 +35,27 @@ const {readFileSync}=require('node:fs');
  await Promise.all([page.waitForNavigation(),accept.getByRole('button',{name:'Подтвердить принятие КП'}).click()]);
  await page.getByRole('heading',{name:'Основание для подготовки передачи'}).waitFor();
  assert.equal(await page.locator('[data-quote-id]').count(),1);
+ const prepareAlternative=async(variant)=>{
+ await page.locator('[name=version]').selectOption(String(f.version));
+ await page.locator('[name=variant]').selectOption(variant);
+ await Promise.all([page.waitForNavigation(),page.getByRole('button',{name:'Просмотреть перед связыванием'}).click()]);
+ await page.locator('[name=confirm_scope]').check();
+ await Promise.all([page.waitForNavigation(),page.getByRole('button',{name:'Связать версию КП',exact:true}).click()]);
+ return page.locator('[data-quote-id]').first();
+ };
+ let alternative=await prepareAlternative('standard');
+ await alternative.getByText('Принятие, отказ или замена',{exact:true}).click();
+ const replacement=alternative.locator('form:has([name=confirm_amount])');
+ await replacement.locator('[name=evidence]').fill('Synthetic explicit replacement');
+ await replacement.locator('[name=confirm_amount]').check();
+ await Promise.all([page.waitForNavigation(),replacement.getByRole('button',{name:'Подтвердить принятие КП'}).click()]);
+ alternative=await prepareAlternative('premium');
+ await alternative.getByText('Принятие, отказ или замена',{exact:true}).click();
+ const rejection=alternative.locator('form:has([name=action][value=reject])');
+ await rejection.locator('[name=evidence]').fill('Synthetic rejected alternative');
+ await Promise.all([page.waitForNavigation(),rejection.getByRole('button',{name:'Зафиксировать отказ'}).click()]);
+ assert.equal(await page.locator('[data-quote-id]').count(),3);
+ card=page.locator('[data-quote-id]').last();
  await page.screenshot({path:'/tmp/crm-quote-desktop.png',fullPage:true});
  await page.setViewportSize({width:390,height:844});await page.evaluate(()=>document.documentElement.setAttribute('data-theme','dark'));
  await card.getByText('История решений · последние 30',{exact:true}).click();
@@ -37,6 +63,6 @@ const {readFileSync}=require('node:fs');
  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1));
  await page.screenshot({path:'/tmp/crm-quote-mobile-dark.png',fullPage:true});
  await page.reload();await page.getByRole('heading',{name:'Основание для подготовки передачи'}).waitFor();
- assert.equal(writes,3);assert.deepEqual(errors,[]);console.log('quote preview/cancel/manual unknown/accept/reload/mobile PASS');
+ assert.equal(writes,7);assert.deepEqual(errors,[]);console.log('quote preview/cancel/manual unknown/accept/reload/mobile PASS');
  } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
