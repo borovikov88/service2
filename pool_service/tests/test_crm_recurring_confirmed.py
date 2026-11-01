@@ -168,6 +168,18 @@ class ConfirmedTests(ConfirmedFixture,TestCase):
         response=self.http.get(reverse('crm_recurring',args=[self.deal.pk]),{'org_id':self.org.pk})
         self.assertEqual(response.status_code,403);self.assertEqual(CrmRecurringConfirmation.objects.count(),0)
 
+    def test_edited_renewal_draft_can_confirm_without_copying_expired_months(self):
+        first,_=self.prepare_confirmed()
+        renewal=self.renewal(schedule=dict(frequency='monthly',first_visit=date(2031,1,1)))
+        edited=self.renewal(action='revise',operation_key='edit-renewal',expected_revision=2,
+            schedule=dict(frequency='monthly',first_visit=date(2031,1,2)))
+        record=service.confirm(actor=self.user,organization_id=self.org.pk,deal_id=self.deal.pk,revision_id=edited.pk,
+            expected_revision=3,effective_from=date(2031,1,1),confirm_effect=True)
+        self.assertEqual(record.revision_id,edited.pk)
+        self.assertEqual(first.draft_id,edited.draft_id)
+        self.assertIsNone(terms_as_of(self.pool,date(2030,1,1))['price'])
+        self.assertEqual(terms_as_of(self.pool,date(2031,1,1))['price'],Decimal('10.50'))
+
     def test_renewal_same_lineage_preserves_old_months_and_zero(self):
         first,_=self.prepare_confirmed()
         row=self.renewal(schedule=dict(frequency='monthly',first_visit=date(2031,1,1)))

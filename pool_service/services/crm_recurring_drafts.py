@@ -167,7 +167,9 @@ def confirm(*, actor, organization_id, deal_id, revision_id, expected_revision, 
         previous=records[-1]
         if effective_from<=previous.effective_from:raise CommercialConflict('Датированные подтверждения должны идти вперёд.')
         old={r['month']:r for r in previous.revision.payload['periods']}
-        if revision.kind != 'renew':
+        old_end=previous.revision.payload['end']
+        extends_term=bool(old_end and revision.payload['start']>old_end)
+        if not extends_term:
             new_rows={r['month']:r for r in revision.payload['periods']}
             for month,row in old.items():
                 if month<effective_from.replace(day=1).isoformat() and new_rows.get(month)!=row:
