@@ -236,6 +236,8 @@ jobs:
             pool_service.tests.test_crm_quotes \
             pool_service.tests.test_crm_quote_migration \
             pool_service.tests.test_crm_construction \
+            pool_service.tests.test_crm_recurring_terms \
+            pool_service.tests.test_crm_recurring_drafts \
             pool_service.tests.test_crm_handoffs \
             pool_service.tests.test_crm_handoff_migration \
             pool_service.tests.test_crm_commercial_card \

@@ -41,8 +41,22 @@ only a proposed contractual amount, never recognized revenue or payment.
 `can_activate` is always false. No allocation or source status is used as authority.
 Technical bound: 1200 explicitly supplied rows; not a rule limiting contract duration.
 
-No migrations, UI, persisted contract versions, renewal actions or auto tasks are
-implemented. This preparatory slice is not a deployable finished contract feature.
+The follow-on local slice adds 0166 (two additive tables): one immutable draft
+container per existing deal and append-only revisions. `save_draft` supports
+prepare, same-term revise and explicitly confirmed same-contract renew; all
+versions remain inactive drafts. A renewed term must follow the previous finite
+term without reusing its calendar months. Unknown amounts remain unknown. Current
+organization/own-deal/payer/object rights and revisions are checked under locks;
+replay rechecks current rights and cannot create a second container/version.
+History reads are bounded to 20 versions and deliberately use the same own-deal
+write scope; broader team/read-only UI is not introduced by this internal service.
+
+No UI, activation, operational update or auto task is implemented. No 1C locator
+is created or reassigned. The draft contract basis is explicit text, not verified
+external contract identity: duplicates across other deals must be reconciled at
+future activation, never auto-matched by text. This is not a finished active
+contract feature. On application rollback keep 0166 evidence tables if populated;
+no production migration/reverse/restore has been performed.
 
 ## Minimal next vertical package and acceptance
 
@@ -80,11 +94,10 @@ is not authorization. No production data, source calls, bindings, sends or cron.
 
 ## Owner decisions needed before activation/renewal
 
-- Renewal of the SAME external contract: append a new dated term version within
-  the existing service deal (recommended, preserves the confirmed one-contract/
-  one-deal invariant), or explicitly supersede that invariant with a linked new
-  deal? A newly signed external contract can have a separate linked deal. Until
-  decided, no renewal write or reassignment of the 0162 locator.
+- RESOLVED by the owner's reply “1”: renewal of the same contract appends a dated
+  revision in the same deal. A genuinely new contract is not silently merged.
+  Draft renewal is implemented; this does not confirm activation or external
+  source identity. Existing 0162 locator ownership remains unchanged.
 - Can confirmed effective contract terms become the single source for Pool price
   and frequency, with changes through a new dated version and conflicting direct
   Pool edits blocked? Until decided, draft validation does not alter active Pool
