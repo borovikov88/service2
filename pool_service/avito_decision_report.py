@@ -239,11 +239,11 @@ def decision_evidence(connection, actor, identifiers, now=None):
             'run_ids': period['run_ids'] if period else [],
             'limitations': ['provider_timezone_unknown', 'no_order_attribution',
                 'published_membership_is_not_active_status']}
-        basis = {'connection_id': current.pk, 'account_id': daily.ACCOUNT,
+        basis = {'connection_id': current.pk, 'account_id': str(current.external_id),
             'organization_id': current.channel.organization_id, 'avito_id': identifier, **value}
         value['basis_digest'] = hashlib.sha256(json.dumps(basis, sort_keys=True).encode()).hexdigest()
         result[identifier] = value
     return {'schema_version': 1, 'source': 'saved_avito_stats_v2_items',
-        'connection_id': current.pk, 'account_id': daily.ACCOUNT,
+        'connection_id': current.pk, 'account_id': str(current.external_id),
         'generated_at': now.isoformat(), 'cutoff': cutoff.isoformat(),
         'provider_timezone': 'unknown', 'barnaul_calendar_confirmed': False, 'ads': result}

@@ -24,8 +24,10 @@ from . import avito_workspace
 
 KEY = 'avito_daily_statistics_v1'
 ZONE = ZoneInfo('Asia/Barnaul')
-ACCOUNT = '446312402'
+ACCOUNT = '446312402'  # Existing services setup/CLI retain their explicit scope.
+ACCOUNTS = {4: ACCOUNT, 1: '7986565'}
 MAX_ROWS = 200
+GOODS_MAX_ROWS = 1000
 BACKFILL_DAYS = 30
 COUNTERS = ('impressions', 'views', 'contacts', 'favorites', 'contactsShowPhone',
             'contactsMessenger', 'contactsShowPhoneAndMessenger')
@@ -40,7 +42,7 @@ ERRORS = {
     'statistics_binding_changed': 'Привязка аккаунта, организации, ключей или права изменились.',
     'statistics_data_invalid': 'Статистика не прошла проверку структуры или показателей.',
     'statistics_total_unavailable': 'Авито не подтвердил общее число строк. Полнота не установлена.',
-    'statistics_limit': 'Ответ превышает безопасный предел 200 объявлений.',
+    'statistics_limit': 'Ответ превышает безопасный предел объявлений этого подключения.',
     'statistics_unavailable': 'Не удалось получить статистику. Сохранённые факты не заменены.',
     'statistics_incomplete': 'Сбор следующей страницы ещё не завершён.',
     'provider_cooldown': 'Действует общее ограничение частоты статистики Авито.',
@@ -74,8 +76,12 @@ def _date(value):
         return None
 
 
+def _max_rows(connection):
+    return GOODS_MAX_ROWS if connection.pk == 1 else MAX_ROWS
+
+
 def _scope(connection):
-    return bool(connection.pk == 4 and str(connection.external_id) == ACCOUNT
+    return bool(connection.pk in ACCOUNTS and str(connection.external_id) == ACCOUNTS[connection.pk]
         and connection.is_active and connection.channel.is_active and connection.channel.kind == 'avito')
 
 
@@ -92,7 +98,7 @@ def _stamp(connection):
 def _allowed(connection, state):
     actor = get_user_model().objects.filter(pk=state.get('actor_id'), is_active=True).first() if type(state.get('actor_id')) is int else None
     return bool(_scope(connection) and actor and _binding(connection).get('credential_stamp')
-        and state.get('account_id') == ACCOUNT
+        and state.get('account_id') == str(connection.external_id)
         and state.get('organization_id') == connection.channel.organization_id
         and state.get('channel_id') == connection.channel_id
         and state.get('binding_digest') == _stamp(connection)
@@ -118,7 +124,7 @@ def configure(connection, actor, action):
             if not _binding(connection).get('credential_stamp'):
                 raise ValueError('Сначала сохраните ключи подключения Авито.')
             state = {'enabled': True, 'generation': uuid.uuid4().hex, 'actor_id': actor.pk,
-                'account_id': ACCOUNT, 'organization_id': connection.channel.organization_id,
+                'account_id': str(connection.external_id), 'organization_id': connection.channel.organization_id,
                 'channel_id': connection.channel_id, 'binding_digest': _stamp(connection),
                 'next_due_at': timezone.now().isoformat(), 'last_error_code': ''}
         metadata[KEY] = state
@@ -172,6 +178,8 @@ def _city(row):
 
 
 def _dimensions(connection):
+    if connection.pk != 4:
+        return {}
     from .avito_feed_models import AvitoServicesFeed
     from .avito_services_feed import bound, entries
     feed = AvitoServicesFeed.objects.filter(connection=connection).first()
@@ -196,8 +204,9 @@ def _dimensions(connection):
 def _choose_day(connection, now):
     latest = collection_cutoff(now)
     completed = set(AvitoStatisticsRun.objects.filter(
-        connection=connection, account_id=ACCOUNT,
-        organization_id_at_collection=connection.channel.organization_id, state='success', pagination_complete=True,
+        connection=connection, account_id=str(connection.external_id),
+        organization_id_at_collection=connection.channel.organization_id, binding_digest=_stamp(connection),
+        state='success', pagination_complete=True,
         day__range=(latest - timedelta(days=BACKFILL_DAYS-1), latest)).values_list('day', flat=True))
     missing = [latest-timedelta(days=n) for n in range(BACKFILL_DAYS)
                if latest-timedelta(days=n) not in completed]
@@ -207,7 +216,7 @@ def _choose_day(connection, now):
     # tried, retry the least recently created attempt sequence, independent of
     # clock ties/drift. A failed date must not starve another missing date.
     attempts = dict(AvitoStatisticsRun.objects.filter(
-        connection=connection, account_id=ACCOUNT,
+        connection=connection, account_id=str(connection.external_id),
         organization_id_at_collection=connection.channel.organization_id,
         source='avito_stats_v2_items', binding_digest=_stamp(connection),
         day__in=missing).values('day').annotate(last_run=Max('pk'))
@@ -226,7 +235,7 @@ def _reserve(connection_id):
         if (due and due > now) or (until and until > now):
             return None
         run = AvitoStatisticsRun.objects.filter(pk=state.get('run_id'), connection=connection,
-            account_id=ACCOUNT, organization_id_at_collection=connection.channel.organization_id,
+            account_id=str(connection.external_id), organization_id_at_collection=connection.channel.organization_id,
             state='collecting', binding_digest=state['binding_digest']).first()
         if run and (now - run.started_at > timedelta(days=1) or run.day > collection_cutoff(now)):
             run.state, run.error_code, run.finished_at = 'failed', 'statistics_incomplete', now
@@ -242,7 +251,7 @@ def _reserve(connection_id):
                 connection.settings = metadata
                 connection.save(update_fields=['settings'])
                 return None
-            run = AvitoStatisticsRun.objects.create(connection=connection, account_id=ACCOUNT,
+            run = AvitoStatisticsRun.objects.create(connection=connection, account_id=str(connection.external_id),
                 organization_id_at_collection=connection.channel.organization_id, day=day,
                 binding_digest=state['binding_digest'], dimensions=_dimensions(connection))
         token = uuid.uuid4().hex
@@ -277,7 +286,7 @@ def _normalized(row):
 
 def collect_next(connection_id=4, *, observer=None):
     """One API page per invocation. No sleeping or silent external retry."""
-    if connection_id != 4:
+    if connection_id not in ACCOUNTS:
         raise ValueError('statistics_binding_changed')
     reserved = _reserve(connection_id)
     if reserved is None:
@@ -288,26 +297,26 @@ def collect_next(connection_id=4, *, observer=None):
     statistics_reason, statistics_shape = '', None
     try:
         token = access_token(connection)
-        if authorized_account_id(connection) != ACCOUNT:
+        if authorized_account_id(connection) != str(connection.external_id):
             raise AvitoError('statistics_binding_changed')
         phase = 'fetch_statistics'
-        page = avito_workspace.fetch_statistics(token, ACCOUNT, start=run.day.isoformat(),
+        page = avito_workspace.fetch_statistics(token, str(connection.external_id), start=run.day.isoformat(),
             end=run.day.isoformat(), grouping='item', offset=run.next_offset)
         phase = 'verify_account'
-        if authorized_account_id(connection) != ACCOUNT:
+        if authorized_account_id(connection) != str(connection.external_id):
             raise AvitoError('statistics_binding_changed')
         phase = 'validate_response'
         rows = [_normalized(row) for row in page['rows']]
         total = page.get('total')
-        if total is not None and (type(total) is not int or not 0 <= total <= MAX_ROWS):
+        if total is not None and (type(total) is not int or not 0 <= total <= _max_rows(connection)):
             raise AvitoError('statistics_limit')
         previous = run.staged_rows
-        if (not isinstance(previous, list) or len(previous) > MAX_ROWS
+        if (not isinstance(previous, list) or len(previous) > _max_rows(connection)
                 or len(previous) != run.next_offset
                 or len({row['id'] for row in previous + rows}) != len(previous + rows)
                 or run.expected_total is not None and total != run.expected_total
                 or total is not None and len(previous + rows) > total
-                or len(previous + rows) > MAX_ROWS):
+                or len(previous + rows) > _max_rows(connection)):
             raise AvitoError('statistics_data_invalid')
     except avito_workspace.AvitoCooldownError as exc:
         error, retry_at = 'provider_cooldown', exc.retry_at
@@ -369,13 +378,13 @@ def collect_next(connection_id=4, *, observer=None):
                 locked.state, locked.pagination_complete, locked.finished_at = 'success', True, now
                 observed = {row['id']: row['metrics'] for row in combined}
                 previous_ids = set(AvitoDailyStatistic.objects.filter(
-                    connection=current, account_id=ACCOUNT,
+                    connection=current, account_id=str(connection.external_id),
                     organization_id_at_collection=current.channel.organization_id,
                     day=locked.day).values_list('avito_id', flat=True))
                 for identifier in sorted(set(observed) | set(locked.dimensions) | previous_ids):
                     dimensions = locked.dimensions.get(identifier, {})
                     AvitoDailyStatistic.objects.update_or_create(
-                        connection=current, account_id=ACCOUNT,
+                        connection=current, account_id=str(connection.external_id),
                         organization_id_at_collection=current.channel.organization_id,
                         day=locked.day, avito_id=identifier,
                         defaults={'source_run': locked, 'metrics': observed.get(identifier, dict.fromkeys(COUNTERS + MONEY)),
@@ -408,29 +417,39 @@ def collect_next(connection_id=4, *, observer=None):
         current.settings = metadata
         current.save(update_fields=['settings'])
     if observer and partial_code:
-        observer(4, 'statistics_daily', 'skipped', reason=partial_code)
+        observer(connection_id, 'statistics_daily', 'skipped', reason=partial_code)
     return status
 
 
-def scan_due(*, deadline, limit=1, observer=None):
+def scan_due(*, deadline, limit=2, observer=None):
     output = {'success': 0, 'failed': 0, 'skipped': 0}
-    if time.monotonic() + 20 > deadline:
-        output['skipped'] = 1
-        return output
-    notified = False
-    def observed(connection_id, check, outcome, **kwargs):
-        nonlocal notified
-        notified = True
-        observer(connection_id, check, outcome, **kwargs)
-    try:
-        status = collect_next(4, observer=observed if observer else None)
-    except ChannelConnection.DoesNotExist:
-        status = 'skipped'
-    except Exception:
-        status = 'failed'
-    output[status] += 1
-    if observer and not notified:
-        observer(4, 'statistics_daily', status)
+    now = timezone.now()
+    candidates = []
+    for connection in ChannelConnection.objects.filter(pk__in=ACCOUNTS).select_related('channel'):
+        state = _state(connection)
+        due, lease = _date(state.get('next_due_at')), _date(state.get('lease_until'))
+        if (state.get('enabled') is True and _allowed(connection, state)
+                and (due is None or due <= now) and (lease is None or lease <= now)):
+            candidates.append((due or now, connection.pk))
+    # Oldest due work first, with a separate bounded page for each account.
+    for _, connection_id in sorted(candidates)[:limit]:
+        if time.monotonic() + 20 > deadline:
+            output['skipped'] += 1
+            break
+        notified = False
+        def observed(observed_id, check, outcome, **kwargs):
+            nonlocal notified
+            notified = True
+            observer(observed_id, check, outcome, **kwargs)
+        try:
+            status = collect_next(connection_id, observer=observed if observer else None)
+        except ChannelConnection.DoesNotExist:
+            status = 'skipped'
+        except Exception:
+            status = 'failed'
+        output[status] += 1
+        if observer and not notified:
+            observer(connection_id, 'statistics_daily', status)
     return output
 
 
@@ -555,17 +574,19 @@ def source_comparisons(periods):
 def _source_history(connection, now=None):
     """Shared bounded DB read; callers establish the current connection scope."""
     cutoff = collection_cutoff(now)
-    rows = list(AvitoDailyStatistic.objects.filter(connection=connection, account_id=ACCOUNT,
+    rows = list(AvitoDailyStatistic.objects.filter(connection=connection, account_id=str(connection.external_id),
         organization_id_at_collection=connection.channel.organization_id,
         day__range=(cutoff-timedelta(days=29), cutoff),
-        source_run__connection=connection, source_run__account_id=ACCOUNT,
+        source_run__connection=connection, source_run__account_id=str(connection.external_id),
         source_run__organization_id_at_collection=connection.channel.organization_id,
         source_run__state='success', source_run__pagination_complete=True,
+        source_run__binding_digest=_stamp(connection),
         source_run__day=F('day')).select_related('source_run')
-        .order_by('-day', 'avito_id')[:MAX_ROWS*BACKFILL_DAYS*2])
+        .order_by('-day', 'avito_id')[:_max_rows(connection)*BACKFILL_DAYS*2])
     complete_runs = AvitoStatisticsRun.objects.filter(
-        connection=connection, account_id=ACCOUNT,
-        organization_id_at_collection=connection.channel.organization_id, state='success', pagination_complete=True,
+        connection=connection, account_id=str(connection.external_id),
+        organization_id_at_collection=connection.channel.organization_id, binding_digest=_stamp(connection),
+        state='success', pagination_complete=True,
         day__range=(cutoff-timedelta(days=29), cutoff)).order_by('-pk')
     day_runs = {}
     for run in complete_runs:
@@ -618,9 +639,10 @@ def display(connection, actor, now=None):
     state = _state(connection)
     cutoff, rows, day_runs = _source_history(connection, now)
     completed_days = set(day_runs)
-    latest = AvitoStatisticsRun.objects.filter(connection=connection, account_id=ACCOUNT,
+    latest = AvitoStatisticsRun.objects.filter(connection=connection, account_id=str(connection.external_id),
         organization_id_at_collection=connection.channel.organization_id).order_by('-pk').first()
     output = {'enabled': state.get('enabled') is True and _allowed(connection, state),
+        'connection_name': connection.name, 'connection_id': connection.pk,
         'can_configure': subscriber_allowed(actor, connection.channel.organization),
         'last_success_at': _date(state.get('last_success_at')),
         'next_due_at': _date(state.get('next_due_at')),
@@ -666,7 +688,7 @@ def display(connection, actor, now=None):
     output['groups_total'] = len(output['groups'])
     output['groups'] = output['groups'][:100]
     from .avito_feed_models import AvitoServicesFeed
-    feed = AvitoServicesFeed.objects.filter(connection=connection, account_id=ACCOUNT,
+    feed = AvitoServicesFeed.objects.filter(connection=connection, account_id=str(connection.external_id),
         organization_id_at_import=connection.channel.organization_id).first()
     if feed:
         output['changes'] = list(feed.versions.filter(
@@ -677,7 +699,7 @@ def display(connection, actor, now=None):
             changes__0__field=FIELD, changes__0__source=SOURCE,
             changes__0__binding_sha256=binding_hash,
             changes__0__scope__connection_id=connection.pk,
-            changes__0__scope__account_id=ACCOUNT,
+            changes__0__scope__account_id=str(connection.external_id),
             changes__0__scope__organization_id=connection.channel.organization_id
         ).order_by('-pk').values('pk', 'created_at', 'changes')[:30]
         output['promotion_observations'] = []
