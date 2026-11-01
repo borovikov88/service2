@@ -19,6 +19,20 @@ from pool_service.tests.test_crm_live_pilot_commands import PilotFixture
 
 @skipUnless(os.environ.get('CRM_CARD_BROWSER_TEST') == '1', 'Dedicated Chromium acceptance step enables this test')
 class CommercialCardBrowserTests(PilotFixture, StaticLiveServerTestCase):
+    def test_compact_header_and_full_height_drop_surface(self):
+        self.org.paid_until = timezone.now() + timedelta(days=30)
+        self.org.save(update_fields=['paid_until'])
+        ids = [self.create(operation_key=f'compact-{n}', title=f'Synthetic compact {n}')['deal_id'] for n in range(12)]
+        self.client.force_login(self.user)
+        fixture = dict(base=self.live_server_url, org=self.org.pk, pipeline=self.pipeline.pk,
+            source=self.pipeline.stages.get(code='need').pk, target=self.pipeline.stages.get(code='technical').pk,
+            deal=ids[0], sessionCookie=self.client.cookies[settings.SESSION_COOKIE_NAME].value,
+            sessionCookieName=settings.SESSION_COOKIE_NAME)
+        from pool_service.tests.test_crm_lead_kanban_browser import _bounded_browser_process
+        code, output = _bounded_browser_process(['node', str(Path(__file__).with_name('crm_compact_board.browser.cjs'))], fixture)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(CrmDeal.objects.get(pk=ids[0]).stage_id, fixture['target'])
+
     def test_all_pipeline_cards_header_money_and_manual_stage(self):
         from pool_service.crm_commercial_models import CrmPipeline
         self.org.paid_until = timezone.now() + timedelta(days=30)

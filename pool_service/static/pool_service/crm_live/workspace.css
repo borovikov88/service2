@@ -23,3 +23,14 @@ html[data-theme=dark] .crm-live{--crm-bg:#0d1726;--crm-panel:#142237;--crm-soft:
 #crm-live-dialog-caption{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.crm-live-copy-link{white-space:nowrap}
 
 .crm-live-completion-warning{padding:14px;border-radius:9px;background:var(--crm-amber-soft);color:var(--crm-amber)!important;border:1px solid var(--crm-line);font-size:13px;line-height:1.5}
+
+/* Compact CRM header; keep the lead page header independent. */
+#crm-live .crm-live-heading{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:16px;margin:4px 0 14px;align-items:center}
+#crm-live .crm-live-heading h1{margin:0}
+#crm-live .crm-live-heading .crm-live-pipelines{min-width:0;margin:0;padding:4px}
+#crm-live .crm-live-heading .crm-live-pipelines button{padding:9px 12px;flex:0 0 auto}
+.crm-live-linked-filters{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px;color:var(--crm-muted);font-size:12px}
+/* Every lane is a drop surface down to the end of the longest loaded column. */
+.crm-live-board>.crm-live-lane{align-self:stretch;height:auto}
+@media(max-width:1000px){#crm-live .crm-live-heading{grid-template-columns:1fr auto;gap:10px}#crm-live .crm-live-heading .crm-live-pipelines{grid-row:2;grid-column:1/-1}#crm-live .crm-live-heading>.crm-live-button{grid-row:1;grid-column:2;margin:0}}
+@media(max-width:700px){.crm-live-board{display:flex;align-items:stretch;overflow-x:auto;overscroll-behavior-x:contain;min-height:340px;padding-bottom:15px;scroll-snap-type:x proximity}.crm-live-board>.crm-live-lane{flex:0 0 82vw;width:auto;min-height:340px;margin-bottom:0;scroll-snap-align:start}}
