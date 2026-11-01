@@ -1,21 +1,23 @@
 {% extends "pool_service/base.html" %}
-{% load static %}
-{% block title %}Авито — Управление{% endblock %}
+{% load static avito_autoload %}
+{% block title %}Авито{% if selected.connection.pk == 4 %} · Услуги{% elif selected.connection.pk == 1 %} · Товары{% endif %}{% endblock %}
 {% block extra_head %}
 <link rel="stylesheet" href="{% static 'assets/css/avito-dashboard.css' %}?v=4">
 <script src="{% static 'assets/js/avito-dashboard.js' %}?v=3" defer></script>
+<link rel="stylesheet" href="{% static 'assets/css/avito-owner-dashboard.css' %}?v=1">
+<script src="{% static 'assets/js/avito-owner-dashboard.js' %}?v=1" defer></script>
 {% endblock %}
 {% block content %}
 <div class="avito-admin" data-avito-dashboard data-avito-timezone="{{ local_analytics.timezone }}">
   <div class="d-flex flex-wrap align-items-start justify-content-between gap-3 mb-4">
     <div>
       <div class="avito-kicker mb-2">Маркетинг · Каналы продаж</div>
-      <h1 class="avito-heading mb-1">Авито</h1>
-      <p class="text-muted mb-0">Аванс, объявления и ошибки выгрузки.</p>
+      <h1 class="avito-heading mb-1">Авито{% if selected.connection.pk == 4 %} · Услуги{% elif selected.connection.pk == 1 %} · Товары{% endif %}</h1>
+      <p class="text-muted mb-0">Размещение, обращения и стоимость результата.</p>
     </div>
     <div class="d-flex flex-wrap gap-2">
       {% if local_analytics.available %}<a class="btn btn-outline-secondary" href="{% url 'communications_conversations' %}"><i class="bi bi-chat-dots me-1" aria-hidden="true"></i>Все диалоги</a>{% endif %}
-      {% if selected %}<a class="btn btn-outline-primary" href="{% url 'avito_services_feed' selected.connection.pk %}">Редактор услуг</a>{% endif %}
+      {% if selected.connection.pk == 4 %}<a class="btn btn-outline-primary" href="{% url 'avito_services_feed' selected.connection.pk %}">Редактор услуг</a>{% endif %}
       {% if selected %}<a class="btn btn-outline-secondary" href="{% url 'communication_connection_edit' selected.connection.pk %}"><i class="bi bi-gear me-1" aria-hidden="true"></i>Настройки подключения</a>{% else %}<a class="btn btn-outline-secondary" href="{% url 'communications_channels' %}">Подключения</a>{% endif %}
     </div>
   </div>
@@ -29,6 +31,9 @@
           <select class="form-select" id="avito-account" name="account">
             {% for account in accounts %}<option value="{{ account.connection.pk }}" {% if account.connection.pk == selected.connection.pk %}selected{% endif %}>{{ account.connection.name }}</option>{% endfor %}
           </select>
+          <input type="hidden" name="owner_period" value="{{ owner_dashboard.period.key|default:'30' }}">
+          <input type="hidden" name="owner_from" value="{{ owner_dashboard.period.from }}">
+          <input type="hidden" name="owner_to" value="{{ owner_dashboard.period.to }}">
           <input type="hidden" name="date_from" value="{{ local_analytics.start }}">
           <input type="hidden" name="date_to" value="{{ local_analytics.end }}">
           <button type="submit" class="btn btn-outline-secondary">Открыть</button>
@@ -52,41 +57,11 @@
       </div>
     {% endif %}
 
-    <div class="row g-3 mb-3 avito-top-cards">
-      {% include 'pool_service/avito/_advance.html' %}
-      <div class="col-md-6 col-xl-4">
-        <section class="avito-panel" aria-labelledby="avito-balance-heading">
-          <div class="avito-panel__header">
-            <h2 class="avito-panel__title" id="avito-balance-heading"><i class="bi bi-wallet2 avito-panel__icon" aria-hidden="true"></i>Кошелёк Авито</h2>
-            <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" data-avito-submit>
-              {% include 'pool_service/avito/_refresh_fields.html' %}<input type="hidden" name="section" value="balance">
-              <button type="submit" class="btn btn-sm btn-outline-secondary" aria-label="Обновить баланс" {% if not selected.has_credentials %}disabled{% endif %}><i class="bi bi-arrow-clockwise" aria-hidden="true"></i></button>
-            </form>
-          </div>
-          <div class="avito-panel__body">
-            {% include 'pool_service/avito/_section_state.html' with state=workspace.balance %}
-            {% if workspace.balance.data %}
-              <div class="small text-muted mb-2">Денежные средства</div>
-              <div class="avito-money">{{ workspace.balance.data.real|default_if_none:"—" }}{% if workspace.balance.data.real != None %}<small>{{ workspace.balance.data.currency }}</small>{% endif %}</div>
-              {% if workspace.balance.data.real == None %}<div class="small text-muted mt-1">Сумма не получена от Авито</div>{% endif %}
-              <details class="avito-help mt-2"><summary>Бонусы</summary><div class="avito-balance-bonus"><span class="text-muted">Бонусы</span><strong>{{ workspace.balance.data.bonus|default_if_none:"—" }}{% if workspace.balance.data.bonus != None %} {{ workspace.balance.data.currency }}{% endif %}</strong></div></details>
-            {% elif workspace.balance.status == 'ok' %}
-              <p class="small text-muted mb-0">Авито не вернул сведения о балансе.</p>
-            {% elif not workspace.balance.status %}
-              <div class="avito-money mb-2">—</div>
-              <p class="small text-muted mb-0">Баланс ещё не загружен</p>
-            {% else %}
-              <p class="small text-muted mb-0">Сохранённых сведений о балансе нет.</p>
-            {% endif %}
-          </div>
-        </section>
-      </div>
-      {% include 'pool_service/avito/_audit_summary.html' %}
-    </div>
+    {% include 'pool_service/avito/_owner_overview.html' %}
 
-    {% include 'pool_service/avito/_tariff_reminder.html' %}
-    {% include 'pool_service/avito/_autoload_report.html' %}
-
+    <details class="avito-disclosure mb-3" id="avito-listings-details" {% if expanded_item_id or request.GET.q %}open{% endif %}>
+      <summary>Все объявления: статусы, цены и действия</summary>
+      <div class="avito-disclosure__body">
     <section class="avito-panel mb-4" aria-labelledby="avito-items-heading">
       <div class="avito-panel__header">
         <div>
@@ -182,10 +157,57 @@
       {% endif %}
     </section>
 
+      </div>
+    </details>
+
+    <details class="avito-disclosure mb-3" id="avito-finance-details">
+      <summary>Деньги, тариф и уведомления</summary>
+      <div class="avito-disclosure__body">
+    <div class="row g-3 mb-3 avito-top-cards">
+      {% include 'pool_service/avito/_advance.html' %}
+      <div class="col-md-6 col-xl-4">
+        <section class="avito-panel" aria-labelledby="avito-balance-heading">
+          <div class="avito-panel__header">
+            <h2 class="avito-panel__title" id="avito-balance-heading"><i class="bi bi-wallet2 avito-panel__icon" aria-hidden="true"></i>Кошелёк Авито</h2>
+            <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" data-avito-submit>
+              {% include 'pool_service/avito/_refresh_fields.html' %}<input type="hidden" name="section" value="balance">
+              <button type="submit" class="btn btn-sm btn-outline-secondary" aria-label="Обновить баланс" {% if not selected.has_credentials %}disabled{% endif %}><i class="bi bi-arrow-clockwise" aria-hidden="true"></i></button>
+            </form>
+          </div>
+          <div class="avito-panel__body">
+            {% include 'pool_service/avito/_section_state.html' with state=workspace.balance %}
+            {% if workspace.balance.data %}
+              <div class="small text-muted mb-2">Денежные средства</div>
+              <div class="avito-money">{{ workspace.balance.data.real|default_if_none:"—" }}{% if workspace.balance.data.real != None %}<small>{{ workspace.balance.data.currency }}</small>{% endif %}</div>
+              {% if workspace.balance.data.real == None %}<div class="small text-muted mt-1">Сумма не получена от Авито</div>{% endif %}
+              <details class="avito-help mt-2"><summary>Бонусы</summary><div class="avito-balance-bonus"><span class="text-muted">Бонусы</span><strong>{{ workspace.balance.data.bonus|default_if_none:"—" }}{% if workspace.balance.data.bonus != None %} {{ workspace.balance.data.currency }}{% endif %}</strong></div></details>
+            {% elif workspace.balance.status == 'ok' %}
+              <p class="small text-muted mb-0">Авито не вернул сведения о балансе.</p>
+            {% elif not workspace.balance.status %}
+              <div class="avito-money mb-2">—</div>
+              <p class="small text-muted mb-0">Баланс ещё не загружен</p>
+            {% else %}
+              <p class="small text-muted mb-0">Сохранённых сведений о балансе нет.</p>
+            {% endif %}
+          </div>
+        </section>
+      </div>
+    </div>
+
+    {% include 'pool_service/avito/_tariff_reminder.html' %}
+
+      </div>
+    </details>
+    {% avito_service_report selected.connection workspace.autoload_report.data as owner_service_report %}
+    <details class="avito-disclosure mb-3" id="avito-report-details" {% if autoload_priority_rows or owner_service_report.has_attention %}open{% endif %}>
+      <summary>Подробный результат автозагрузки</summary>
+      <div class="avito-disclosure__body">{% include 'pool_service/avito/_autoload_report.html' %}</div>
+    </details>
+
     {% if expanded_item_id and not detail_in_items %}<div class="avito-panel mb-3"><p class="small text-muted px-3 pt-2 mb-0">Выбранное объявление не входит в текущую загруженную страницу.</p>{% include 'pool_service/avito/_item_detail.html' %}</div>{% endif %}
     <details class="avito-disclosure mb-3" id="avito-audit-details">
       <summary>Подробности аудита: дубли, остатки и XML</summary>
-      <div class="avito-disclosure__body">{% include 'pool_service/avito/_audit.html' %}</div>
+      <div class="avito-disclosure__body"><div class="row mb-3">{% include 'pool_service/avito/_audit_summary.html' %}</div>{% include 'pool_service/avito/_audit.html' %}</div>
     </details>
     <details class="avito-disclosure mb-3" id="avito-analytics-details">
       <summary>Статистика, звонки и обращения</summary>
