@@ -14,6 +14,8 @@ from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db.models import Count, F, Q, Sum, OuterRef, Subquery
+from django.db import transaction
+from .services.crm_board_cursor import BoardReset, epoch, portion, cursor_time
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -114,7 +116,7 @@ def _task_for(deal):
 ATTENTION_CANDIDATE_LIMIT = 1000
 
 
-def _attention_ids(queryset, user, organization, attention):
+def _attention_ids(queryset, user, organization, attention, as_of=None):
     """Classify one explicitly bounded business-visible set before pagination.
 
     The sentinel check precedes task loading/privacy/timing. Reuse the current
@@ -129,7 +131,7 @@ def _attention_ids(queryset, user, organization, attention):
     task_ids = {task.pk for task, invalid in pairs.values() if task and not invalid}
     visible = {task.pk: task for task in readable_tasks(
         ServiceTask.objects.filter(pk__in=task_ids, organization=organization), user)}
-    now = timezone.now()
+    now = as_of or timezone.now()
     zone = ZoneInfo(getattr(settings, "COMMUNICATION_TIME_ZONE", "Asia/Barnaul"))
     today = now.astimezone(zone).date()
     matched = []
@@ -252,7 +254,12 @@ def _serialize_deals(deals, user, organization, grant, *, detail=False):
     return rows
 
 
-def _workspace_data(request, organization):
+@transaction.atomic
+def _workspace_data(request, organization, *, board=None):
+    board = request.GET.get("layout") == "board" if board is None else board
+    if board:
+        organization = Organization.objects.select_for_update().get(pk=organization.pk)
+        if not can_view_team_deals(request.user, organization): raise PermissionDenied
     grant = _grant(request.user, organization)
     pipelines = list(CrmPipeline.objects.filter(organization=organization, is_active=True).prefetch_related("stages"))
     pipeline_id = _id(request.GET["pipeline"]) if request.GET.get("pipeline") else (pipelines[0].pk if pipelines else None)
@@ -311,9 +318,10 @@ def _workspace_data(request, organization):
     attention = request.GET.get("attention", "all")
     if attention not in {"all", "today", "overdue", "missing"}:
         raise ValidationError("Некорректный фильтр следующего действия.")
+    as_of = cursor_time(request.GET.get('cursor',''), timezone.now()) if board else None
     attention_total = None
     if attention != "all":
-        matched_ids = _attention_ids(queryset, request.user, organization, attention)
+        matched_ids = _attention_ids(queryset, request.user, organization, attention, as_of=as_of)
         attention_total = len(matched_ids)
         queryset = queryset.filter(pk__in=matched_ids)
     stage_totals = [{"stage_id": row["stage_id"], "currency": row["currency"],
@@ -321,8 +329,28 @@ def _workspace_data(request, organization):
         "count": row["count"], "unknown_count": row["count"] - row["known_count"]}
         for row in queryset.order_by().values("stage_id", "currency").annotate(
             amount_total=Sum("amount"), count=Count("pk"), known_count=Count("amount"))]
-    offset = (page - 1) * PAGE_SIZE
-    deals = list(queryset.order_by("-pk")[offset:offset + PAGE_SIZE + 1])
+    column_windows = []
+    if board:
+        revision=epoch(organization.pk)
+        stage_ids=[item.pk for pipeline in pipelines if pipeline.pk==pipeline_id for item in pipeline.stages.all()]
+        requested=request.GET.get('board_column','')
+        if requested and requested not in {str(pk) for pk in stage_ids}: raise BoardReset()
+        if request.GET.get('cursor') and not requested: raise BoardReset()
+        scope={'kind':'deals','actor':request.user.pk,'org':organization.pk,'pipeline':pipeline_id,
+            'q':query,'owner':owner,'outcome':outcome,'object':object_kind,'stage':stage,
+            'specialization':specialization,'attention':attention,'as_of':as_of.isoformat(),
+            'from':request.GET.get('decision_from',''),'to':request.GET.get('decision_to','')}
+        deals=[]
+        for stage_id in stage_ids:
+            if requested and requested!=str(stage_id): continue
+            rows,cursor=portion(queryset.filter(stage_id=stage_id),scope=scope,column=stage_id,
+                revision=revision,cursor=request.GET.get('cursor','') if requested else '',as_of=as_of)
+            deals.extend(rows)
+            column_windows.append({'stage_id':stage_id,'cursor':cursor,'loaded':len(rows),'has_more':bool(cursor)})
+    else:
+        offset=(page-1)*PAGE_SIZE
+        deals=list(queryset.order_by('-pk')[offset:offset+PAGE_SIZE+1])
+
     return {
         "organization_id": organization.pk, "organization_name": organization.name, "actor_id": request.user.pk,
         "capabilities": {"create": _write_capability(grant, organization, "create_own_deals")
@@ -333,11 +361,12 @@ def _workspace_data(request, organization):
                 "requires_manual_confirmation": stage.code == "completed",
                 "transition_block_reason": "Этап отключён" if not stage.is_active else ""}
                 for stage in pipeline.stages.all()]} for pipeline in pipelines],
-        "deals": _serialize_deals(deals[:PAGE_SIZE], request.user, organization, grant),
-        "selected_pipeline_id": pipeline_id, "has_more": len(deals) > PAGE_SIZE,
-        "page": page, "has_previous": page > 1,
+        "deals": _serialize_deals(deals if board else deals[:PAGE_SIZE], request.user, organization, grant),
+        "column_windows": column_windows, "layout": "board" if board else "page",
+        "selected_pipeline_id": pipeline_id, "has_more": not board and len(deals) > PAGE_SIZE,
+        "page": 1 if board else page, "has_previous": not board and page > 1,
         "page_size": PAGE_SIZE, "q": query, "owner": owner, "stage_totals": stage_totals,
-        "attention": attention, "attention_total": attention_total,
+        "attention": attention, "attention_total": attention_total, "attention_as_of": as_of.isoformat() if as_of else None,
         "outcome": outcome, "object": object_kind, "stage": stage, "specialization": specialization,
         "decision_from": request.GET.get("decision_from", ""), "decision_to": request.GET.get("decision_to", ""),
     }
@@ -355,6 +384,8 @@ def _api(view):
             return JsonResponse({"error": "Доступ к этому действию сейчас отсутствует.", "code": "forbidden"}, status=403)
         except Http404:
             return JsonResponse({"error": "Карточка или воронка недоступна.", "code": "not_found"}, status=404)
+        except BoardReset as exc:
+            return JsonResponse({"error":exc.messages[0],"code":"reset_required"},status=409)
         except CommercialConflict:
             return JsonResponse({"error": "Карточка или задача уже изменена. Обновите её и проверьте данные перед сохранением.", "code": "conflict"}, status=409)
         except ValidationError as exc:
@@ -386,7 +417,7 @@ def workspace(request):
     if blocked:
         return blocked
     try:
-        data = _workspace_data(request, organization)
+        data = _workspace_data(request, organization, board=request.GET.get("view") != "table")
     except ValidationError as exc:
         # A saved invalid/too-wide filter must still open a usable filter shell.
         # Access errors and unavailable pipeline/card 404s remain unchanged.
@@ -395,12 +426,15 @@ def workspace(request):
             request.GET = original.copy()
             request.GET["attention"], request.GET["page"] = "all", "1"
             try:
-                data = _workspace_data(request, organization)
+                data = _workspace_data(request, organization, board=request.GET.get("view") != "table")
             except ValidationError:
                 from django.http import QueryDict
                 request.GET = QueryDict(mutable=True)
                 request.GET["org_id"] = str(organization.pk)
-                data = _workspace_data(request, organization)
+                # Even a configured pipeline with too many stages must open a
+                # usable bounded table, not fail its board budget repeatedly.
+                data = _workspace_data(request, organization, board=False)
+                data["initial_view"] = "table"
         finally:
             request.GET = original
         message = exc.messages[0] if exc.messages else "Проверьте условия поиска."

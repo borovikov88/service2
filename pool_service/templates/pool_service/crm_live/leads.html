@@ -4,7 +4,7 @@
 {% block extra_head %}
 <link rel="stylesheet" href="{% static 'pool_service/crm_live/workspace.css' %}?v=20261101-compact">
 <link rel="stylesheet" href="{% static 'pool_service/crm_live/leads.css' %}?v=20261101-drop">
-<script src="{% static 'pool_service/crm_live/leads.js' %}?v=20261031-continuation" defer></script>
+<script src="{% static 'pool_service/crm_live/leads.js' %}?v=20261101-cursor" defer></script>
 {% endblock %}
 {% block content %}
 <section class="crm-live crm-leads" id="crm-leads" aria-label="Лиды">
@@ -28,6 +28,7 @@
   <div id="lead-list" aria-busy="false"></div>
   <nav class="lead-pager" aria-label="Страницы лидов"><button class="crm-live-button" type="button" id="lead-prev">← Назад</button><span id="lead-page"></span><button class="crm-live-button" type="button" id="lead-next">Далее →</button></nav>
   <p class="crm-live-muted lead-limits">Переписка, записи звонков и вложения открываются в исходных коммуникациях с учётом ваших прав. При разборе обращения укажите следующий шаг и его срок.</p>
+  <p class="crm-live-muted">Живой список: порции загружаются последовательно. После изменений связанных данных обновите доску.</p>
   <noscript><p>Для работы с лидами включите JavaScript.</p></noscript>
   <dialog class="crm-live-dialog lead-dialog" id="lead-dialog" aria-labelledby="lead-dialog-title"><header class="crm-live-dialog-header"><span>Карточка лида</span><button type="button" class="crm-live-close" id="lead-close" aria-label="Закрыть карточку">×</button></header><div class="crm-live-dialog-inner" id="lead-dialog-content"></div></dialog>
   <div hidden>{% csrf_token %}</div>
