@@ -7,7 +7,9 @@ Both boards show initial50 per column, then50 per explicit request. No200-card
 ceiling and no need to open a table for card201. Deal table and closed-lead history
 retain existing page pagination. Initial board work is proportional to configured
 column count; source history/media is not fetched without its existing detail action.
-No global CI workflow changes are included in this LOCAL delta.
+Follow-up LOCAL CI wiring adds the cursor browser flag/module and native HTTP/epoch
+modules plus path filters. Existing gates, timeouts and release permissions are unchanged.
+No external CI has been dispatched.
 
 ## Protocol / consistency boundary
 
