@@ -32,7 +32,7 @@
 {% if quote.blocked %}<p role="alert" class="alert alert-warning">{{ quote.blocked }}</p>{% else %}
 <a href="{{ quote.document_url }}">Открыть документ выбранной версии</a><p class="small">Просмотр и печать не считаются отправкой.</p>
 <details><summary>Согласуемый состав</summary>{% include 'pool_service/crm_live/quote_rows.html' with rows=quote.rows %}</details>
-{% if quote.ready %}<section class="quote-ready"><h3>Основание для подготовки передачи</h3><p>Выбранная версия и вариант приняты. Работы ещё не запущены. Передача в проект, договор или существующую заявку — отдельное действие; аванс этим КП не требуется.</p></section>{% endif %}
+{% if quote.ready %}<section class="quote-ready"><h3>Основание для подготовки передачи</h3><p>Выбранная версия и вариант приняты. Работы ещё не запущены. Передача в проект, договор или существующую заявку — отдельное действие; аванс этим КП не требуется.</p><a href="{% url 'crm_handoff' deal.pk %}?org_id={{ organization.pk }}">Подготовить передачу существующей сервисной заявки</a></section>{% endif %}
 {% if quote.actionable %}
 <details><summary>Зафиксировать отправку вне системы</summary>
 <form method="post">{% csrf_token %}<input type="hidden" name="action" value="send"><input type="hidden" name="quote_id" value="{{ quote.pk }}"><input type="hidden" name="revision" value="{{ deal.revision }}"><input type="hidden" name="operation_key" value="{{ quote.keys.send }}">
