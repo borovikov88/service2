@@ -4,7 +4,7 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.core import signing
 from django.db import transaction
-from django.test import TestCase
+from django.test import TestCase, SimpleTestCase
 from django.urls import reverse
 from django.utils import timezone
 from pool_service.tests.test_crm_live_pilot_commands import PilotFixture
@@ -174,3 +174,12 @@ class ColumnLoadingTests(PilotFixture, TestCase):
         self.assertEqual(changed.status_code,409)
         self.grant.view_leads=False;self.grant.save()
         self.assertEqual(self.client.get(url,args|{'board_column':'unparsed','cursor':token}).status_code,403)
+
+
+class ColumnBrowserSettingsTests(SimpleTestCase):
+    def test_standalone_browser_flag_uses_private_file_database(self):
+        import os, subprocess, sys
+        env={key:value for key,value in os.environ.items() if not key.endswith('_BROWSER_TEST') and key!='SERVICE2_SQLITE_LIVE_SERVER_TEST'}
+        env['CRM_COLUMN_BROWSER_TEST']='1'
+        result=subprocess.run([sys.executable,'-c',"from service_site.test_settings import DATABASES; name=DATABASES['default']['TEST']['NAME']; assert name and name != ':memory:'"],env=env,text=True,capture_output=True,timeout=30)
+        self.assertEqual(result.returncode,0,result.stderr)
