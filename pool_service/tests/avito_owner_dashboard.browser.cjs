@@ -35,6 +35,9 @@ const {chromium} = require('playwright');
     let response = await page.goto(servicesUrl);
     assert.equal(response.status(), 200);
     await page.locator('[data-avito-owner]').waitFor();
+    assert.equal(await page.locator('[data-owner-account-tabs] [data-owner-account]').count(), 2);
+    assert.equal(await page.locator('[data-owner-account="' + fixture.servicesId + '"]').getAttribute('aria-current'), 'page');
+    assert.equal(await page.locator('#avito-account, form.avito-account-picker, .avito-account-bar').count(), 0);
     assert.equal(await page.locator('[data-owner-kpi]').count(), 5);
     assert.ok((await page.locator('[data-owner-kpi="views"]').innerText()).includes('—'));
     assert.ok((await page.locator('[data-owner-kpi="contacts"]').innerText()).includes('6'));
@@ -113,8 +116,35 @@ const {chromium} = require('playwright');
       assert.equal(await page.locator('[data-owner-cost="cost_contact"]').getAttribute('aria-pressed'), 'true');
     }
 
+    // One missing series must collapse even while another series keeps the panel visible.
+    const chartScriptUrl = await page.locator('script[src*="avito-owner-dashboard.js"]').first().getAttribute('src');
+    await page.evaluate(() => {
+      const payload = document.getElementById('avito-owner-chart-data');
+      const data = JSON.parse(payload.textContent);
+      data.views = data.labels.map(() => null);
+      payload.textContent = JSON.stringify(data);
+    });
+    await page.addScriptTag({url: new URL(chartScriptUrl, fixture.base).href});
+    assert.equal(await page.locator('[data-owner-charts]').isVisible(), true);
+    assert.equal(await page.locator('svg[data-owner-chart="views"]').getAttribute('hidden'), '');
+    assert.equal(await page.locator('svg[data-owner-chart="views"]').isVisible(), false);
+    assert.equal(await page.locator('svg[data-owner-chart="contacts"]').isVisible(), true);
+
+    // A real, known zero must keep its chart; absence must not be coerced into zero.
+    await page.evaluate(() => {
+      const payload = document.getElementById('avito-owner-chart-data');
+      const data = JSON.parse(payload.textContent);
+      data.views = data.labels.map(() => 0);
+      payload.textContent = JSON.stringify(data);
+    });
+    await page.addScriptTag({url: new URL(chartScriptUrl, fixture.base).href});
+    const zeroChart = page.locator('svg[data-owner-chart="views"]');
+    assert.equal(await zeroChart.getAttribute('hidden'), null);
+    assert.equal(await zeroChart.isVisible(), true);
+    assert.equal(await zeroChart.locator('circle').count(), 7);
+    assert.equal(await page.locator('[data-owner-empty="views"]').isVisible(), false);
+
     await page.setViewportSize({width: 1440, height: 1000});
-    await page.locator('#avito-account').selectOption(String(fixture.goodsId));
     const [goodsResponse] = await Promise.all([
       page.waitForResponse(response => {
         const url = new URL(response.url());
@@ -124,19 +154,29 @@ const {chromium} = require('playwright');
           && request.method() === 'GET' && request.isNavigationRequest()
           && request.resourceType() === 'document';
       }),
-      page.locator('form.avito-account-picker button[type="submit"]').click(),
+      page.locator('[data-owner-account="' + fixture.goodsId + '"]').click(),
     ]);
     assert.equal(goodsResponse.status(), 200);
     await page.waitForURL(url => url.searchParams.get('account') === String(fixture.goodsId));
     assert.equal(new URL(page.url()).searchParams.get('account'), String(fixture.goodsId));
     assert.notEqual(new URL(page.url()).searchParams.get('owner_ad'), '91');
     await page.locator('[data-avito-owner]').waitFor();
-    assert.ok((await page.locator('[data-owner-kpi="views"]').innerText()).includes('—'));
-    assert.ok((await page.locator('[data-owner-kpi="spending"]').innerText()).includes('—'));
+    assert.equal(await page.locator('[data-owner-kpi]').count(), 0);
+    assert.equal(await page.locator('[data-owner-no-statistics]').isVisible(), true);
+    assert.equal(await page.locator('[data-owner-account="' + fixture.goodsId + '"]').getAttribute('aria-current'), 'page');
+    assert.equal(new URL(page.url()).searchParams.get('owner_period'), 'custom');
+    assert.equal(new URL(page.url()).searchParams.get('owner_from'), '2026-01-02');
+    assert.equal(new URL(page.url()).searchParams.get('owner_to'), '2026-01-06');
     const goodsData = JSON.parse(await page.locator('#avito-owner-chart-data').textContent());
     assert.ok(goodsData.views.every(value => value === null));
     assert.equal(await page.locator('a[href="/avito/1/services-feed/"]').count(), 0);
-    assert.equal(await page.locator('svg[data-owner-chart="views"] polyline').count(), 0);
+    assert.equal(await page.locator('[data-owner-charts]').isVisible(), false);
+    assert.equal(await page.locator('[data-owner-charts-empty]').isVisible(), true);
+    for (const name of ['views', 'contacts', 'cost']) {
+      const emptyChart = page.locator('svg[data-owner-chart="' + name + '"]');
+      assert.equal(await emptyChart.isVisible(), false);
+      assert.equal(await emptyChart.locator('line, text, polyline, circle, rect').count(), 0);
+    }
     await page.setViewportSize({width: 390, height: 844});
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
       'Goods empty state must also fit mobile');

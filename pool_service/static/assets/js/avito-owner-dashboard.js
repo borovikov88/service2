@@ -39,6 +39,17 @@
     const existing = values.filter(known);
     const empty = root.querySelector('[data-owner-empty="' + target + '"]');
     if (empty) empty.hidden = existing.length > 0;
+    svg.toggleAttribute('hidden', existing.length === 0);
+    const wrapper = svg.closest('.avito-owner-svg-wrap');
+    if (wrapper) wrapper.classList.toggle('avito-owner-svg-wrap--empty', existing.length === 0);
+    const output = root.querySelector('[data-owner-chart-output="' + outputName + '"]');
+    const hasOutputValues = outputName === 'volume'
+      ? series('views').some(known) || series('contacts').some(known) : existing.length > 0;
+    if (output) {
+      output.hidden = !hasOutputValues;
+      output.textContent = hasOutputValues ? 'Выберите точку для просмотра значения' : '';
+    }
+    if (!existing.length) return;
     const width = 600, left = 46, right = 12, top = 12, bottom = 24;
     const plotHeight = height - top - bottom;
     const maximum = existing.length ? Math.max.apply(null, existing) : 1;
@@ -69,8 +80,6 @@
       });
       finishSegment();
     }
-    const output = root.querySelector('[data-owner-chart-output="' + outputName + '"]');
-    if (output) output.textContent = existing.length ? 'Выберите точку для просмотра значения' : 'Динамика не получена: неизвестные значения не заменяются нулями';
     values.forEach(function (value, index) {
       if (!known(value)) return;
       const label = sourceDate(index) + ' · ' + metricNames[key] + ': ' + valueText(value, key);
@@ -91,6 +100,13 @@
       svg.appendChild(point);
     });
   }
+  const hasChartValues = ['views', 'contacts', 'spending', 'cost_view', 'cost_contact'].some(function (key) {
+    return series(key).some(known);
+  });
+  const chartGroup = root.querySelector('[data-owner-charts]');
+  const chartEmpty = root.querySelector('[data-owner-charts-empty]');
+  if (chartGroup) chartGroup.hidden = !hasChartValues;
+  if (chartEmpty) chartEmpty.hidden = hasChartValues;
   draw('views', 'views', 130, 'volume');
   draw('contacts', 'contacts', 130, 'volume');
   draw('cost', 'cost_view', 288, 'cost');
