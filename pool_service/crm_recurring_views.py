@@ -22,7 +22,10 @@ from .client_queries import readable_clients
 @require_http_methods(['GET','POST'])
 def workspace(request,deal_id):
     org=_organization(request)
-    _,_,deal=service._scope_read_ui(request.user,org.pk,deal_id)
+    try:
+        _,_,deal=service._scope_read_ui(request.user,org.pk,deal_id)
+    except ValidationError:
+        return _blocked(request, org, deal_id)
     base=reverse('crm_recurring',args=[deal.pk])+'?org_id='+str(org.pk)
     error='';status=200
     if request.method=='POST':
@@ -52,7 +55,13 @@ def workspace(request,deal_id):
             error='; '.join(exc.messages) if isinstance(exc,ValidationError) else 'Проверьте даты, объёмы и суммы.'
             status=409 if isinstance(exc,CommercialConflict) else 400
     before=request.GET.get('before')
-    history=service.read_history(actor=request.user,organization_id=org.pk,deal_id=deal.pk,before_revision=int(before) if before and before.isdigit() else None)
+    if before is not None and (not before.isascii() or not before.isdigit() or len(before)>9 or int(before)<1):
+        return HttpResponseBadRequest('Некорректная страница истории.')
+    try:
+        history=service.read_history(actor=request.user,organization_id=org.pk,deal_id=deal.pk,before_revision=int(before) if before else None)
+    except ValidationError:
+        # Eligibility may change between the two independently locked reads.
+        return _blocked(request, org, deal_id)
     draft=CrmRecurringDraft.objects.filter(deal=deal).first()
     latest=CrmRecurringRevision.objects.filter(draft=draft).order_by('-revision').first() if draft else None
     confirmations={c.revision_id:c for c in CrmRecurringConfirmation.objects.filter(revision_id__in=[r.pk for r in history])} if draft else {}
@@ -77,3 +86,11 @@ def workspace(request,deal_id):
         values=values,draft=draft,latest=latest,history=history,rows=rows or [dict(month='',quantity='',unit='',agreed_amount='')],
         payers=payers,key=uuid4().hex,
         frequencies=Pool.SERVICE_FREQUENCY_CHOICES,next_before=history[-1].revision if len(history)==20 else None),status=status)
+
+
+def _blocked(request, organization, deal_id):
+    # Authorization failures remain 403. Never expose raw validation exceptions,
+    # related object data or a form capable of writing an ineligible contract.
+    return render(request, 'pool_service/crm_live/recurring_blocked.html', {
+        'workspace_url': reverse('crm_live_workspace') + '?org_id=' + str(organization.pk) + '&deal=' + str(deal_id),
+    }, status=409 if request.method == 'POST' else 200)
