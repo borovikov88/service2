@@ -203,6 +203,10 @@ class MaterialMonthTests(MaterialFixture,TestCase):
             self.move(row,quantity='.001',occurred_on=date(2026,9,2),operation_key='event-page-'+str(n));row.refresh_from_db()
         group=self.month()[2][0];self.assertEqual(len(group['events']),20);self.assertTrue(group['more_events'])
         self.assertEqual(group['quantities'][0]['quantity'],Decimal('.021'))
+        for n in range(21):
+            destination=Pool.objects.create(organization=self.org,client=self.client_record,address='Synthetic target '+str(n))
+            self.move(row,quantity='.001',pool_id=destination.pk,reason='Synthetic distribution',occurred_on=date(2026,9,2),operation_key='target-page-'+str(n));row.refresh_from_db()
+        group=self.month()[2][0];self.assertEqual(len(group['quantities']),20);self.assertTrue(group['more_quantities'])
 
 
 class MaterialRaceTests(MaterialFixture,TransactionTestCase):
