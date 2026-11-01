@@ -359,13 +359,6 @@
         if (sameId(pipeline.id, state.pipelineId)) button.setAttribute("aria-current", "page");
         nav.append(button);
       }
-      const stages = byId("crm-live-stage");
-      stages.replaceChildren(element("option", "", "Все этапы"));
-      stages.firstChild.value = "";
-      for (const stage of pipelineFor(state.pipelineId)?.stages || []) {
-        const option = element("option", "", stage.name); option.value = String(stage.id); stages.append(option);
-      }
-      stages.value = state.filters.stage;
       byId("crm-live-create").hidden = !state.data.capabilities?.create || !(state.data.pipelines || []).length;
       for (const button of root.querySelectorAll("[data-view]")) button.setAttribute("aria-pressed", String(button.dataset.view === state.view));
     }
@@ -426,7 +419,9 @@
         root.querySelector(`[data-attention="${kind}"]`).setAttribute("aria-pressed", String(state.attention === kind));
       }
       byId("crm-live-result-status").textContent = state.loading ? "Обновляем…" : "На странице: " + filtered.length + (state.data.attention_total == null ? "" : " · по фильтру: " + state.data.attention_total);
+      byId("crm-live-linked-filters").hidden = !Object.entries(state.filters).some(([key, value]) => value && !(key === "outcome" && value === "open"));
       byId("crm-live-limit").hidden = !state.data.has_more;
+      root.querySelector(".crm-live-pagination").hidden = !state.data.has_more && !state.data.has_previous;
       byId("crm-live-page-prev").disabled = state.loading || !state.data.has_previous;
       byId("crm-live-page-next").disabled = state.loading || !state.data.has_more;
       byId("crm-live-page-label").textContent = "Страница " + state.page;
@@ -986,7 +981,6 @@
         if (entry.payload.command_type === "deal.create") {
           state.pipelineId = deal.pipeline_id;
           state.page = 1; state.filters.outcome = "open"; state.filters.stage = "";
-          byId("crm-live-outcome").value = "open";
           state.query = "";
           state.attention = "all";
           byId("crm-live-search").value = "";
@@ -1122,9 +1116,13 @@
       else if (button.dataset.action === "retry") performExisting(button.dataset.operationKey);
       else if (button.dataset.action === "restore-conflict") restoreConflict(button.dataset.operationKey);
       else if (button.dataset.action === "dismiss-operation") queue.dismiss(button.dataset.operationKey);
+      else if (button.dataset.action === "clear-linked-filters") {
+        for (const key of Object.keys(state.filters)) state.filters[key] = key === "outcome" ? "open" : "";
+        state.page = 1; loadData();
+      }
       else if (button.dataset.action === "reset") {
         state.query = ""; state.owner = "all"; state.attention = "all"; state.page = 1;
-        for (const key of Object.keys(state.filters)) { state.filters[key] = key === "outcome" ? "open" : ""; byId("crm-live-" + key).value = state.filters[key]; }
+        for (const key of Object.keys(state.filters)) { state.filters[key] = key === "outcome" ? "open" : ""; }
         byId("crm-live-search").value = ""; byId("crm-live-owner").value = "all";
         loadData();
       }
@@ -1145,14 +1143,6 @@
     });
     byId("crm-live-owner").value = state.owner;
     byId("crm-live-owner").addEventListener("change", (event) => { state.owner = event.target.value; state.page = 1; loadData(); });
-    for (const key of Object.keys(state.filters)) {
-      const input = byId("crm-live-" + key); input.value = state.filters[key];
-      input.addEventListener(key === "specialization" ? "input" : "change", () => {
-        state.filters[key] = input.value; state.page = 1;
-        win.clearTimeout(searchTimer); if (state.dataController) state.dataController.abort();
-        searchTimer = win.setTimeout(loadData, key === "specialization" ? 300 : 0);
-      });
-    }
     byId("crm-live-refresh").addEventListener("click", () => loadData());
 
     root.addEventListener("dragstart", (event) => {
@@ -1213,7 +1203,7 @@
       state.attention = ["today", "overdue", "missing"].includes(current.get("attention")) ? current.get("attention") : "all";
       state.view = current.get("view") === "table" ? "table" : "kanban";
       state.pipelineId = current.get("pipeline") || state.pipelineId;
-      for (const key of Object.keys(state.filters)) { state.filters[key] = current.get(key) || (key === "outcome" ? "open" : ""); byId("crm-live-" + key).value = state.filters[key]; }
+      for (const key of Object.keys(state.filters)) { state.filters[key] = current.get(key) || (key === "outcome" ? "open" : ""); }
       byId("crm-live-search").value = state.query;
       byId("crm-live-owner").value = state.owner;
       const linked = current.get("deal");

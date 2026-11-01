@@ -14,6 +14,22 @@ const {readFileSync}=require('node:fs');
  await page.goto(f.base+f.workspace);
  const cards=page.locator('[data-column=unparsed] .lead-row');await cards.last().waitFor();assert.equal(await cards.count(),18);
  assert.equal(await page.locator('.lead-card-move').count(),0);
+ // Lower blank area must be the actual drop target, not just the heading.
+ for (const width of [1440,390]) {
+   await page.setViewportSize({width,height:800});
+   const long=page.locator('[data-column=unparsed]'),empty=page.locator('[data-column=working]');
+   const heights=await Promise.all([long,empty].map(n=>n.evaluate(e=>e.getBoundingClientRect().height)));
+   assert.ok(Math.abs(heights[0]-heights[1])<2,'Empty lead column must stretch to the longest column');
+ }
+ await page.setViewportSize({width:1440,height:800});
+ for(let n=0;n<2;n++) {
+   const last=cards.last();await last.scrollIntoViewIfNeeded();
+   const c=await last.boundingBox(),target=page.locator('[data-column=working]'),t=await target.boundingBox();
+   await last.dragTo(target,{targetPosition:{x:30,y:c.y+c.height/2-t.y}});
+   await page.getByLabel('Следующий шаг',{exact:true}).waitFor();
+   assert.equal(await page.getByLabel('Причина перемещения',{exact:true}).count(),0);
+   await page.locator('#lead-close').click();assert.equal(writes,0);
+ }
  const zone=page.locator('.lead-conversion-drop');
  for(const index of [0,1,2,10,17,17]){
    const card=cards.nth(index);await card.scrollIntoViewIfNeeded();const b=await card.boundingBox();
