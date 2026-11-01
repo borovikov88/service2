@@ -100,6 +100,20 @@ class MaterialTests(MaterialFixture,TestCase):
         self.assertEqual(moved.deal_id,second.pk)
         self.assertEqual(CrmDeal.objects.count(),2)
 
+    def test_client_merge_preserves_material_history_and_blocks_source_links(self):
+        from pool_service.client_merge import merge_clients
+        from pool_service.client_crm_models import ClientCRMProfile
+        row=self.issue()
+        target=Client.objects.create(organization=self.org,name='Synthetic merge target')
+        ClientCRMProfile.objects.create(client=target,onec_ref='synthetic-material-target')
+        with self.assertRaisesMessage(ValueError,'История материалов'):
+            merge_clients(self.client_record.pk,target.pk,organization_id=self.org.pk,actor=self.user)
+        self.pool.refresh_from_db();self.assertEqual(self.pool.client_id,self.client_record.pk)
+        ClientCRMProfile.objects.update_or_create(client=self.client_record,defaults={'onec_ref':'synthetic-material-existing'})
+        source=Client.objects.create(organization=self.org,name='Synthetic empty source')
+        merge_clients(source.pk,self.client_record.pk,organization_id=self.org.pk,actor=self.user)
+        row.refresh_from_db();self.assertEqual(row.client_id,self.client_record.pk)
+
     def test_units_are_literal_and_invalid_values_or_future_dates_refused(self):
         for invalid in ['0','-1','NaN','Infinity','1.0001','100000000000']:
             with self.assertRaises(ValidationError):self.issue(quantity=invalid)

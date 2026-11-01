@@ -9,6 +9,7 @@ from django.utils import timezone
 from .models import Client, ClientAccess, Organization
 from .client_crm_import import normalize_phone
 from .crm_commercial_models import CrmDeal, CrmLead
+from .crm_material_models import CrmMaterialIssue, CrmMaterialMovement
 from .client_crm_models import (
     ClientCRMProfile,
     ClientCompanyLink,
@@ -194,6 +195,8 @@ def _generic_relations(source, target):
         # preflight in merge_clients() refuses existing links before any write.
         CrmLead,
         CrmDeal,
+        CrmMaterialIssue,
+        CrmMaterialMovement,
     }
     relations = list(Client._meta.related_objects)
     # Move objects first because some reward links validate that pool.client
@@ -288,6 +291,10 @@ def merge_clients(source_id, target_id, *, organization_id, actor=None):
             "Нельзя автоматически объединить клиента с коммерческими лидами или сделками CRM. "
             "Для переноса этих связей требуется отдельная проверенная операция."
         )
+
+    if (CrmMaterialIssue.objects.filter(client_id=source.pk).exists()
+            or CrmMaterialMovement.objects.filter(client_id=source.pk).exists()):
+        raise ValueError("История материалов требует отдельной сверки перед объединением клиентов.")
 
     from .client_crm_models import OrganizationPersonLink
     if OrganizationPersonLink.objects.filter(person_id__in=[source.pk, target.pk]).exists():
