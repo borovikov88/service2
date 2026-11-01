@@ -114,6 +114,16 @@ def move(*,actor,organization_id,issue_id,operation_key,expected_revision,kind,q
     reason=str(reason or '').strip()
     if len(reason)>500:raise ValidationError('Слишком длинная причина.')
     if occurred_on<row.occurred_on:raise ValidationError('Движение не может предшествовать выдаче.')
+    # Current reads, not an earlier MySQL repeatable-read snapshot. Keep every
+    # historical object locked until commit, including before an idempotent retry.
+    history=list(row.movements.select_for_update().order_by('pk'))
+    pools,_=object_querysets(user,org.pk,lock=True)
+    ids={row.pool_id,*(item.pool_id for item in history)}
+    if pool_id:ids.add(int(pool_id))
+    locked={p.pk:p for p in pools.select_for_update().filter(pk__in=ids).order_by('pk')}
+    if any(item.organization_id!=org.pk or item.pool_id not in locked or
+           locked[item.pool_id].client_id!=item.client_id for item in [row,*history]):
+        raise CommercialConflict('Исторические связи требуют отдельной сверки; новые движения недоступны.')
     original=None
     if kind=='void':
         if not grant.review_team:raise PermissionDenied
@@ -123,7 +133,6 @@ def move(*,actor,organization_id,issue_id,operation_key,expected_revision,kind,q
         if not grant.review_team:raise PermissionDenied
         original=row.movements.select_for_update().filter(organization=org,pk=reverses_id,kind__in=['delivery','return']).first()
         if not original or original.quantity!=quantity:raise ValidationError('Отмена должна точно ссылаться на исходную запись.')
-        if (original.pool.client_id!=original.client_id or original.pool.organization_id!=org.pk):raise CommercialConflict('Историческая область движения требует сверки.')
         if occurred_on<original.occurred_on:raise ValidationError('Исправление не может предшествовать отменяемому движению.')
         pool_id=original.pool_id;deal_id=original.deal_id
     elif reverses_id:raise ValidationError('Лишнее основание корректировки.')
@@ -132,6 +141,7 @@ def move(*,actor,organization_id,issue_id,operation_key,expected_revision,kind,q
         pool_id=row.pool_id
     if kind=='delivery' and not deal_id and (not pool_id or int(pool_id)==row.pool_id):deal_id=row.deal_id
     pool,deal=target(user,org,pool_id or row.pool_id,deal_id)
+    if original and pool.client_id!=original.client_id:raise CommercialConflict('Историческая область движения требует сверки.')
     if (kind in {'correction','void'} or pool.pk!=row.pool_id or (kind=='delivery' and (deal.pk if deal else None)!=row.deal_id)) and not reason:raise ValidationError('Для корректировки или другого объекта нужна причина.')
     values=dict(issue_id=row.pk,kind=kind,quantity=quantity,occurred_on=occurred_on,source=source,reason=reason,pool_id=pool.pk,client_id=pool.client_id,deal_id=deal.pk if deal else None,reverses_id=original.pk if original else None)
     hashed=digest(dict(values,expected_revision=expected_revision))
@@ -140,7 +150,6 @@ def move(*,actor,organization_id,issue_id,operation_key,expected_revision,kind,q
         if old.payload_hash!=hashed:raise CommercialConflict('Повтор содержит другие данные.')
         return old
     if type(expected_revision) is not int or row.revision!=expected_revision:raise CommercialConflict('Запись уже изменена. Обновите её.')
-    if row.movements.exclude(organization=org,pool__in=object_querysets(user,org.pk)[0],client_id=F('pool__client_id')).exists():raise CommercialConflict('Исторические связи требуют отдельной сверки; новые движения недоступны.')
     current=balances(row)
     if current['cancelled']:raise CommercialConflict('Выдача отменена как ошибочная.')
     if kind=='void' and (current['delivered'] or current['returned']):raise ValidationError('Сначала отдельно разберите подтверждённые движения.')

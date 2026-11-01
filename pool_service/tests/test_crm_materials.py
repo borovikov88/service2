@@ -2,6 +2,7 @@ from datetime import timedelta,date
 from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
+from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied,ValidationError
 from django.db import connections,close_old_connections,connection
@@ -145,6 +146,28 @@ class MaterialTests(MaterialFixture,TestCase):
 
 
 class MaterialRaceTests(MaterialFixture,TransactionTestCase):
+    @skipUnlessDBFeature('has_select_for_update')
+    def test_historical_object_change_after_snapshot_blocks_write(self):
+        row=self.issue()
+        other=Pool.objects.create(organization=self.org,client=self.client_record,address='Synthetic destination')
+        self.move(row,quantity='1',pool_id=other.pk,reason='Synthetic transfer')
+        row.refresh_from_db()
+        new_client=Client.objects.create(organization=self.org,name='Synthetic replacement')
+        original_visible=svc.visible
+        def visible(*args):
+            result=original_visible(*args)  # establishes the ordinary-read snapshot
+            def change():
+                close_old_connections()
+                try:
+                    obj=Pool.objects.get(pk=other.pk);obj.client=new_client;obj.save(update_fields=['client'])
+                finally:connections.close_all()
+            with ThreadPoolExecutor(max_workers=1) as executor:executor.submit(change).result(timeout=15)
+            return result
+        with patch.object(svc,'visible',side_effect=visible):
+            with self.assertRaises(CommercialConflict):
+                self.move(row,operation_key='snapshot-return-01',kind='return',quantity='1')
+        self.assertEqual(row.movements.count(),1)
+
     @skipUnlessDBFeature('has_select_for_update')
     def test_parallel_issue_retry_and_movement_revision(self):
         barrier=Barrier(2)
