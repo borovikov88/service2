@@ -9,7 +9,7 @@ from django.views.decorators.http import require_POST
 
 from .avito_management import _scope
 from .communication_models import ChannelConnection
-from .avito_daily_statistics import configure, collect_next, ACCOUNT
+from .avito_daily_statistics import configure, collect_next, _scope as statistics_scope
 
 
 @login_required
@@ -18,9 +18,9 @@ from .avito_daily_statistics import configure, collect_next, ACCOUNT
 def control(request, connection_id):
     organization = _scope(request)
     connection = ChannelConnection.objects.select_related('channel').filter(
-        pk=connection_id, external_id=ACCOUNT, channel__organization=organization,
+        pk=connection_id, channel__organization=organization,
         channel__kind='avito').first()
-    if connection_id != 4 or connection is None:
+    if connection is None or not statistics_scope(connection):
         raise Http404
     action = request.POST.get('action')
     if action not in {'enable', 'disable', 'collect'}:
@@ -39,4 +39,4 @@ def control(request, connection_id):
                 messages.info(request, 'Настройка фонового сбора сохранена. Это не подтверждение запуска.')
         except ValueError as error:
             messages.error(request, str(error))
-    return redirect(reverse('avito_dashboard') + '?account=4#avito-analytics-details')
+    return redirect(reverse('avito_dashboard') + f'?account={connection.pk}#avito-analytics-details')

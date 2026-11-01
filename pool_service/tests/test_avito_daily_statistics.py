@@ -199,9 +199,8 @@ class DailyHistoryTests(TestCase):
         self.assertEqual(AvitoStatisticsRun.objects.get().state, 'collecting')
         self.assertEqual(AvitoDailyStatistic.objects.count(), 0)
 
-    def test_other_account_has_no_controls_data_or_collection(self):
-        with self.assertRaises(ValueError):
-            daily.collect_next(1)
+    def test_unbound_account_has_no_controls_data_or_collection(self):
+        self.assertEqual(daily.collect_next(1), 'skipped')
         with self.assertRaises(PermissionDenied):
             daily.configure(self.goods, self.owner, 'enable')
         self.assertIsNone(daily.display(self.goods, self.owner))

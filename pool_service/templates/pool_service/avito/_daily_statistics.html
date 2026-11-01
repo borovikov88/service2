@@ -3,7 +3,7 @@
 <section class="avito-panel mb-4" aria-label="Сохранённая ежедневная статистика">
   <div class="avito-panel__header">
     <div><h2 class="avito-panel__title">История эффективности</h2>
-    <div class="small text-muted">Ежедневные факты официального API Авито · подключение «Услуги» №4</div></div>
+    <div class="small text-muted">Ежедневные факты официального API Авито · подключение «{{ daily.connection_name }}» №{{ daily.connection_id }}</div></div>
     <span class="avito-state">{% if daily.enabled %}Фоновый сбор включён{% else %}Фоновый сбор выключен{% endif %}</span>
   </div>
   <div class="avito-panel__body">
