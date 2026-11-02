@@ -48,6 +48,10 @@ on:
       - "pool_service/tests/test_crm_recurring*.py"
       - "pool_service/crm_construction_views.py"
       - "pool_service/services/crm_handoffs.py"
+      - "pool_service/crm_material_models.py"
+      - "pool_service/crm_material_views.py"
+      - "pool_service/services/crm_materials.py"
+      - "pool_service/tests/test_crm_material*.py"
       - "pool_service/crm_handoff_models.py"
       - "pool_service/crm_handoff_views.py"
       - "pool_service/tests/crm_quote.browser.cjs"
@@ -67,6 +71,10 @@ on:
       - "pool_service/services/task_generation.py"
       - "pool_service/tests/test_supply_task_generation.py"
       - "pool_service/tests/test_crm_live_*.py"
+      - "pool_service/crm_board_models.py"
+      - "pool_service/services/crm_board_cursor.py"
+      - "pool_service/tests/test_crm_board_epoch.py"
+      - "pool_service/tests/test_crm_column*.py"
       - "pool_service/crm_live_views.py"
       - "pool_service/crm_lead_views.py"
       - "pool_service/services/crm_lead_*.py"
@@ -247,6 +255,7 @@ jobs:
             pool_service.tests.test_crm_recurring_get \
             pool_service.tests.test_crm_recurring_reminders \
             pool_service.tests.test_crm_handoffs \
+            pool_service.tests.test_crm_materials \
             pool_service.tests.test_crm_handoff_migration \
             pool_service.tests.test_crm_commercial_card \
             pool_service.tests.test_crm_object_needs \
@@ -269,6 +278,8 @@ jobs:
             pool_service.tests.test_crm_live_pilot_commands \
             pool_service.tests.test_crm_live_pilot_migrations \
             pool_service.tests.test_crm_live_views \
+            pool_service.tests.test_crm_column_loading \
+            pool_service.tests.test_crm_board_epoch \
             pool_service.tests.test_crm_approved_access \
             pool_service.tests.test_crm_lead_commands \
             pool_service.tests.test_crm_lead_migrations \

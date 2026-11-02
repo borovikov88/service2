@@ -5,7 +5,7 @@
 
 {% block extra_head %}
   <link rel="stylesheet" href="{% static 'pool_service/crm_live/workspace.css' %}?v=20261101-compact">
-  <script src="{% static 'pool_service/crm_live/workspace.js' %}?v=20261101-compact" defer></script>
+  <script src="{% static 'pool_service/crm_live/workspace.js' %}?v=20261101-cursor" defer></script>
 {% endblock %}
 
 {% block content %}
@@ -53,6 +53,7 @@
     <button type="button" class="crm-live-button" data-action="page-next" id="crm-live-page-next">Далее →</button>
   </nav>
   <p class="crm-live-help" id="crm-live-help">Перетащите карточку мышкой в другой этап или измените этап внутри карточки.</p>
+  <p class="crm-live-muted">Живой список: порции загружаются последовательно. Временные фильтры фиксируются на начало загрузки; обновление пересчитывает их. После изменений связанных данных обновите доску.</p>
   <noscript><div class="crm-live-empty"><h2>Для работы CRM нужен JavaScript</h2><p>Включите JavaScript в браузере и обновите страницу.</p></div></noscript>
 
   <dialog class="crm-live-dialog" id="crm-live-dialog" aria-labelledby="crm-live-dialog-title">

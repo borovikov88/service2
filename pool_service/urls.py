@@ -570,3 +570,9 @@ urlpatterns = [
 
 from . import crm_recurring_views
 urlpatterns += [path("crm/workspace/deals/<int:deal_id>/recurring/", crm_recurring_views.workspace, name="crm_recurring")]
+
+from . import crm_material_views
+urlpatterns += [
+    path('crm/workspace/materials/',crm_material_views.workspace,name='crm_materials'),
+    path('crm/workspace/materials/<int:issue_id>/',crm_material_views.workspace,name='crm_material_detail'),
+]
