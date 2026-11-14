@@ -53,7 +53,7 @@ test('server-linked exclusions refresh structure but quantity edits preserve the
 });
 
 test('loading an old version clears technology dimensions and schemes from the newer form', () => {
-  const controls = {tech_sand:{value:'on'},tech_sand_thickness:{value:'0.2'}};
+  const controls = {tech_sand:{value:'on'},tech_sand_thickness:{value:'0.2'},delivery_sand_capacity:{value:'10'},delivery_gravel_volume:{value:'15'}};
   const uv = {value:'on',type:'checkbox',checked:true};
   const fallback = {value:''};
   const context = vm.createContext({form:{querySelectorAll:()=>Object.values(controls), elements:{uv_enabled:uv,light_color:{value:'rgb'},drain_scheme:{value:'empty_only'},lighting:{value:'yes'},light_count:{value:'2'},construction_scheme:{value:''},height_mode:{value:''},freeboard:{value:''},namedItem:key=>controls[key]||fallback}},
@@ -61,6 +61,8 @@ test('loading an old version clears technology dimensions and schemes from the n
   vm.runInContext(fn('fillParameters')+';fillParameters()',context);
   assert.equal(controls.tech_sand.value,'');
   assert.equal(controls.tech_sand_thickness.value,'');
+  assert.equal(controls.delivery_sand_capacity.value,'');
+  assert.equal(controls.delivery_gravel_volume.value,'');
   assert.equal(uv.checked,false);
   assert.equal(uv.value,'on');
   context.snapshot.inputs={uv_enabled:true};

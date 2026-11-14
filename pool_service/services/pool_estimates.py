@@ -22,6 +22,7 @@ from . import estimate_filter_media as filter_media
 from . import estimate_filter_gravel as filter_gravel
 from . import estimate_filter_valve as filter_valve
 from . import estimate_uv as uv
+from . import estimate_delivery as delivery
 from . import estimate_rounding as rounding
 from . import estimate_electrical as electrical
 
@@ -196,6 +197,7 @@ def normalize_inputs(raw):
             raise EstimateInputError('Полная высота чаши превышает 10 м.')
         raw['bowl_height']=data['bowl_height']
     data.update(construction.normalize(raw))
+    data.update(delivery.normalize(raw))
     if data.get("bowl_height"):
         if Decimal(data["depth_start"]) != Decimal(data["depth_end"]):
             raise EstimateInputError("Расчёт полной чаши пока поддерживает горизонтальное дно: глубины воды должны совпадать.")
@@ -454,6 +456,7 @@ def generate(raw):
     filter_gravel.initialize(result)
     filter_valve.initialize(result)
     uv.initialize(result)
+    delivery.initialize(result)
     result["level_shared_quantity_version"]=2
     finishing_work.initialize(result)
     return evaluate(result)
@@ -572,6 +575,7 @@ def normalize_snapshot(raw):
     if raw.get('filter_gravel_version') == 1: result['filter_gravel_version'] = 1
     if raw.get('filter_valve_version') == 1: result['filter_valve_version'] = 1
     if raw.get('uv_version') == 1: result['uv_version'] = 1
+    if raw.get('delivery_version') == 1: result['delivery_version'] = 1
     if result.get("construction_version") and raw.get("construction_quantity_version") in (1, 2):
         result["construction_quantity_version"] = raw["construction_quantity_version"]
     expected_blocks=set(BLOCKS) if result.get("construction_version") else set(BLOCKS)-{construction.MATERIAL_BLOCK}
@@ -611,7 +615,7 @@ def normalize_snapshot(raw):
                 if not isinstance(rid, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", rid) or rid in row_ids:
                     raise EstimateInputError("Строки должны иметь уникальные идентификаторы.")
                 row_ids.add(rid)
-                if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("basis", ""), str) or row.get("basis", "") not in {"", "contact_work", "filter_load", "filter_valve", "lighting", "liner_corner", "finish_area", "finish_net", "finish_stock", "surface", "perimeter", "volume", "concrete_total", "exchanger_quantity", "embedded_work", "level_system", *embedded.ROLES, *technology.BASES, *construction.BASES, *plaster_systems.BASES}:
+                if not isinstance(row.get("kind"), str) or row["kind"] not in KINDS or not isinstance(row.get("basis", ""), str) or row.get("basis", "") not in {"", "contact_work", "filter_load", "filter_valve", "lighting", "liner_corner", "finish_area", "finish_net", "finish_stock", "surface", "perimeter", "volume", "concrete_total", "exchanger_quantity", "embedded_work", "level_system", *embedded.ROLES, *technology.BASES, *construction.BASES, *delivery.BASES, *plaster_systems.BASES}:
                     raise EstimateInputError("Некорректный тип строки.")
                 item = {"id": rid, "kind": row["kind"], "basis": row.get("basis", "")}
                 item["filter_parent"] = string(row.get("filter_parent", ""), "Связанный фильтр", 64)
@@ -626,7 +630,7 @@ def normalize_snapshot(raw):
                 item["finish_type"] = string(row.get("finish_type", ""), "Тип отделки", 20)
                 if item["finish_type"] not in {"", *FINISHES}:
                     raise EstimateInputError("Некорректный тип отделки строки.")
-                for field, limit in (("name", 200), ("unit", 20), ("brand", 80), ("model", 120), ("reason", 300), ("rate_source", 300), ("selection_note", 1000), ("catalog_review_note", 1000)):
+                for field, limit in (("name", 200), ("unit", 20), ("brand", 80), ("model", 120), ("reason", 300), ("rate_source", 300), ("selection_note", 1000), ("catalog_review_note", 1000), ("delivery_computed_note", 1000)):
                     item[field] = string(row.get(field, ""), field, limit, required=field in {"name", "unit"})
                 for field in ("excluded", "existing", "auto_quantity", "selection_locked", "quantity_stale", "heating_unbound", "level_managed", "unit_price_manual", "construction_price_suspended", "pvc_price_suspended", "consumables_price_suspended", "material_price_suspended", "media_sand_mass_fallback", "electrical_managed", "electrical_price_suspended"):
                     item[field] = boolean(row.get(field, False))
@@ -699,6 +703,7 @@ def normalize_snapshot(raw):
         result['variants'][key]['filter_valve_parents'] = dict(valve_parents)
         result['variants'][key]['filter_valve_active'] = boolean(variant.get('filter_valve_active', False))
         result['variants'][key]['uv_initialized'] = boolean(variant.get('uv_initialized', False))
+        result['variants'][key]['delivery_initialized'] = boolean(variant.get('delivery_initialized', False))
         initialized=variant.get('thermostat_parents',[])
         if not isinstance(initialized,list) or len(initialized)>100 or any(not isinstance(x,str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}',x) for x in initialized):
             raise EstimateInputError('Некорректный состав термостатов.')
@@ -723,6 +728,7 @@ def evaluate(raw):
     result["geometry"] = geometry(result["inputs"])
     result["geometry"].update(technology.apply(result))
     construction.sync(result)
+    delivery.sync(result)
     plaster_warnings = plaster_systems.apply(result)
     pvc.apply(result)
     electrical.apply(result)
@@ -941,6 +947,7 @@ def recalculate(raw, inputs):
     filter_gravel.initialize(result)
     filter_valve.initialize(result)
     uv.initialize(result)
+    delivery.initialize(result)
     if result.get("level_shared_inlet") and inputs.get("level_inlet_mode")=="automatic": result["level_shared_quantity_version"]=2
     # Upgrade only the editable copy; saved versions are never passed through here on load.
     works.add_works(result)

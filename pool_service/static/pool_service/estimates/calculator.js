@@ -4,7 +4,7 @@ import {productDetails,productTitle} from './product-details.js?v=1';
 import {sections as viewSections, groupFor, moveViewRow} from './layout.js?v=6';
 import {installHelp} from './help.js?v=5';
 import {displayNumber, money, indivisible, exactNumber, cleanNote, bindNumber, rawValue, installNumbers} from './numbers.js?v=3';
-import {constructionScope, setConstructionExcluded, setExcluded, addRow, emptyRow, isWork, samePrice, workPriceTargets, automaticQuantity, quantityRequired, moveRow} from './state.js?v=17';
+import {constructionScope, setConstructionExcluded, setExcluded, addRow, emptyRow, isWork, samePrice, workPriceTargets, automaticQuantity, quantityRequired, moveRow} from './state.js?v=18';
 
 const root = document.querySelector('#pool-estimator');
 const $ = selector => root.querySelector(selector);
@@ -243,7 +243,7 @@ function setHeating(values) {
   for (const checkbox of form.querySelectorAll('[name="heating_types"]')) checkbox.checked = selectedTypes.includes(checkbox.value);
 }
 function fillParameters() {
-  form.querySelectorAll('[name^="tech_"], [name^="construction_"]').forEach(el => { el.value = ''; });
+  form.querySelectorAll('[name^="tech_"], [name^="construction_"], [name^="delivery_"]').forEach(el => { el.value = ''; });
   form.elements.light_color.value=snapshot.inputs.light_color || '';
   form.elements.drain_scheme.value=snapshot.inputs.drain_scheme || 'unknown';
   form.elements.lighting.value=snapshot.inputs.lighting || 'no';
@@ -437,6 +437,8 @@ root.addEventListener('click', event => {
   if (el.dataset.edit || el.dataset.add) {
     const block = snapshot.variants[selected].blocks.find(b => b.id === (el.dataset.block || el.dataset.add));
     rowBeingEdited = el.dataset.edit ? structuredClone(block.rows.find(r => r.id === el.dataset.edit)) : emptyRow(crypto.randomUUID());
+    const deliveryCode = ['delivery_sand','delivery_concrete','delivery_rebar','delivery_gravel'].find(code => [rowBeingEdited.work_code,rowBeingEdited.id].includes(code));
+    if (snapshot.delivery_version === 1 && rowBeingEdited.kind === 'work' && !rowBeingEdited.basis && deliveryCode) rowBeingEdited.basis = deliveryCode;
     if(el.dataset.addWork==='true')rowBeingEdited.kind='work';
     const edit = $('#pe-row-form'); edit.reset();
     edit.querySelector('[type=submit]').textContent=el.dataset.edit?'Применить к текущей смете':'Продолжить';

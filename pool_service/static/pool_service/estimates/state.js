@@ -78,6 +78,7 @@ export function setWorkPrice(snapshot, variantKey, blockId, source, price, all =
 export function automaticQuantity(snapshot, variantKey, row) {
   if(row.basis==='contact_work')return snapshot.variants[variantKey].blocks.flatMap(b=>b.rows).find(r=>r.work_code==='plaster')?.quantity??null;
   if (['filter_load', 'filter_valve'].includes(row.basis)) return row.quantity; // Server uses saved filter/accessory facts.
+  if (['delivery_sand', 'delivery_concrete', 'delivery_rebar', 'delivery_gravel'].includes(row.basis)) return row.quantity; // Server uses each quote's actual material quantities.
   if (row.basis?.startsWith('pkg_')) return row.quantity; // Server owns exact construction quantities and handling scope.
   if (row.basis === 'liner_corner') return String(Math.ceil(Number(snapshot.geometry.perimeter)/2));
   if (row.basis === 'lighting') return ['light_transformer','light_controller'].includes(row.kind) ? '1' : snapshot.inputs.light_count;

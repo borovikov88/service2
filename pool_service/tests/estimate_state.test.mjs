@@ -7,6 +7,18 @@ import {renderCatalogCard} from '../static/pool_service/estimates/catalog-card.j
 function sample() {
   return {variants: Object.fromEntries(['economy', 'standard', 'premium'].map(key => [key, {blocks: [{id: 'equipment', excluded: false, reason: '', rows: [emptyRow('pump'), {...emptyRow('filter'), excluded: true, price: '120'}]}]}]))};
 }
+
+test('delivery trips keep server-calculated per-quote quantities and unknown values', () => {
+  const s = sample();
+  s.geometry = {delivery_sand: '999'};
+  for (const basis of ['delivery_sand', 'delivery_concrete', 'delivery_rebar', 'delivery_gravel']) {
+    const row = {...emptyRow(basis), kind:'work', basis, auto_quantity:true, quantity:'3'};
+    assert.equal(automaticQuantity(s, 'economy', row), '3');
+    row.quantity = null;
+    assert.equal(automaticQuantity(s, 'economy', row), null);
+    assert.equal(quantityRequired(row), false);
+  }
+});
 test('restoring a block preserves earlier individual exclusions and prices', () => {
   const s = sample();
   setExcluded(s, 'economy', 'equipment', null, true);
