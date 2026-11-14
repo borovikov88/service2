@@ -8,15 +8,35 @@ BASES = {'delivery_' + material for material in MATERIALS}
 SOURCES = {'sand': ({'material_sand'}, {'pkg_sand_tonnes'}),
            'concrete': ({'material_concrete_bowl', 'material_concrete_base'}, {'pkg_concrete_total', 'pkg_base_volume'}),
            'rebar': ({'material_rebar'}, {'pkg_rebar_mass', 'pkg_rebar_tonnes'})}
+FLEET_VOLUMES = {'sand': ('5', '10', '20'), 'concrete': ('5', '7', '9', '10'),
+                'gravel': ('5', '10', '20')}
+
+
+def lower_middle(values):
+    ordered = sorted(Decimal(value) for value in values)
+    return ordered[(len(ordered) - 1) // 2]
+
+
+DEFAULTS = {'delivery_' + material + '_capacity': str(lower_middle(values))
+            for material, values in FLEET_VOLUMES.items()}
+DEFAULTS.update(delivery_rebar_capacity='20', delivery_sand_payload='12',
+                delivery_gravel_payload='12', delivery_gravel_density='1.5')
+
+
+def defaults(raw):
+    """Proposals belong to an explicit new calculation/recalculation, not load."""
+    return {**DEFAULTS, **raw} if isinstance(raw, dict) else raw
 
 
 def normalize(raw):
     from .pool_estimates import number
     fields = [('delivery_' + material + '_capacity', '.001') for material in MATERIALS]
-    fields.append(('delivery_gravel_volume', '0'))
+    fields.extend([('delivery_gravel_volume', '0'), ('delivery_sand_payload', '.001'),
+                   ('delivery_gravel_payload', '.001'), ('delivery_gravel_density', '.1')])
     return {field: (str(value) if value is not None else None)
             for field, minimum in fields if field in raw
-            for value in [number(raw[field], field, optional=True, minimum=minimum, maximum='1000000')]}
+            for value in [number(raw[field], field, optional=True, minimum=minimum,
+                                 maximum='5' if field == 'delivery_gravel_density' else '1000000')]}
 
 
 def initialize(snapshot):
@@ -104,10 +124,28 @@ def trips(snapshot, variant, material):
         return None, 'Укажите вместимость машины, ' + unit + '/рейс; количество рейсов пока не определено.'
     capacity = Decimal(capacity)
     result = sum((v / capacity).to_integral_value(rounding=ROUND_CEILING) for v in values)
+    payload_note = ''
+    payload = snapshot['inputs'].get('delivery_' + material + '_payload') if material in {'sand', 'gravel'} else None
+    if payload is not None:
+        density = snapshot['inputs'].get('construction_sand_density' if material == 'sand' else 'delivery_gravel_density')
+        if density is None:
+            return None, 'Задана грузоподъёмность машины; укажите плотность материала, т/м³, для проверки ограничения по массе.'
+        density, payload = Decimal(density), Decimal(payload)
+        if material == 'gravel':
+            mass = sum(values) * density
+        else:
+            # Use purchased mass directly when present, avoiding a second
+            # rounded mass/density conversion at exact payload boundaries.
+            mass = sum((Decimal(r['quantity']) * density if r['unit'] == 'м³' else
+                        Decimal(r['quantity']) / (1000 if r['unit'] == 'кг' else 1))
+                       for r in material_rows(variant, material))
+        result = max(result, (mass / payload).to_integral_value(rounding=ROUND_CEILING))
+        effective = min(capacity, payload / density)
+        payload_note = ' Грузоподъёмность ' + format(payload, 'f') + ' т; плотность ' + format(density, 'f') + ' т/м³; фактическая вместимость не более ' + format(effective, 'f') + ' м³/рейс.'
     if result > 1000000:
         return None, 'Расчёт превышает допустимый предел 1 000 000 рейсов; уточните количество материала и вместимость машины.'
     stages = ' Бетон по отдельным маркам/этапам округлён отдельно, затем рейсы сложены.' if material == 'concrete' else ''
-    return str(result), 'По сметным количествам закупки: ' + format(sum(values), 'f') + ' ' + unit + '; вместимость ' + format(capacity, 'f') + ' ' + unit + '/рейс; округление вверх до целого рейса.' + stages
+    return str(result), 'По сметным количествам закупки: ' + format(sum(values), 'f') + ' ' + unit + '; вместимость ' + format(capacity, 'f') + ' ' + unit + '/рейс; округление вверх до целого рейса.' + payload_note + stages
 
 
 def sync(snapshot):

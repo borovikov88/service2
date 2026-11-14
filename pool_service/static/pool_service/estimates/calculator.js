@@ -252,6 +252,10 @@ function fillParameters() {
   form.elements.construction_scheme.value = snapshot.construction_version ? 'package' : 'legacy';
   form.elements.height_mode.value = Object.hasOwn(snapshot.inputs,'freeboard') ? 'freeboard' : 'legacy';
   form.elements.freeboard.value = snapshot.inputs.freeboard ?? (snapshot.inputs.bowl_height ? String(Math.max(0,Number(snapshot.inputs.bowl_height)-Number(snapshot.inputs.depth_start))) : '');
+  for (const [key, fallback] of Object.entries({delivery_sand_capacity:'10',delivery_sand_payload:'12',delivery_concrete_capacity:'7',delivery_rebar_capacity:'20',delivery_gravel_capacity:'10',delivery_gravel_payload:'12',delivery_gravel_density:'1.5'})) {
+    const field = form.elements.namedItem(key);
+    if (field) field.value = Object.hasOwn(snapshot.inputs, key) ? snapshot.inputs[key] ?? '' : fallback;
+  }
   // Historical snapshots must not inherit the inputs of a more recent estimate.
   for (const [key, value] of Object.entries({primary_pump_connection:'', primary_valve_connection:'', primary_medium:'', primary_temperature:'', primary_delta:'', primary_flow:'', primary_head:'', bowl_height: '', wall_thickness: '', slab_thickness: '', heating_power: '', water_start: '', water_target: '', heating_hours: '', heating_reserve: '', finish: '', skimmer_area: '25', skimmer_flow: '5', inlet_flow: '3'})) {
     form.elements.namedItem(key).value = snapshot.inputs[key] ?? value;

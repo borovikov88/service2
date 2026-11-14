@@ -16,7 +16,8 @@ from .test_pool_estimates import block
 
 CAPACITIES = {'delivery_sand_capacity':'3', 'delivery_concrete_capacity':'12',
               'delivery_rebar_capacity':'1', 'delivery_gravel_capacity':'10',
-              'delivery_gravel_volume':'13'}
+              'delivery_gravel_volume':'13', 'delivery_sand_payload':None,
+              'delivery_gravel_payload':None, 'delivery_gravel_density':None}
 
 
 def calculated():return engine.generate({**NEW,**CAPACITIES})
@@ -34,6 +35,66 @@ def old_snapshot():
 
 
 class DeliveryTests(SimpleTestCase):
+    def test_lower_middle_proposals_apply_only_to_absent_fields_on_explicit_actions(self):
+        self.assertEqual(delivery.lower_middle(['3','5','7','12']),D(5))
+        self.assertEqual(delivery.lower_middle(['20','5','10']),D(10))
+        s=engine.generate(NEW)
+        for field,value in delivery.DEFAULTS.items():self.assertEqual(D(s['inputs'][field]),D(value))
+        self.assertNotIn('delivery_gravel_volume',s['inputs'])
+        self.assertEqual([D(row(s,'delivery_'+k)['quantity']) for k in ('sand','concrete','rebar')],[D(1),D(4),D(1)])
+        self.assertIsNone(row(s,'delivery_gravel')['quantity'])
+        blank=engine.generate({**NEW,'delivery_sand_capacity':'','delivery_sand_payload':None,'delivery_gravel_density':None})
+        for field in ('delivery_sand_capacity','delivery_sand_payload','delivery_gravel_density'):self.assertIsNone(blank['inputs'][field])
+        old=deepcopy(blank)
+        for field in delivery.DEFAULTS:old['inputs'].pop(field,None)
+        loaded=engine.evaluate(old)
+        self.assertFalse(any(field in loaded['inputs'] for field in delivery.DEFAULTS))
+        for material in ('sand','concrete','rebar'):self.assertIsNone(row(loaded,'delivery_'+material)['quantity'])
+        upgraded=engine.recalculate(loaded,loaded['inputs'])
+        for field,value in delivery.DEFAULTS.items():self.assertEqual(D(upgraded['inputs'][field]),D(value))
+        again=engine.recalculate(blank,blank['inputs'])
+        for field in ('delivery_sand_capacity','delivery_sand_payload','delivery_gravel_density'):self.assertIsNone(again['inputs'][field])
+        with self.assertRaises(engine.EstimateInputError):engine.recalculate(s,None)
+
+    def test_bulk_payload_limits_volume_and_uses_actual_mass_at_boundaries(self):
+        s=engine.generate({**NEW,'delivery_gravel_volume':'9'})
+        row(s,'material_sand').update(auto_quantity=False,quantity='13')
+        s=engine.evaluate(s)
+        self.assertEqual(D(row(s,'delivery_sand')['quantity']),D(2))  # 13t > 12t; volume 8.125m³ < 10m³.
+        self.assertEqual(D(row(s,'delivery_gravel')['quantity']),D(2))  # 9m³ * 1.5t/m³ > 12t.
+        self.assertIn('7.5',row(s,'delivery_sand')['selection_note'])
+        self.assertIn('8',row(s,'delivery_gravel')['selection_note'])
+        for mass,count in [('12','1'),('24','2'),('24.001','3')]:
+            row(s,'material_sand').update(quantity=mass)
+            s['inputs']['construction_sand_density']='1.7'
+            s=engine.evaluate(s)
+            self.assertEqual(D(row(s,'delivery_sand')['quantity']),D(count))
+
+    def test_payload_blank_removes_only_weight_limit_and_missing_density_is_unknown(self):
+        s=engine.generate({**NEW,'delivery_gravel_volume':'9','delivery_sand_payload':None,'delivery_gravel_payload':None})
+        row(s,'material_sand').update(auto_quantity=False,quantity='13')
+        s=engine.evaluate(s)
+        for material in ('sand','gravel'):self.assertEqual(D(row(s,'delivery_'+material)['quantity']),D(1))
+        row(s,'material_sand').update(unit='м³',quantity='8',unit_price_manual=True)
+        s['inputs'].update(construction_sand_density=None,delivery_sand_payload='12',delivery_gravel_density=None,delivery_gravel_payload='12')
+        s=engine.evaluate(s)
+        for material in ('sand','gravel'):
+            self.assertIsNone(row(s,'delivery_'+material)['quantity'])
+            self.assertIn('плотность',row(s,'delivery_'+material)['selection_note'])
+
+    def test_old_volume_only_snapshot_keeps_its_charge_until_explicit_recalculation(self):
+        s=engine.generate({**NEW,'delivery_sand_capacity':'10','delivery_sand_payload':None})
+        row(s,'material_sand').update(auto_quantity=False,quantity='16')
+        row(s,'delivery_sand').update(price='400',unit_price_manual=True)
+        for field in ('delivery_sand_payload','delivery_gravel_payload','delivery_gravel_density'):s['inputs'].pop(field,None)
+        s=engine.evaluate(s);before=deepcopy(s)
+        self.assertEqual(row(s,'delivery_sand')['amount'],'400.00')
+        self.assertEqual(engine.evaluate(json.loads(json.dumps(s))),before)
+        changed=engine.recalculate(s,s['inputs'])
+        self.assertEqual(row(changed,'delivery_sand')['amount'],'800.00')
+        self.assertEqual(row(changed,'delivery_sand')['price'],'400.00')
+        self.assertEqual(s,before)
+
     def test_four_trip_counts_follow_rounded_purchases_and_separate_concrete_stages(self):
         s=calculated()
         for tier in s['variants']:
@@ -71,7 +132,7 @@ class DeliveryTests(SimpleTestCase):
         self.assertEqual(D(row(engine.evaluate(s),'delivery_sand')['quantity']),D(1))
 
     def test_unknown_inputs_stay_unknown_but_explicit_zero_needs_no_capacity(self):
-        s=engine.generate(NEW)
+        s=engine.generate({**NEW,**{field:None for field in delivery.DEFAULTS}})
         for material in delivery.MATERIALS:self.assertIsNone(row(s,'delivery_'+material)['quantity'])
         s=engine.recalculate(s,{**s['inputs'],**CAPACITIES,'delivery_gravel_volume':None})
         self.assertIsNone(row(s,'delivery_gravel')['quantity'])

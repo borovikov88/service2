@@ -33,13 +33,16 @@
 <label>Расходники чаши, конечная ставка ₽/м²<input name="construction_supplies_rate" value="250" type="number" min="0" max="1000000" step="0.01"></label></div><p class="pe-help" data-help-target=".pe-construction-settings > summary">Вывоз = котлован минус оставляемый пригодный грунт для засыпки, в плотном теле без коэффициентов. Количество можно исправить вручную. ПРР: в редакторе материала подтвердите способ разгрузки; неизвестные массы не предполагаются, товарный бетон исключён.</p></details><details class="pe-construction-settings"><summary>Доставка материалов</summary>
           <p class="pe-help">Укажите фактическую загрузку машины на один рейс с учётом грузоподъёмности. Рейсы округляются вверх. Песок, бетон и арматура — по количеству материалов в каждом КП; бетон разных марок доставляется отдельно. Стоимость одного рейса задаётся в строке сметы.</p>
           <div class="pe-grid2">
-            <label>Песок, м³/рейс<input name="delivery_sand_capacity" type="number" min="0.001" max="1000000" step="any" placeholder="Указать загрузку"></label>
-            <label>Бетон, м³/рейс<input name="delivery_concrete_capacity" type="number" min="0.001" max="1000000" step="any" placeholder="Объём миксера"></label>
-            <label>Арматура, т/рейс<input name="delivery_rebar_capacity" type="number" min="0.001" max="1000000" step="any" placeholder="Грузоподъёмность"></label>
-            <label>Щебень, м³/рейс<input name="delivery_gravel_capacity" type="number" min="0.001" max="1000000" step="any" placeholder="Указать загрузку"></label>
+            <label>Песок, м³/рейс<input name="delivery_sand_capacity" value="10" type="number" min="0.001" max="1000000" step="any" placeholder="Указать загрузку"></label>
+            <label>Грузоподъёмность для песка, т<input name="delivery_sand_payload" value="12" type="number" min="0.001" max="1000000" step="any" placeholder="Уточнить по машине"></label>
+            <label>Бетон, м³/рейс<input name="delivery_concrete_capacity" value="7" type="number" min="0.001" max="1000000" step="any" placeholder="Объём миксера"></label>
+            <label>Арматура, т/рейс<input name="delivery_rebar_capacity" value="20" type="number" min="0.001" max="1000000" step="any" placeholder="Грузоподъёмность"></label>
+            <label>Щебень, м³/рейс<input name="delivery_gravel_capacity" value="10" type="number" min="0.001" max="1000000" step="any" placeholder="Указать загрузку"></label>
+            <label>Грузоподъёмность для щебня, т<input name="delivery_gravel_payload" value="12" type="number" min="0.001" max="1000000" step="any" placeholder="Уточнить по машине"></label>
+            <label>Плотность щебня, т/м³<input name="delivery_gravel_density" value="1.5" type="number" min="0.1" max="5" step="any" placeholder="По материалу"></label>
             <label>Щебень к доставке, м³<input name="delivery_gravel_volume" type="number" min="0" max="1000000" step="any" placeholder="Указать объём"></label>
           </div>
-          <p class="pe-help">Для арматуры длиной 12 м нужен подходящий длинномер. Объём щебня задаётся отдельно; строка стоимости самого материала автоматически не добавляется.</p>
+          <p class="pe-help">Приняты самосвал 10 м³ / 12 т, миксер 7 м³ и длинномер 20 т с платформой 13,6 м для арматуры длиной 12 м. Плотность щебня 1,5 т/м³ — сметное допущение. Параметры можно изменить; объём щебня задаётся отдельно.</p>
         </details><details class="pe-technology"><summary>Строительные слои и дополнительные объёмы</summary>
           <p class="pe-help">Плита — дно по наружным размерам бетона: L + 2t и W + 2t, без дополнительного свеса. Выпуск подготовки — выступ за плиту; 0 означает совпадение габаритов. Высота утепления отсчитывается от верха плиты. Включите нужные позиции и задайте размеры по проекту. Пусто — неизвестно; «Не включать» — явное отключение. Новые материалы без цены. Ранее введённые ручные объёмы сохраняются. Запас на эти слои не добавляется.</p>
           <label>Песчаная подготовка<select name="tech_sand"><option value="">Не определено</option><option value="off">Не включать</option><option value="on" selected>Включить</option></select></label>

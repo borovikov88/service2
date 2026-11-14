@@ -406,6 +406,7 @@ def make_row(key, name, unit="компл.", quantity="1", basis="", kind="other"
 def generate(raw):
     # Defaults belong only to new calculations; normalize/load never inject them.
     if isinstance(raw, dict):
+        raw = delivery.defaults(raw)
         if raw.get('construction_scheme') != 'legacy':
             raw=construction.defaults(raw)
             if 'freeboard' not in raw and 'bowl_height' not in raw: raw['freeboard']='.15'
@@ -935,7 +936,7 @@ def recalculate(raw, inputs):
             for row in block["rows"]:
                 if row["kind"] == "heater":
                     row["heating_type"] = row_heating_type(row, result["inputs"])
-    result["inputs"] = normalize_inputs(inputs)
+    result["inputs"] = normalize_inputs(delivery.defaults(inputs))
     result['visible_rounding'] = 1
     pvc.upgrade_rates(result)
     installation.initialize(result)
