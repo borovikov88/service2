@@ -557,7 +557,7 @@
         <div class="object-role-kpi {% if pool.service_status == 'active' %}object-role-kpi--success{% elif pool.service_status == 'winterized' %}object-role-kpi--info{% elif pool.service_status == 'stopped' %}object-role-kpi--danger{% else %}object-role-kpi--warning{% endif %}">
             <div class="object-role-kpi__label">Статус обслуживания</div>
             <div class="object-role-kpi__value">{{ pool.get_service_status_display }}</div>
-            <div class="object-role-kpi__meta">{{ pool.get_service_frequency_display|default:"График не задан" }}</div>
+            <div class="object-role-kpi__meta">{{ pool.contractual_service.label|default:"График не задан" }}</div>
         </div>
         <div class="object-role-kpi">
             <div class="object-role-kpi__label">Следующий выезд</div>
@@ -592,7 +592,7 @@
         </div>
         <div class="object-role-kpi">
             <div class="object-role-kpi__label">Частота визитов</div>
-            <div class="object-role-kpi__value">{{ pool.get_service_frequency_display|default:"Не задана" }}</div>
+            <div class="object-role-kpi__value">{{ pool.contractual_service.label|default:"Не задана" }}</div>
             <div class="object-role-kpi__meta">График обслуживания</div>
         </div>
         <div class="object-role-kpi {% if open_service_issue_count %}object-role-kpi--warning{% else %}object-role-kpi--success{% endif %}">

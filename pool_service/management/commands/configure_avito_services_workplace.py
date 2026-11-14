@@ -73,4 +73,6 @@ class Command(BaseCommand):
                     "connection_id": 4, "account_id": "446312402", "provider_write_performed": False}
             from pool_service.avito_mcp_reader import setup_evidence as assistant_read_evidence
             result["assistant_read_tools"] = assistant_read_evidence()
+        from pool_service.avito_owner_dashboard_probe import runtime_evidence as owner_dashboard_evidence
+        result["owner_dashboard"] = owner_dashboard_evidence()
         self.stdout.write("AVITO_SERVICES_SETUP " + json.dumps(result, sort_keys=True))

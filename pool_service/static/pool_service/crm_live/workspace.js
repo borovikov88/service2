@@ -186,6 +186,7 @@
     };
     const params = new URL(win.location.href).searchParams;
     if (bootstrap.initial_notice) {
+      if (bootstrap.initial_view === "table") params.set("view", "table");
       for (const key of ["q", "owner", "attention", "outcome", "object", "stage", "specialization", "decision_from", "decision_to"]) {
         params.set(key, bootstrap[key] == null ? "" : String(bootstrap[key]));
       }
@@ -297,7 +298,7 @@
         if (value === defaultValue) url.searchParams.delete(key);
         else url.searchParams.set(key, value);
       }
-      if (state.page > 1) url.searchParams.set("page", state.page); else url.searchParams.delete("page");
+      if (state.view === "table" && state.page > 1) url.searchParams.set("page", state.page); else url.searchParams.delete("page");
       for (const [key, value] of Object.entries(state.filters)) {
         if (value && !(key === "outcome" && value === "open")) url.searchParams.set(key, value);
         else url.searchParams.delete(key);
@@ -359,13 +360,6 @@
         if (sameId(pipeline.id, state.pipelineId)) button.setAttribute("aria-current", "page");
         nav.append(button);
       }
-      const stages = byId("crm-live-stage");
-      stages.replaceChildren(element("option", "", "Все этапы"));
-      stages.firstChild.value = "";
-      for (const stage of pipelineFor(state.pipelineId)?.stages || []) {
-        const option = element("option", "", stage.name); option.value = String(stage.id); stages.append(option);
-      }
-      stages.value = state.filters.stage;
       byId("crm-live-create").hidden = !state.data.capabilities?.create || !(state.data.pipelines || []).length;
       for (const button of root.querySelectorAll("[data-view]")) button.setAttribute("aria-pressed", String(button.dataset.view === state.view));
     }
@@ -425,8 +419,10 @@
       for (const kind of ["all", "today", "overdue", "missing"]) {
         root.querySelector(`[data-attention="${kind}"]`).setAttribute("aria-pressed", String(state.attention === kind));
       }
-      byId("crm-live-result-status").textContent = state.loading ? "Обновляем…" : "На странице: " + filtered.length + (state.data.attention_total == null ? "" : " · по фильтру: " + state.data.attention_total);
+      byId("crm-live-result-status").textContent = state.loading ? "Обновляем…" : (state.view === "kanban" ? "Загружено: " : "На странице: ") + filtered.length + (state.data.attention_total == null ? "" : " · по фильтру: " + state.data.attention_total);
+      byId("crm-live-linked-filters").hidden = !Object.entries(state.filters).some(([key, value]) => value && !(key === "outcome" && value === "open"));
       byId("crm-live-limit").hidden = !state.data.has_more;
+      root.querySelector(".crm-live-pagination").hidden = state.view !== "table" || (!state.data.has_more && !state.data.has_previous);
       byId("crm-live-page-prev").disabled = state.loading || !state.data.has_previous;
       byId("crm-live-page-next").disabled = state.loading || !state.data.has_more;
       byId("crm-live-page-label").textContent = "Страница " + state.page;
@@ -480,6 +476,16 @@
           if (!stage.can_transition) lane.append(element("p", "crm-live-lane-unavailable", stage.transition_block_reason || "Перенос в этот этап недоступен"));
           if (!deals.length) lane.append(element("p", "crm-live-lane-empty", count > 0 ? "На этой странице нет сделок этого этапа" : stage.can_transition ? "Нет сделок на этом этапе" : ""));
           else deals.forEach((deal) => lane.append(renderCard(deal, false)));
+          const window = (state.data.column_windows || []).find(item => sameId(item.stage_id, stage.id));
+          if (window?.has_more) {
+            lane.append(element("p", "crm-live-lane-progress", "Загружено " + deals.length + " из " + count));
+            if (window.cursor) {
+              const more = makeButton("Показать ещё 50", "column-more");
+              more.dataset.stageId = stage.id;
+              more.disabled = state.loading;
+              lane.append(more);
+            }
+          }
           board.append(lane);
         }
         container.append(board);
@@ -488,6 +494,9 @@
     }
 
     async function loadData(options) {
+      const more = options?.moreStage == null ? null : (state.data.column_windows || []).find(item => sameId(item.stage_id, options.moreStage));
+      if (options?.moreStage != null && (!more?.cursor || state.loading)) return;
+      const previous = state.data;
       const generation = ++state.dataGeneration;
       if (state.dataController) state.dataController.abort();
       const controller = new AbortController();
@@ -497,6 +506,10 @@
       const url = scopedURL(bootstrap.urls.data);
       if (state.pipelineId != null) url.searchParams.set("pipeline", state.pipelineId);
       url.searchParams.set("page", state.page);
+      if (state.view === "kanban") {
+        url.searchParams.set("layout", "board");
+        if (more) { url.searchParams.set("board_column", more.stage_id); url.searchParams.set("cursor", more.cursor); }
+      }
       url.searchParams.set("q", state.query);
       url.searchParams.set("owner", state.owner);
       url.searchParams.set("attention", state.attention);
@@ -506,7 +519,12 @@
         const response = await requestJSON(url, {headers: {"Accept": "application/json"}}, controller.signal);
         if (generation !== state.dataGeneration) return;
         if (!Array.isArray(response.deals) || !Array.isArray(response.pipelines)) throw new Error("Сервер вернул неполные данные CRM.");
-        state.data = response;
+        if (more) {
+          const rows = new Map((previous.deals || []).map(row => [String(row.id), row]));
+          for (const row of response.deals) rows.set(String(row.id), row);
+          state.data = {...response, deals: Array.from(rows.values()), column_windows: previous.column_windows.map(item =>
+            (response.column_windows || []).find(next => sameId(next.stage_id, item.stage_id)) || item)};
+        } else state.data = response;
         state.pipelineId = response.selected_pipeline_id;
         state.page = response.page || 1;
         state.attention = response.attention || "all";
@@ -515,6 +533,12 @@
         if (!options?.keepNotice) notice("");
       } catch (error) {
         if (controller.signal.aborted || generation !== state.dataGeneration) return;
+        if (error.code === "reset_required") {
+          state.data = {...state.data, deals: [], column_windows: [], stage_totals: []};
+          notice("Доска изменилась. Загружаем актуальные первые порции; продолжите загрузку заново.", true);
+          await loadData({keepNotice:true}); return;
+        }
+        if ([401,403,404].includes(error.status)) { state.data = {...state.data, deals: [], column_windows: [], stage_totals: []}; state.dataError = friendlyError(error); }
         state.attention = state.data.attention || "all"; syncURL();
         if (error.status === 400) state.dataError = friendlyError(error);
         notice("Не удалось обновить сделки. " + friendlyError(error) + " Нажмите кнопку обновления.", true);
@@ -737,6 +761,8 @@
       if (href) { const link = element("a", "", deal.client.name); link.href = href; client.append(link); }
       else client.textContent = deal.client?.name || "Клиент не указан";
       dialogContent.append(client);
+      const quoteUrl = safeLink(deal.quotes_url);
+      if (quoteUrl) { const link = element("a", "btn btn-outline-primary", "КП: версии и решения"); link.href = quoteUrl; dialogContent.append(link); }
       const serviceUrl = safeLink(deal.service_documents_url);
       if (serviceUrl) { const link = element("a", "btn btn-outline-primary", "Документы обслуживания и периоды"); link.href = serviceUrl; dialogContent.append(link); }
       const meta = element("div", "crm-live-detail-meta");
@@ -984,7 +1010,6 @@
         if (entry.payload.command_type === "deal.create") {
           state.pipelineId = deal.pipeline_id;
           state.page = 1; state.filters.outcome = "open"; state.filters.stage = "";
-          byId("crm-live-outcome").value = "open";
           state.query = "";
           state.attention = "all";
           byId("crm-live-search").value = "";
@@ -1107,10 +1132,14 @@
         loadData();
       } else if (button.dataset.view) {
         state.view = button.dataset.view;
-        renderPipelines(); renderContent(); syncURL();
+        state.page = 1; renderPipelines(); loadData();
       } else if (button.dataset.attention) {
         state.attention = button.dataset.attention; state.page = 1;
         loadData();
+      } else if (button.dataset.action === "column-more") {
+        const window = (state.data.column_windows || []).find(item => sameId(item.stage_id, button.dataset.stageId));
+        if (state.loading || !window?.cursor) return;
+        loadData({moreStage:window.stage_id});
       } else if (button.dataset.action === "page-prev" || button.dataset.action === "page-next") {
         state.page = Math.max(1, state.page + (button.dataset.action === "page-next" ? 1 : -1)); loadData();
       } else if (button.dataset.action === "open") {
@@ -1120,9 +1149,13 @@
       else if (button.dataset.action === "retry") performExisting(button.dataset.operationKey);
       else if (button.dataset.action === "restore-conflict") restoreConflict(button.dataset.operationKey);
       else if (button.dataset.action === "dismiss-operation") queue.dismiss(button.dataset.operationKey);
+      else if (button.dataset.action === "clear-linked-filters") {
+        for (const key of Object.keys(state.filters)) state.filters[key] = key === "outcome" ? "open" : "";
+        state.page = 1; loadData();
+      }
       else if (button.dataset.action === "reset") {
         state.query = ""; state.owner = "all"; state.attention = "all"; state.page = 1;
-        for (const key of Object.keys(state.filters)) { state.filters[key] = key === "outcome" ? "open" : ""; byId("crm-live-" + key).value = state.filters[key]; }
+        for (const key of Object.keys(state.filters)) { state.filters[key] = key === "outcome" ? "open" : ""; }
         byId("crm-live-search").value = ""; byId("crm-live-owner").value = "all";
         loadData();
       }
@@ -1137,20 +1170,13 @@
     byId("crm-live-search").value = state.query;
     byId("crm-live-search").addEventListener("input", (event) => {
       state.query = event.target.value.trim(); state.page = 1;
+      if(state.dataController)state.dataController.abort(); ++state.dataGeneration; state.loading=true; renderContent();
       win.clearTimeout(searchTimer);
       if (state.dataController) state.dataController.abort();
       searchTimer = win.setTimeout(loadData, 300);
     });
     byId("crm-live-owner").value = state.owner;
     byId("crm-live-owner").addEventListener("change", (event) => { state.owner = event.target.value; state.page = 1; loadData(); });
-    for (const key of Object.keys(state.filters)) {
-      const input = byId("crm-live-" + key); input.value = state.filters[key];
-      input.addEventListener(key === "specialization" ? "input" : "change", () => {
-        state.filters[key] = input.value; state.page = 1;
-        win.clearTimeout(searchTimer); if (state.dataController) state.dataController.abort();
-        searchTimer = win.setTimeout(loadData, key === "specialization" ? 300 : 0);
-      });
-    }
     byId("crm-live-refresh").addEventListener("click", () => loadData());
 
     root.addEventListener("dragstart", (event) => {
@@ -1211,7 +1237,7 @@
       state.attention = ["today", "overdue", "missing"].includes(current.get("attention")) ? current.get("attention") : "all";
       state.view = current.get("view") === "table" ? "table" : "kanban";
       state.pipelineId = current.get("pipeline") || state.pipelineId;
-      for (const key of Object.keys(state.filters)) { state.filters[key] = current.get(key) || (key === "outcome" ? "open" : ""); byId("crm-live-" + key).value = state.filters[key]; }
+      for (const key of Object.keys(state.filters)) { state.filters[key] = current.get(key) || (key === "outcome" ? "open" : ""); }
       byId("crm-live-search").value = state.query;
       byId("crm-live-owner").value = state.owner;
       const linked = current.get("deal");

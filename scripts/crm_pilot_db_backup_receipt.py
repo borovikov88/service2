@@ -17,7 +17,11 @@ HELPER_PHASES = frozenset(("initial", "lock", "checkout", "native_tool", "settin
                          "options_file", "dump_stream", "schema_after", "gzip_verify", "checkout_after", "publish"))
 HELPER_ERRORS = frozenset(("guard_failed", "unexpected", "native_failed", "subprocess_timeout",
                          "subprocess_failed", "import_failed", "os_error", "database_error"))
-HELPER_REASONS = frozenset(("unspecified", "lock_directory_path", "lock_directory_owner_mode",
+HELPER_REASONS = frozenset(("dump_raw_limit", "dump_line_limit", "dump_ddl_limit", "dump_trailing_content",
+                     "dump_schema_mismatch", "dump_unknown_table", "dump_duplicate_table",
+                     "dump_footer_missing", "dump_ddl_incomplete", "dump_table_coverage",
+                     "dump_gzip_limit", "dump_deadline",
+                     "unspecified", "lock_directory_path", "lock_directory_owner_mode",
                           "lock_file_owner_type", "lock_file_mode", "lock_file_replaced",
                           "checkout_head", "checkout_path", "checkout_dirty", "checkout_untracked",
                           "native_missing", "native_version_size", "native_version_unsupported",
@@ -109,7 +113,7 @@ def normalize(text, expected):
         raise ValueError()
     if value["expected_sha"] != expected or value["integrity_verified"] is not True or value["restore_verified"] is not False:
         raise ValueError()
-    for name, limit in (("table_count", 2000), ("size_bytes", 512 * 1024 ** 2), ("uncompressed_bytes", 1024 ** 3)):
+    for name, limit in (("table_count", 2000), ("size_bytes", 512 * 1024 ** 2), ("uncompressed_bytes", 2 * 1024 ** 3)):
         if type(value[name]) is not int or not 0 < value[name] <= limit:
             raise ValueError()
     for name in ("sha256", "schema_sha256"):

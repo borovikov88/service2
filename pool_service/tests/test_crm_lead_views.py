@@ -54,6 +54,62 @@ class LeadWorkspaceTests(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         return response.json()["lead"]
 
+    def test_continuation_candidates_filter_before_limit_and_exclude_self(self):
+        source = self.create(title="Synthetic candidate source")
+        target = self.create(title="Synthetic candidate target")
+        for n in range(25):
+            CrmLead.objects.create(organization=self.org, assignee=self.actor,
+                title=f"Synthetic candidate closed {n}", status="closed", result="non_target")
+        CrmLead.objects.create(organization=self.org, title="Synthetic candidate unassigned")
+        response = self.client.get(self.url("crm_live_lead_targets")+
+            "&q=Synthetic%20candidate&kind=lead&exclude_id="+str(source["id"]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row["id"] for row in response.json()["targets"]], [target["id"]])
+
+    def test_serving_runtime_uses_web_settings_and_administrative_policy(self):
+        from django.test import override_settings
+        from pool_service.services.crm_intake_wakeup import MODULE_LOADED_AT
+        url = self.url("crm_live_lead_data")
+        with override_settings(CRM_INTAKE_EVENT_WAKEUP_ENABLED=False):
+            response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        runtime = response.json()["intake"]["serving_runtime"]
+        self.assertEqual(set(runtime), {"contract", "module_loaded_at", "observed_at",
+            "event_wakeup_enabled", "configuration_gate", "event_gate", "scope"})
+        self.assertFalse(runtime["event_wakeup_enabled"])
+        self.assertEqual(runtime["module_loaded_at"], MODULE_LOADED_AT)
+        self.assertEqual(runtime["event_gate"], "not_observed")
+        self.assertIn("no-store", response["Cache-Control"])
+        with override_settings(CRM_INTAKE_EVENT_WAKEUP_ENABLED=True):
+            second = self.client.get(url).json()["intake"]["serving_runtime"]
+        self.assertTrue(second["event_wakeup_enabled"])
+        self.assertEqual(second["module_loaded_at"], runtime["module_loaded_at"])
+        self.membership.role = "manager"
+        self.membership.save()
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("serving_runtime", response.json()["intake"])
+        self.membership.role = "admin"
+        self.membership.save()
+        self.assertIn("serving_runtime", self.client.get(url).json()["intake"])
+        self.membership.role = "manager"
+        self.membership.save()
+        self.actor.is_superuser = True
+        self.actor.save(update_fields=["is_superuser"])
+        self.assertIn("serving_runtime", self.client.get(url).json()["intake"])
+        foreign = Organization.objects.create(name="Synthetic foreign runtime")
+        self.assertEqual(self.client.get(self.url("crm_live_lead_data", org=foreign.pk)).status_code, 403)
+        self.grant.view_leads = False
+        self.grant.save(update_fields=["view_leads"])
+        self.assertEqual(self.client.get(url).status_code, 403)
+        self.grant.view_leads = True
+        self.grant.save(update_fields=["view_leads"])
+        self.actor.is_active = False
+        self.actor.save(update_fields=["is_active"])
+        self.assertEqual(self.client.get(url).status_code, 401)
+        self.client.logout()
+        self.assertEqual(self.client.get(url).status_code, 401)
+
     def test_intake_status_is_scoped_without_queue_scan_or_false_zero(self):
         from pool_service.crm_commercial_models import CrmIntakeActivation
         activation=CrmIntakeActivation.objects.create(organization=self.org, last_run_at=timezone.now(), last_error="worker_failed")

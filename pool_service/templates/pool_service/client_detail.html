@@ -383,12 +383,12 @@
                   <div class="fw-semibold">{{ pool.address }}</div>
                   <div class="text-muted small">
                     {{ pool.get_object_type_display }}
-                    {% if pool.service_frequency %} · {{ pool.get_service_frequency_display }}{% endif %}
+                    {% if pool.contractual_service.frequency %} · {{ pool.contractual_service.label }}{% endif %}
                   </div>
                 </div>
                 <div class="text-end">
                   <div class="small">{{ pool.get_service_status_display }}</div>
-                  {% if can_view_object_finance and pool.service_monthly_price %}<div class="text-muted small">{{ pool.service_monthly_price }} ₽/мес.</div>{% endif %}
+                  {% if can_view_object_finance and pool.contractual_service.price != None %}<div class="text-muted small">{{ pool.contractual_service.price }} ₽/мес.</div>{% endif %}
                 </div>
               </div>
             </a>

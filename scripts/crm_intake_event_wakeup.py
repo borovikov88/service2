@@ -4,6 +4,7 @@ No credentials, persisted source payloads, or replacement delivery implementatio
 A missed wake/crash/budget exhaustion is recovered by the independent periodic job.
 """
 import argparse
+import errno
 import fcntl
 import os
 from pathlib import Path
@@ -14,12 +15,31 @@ import time
 import uuid
 
 
+def failure_metadata(error):
+    """Fixed vocabulary only: never paths, exception text, numeric IDs or payloads."""
+    known = {
+        'not_canonical_deployment', 'missing_private_host_runtime',
+        'unsafe_wakeup_directory_type', 'unsafe_wakeup_directory_owner', 'unsafe_wakeup_directory_mode',
+        'unsafe_wakeup_file_type', 'unsafe_wakeup_file_owner', 'unsafe_wakeup_file_mode',
+        'wakeup_dispatch_busy', 'invalid_worker_descriptor',
+    }
+    code = str(error) if type(error) in {ValueError, TimeoutError} and str(error) in known else 'unexpected_failure'
+    allowed_errno = {'EACCES', 'EPERM', 'ENOSPC', 'EDQUOT', 'EMFILE', 'ENFILE', 'ELOOP', 'EROFS', 'ENOENT'}
+    label = errno.errorcode.get(error.errno, 'OTHER') if isinstance(error, OSError) else 'NONE'
+    if label not in allowed_errno | {'NONE'}:
+        label = 'OTHER'
+    return code, label, os.getuid() == os.geteuid()
+
+
 def _open(path):
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     info = os.fstat(fd)
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+    failure = ('type' if not stat.S_ISREG(info.st_mode) else
+               'owner' if info.st_uid != os.getuid() else
+               'mode' if info.st_mode & 0o077 else None)
+    if failure:
         os.close(fd)
-        raise ValueError("unsafe_wakeup_file")
+        raise ValueError('unsafe_wakeup_file_' + failure)
     return fd
 
 
@@ -33,8 +53,12 @@ def _state(app):
     path = parent / 'crm-intake-wakeup'
     path.mkdir(mode=0o700, exist_ok=True)
     info = path.lstat()
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-        raise ValueError('unsafe_wakeup_directory')
+    if not stat.S_ISDIR(info.st_mode):
+        raise ValueError('unsafe_wakeup_directory_type')
+    if info.st_uid != os.getuid():
+        raise ValueError('unsafe_wakeup_directory_owner')
+    if info.st_mode & 0o077:
+        raise ValueError('unsafe_wakeup_directory_mode')
     return path
 
 

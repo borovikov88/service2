@@ -2,7 +2,7 @@
     <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
         <i class="bi bi-calendar-check {% if is_water_object %}text-success{% else %}text-primary{% endif %}"></i>
         <div class="small text-muted">Частота визитов</div>
-        <div class="ms-auto fw-semibold">{{ pool.get_service_frequency_display|default:"-" }}</div>
+        <div class="ms-auto fw-semibold">{{ pool.contractual_service.label|default:"-" }}</div>
     </div>
 </div>
 {% if can_view_service_details %}

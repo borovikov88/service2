@@ -1,0 +1,87 @@
+"""Immutable terms evidence and separate explicit dated confirmations."""
+from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.db import models
+from django.utils import timezone
+from .crm_commercial_models import LeadEvidenceModel
+
+
+class CrmRecurringDraft(LeadEvidenceModel):
+    immutable_scope = ('organization_id', 'deal_id', 'client_id', 'payer_id', 'object_scope', 'contract_basis', 'created_by_id', 'created_at')
+    organization = models.ForeignKey('Organization', on_delete=models.PROTECT)
+    deal = models.OneToOneField('CrmDeal', on_delete=models.PROTECT)
+    client = models.ForeignKey('Client', on_delete=models.PROTECT, related_name='+')
+    payer = models.ForeignKey('Client', on_delete=models.PROTECT, related_name='+')
+    object_scope = models.JSONField()
+    contract_basis = models.CharField(max_length=1000)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    created_at = models.DateTimeField(default=timezone.now)
+
+
+    def clean(self):
+        super().clean()
+        from pool_service.models import Client
+        if not Client.objects.filter(pk=self.payer_id, organization_id=self.organization_id).exists():
+            raise ValidationError('Payer must belong to the contract organization.')
+
+
+class CrmRecurringRevision(LeadEvidenceModel):
+    immutable_scope = ('organization_id', 'draft_id', 'revision', 'kind', 'payload', 'operation_key', 'payload_hash', 'actor_id', 'reason', 'created_at')
+    organization = models.ForeignKey('Organization', on_delete=models.PROTECT)
+    draft = models.ForeignKey(CrmRecurringDraft, on_delete=models.PROTECT, related_name='versions')
+    revision = models.PositiveIntegerField()
+    kind = models.CharField(max_length=16, choices=[('prepare','Prepare'),('revise','Revise'),('renew','Renew')])
+    payload = models.JSONField()
+    operation_key = models.CharField(max_length=100)
+    payload_hash = models.CharField(max_length=64)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    reason = models.CharField(max_length=1000)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        base_manager_name = 'objects'
+        constraints = [models.UniqueConstraint(fields=['draft','revision'],name='crm_recurring_revision_uq'),
+                       models.UniqueConstraint(fields=['organization','operation_key'],name='crm_recurring_operation_uq')]
+
+    def clean(self):
+        super().clean()
+        if not CrmRecurringDraft.objects.filter(pk=self.draft_id, organization_id=self.organization_id).exists():
+            raise ValidationError('Draft must belong to the revision organization.')
+        if not isinstance(self.payload, dict) or self.payload.get('state') != 'draft' or self.payload.get('operational_effect') != 'none':
+            raise ValidationError('Only inactive draft evidence can be stored.')
+
+
+class CrmRecurringConfirmation(LeadEvidenceModel):
+    immutable_scope = ('organization_id','revision_id','pool_id','effective_from','actor_id','created_at')
+    organization = models.ForeignKey('Organization', on_delete=models.PROTECT)
+    revision = models.OneToOneField(CrmRecurringRevision, on_delete=models.PROTECT)
+    pool = models.ForeignKey('Pool', on_delete=models.PROTECT)
+    effective_from = models.DateField()
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    def clean(self):
+        super().clean()
+        if not CrmRecurringRevision.objects.filter(pk=self.revision_id, organization_id=self.organization_id).exists():
+            raise ValidationError('Confirmation scope mismatch.')
+        from pool_service.models import Pool
+        if not Pool.objects.filter(pk=self.pool_id, organization_id=self.organization_id).exists():
+            raise ValidationError('Confirmation object scope mismatch.')
+
+
+class CrmRecurringReminder(models.Model):
+    """Per-recipient delivery receipt, not an obligation or accounting event."""
+    organization = models.ForeignKey('Organization', on_delete=models.PROTECT)
+    pool = models.ForeignKey('Pool', on_delete=models.PROTECT)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    revision = models.ForeignKey(CrmRecurringRevision, on_delete=models.PROTECT)
+    occurrence_key = models.CharField(max_length=64)
+    due_date = models.DateField()
+    created_at = models.DateTimeField(default=timezone.now)
+    attempted_revision = models.ForeignKey(CrmRecurringRevision, on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    attempted_due_date = models.DateField(null=True, blank=True)
+    push_attempted_at = models.DateTimeField(null=True, blank=True)
+    push_result = models.CharField(max_length=24, default='pending')
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['pool','user','occurrence_key'],name='crm_recurring_reminder_uq')]

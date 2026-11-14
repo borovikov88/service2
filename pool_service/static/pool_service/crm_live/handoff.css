@@ -1,0 +1,3 @@
+:is([data-handoff],[data-construction]) .quote-table table{min-width:520px}
+:is([data-handoff],[data-construction]) .quote-table th:not(:first-child),:is([data-handoff],[data-construction]) .quote-table td:not(:first-child){white-space:nowrap}
+@media(max-width:600px){:is([data-handoff],[data-construction]){padding-bottom:110px!important}}

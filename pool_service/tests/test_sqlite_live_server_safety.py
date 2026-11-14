@@ -20,7 +20,8 @@ from pool_service.models import Organization
 from pool_service.tests.test_crm_object_needs import ReviewFixture
 
 FLAGS = ('CRM_CARD_BROWSER_TEST', 'CRM_NEEDS_BROWSER_TEST', 'CRM_LEADS_BROWSER_TEST',
-         'CONTACTS_BROWSER_TEST', 'CRM_NON_SALES_BROWSER_TEST', 'SERVICE2_SQLITE_LIVE_SERVER_TEST')
+         'CONTACTS_BROWSER_TEST', 'CRM_NON_SALES_BROWSER_TEST', 'SERVICE2_SQLITE_LIVE_SERVER_TEST',
+         'CRM_COLUMN_BROWSER_TEST', 'CRM_MATERIAL_BROWSER_TEST')
 
 
 class SQLiteTestConfigurationTests(SimpleTestCase):

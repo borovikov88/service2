@@ -77,7 +77,7 @@
     if (!lead.can_move) return [];
     if (lead.is_archived) return lead.status === "closed" ? (lead.result === "spam" ? ["restore", "spam"] : ["restore", "unparsed"]) : ["restore", "unparsed", "working"];
     if (lead.status === "closed" && lead.result !== "spam") return lead.needs_review ? ["deleted"] : ["unparsed", "deleted"];
-    return ["unparsed", "working", "spam", "deleted"].filter((key) => key !== lead.column);
+    return ["unparsed", "working", ...((lead.status !== "closed") ? ["history"] : []), "spam", "deleted"].filter((key) => key !== lead.column);
   }
   function mount(doc) {
     const root = doc.getElementById("crm-leads"); if (!root) return;
@@ -100,14 +100,14 @@
       for (const [key, value, base] of [["q", state.q, ""], ["mode", state.mode, "all"], ["status", state.status, ""], ["page", String(state.mode === "closed" ? state.page : 1), "1"]]) {
         if (value && value !== base) url.searchParams.set(key, value); else url.searchParams.delete(key);
       }
-      for (const key of ["unparsed", "working", "history", "spam", "deleted"]) { const page = state.pages[key] || 1; if (page > 1) url.searchParams.set("page_" + key, page); else url.searchParams.delete("page_" + key); }
+      for (const key of ["unparsed", "working", "history", "spam", "deleted"]) url.searchParams.delete("page_" + key);
       if (state.selected) url.searchParams.set("lead", state.selected); else url.searchParams.delete("lead");
       win.history.replaceState({}, "", url);
     }
     async function read(url, signal) {
       const response = await win.fetch(url, {credentials: "same-origin", headers: {Accept: "application/json"}, signal});
       let body; try { body = await response.json(); } catch (_error) { throw new Error("Ответ сервера недоступен. Обновите данные."); }
-      if (!response.ok) throw new Error(body.error || "Не удалось загрузить данные.");
+      if (!response.ok) { const error = new Error(body.error || "Не удалось загрузить данные."); error.status=response.status; error.code=body.code; throw error; }
       return body;
     }
     const csrf = () => root.querySelector("[name=csrfmiddlewaretoken]").value;
@@ -161,7 +161,7 @@
         }
       } catch (error) { errorNode(form, error); }
     }
-    const columnLabels = {unparsed: "Не разобраны", working: "В работе", spam: "Спам", deleted: "Удалённые", restore: "Восстановить"};
+    const columnLabels = {unparsed: "Не разобраны", working: "В работе", history: "Завершённые", spam: "Спам", deleted: "Удалённые", restore: "Восстановить"};
     let dragged = null;
     const conversionDrop=el("div","lead-conversion-drop","Создать сделку");conversionDrop.hidden=true;root.append(conversionDrop);
     conversionDrop.addEventListener("dragover",e=>{if(dragged?.can_qualify){e.preventDefault();e.dataTransfer.dropEffect="move";}});
@@ -203,15 +203,12 @@
           dragged = lead; conversionDrop.hidden=!lead.can_qualify; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", String(lead.id)); row.classList.add("is-dragging");
         });
         row.addEventListener("dragend", () => { dragged = null; conversionDrop.hidden=true; row.classList.remove("is-dragging"); root.querySelectorAll(".is-drop-target").forEach((node) => node.classList.remove("is-drop-target")); });
-        const actions = el("details", "lead-card-move"), summary = el("summary", "", "⋯"); summary.setAttribute("aria-label","Действия лида"); actions.append(summary);
-        const buttons = el("div", "lead-move-options");
-        for (const target of targets) buttons.append(button(columnLabels[target], () => moveLead(lead, target)));
-        if(lead.can_qualify)buttons.append(button("Создать сделку",()=>conversionDialog(lead))); actions.append(buttons); row.append(actions);
+
       }
       return row;
     }
     function renderList() {
-      const data = state.data, list = byId("lead-list"); list.replaceChildren(); list.setAttribute("aria-busy", String(state.loading));
+      const data = state.data, list = byId("lead-list"), scrollLeft = list.scrollLeft; list.replaceChildren(); list.setAttribute("aria-busy", String(state.loading));
       list.className = state.mode === "closed" ? "lead-history-list" : "lead-board";
       byId("lead-count").textContent = state.loading ? "Обновляем…" : "Найдено: " + data.total;
       byId("lead-page").textContent = `${data.page} / ${data.pages}`;
@@ -236,11 +233,14 @@
         section.addEventListener("dragover", (event) => { if (dragged && !state.loading && moveTargets(dragged).includes(column.key)) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; section.classList.add("is-drop-target"); } });
         section.addEventListener("dragleave", (event) => { if (!section.contains(event.relatedTarget)) section.classList.remove("is-drop-target"); });
         section.addEventListener("drop", (event) => { event.preventDefault(); section.classList.remove("is-drop-target"); const lead = dragged; dragged = null; conversionDrop.hidden=true; if (lead && !state.loading && moveTargets(lead).includes(column.key)) moveLead(lead, column.key); });
-        const pager = el("nav", "lead-column-pager"); pager.setAttribute("aria-label", "Страницы: " + column.label);
-        const previous = button("←", () => { state.pages[column.key] = column.page - 1; loadList(); }); previous.setAttribute("aria-label", "Предыдущая страница: " + column.label); previous.disabled = state.loading || column.page <= 1;
-        const next = button("→", () => { state.pages[column.key] = column.page + 1; loadList(); }); next.setAttribute("aria-label", "Следующая страница: " + column.label); next.disabled = state.loading || column.page >= column.pages;
-        pager.append(previous, el("span", "", `${column.page} / ${column.pages}`), next); section.append(pager); list.append(section);
+        section.append(el("p", "lead-column-progress", `Загружено ${column.leads.length} из ${column.total}`));
+        if (column.cursor) {
+          const more = button("Показать ещё 50", () => loadList({column:column.key}));
+          more.dataset.action="column-more"; more.disabled=state.loading; section.append(more);
+        }
+        list.append(section);
       }
+      list.scrollLeft=scrollLeft;
       renderOperations();
     }
     async function moveLead(snapshot, target) {
@@ -255,27 +255,52 @@
         if (lead.revision !== snapshot.revision || !moveTargets(lead).includes(target)) throw new Error("Карточка уже изменена или действие недоступно. Обновите канбан.");
         const free = !lead.assignee;
         const form = makeForm(content, columnLabels[target], free ? "Первое успешное сохранение закрепит свободный лид за вами." : "Перемещение сохранится после подтверждения. История и связи останутся в карточке.");
-        const reason = field(form, "Причина перемещения", "", "textarea"); reason.required = true; reason.maxLength = 500;
+        const ranks={unparsed:0,working:1,history:2,spam:3,deleted:4};
+        const required=["spam","deleted","restore"].includes(target)||ranks[target]<ranks[lead.column];
+        const reason = required ? field(form, "Причина перемещения", "", "textarea") : null;
+        if(reason){reason.required=true;reason.maxLength=500;}
+        if(target==="history")form.append(el("p","lead-form-note","Лид будет завершён без создания сделки. Открытый следующий шаг отменится; сделки, выполнение и оплата не изменятся."));
         let next = null;
         if (target === "working" && (!lead.next_action || lead.next_action.completed)) next = nextFields(form, null);
         if (target === "spam" || target === "deleted") form.append(el("p", "lead-form-note", "Текущий незавершённый шаг будет отменён с сохранением истории."));
         formSubmit(form, free ? "Взять на себя и переместить" : "Подтвердить перемещение", () => {
-          const changes = {column: target, reason: reason.value.trim()}; if (next) changes.next_action = next();
-          if (["spam", "deleted"].includes(target) && lead.next_action?.version && !lead.next_action.completed) changes.expected_task_version = lead.next_action.version;
+          const changes = {column: target, reason: reason ? reason.value.trim() : ""}; if (next) changes.next_action = next();
+          if (["spam", "deleted", "history"].includes(target) && lead.next_action?.version && !lead.next_action.completed) changes.expected_task_version = lead.next_action.version;
           submit(form, "lead.disposition", lead, changes);
         });
         renderOperations();
       } catch (error) { if (sequence === state.detailSequence) content.append(el("p", "lead-error", error.message)); }
     }
-    async function loadList() {
+    async function loadList(options) {
+      const more=options?.column ? (state.data.columns || []).find(c=>c.key===options.column) : null;
+      if (options?.column && (!more?.cursor || state.loading)) return;
+      const previous=state.data;
       if (state.listController) state.listController.abort();
       const controller = new AbortController(), sequence = ++state.sequence; state.listController = controller; state.loading = true; renderList(); urlState();
       const url = new URL(initial.urls.data, win.location.origin);
       for (const [key, value] of Object.entries({q: state.q, mode: state.mode, status: state.status, page: state.mode === "closed" ? state.page : 1})) url.searchParams.set(key, value);
-      for (const [key, page] of Object.entries(state.pages)) url.searchParams.set("page_" + key, page);
-      try { const data = await read(url, controller.signal); if (sequence !== state.sequence) return; state.data = data; state.page = data.page; state.pages = Object.fromEntries((data.columns || []).map((column) => [column.key, column.page])); urlState(); }
-      catch (error) { if (error.name !== "AbortError" && sequence === state.sequence) notice(error.message); }
-      finally { if (sequence === state.sequence) { state.loading = false; renderList(); } }
+      if(state.mode!=="closed") url.searchParams.set("layout","board");
+      if(more){url.searchParams.set("board_column",more.key);url.searchParams.set("cursor",more.cursor);}
+      try {
+        const data = await read(url, controller.signal); if (sequence !== state.sequence) return;
+        if(more){
+          const replacement=data.columns.find(c=>c.key===more.key);
+          const rows=new Map(more.leads.map(row=>[String(row.id),row]));
+          for(const row of replacement.leads) rows.set(String(row.id),row);
+          const columns=previous.columns.map(c=>c.key===more.key?{...replacement,leads:Array.from(rows.values())}:c);
+          state.data={...data,columns,leads:columns.flatMap(c=>c.leads)};
+        }else state.data=data;
+        state.page=data.page; urlState(); if(!options?.keepNotice) notice("");
+      } catch(error) {
+        if(error.name==="AbortError" || sequence!==state.sequence) return;
+        if(error.code==="reset_required"){
+          state.data={...state.data,leads:[],columns:[],total:0};
+          notice("Доска изменилась. Загружаем актуальные первые порции; продолжите загрузку заново.");
+          await loadList({keepNotice:true});return;
+        }
+        if([401,403,404].includes(error.status)) state.data={...state.data,leads:[],columns:[],total:0,can_create:false};
+        notice(error.message);
+      } finally { if(sequence===state.sequence){state.loading=false;renderList();} }
     }
     function field(host, label, value = "", type = "text", wide = false) {
       const wrap = el("label", "lead-field" + (wide ? " wide" : "")), input = el(type === "textarea" ? "textarea" : "input");
@@ -304,7 +329,7 @@
           } catch (error) { if (error.name !== "AbortError" && sequence === current) chosen.textContent = error.message; }
         }, 300);
       });
-      return {element: wrap, value: () => selected?.id ?? null, clear: () => { selected = null; input.value = ""; chosen.textContent = "Не выбрано"; results.replaceChildren(); }};
+      return {element: wrap, value: () => selected?.id ?? null, clear: () => { ++sequence; win.clearTimeout(timer); if (controller) controller.abort(); selected = null; input.value = ""; chosen.textContent = "Не выбрано"; results.replaceChildren(); }};
     }
     function nextFields(host, current) {
       const title = field(host, "Следующий шаг", current?.restricted || current?.completed ? "" : current?.title); title.required = true; title.maxLength = 255;
@@ -360,10 +385,11 @@
     function transitionForm(host, lead) {
       const form = makeForm(host, "Результат разбора / ожидание"), fields = el("div", "lead-fields"); form.append(fields);
       const status = select(fields, "Состояние", [["working", "В работе"], ["qualifying", "Уточнение"], ["waiting", "Ожидание"], ["deferred", "Отложен"], ["closed", "Разбор завершён"]], lead.status === "new" ? "working" : lead.status);
-      const result = select(fields, "Результат завершения", [["non_target", "Нецелевой"], ["spam", "Спам"], ["duplicate", "Дубль другого лида"], ["no_deal", "Закрыт без сделки"], ["linked", "Относится к существующей сделке"]]);
+      const result = select(fields, "Результат завершения", [["non_target", "Нецелевой"], ["spam", "Спам"], ["duplicate", "Продолжение существующей потребности"], ["no_deal", "Закрыт без сделки"], ["linked", "Относится к существующей сделке"]]);
       const reason = field(fields, "Причина / пояснение", "", "textarea", true); reason.maxLength = 500;
       const follow = field(fields, "Когда вернуться · " + initial.timezone, localDateTime(lead.follow_up_at, initial.timezone), "datetime-local");
-      const targets = picker(fields, "Связанный лид / сделка · для дубля или текущей работы", initial.urls.targets, "targets", null, () => result.value === "linked" ? "deal" : "lead");
+      fields.append(el("p", "lead-field wide lead-form-note", "Подтвердите, что это та же потребность: телефон сам по себе не основание для связи. История сохранится, открытый шаг исходного лида отменится. Задачи и сделки выбранной работы не изменятся. Доступны ваши активные независимые лиды."));
+      const targets = picker(fields, "Подтверждённая потребность / сделка", initial.urls.targets + "&exclude_id=" + lead.id, "targets", null, () => result.value === "linked" ? "deal" : "lead");
       const update = () => { result.parentElement.hidden = status.value !== "closed"; follow.parentElement.hidden = !["waiting", "deferred"].includes(status.value); targets.element.hidden = status.value !== "closed" || !["duplicate", "linked"].includes(result.value); targets.clear(); };
       status.addEventListener("change", update); result.addEventListener("change", update); update();
       formSubmit(form, "Сохранить состояние", () => {
@@ -376,6 +402,9 @@
     function qualificationForm(host, lead, additional = false) {
       const form = makeForm(host, additional ? "Дополнительная сделка" : "Создать сделку", "Создание произойдёт только после подтверждения. Совпадения контактов требуют явного выбора.");
       const fields=el("div","lead-fields");form.append(fields);
+      if(!lead.assignee)form.append(el("p","lead-form-note","При подтверждении вы возьмёте свободный лид на себя."));
+      if(lead.is_archived)form.append(el("p","lead-form-note","При подтверждении лид будет восстановлен и конвертирован. История удаления сохранится."));
+      const need=additional?null:field(fields,"Потребность",lead.need||"","textarea",true);if(need){need.required=true;need.maxLength=10000;need.readOnly=!lead.can_edit_conversion_need;if(!lead.can_edit_conversion_need&&!lead.need)form.append(el("p","lead-error","Для уточнения потребности требуется право редактирования лида."));}
       const title=field(fields,"Название сделки",lead.title,"text",true);title.required=true;title.maxLength=255;
       const pipeline=select(fields,"Воронка",initial.pipelines.map(p=>[String(p.id),p.name]),String(initial.pipelines.find(p=>p.code===lead.direction)?.id || initial.pipelines[0]?.id || ""));pipeline.required=true;
       const mode=select(fields,"Контакт",[["existing","Выбрать существующий"],["private","Новое физлицо"],["legal","Новая компания"],["both","Новое физлицо и компания"]],"existing");
@@ -392,7 +421,7 @@
         const row={title:title.value.trim(),pipeline_id:Number(pipeline.value),next_action:reuse?.checked?{title:lead.next_action.title,due_at:lead.next_action.due_at}:next()};
         if(mode.value==="existing"){if(!client.value())throw new Error("Выберите существующего клиента из результатов поиска.");row.client_id=client.value();}
         else row.new_contact={type:mode.value,person_name:person.value.trim(),company_name:company.value.trim(),phone:phone.value.trim(),inn:inn.value.trim()};
-        const changes={deals:[row]};if(reuse?.checked){row.reuse_next_action=true;changes.expected_task_version=lead.next_action.version;}
+        const changes={deals:[row]};if(need)changes.need=need.value.trim();if(reuse?.checked){row.reuse_next_action=true;changes.expected_task_version=lead.next_action.version;}
         submit(form,additional?"lead.add_deal":"lead.qualify",lead,changes);
       });
     }
@@ -418,10 +447,12 @@
       }
       const actions=el("details","lead-panel");actions.append(el("summary","","Действия с лидом"));
       if(lead.can_transition)transitionForm(actions,lead);
-      if(lead.can_qualify)actions.append(button("Создать сделку",()=>conversionDialog(lead)));
+      if(lead.can_qualify)left.append(button("Создать сделку",()=>conversionDialog(lead)));
+      if(moveTargets(lead).length){const movement=el("details","lead-detail-moves");movement.append(el("summary","","Изменить этап"));for(const target of moveTargets(lead))movement.append(button(columnLabels[target],()=>moveLead(lead,target)));left.append(movement);}
       if(lead.can_add_deal)qualificationForm(actions,lead,true);
       if(lead.can_acknowledge){const f=makeForm(actions,"Продолжение работы","");formSubmit(f,"Отметить разобранным",()=>submit(f,"lead.acknowledge",lead,{}));}
       if(lead.can_new_need)editForm(actions,lead,"lead.new_need");left.append(actions);
+      if(data.duplicate_of){const related=el("section","lead-panel");related.append(el("h3","","Продолжение потребности"),button(data.duplicate_of.title,()=>openLead(data.duplicate_of.id)));left.append(related);}
       if(data.deals?.length){const links=el("section","lead-panel");links.append(el("h3","","Сделки"));for(const deal of data.deals){const a=el("a","",deal.title);a.href=deal.url;links.append(a);}left.append(links);}
       right.append(el("h3","","История общения"));const filters=el("div","lead-timeline-filters"), items=el("div");right.append(filters,items);
       let filter="all",sources=[...(data.sources||[])],cursor=data.source_cursor;
@@ -480,12 +511,21 @@
     byId("lead-refresh").addEventListener("click", loadList);
     let searchTimer;
     byId("lead-search").value = state.q; byId("lead-status").value = state.status;
-    byId("lead-search").addEventListener("input", (event) => { state.q = event.target.value; state.page = 1; state.pages = {}; win.clearTimeout(searchTimer); searchTimer = win.setTimeout(loadList, 300); });
+    byId("lead-search").addEventListener("input", (event) => { state.q = event.target.value; state.page = 1; state.pages = {}; if(state.listController)state.listController.abort(); ++state.sequence; state.loading=true; renderList(); win.clearTimeout(searchTimer); searchTimer = win.setTimeout(loadList, 300); });
     byId("lead-status").addEventListener("change", (event) => { state.status = event.target.value; state.page = 1; state.pages = {}; loadList(); });
     byId("lead-modes").addEventListener("click", (event) => { const target = event.target.closest("[data-mode]"); if (target) { state.mode = target.dataset.mode; state.page = 1; state.pages = {}; loadList(); } });
     byId("lead-prev").addEventListener("click", () => { if (state.page > 1) { state.page -= 1; loadList(); } });
     byId("lead-next").addEventListener("click", () => { if (state.page < state.data.pages) { state.page += 1; loadList(); } });
     win.addEventListener("beforeunload", (event) => { if (operations.pending().length) { event.preventDefault(); event.returnValue = ""; } });
+    win.addEventListener("popstate",()=>{
+      const params=new URL(win.location.href).searchParams;
+      state.q=params.get("q") || ""; state.mode=params.get("mode") || "all"; state.status=params.get("status") || "";
+      state.page=Number(params.get("page")) || 1; state.pages={};
+      byId("lead-search").value=state.q; byId("lead-status").value=state.status;
+      const selected=params.get("lead"); state.selected=null;
+      if(dialog.open) dialog.close(); loadList();
+      if(selected && /^\d+$/.test(selected)) openLead(Number(selected));
+    });
     const selected = new URL(win.location.href).searchParams.get("lead"); renderList(); if (selected && /^\d+$/.test(selected)) openLead(Number(selected));
     return {state, operations, loadList, openLead};
   }

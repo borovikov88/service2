@@ -1,3 +1,4 @@
+from django.utils import timezone
 import logging
 from django.conf import settings
 from django.contrib import messages
@@ -491,6 +492,8 @@ def client_detail(request, client_id):
     from .client_crm_models import OrganizationPersonLink
     from .services.call_processing_settings import settings_allowed
     from .services.owner_call_privacy import contact_state
+    from .services.crm_recurring_effective import attach_terms
+    attach_terms(pools, timezone.localdate(), timezone.localdate())
     personal_call_state = contact_state(request.user, client) if client.client_type == "private" and settings_allowed(request.user, client.organization) else None
     return render(
         request,

@@ -25,6 +25,22 @@ class CommercialQuerySet(models.QuerySet):
     def bulk_update(self, objs, fields, **kwargs):
         raise ValidationError("Bulk CRM writes are unavailable.")
 
+    def delete(self):
+        from .services.crm_board_cursor import TRACKED, bump
+        if self.model.__name__ not in TRACKED:
+            return super().delete()
+        from .models import Organization
+        with transaction.atomic(using=self.db):
+            candidates=list(self.values_list('pk','organization_id'))
+            orgs=sorted({org for _,org in candidates})
+            list(Organization.objects.using(self.db).select_for_update().filter(pk__in=orgs).order_by('pk'))
+            survivors=list(self.filter(pk__in=[pk for pk,_ in candidates]).select_for_update().values_list('pk','organization_id'))
+            target=self.model.objects.using(self.db).filter(pk__in=[pk for pk,_ in survivors])
+            result=models.QuerySet.delete(target)
+            for org in {org for _,org in survivors}: bump(org,self.db)
+            return result
+
+
 
 class CommercialModel(models.Model):
     objects = CommercialQuerySet.as_manager()
@@ -101,7 +117,27 @@ class CommercialModel(models.Model):
                 if field.is_relation and getattr(self, field.attname, None):
                     field.remote_field.model.objects.using(using).select_for_update().filter(pk=getattr(self, field.attname)).exists()
             self.full_clean()
-            return super().save(*args, **kwargs)
+            result = super().save(*args, **kwargs)
+            from .services.crm_board_cursor import TRACKED, bump
+            if type(self).__name__ in TRACKED:
+                for org_id in org_ids: bump(org_id, using)
+            return result
+
+
+    def delete(self, using=None, keep_parents=False):
+        from .services.crm_board_cursor import TRACKED, bump
+        if type(self).__name__ not in TRACKED:
+            return super().delete(using=using,keep_parents=keep_parents)
+        from .models import Organization
+        using=using or router.db_for_write(type(self),instance=self)
+        with transaction.atomic(using=using):
+            org_id=type(self).objects.using(using).filter(pk=self.pk).values_list('organization_id',flat=True).first()
+            if org_id is None:
+                return super().delete(using=using,keep_parents=keep_parents)
+            Organization.objects.using(using).select_for_update().get(pk=org_id)
+            result=super().delete(using=using,keep_parents=keep_parents)
+            bump(org_id,using)
+            return result
 
 
 class CrmPipeline(CommercialModel):
@@ -348,8 +384,10 @@ class CrmCommand(CommercialModel):
 
     def clean(self):
         super().clean()
-        if not isinstance(self.result, dict) or not self.result.keys() <= {"lead_id", "deal_id", "event_id", "revision", "task_id", "deal_ids", "previous_lead_id", "need_id", "review_id", "source_revision", "transferred_task_id"}:
+        if not isinstance(self.result, dict) or not self.result.keys() <= {"lead_id", "deal_id", "event_id", "revision", "task_id", "deal_ids", "previous_lead_id", "need_id", "review_id", "source_revision", "transferred_task_id", "quote_id"}:
             raise ValidationError("Command result accepts only structural CRM identifiers.")
+        if "quote_id" in self.result and (type(self.result["quote_id"]) is not int or self.result["quote_id"] <= 0 or self.command_type not in {"quote.prepare", "quote.send", "quote.accept", "quote.reject", "quote.replace"}):
+            raise ValidationError("Quote identifiers require a quote command.")
         if "transferred_task_id" in self.result and (type(self.result["transferred_task_id"]) is not int or self.result["transferred_task_id"] <= 0 or self.command_type != "lead.qualify"):
             raise ValidationError("Task transfer requires a positive identifier in a qualification command.")
         if "deal_ids" in self.result and (type(self.result["deal_ids"]) is not list

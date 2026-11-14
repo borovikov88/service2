@@ -13,6 +13,8 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.paginator import Paginator
 from django.db.models import Q
+from django.db import transaction
+from .services.crm_board_cursor import BoardReset, epoch, portion
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
@@ -28,7 +30,7 @@ from .models import Client, Organization, ServiceTask
 from .services.task_read_permissions import readable_tasks
 from .services.task_feedback import version_for, waiting_control
 from .services.crm_lead_commands import lead_column
-from .services.crm_intake_status import intake_status
+from .services.crm_intake_status import intake_status, can_read_serving_runtime
 
 PAGE_SIZE = 50
 MAX_BODY_BYTES = 65536
@@ -38,7 +40,8 @@ EVENTS = {"lead.create": "Лид создан", "lead.take": "Обращение
     "lead.edit": "Карточка изменена", "lead.disposition": "Лид перемещён", "lead.transition": "Состояние изменено",
     "lead.qualify": "Квалификация завершена", "lead.add_deal": "Добавлена сделка",
     "lead.new_need": "Открыта новая потребность", "lead.incoming": "Поступило обращение",
-    "lead.acknowledge": "Новое обращение разобрано как продолжение текущей работы"}
+    "lead.acknowledge": "Новое обращение разобрано как продолжение текущей работы",
+    "lead.continuation": "Подтверждено продолжение потребности"}
 INTAKE_REASONS = {"unassigned": "Требуется ответственный", "missed_call": "Пропущенный звонок",
     "employee_unmapped": "Принявший сотрудник не сопоставлен", "employee_ambiguous": "Неоднозначное сопоставление сотрудника",
     "employee_unavailable": "Принявший сотрудник недоступен", "needs_qualification": "Требуется квалификация"}
@@ -93,7 +96,8 @@ def _serialize(lead, user, capabilities, *, detail=False, visible_tasks=None):
         "can_take": opened and lead.status == "new" and lead.assignee_id is None and capabilities["take_leads"],
         "can_edit": own and opened and capabilities["edit_own_leads"],
         "can_transition": own and opened and capabilities["transition_own_leads"],
-        "can_qualify": own and opened and all(capabilities[name] for name in ("qualify_own_leads", "create_own_deals", "manage_own_next_action")),
+        "can_qualify": (own or lead.assignee_id is None and lead.status == "new" and capabilities["take_leads"]) and lead.status != "closed" and not lead.result and (not lead.is_archived or capabilities["transition_own_leads"]) and all(capabilities[name] for name in ("qualify_own_leads", "create_own_deals", "manage_own_next_action")),
+        "can_edit_conversion_need": capabilities["edit_own_leads"],
         "can_add_deal": own and not lead.is_archived and lead.result == "qualified" and all(capabilities[name] for name in ("qualify_own_leads", "create_own_deals", "manage_own_next_action")),
         "can_new_need": detail and own and not lead.is_archived and lead.result != "spam" and lead.status == "closed" and capabilities["create_own_leads"] and lead.threads.exists(),
         "can_acknowledge": own and not lead.is_archived and lead.result != "spam" and lead.status == "closed" and lead.needs_review and capabilities["edit_own_leads"],
@@ -147,7 +151,13 @@ def _serialize_many(leads, user, capabilities, *, detail=False):
     return output
 
 
-def _data(request, organization):
+@transaction.atomic
+def _data(request, organization, *, board=None):
+    board=request.GET.get('layout')=='board' if board is None else board
+    if board:
+        organization=Organization.objects.select_for_update().get(pk=organization.pk)
+        from .services.crm_lead_access import can_view_leads
+        if not can_view_leads(request.user,organization): raise PermissionDenied
     capabilities = _capabilities(request.user, organization)
     mode = request.GET.get("mode", "all")
     status = request.GET.get("status", "")
@@ -189,20 +199,37 @@ def _data(request, organization):
             "spam": Q(is_archived=False) & spam,
             "deleted": Q(is_archived=True),
         }
+        requested=request.GET.get('board_column','') if board else ''
+        if board and (requested and requested not in COLUMNS or request.GET.get('cursor') and not requested): raise BoardReset()
+        revision=epoch(organization.pk) if board else None
+        scope={'kind':'leads','actor':request.user.pk,'org':organization.pk,'mode':mode,'status':status,'q':query}
+        totals={key:ordered.filter(predicate).count() for key,predicate in predicates.items()}
         for key, label in COLUMNS.items():
-            paginator = Paginator(ordered.filter(predicates[key]), PAGE_SIZE)
-            page = paginator.get_page(page_number("page_" + key))
-            columns.append({"key": key, "label": label, "page": page.number,
-                "pages": paginator.num_pages, "total": paginator.count,
-                "leads": _serialize_many(page, request.user, capabilities)})
+            if requested and requested!=key: continue
+            subset=ordered.filter(predicates[key])
+            if board:
+                rows,cursor=portion(subset,scope=scope,column=key,revision=revision,
+                    cursor=request.GET.get('cursor','') if requested else '',chronological=True)
+                columns.append({'key':key,'label':label,'page':1,'pages':1,'total':totals[key],
+                    'cursor':cursor,'leads':_serialize_many(rows,request.user,capabilities)})
+            else:
+                paginator = Paginator(subset, PAGE_SIZE)
+                page = paginator.get_page(page_number("page_" + key))
+                columns.append({"key": key, "label": label, "page": page.number,
+                    "pages": paginator.num_pages, "total": paginator.count,
+                    "leads": _serialize_many(page, request.user, capabilities)})
         leads = [lead for column in columns for lead in column["leads"]]
-        total = sum(column["total"] for column in columns)
+        total = sum(totals.values())
     activation = CrmIntakeActivation.objects.filter(organization=organization).first()
+    intake = intake_status(organization, activation)
+    if can_read_serving_runtime(request.user, organization):
+        from .services.crm_intake_wakeup import serving_runtime
+        intake["serving_runtime"] = serving_runtime(organization.pk)
     return {"leads": leads, "columns": columns,
         "page": columns[0]["page"] if columns else page.number, "pages": columns[0]["pages"] if columns else paginator.num_pages, "total": total,
         "page_size": PAGE_SIZE, "q": query, "mode": mode, "status": status,
         "can_create": capabilities["create_own_leads"],
-        "intake": intake_status(organization, activation)}
+        "intake": intake}
 
 
 def _api(view):
@@ -217,6 +244,8 @@ def _api(view):
             return JsonResponse({"error": "Доступ к этому действию сейчас отсутствует.", "code": "forbidden"}, status=403)
         except Http404:
             return JsonResponse({"error": "Карточка недоступна.", "code": "not_found"}, status=404)
+        except BoardReset as exc:
+            return JsonResponse({"error":exc.messages[0],"code":"reset_required"},status=409)
         except CommercialConflict:
             return JsonResponse({"error": "Карточка уже изменена. Обновите её и проверьте введённые данные.", "code": "conflict"}, status=409)
         except ValidationError as exc:
@@ -237,7 +266,7 @@ def workspace(request):
     if blocked:
         return blocked
     try:
-        data = _data(request, organization)
+        data = _data(request, organization, board=True)
     except ValidationError:
         # Bad URL state must not silently open a different organization or list.
         return JsonResponse({"error": "Некорректные фильтры лидов."}, status=400)
@@ -375,10 +404,13 @@ def targets(request):
     if len(query) < 3:
         return JsonResponse({"targets": []})
     if kind == "lead":
-        queryset = _queryset(request.user, organization)
+        queryset = _queryset(request.user, organization).filter(is_archived=False, assignee=request.user, origin_lead__isnull=True).exclude(status="closed")
     else:
         from .services.crm_commercial_access import deals_for_user
-        queryset = deals_for_user(request.user, organization)
+        queryset = deals_for_user(request.user, organization).filter(is_archived=False, outcome="open")
+    exclude_id = request.GET.get("exclude_id")
+    if exclude_id and kind == "lead":
+        queryset = queryset.exclude(pk=_id(exclude_id))
     return JsonResponse({"targets": list(queryset.filter(title__icontains=query).order_by("-pk").values("id", "title")[:20])})
 
 
@@ -419,14 +451,13 @@ def command(request):
 @require_POST
 def analyze_call(request, lead_id, call_id):
     # Explicit action only; same current source/privacy checks as the card.
-    from .services.crm_lead_access import can_read_lead, _readable_sources
+    from .services.crm_lead_access import can_read_lead, has_readable_family_call
     from .communication_views import _authorize_call_access, request_call_analysis, start_requested_call_analysis_worker
     from .communication_models import PhoneCall
     organization = _organization(request)
     lead = get_object_or_404(_queryset(request.user, organization), pk=lead_id)
     if not can_read_lead(request.user, organization, lead): raise Http404
-    if not _readable_sources(request.user, organization).filter(
-        lead_id__in=[lead.pk, lead.origin_lead_id], inbox__source_type="call", inbox__source_id=call_id).exists(): raise Http404
+    if not has_readable_family_call(request.user, organization, lead, call_id): raise Http404
     # Reuse existing authorization, request queue, worker and repeat protection.
     call = get_object_or_404(PhoneCall.objects.select_related("connection"), pk=call_id, organization=organization)
     _authorize_call_access(request, call)

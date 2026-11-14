@@ -48,6 +48,20 @@ class PayrollPlanCalendarTests(TestCase):
         )
 
 
+    @patch("pool_service.finance_imports.payroll_plan.calendar_timezone")
+    def test_current_plan_date_changes_month_at_business_midnight(self, calendar_timezone_mock):
+        from zoneinfo import ZoneInfo
+
+        calendar_timezone_mock.return_value = ZoneInfo("Asia/Barnaul")
+        for utc_time, expected_date in (
+            (datetime(2026, 10, 31, 16, 59, 59, tzinfo=dt_timezone.utc), date(2026, 10, 31)),
+            (datetime(2026, 10, 31, 17, 0, tzinfo=dt_timezone.utc), date(2026, 11, 1)),
+        ):
+            with self.subTest(utc_time=utc_time):
+                self.assertEqual(utc_time.date(), date(2026, 10, 31))
+                self.assertEqual(current_payroll_plan_date(utc_time), expected_date)
+
+
 class PayrollPlanReaderTests(TestCase):
     @patch("pool_service.finance_imports.odata_payroll_plan.Reader")
     def test_reader_uses_latest_effective_plan_and_marks_only_salary(self, reader_cls):
@@ -243,6 +257,11 @@ class PayrollPlanReaderTests(TestCase):
 
 class PayrollCurrentCompensationTests(TestCase):
     def setUp(self):
+        # Freeze the same aware clock before access/session fixtures are created.
+        self.clock_now = datetime(2026, 10, 31, 17, 30, tzinfo=dt_timezone.utc)
+        self.enterContext(patch.dict("os.environ", {"ONEC_ODATA_CALENDAR_TIMEZONE": "Asia/Barnaul"}))
+        self.enterContext(patch("django.utils.timezone.now", return_value=self.clock_now))
+        self.enterContext(timezone.override("UTC"))
         self.organization = Organization.objects.create(
             name="Synthetic Payroll Plan",
             paid_until=timezone.now() + timedelta(days=30),
@@ -254,7 +273,7 @@ class PayrollCurrentCompensationTests(TestCase):
             role="owner",
         )
         self.client.force_login(self.user)
-        self.month = timezone.localdate().replace(day=1)
+        self.month = current_payroll_plan_date().replace(day=1)
 
     def identity(self, name="Иванов Иван Иванович"):
         employee = Employee.objects.create(
@@ -331,6 +350,9 @@ class PayrollCurrentCompensationTests(TestCase):
     def test_personal_payroll_permission_renders_current_compensation(
         self, _mapping, _import, _personal, _summary
     ):
+        self.assertEqual(timezone.localdate(), date(2026, 10, 31))
+        self.assertEqual(current_payroll_plan_date(), date(2026, 11, 1))
+        self.assertEqual(self.month, date(2026, 11, 1))
         identity = self.identity()
         self.snapshot(identity)
 
@@ -338,6 +360,8 @@ class PayrollCurrentCompensationTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Зарплата текущего месяца")
+        self.assertEqual(response.context["compensation"]["period_month"], date(2026, 11, 1))
+        self.assertContains(response, "11.2026")
         self.assertContains(response, identity.raw_name)
         self.assertContains(response, "60")
         self.assertNotContains(response, "Обновить оклады из 1С")

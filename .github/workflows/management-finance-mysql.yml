@@ -23,6 +23,7 @@ on:
       - "pool_service/crm_service_binding_views.py"
       - "pool_service/tests/test_crm_service_binding*.py"
       - "pool_service/services/owner_call_privacy.py"
+      - "pool_service/services/call_privacy.py"
       - "pool_service/tests/test_owner_call_privacy*.py"
       - "pool_service/tests/test_contacts*.py"
       - "pool_service/tests/test_contact_identity*.py"
@@ -33,6 +34,28 @@ on:
       - "pool_service/communication_avito.py"
       - "pool_service/crm_source_*.py"
       - "pool_service/crm_commercial_*.py"
+      - "pool_service/crm_quote*.py"
+      - "pool_service/services/crm_quotes.py"
+      - "pool_service/tests/test_crm_quote*.py"
+      - "pool_service/tests/test_crm_handoff*.py"
+      - "pool_service/tests/test_crm_construction*.py"
+      - "pool_service/services/crm_construction.py"
+      - "pool_service/crm_construction_models.py"
+      - "pool_service/crm_recurring*.py"
+      - "pool_service/recurring_pool_guard.py"
+      - "pool_service/templates/pool_service/crm_live/recurring.html"
+      - "pool_service/services/crm_recurring_*.py"
+      - "pool_service/tests/test_crm_recurring*.py"
+      - "pool_service/crm_construction_views.py"
+      - "pool_service/services/crm_handoffs.py"
+      - "pool_service/crm_material_models.py"
+      - "pool_service/crm_material_views.py"
+      - "pool_service/services/crm_materials.py"
+      - "pool_service/tests/test_crm_material*.py"
+      - "pool_service/crm_handoff_models.py"
+      - "pool_service/crm_handoff_views.py"
+      - "pool_service/tests/crm_quote.browser.cjs"
+      - "pool_service/templates/pool_service/crm_live/quote*.html"
       - "pool_service/client_merge.py"
       - "pool_service/tests/test_client_merge.py"
       - "pool_service/tests/test_conversation_clients.py"
@@ -48,6 +71,10 @@ on:
       - "pool_service/services/task_generation.py"
       - "pool_service/tests/test_supply_task_generation.py"
       - "pool_service/tests/test_crm_live_*.py"
+      - "pool_service/crm_board_models.py"
+      - "pool_service/services/crm_board_cursor.py"
+      - "pool_service/tests/test_crm_board_epoch.py"
+      - "pool_service/tests/test_crm_column*.py"
       - "pool_service/crm_live_views.py"
       - "pool_service/crm_lead_views.py"
       - "pool_service/services/crm_lead_*.py"
@@ -122,7 +149,7 @@ jobs:
     # Full suite includes historical forward/reverse migration preservation.
     # 20-minute runs exhausted the budget while still progressing; keep a
     # bounded limit without skipping assertions, races or migration checks.
-    timeout-minutes: 30
+    timeout-minutes: 40
     services:
       mysql:
         image: mysql:8.4
@@ -177,6 +204,8 @@ jobs:
       - name: Verify Avito date precision and read-only tools on MySQL
         run: |
           python manage.py test \
+            pool_service.tests.test_avito_owner_dashboard \
+            pool_service.tests.test_avito_owner_overview \
             pool_service.tests.test_avito_placement_continuity \
             pool_service.tests.test_avito_mcp \
             --verbosity 2
@@ -217,6 +246,17 @@ jobs:
             pool_service.tests.test_crm_inbox_migrations \
             pool_service.tests.test_crm_commercial_foundation \
             pool_service.tests.test_crm_commercial_commands \
+            pool_service.tests.test_crm_quotes \
+            pool_service.tests.test_crm_quote_migration \
+            pool_service.tests.test_crm_construction \
+            pool_service.tests.test_crm_recurring_terms \
+            pool_service.tests.test_crm_recurring_drafts \
+            pool_service.tests.test_crm_recurring_confirmed \
+            pool_service.tests.test_crm_recurring_get \
+            pool_service.tests.test_crm_recurring_reminders \
+            pool_service.tests.test_crm_handoffs \
+            pool_service.tests.test_crm_materials \
+            pool_service.tests.test_crm_handoff_migration \
             pool_service.tests.test_crm_commercial_card \
             pool_service.tests.test_crm_object_needs \
             pool_service.tests.test_crm_object_need_corrections \
@@ -238,6 +278,8 @@ jobs:
             pool_service.tests.test_crm_live_pilot_commands \
             pool_service.tests.test_crm_live_pilot_migrations \
             pool_service.tests.test_crm_live_views \
+            pool_service.tests.test_crm_column_loading \
+            pool_service.tests.test_crm_board_epoch \
             pool_service.tests.test_crm_approved_access \
             pool_service.tests.test_crm_lead_commands \
             pool_service.tests.test_crm_lead_migrations \

@@ -184,6 +184,36 @@ def can_read_lead(user, organization, lead):
     return not private_call_ids(PhoneCall.objects.filter(pk__in=call_ids, organization=organization))
 
 
+def source_family(user, organization, lead):
+    """Only direct, explicitly confirmed contributors with current card access."""
+    roots = {lead.pk, lead.origin_lead_id} - {None}
+    return leads_for_user(user, organization).filter(Q(pk__in=roots) |
+        Q(duplicate_of_id__in=roots, status="closed", result="duplicate")).values("pk")
+
+
+def _identity_batches(queryset, field='pk'):
+    """Keyset portions, never a total history cap or a nested privacy query."""
+    cursor = 0
+    while True:
+        ids = list(queryset.filter(**{field+'__gt': cursor}).order_by(field)
+                   .values_list(field, flat=True).distinct()[:200])
+        if not ids:
+            return
+        yield ids
+        cursor = ids[-1]
+        if len(ids) < 200:
+            return
+
+
+def has_readable_family_call(user, organization, lead, call_id):
+    sources = _readable_sources(user, organization).filter(
+        inbox__source_type='call', inbox__source_id=call_id)
+    for ids in _identity_batches(sources, 'lead_id'):
+        if source_family(user, organization, lead).filter(pk__in=ids).exists():
+            return True
+    return False
+
+
 def source_metadata_many(*, user, organization, leads, limit=1, before=None):
     """Bounded, batched metadata from currently readable sources; no bodies/audio."""
     leads = list(leads)
@@ -193,14 +223,39 @@ def source_metadata_many(*, user, organization, leads, limit=1, before=None):
     leads = [lead for lead in leads if lead.pk in allowed]
     source_leads = {pk for lead in leads for pk in (lead.pk, lead.origin_lead_id) if pk}
     limit = max(1, min(int(limit), 50))
-    source_rows = _readable_sources(user, organization).filter(lead_id__in=source_leads)
-    if before:
-        stamp, source_id = before
-        source_rows = source_rows.filter(Q(inbox__received_at__lt=stamp) | Q(inbox__received_at=stamp, pk__lt=source_id))
-    rows = list(source_rows
-        .select_related("inbox").annotate(_source_rank=Window(expression=RowNumber(),
-            partition_by=[F("lead_id")], order_by=[F("inbox__received_at").desc(), F("pk").desc()]))
-        .filter(_source_rank__lte=limit).order_by("-inbox__received_at", "-pk"))
+    readable = leads_for_user(user, organization)
+    # A source may belong both to its immutable original card and to the
+    # confirmed continuation target on the same page. Rank each projection
+    # separately so page composition cannot change either card's history.
+    projections = [
+        (readable.filter(pk__in=source_leads), "lead_id"),
+        (readable.filter(duplicate_of_id__in=source_leads, status="closed", result="duplicate"), "lead__duplicate_of_id"),
+    ]
+    top = {}
+    for contributors, family in projections:
+        # SQLite <=3.45 cannot parse the expanded phone privacy predicate twice
+        # inside an IN subquery plus a window wrapper. Evaluate contributor
+        # authority separately in bounded keyset portions; source checks remain.
+        for ids in _identity_batches(contributors):
+            source_rows = _readable_sources(user, organization).filter(lead_id__in=ids)
+            if before:
+                stamp, source_id = before
+                source_rows = source_rows.filter(Q(inbox__received_at__lt=stamp) | Q(inbox__received_at=stamp, pk__lt=source_id))
+            batch = source_rows.select_related("inbox").annotate(_family=F(family),
+                _source_rank=Window(expression=RowNumber(), partition_by=[F(family)],
+                    order_by=[F("inbox__received_at").desc(), F("pk").desc()]))                .filter(_source_rank__lte=limit).order_by("-inbox__received_at", "-pk")
+            for row in batch:
+                items = top.setdefault(row._family, {})
+                items[row.pk] = row
+                top[row._family] = {item.pk:item for item in sorted(items.values(),
+                    key=lambda item:(item.inbox.received_at,item.pk), reverse=True)[:limit]}
+    rows = [row for items in top.values() for row in items.values()]
+    # Recheck whole contributor cards after the split reads too. Revoking access
+    # to another source on that card must not expose its remaining public source.
+    current = set()
+    for ids in _identity_batches(CrmLead.objects.filter(pk__in={row.lead_id for row in rows})):
+        current.update(leads_for_user(user, organization).filter(pk__in=ids).values_list('pk',flat=True))
+    rows = [row for row in rows if row.lead_id in current]
     messages = {row.pk: row for row in ConversationMessage.objects.filter(
         pk__in=[row.inbox.source_id for row in rows if row.inbox.source_type == "message"])
         .select_related("conversation").only("pk", "sender_name", "direction", "conversation_id", "conversation__uuid", "conversation__client_id", "conversation__provider_phone", "conversation__participant_phone")}
@@ -246,11 +301,11 @@ def source_metadata_many(*, user, organization, leads, limit=1, before=None):
             peer = " · ".join(value for value in (contact.name if contact else "Контакт не определён", metadata["phone"]) if value)
             staff = metadata["employee"] or "Сотрудник не определён"
             metadata["caller"], metadata["callee"] = (peer, staff) if metadata["direction"] == "in" else (staff, peer)
-        grouped.setdefault(row.lead_id, []).append(metadata)
+        grouped.setdefault(row._family, []).append(metadata)
     result = {}
     for lead in leads:
-        items = grouped.get(lead.pk, []) + grouped.get(lead.origin_lead_id, [])
-        result[lead.pk] = sorted(items, key=lambda row: (row["received_at"], row["id"]), reverse=True)[:limit]
+        items = {row["id"]: row for row in grouped.get(lead.pk, []) + grouped.get(lead.origin_lead_id, [])}
+        result[lead.pk] = sorted(items.values(), key=lambda row: (row["received_at"], row["id"]), reverse=True)[:limit]
     return result
 
 

@@ -11,6 +11,88 @@ class TimelineTests(LeadIntakeTests):
     mapped_call=LeadIntakeTests.mapped_call
     deliver=LeadIntakeTests.deliver
 
+    def test_continuation_private_contributor_cannot_leak_or_queue_analysis(self):
+        from pool_service.services.crm_lead_commands import execute_lead_command
+        from pool_service.call_processing_models import CallPrivateNumber
+        from pool_service.phone_utils import normalize_phone
+        self.mapped_call(); self.deliver('call')
+        incoming = CrmLead.objects.get(); call = PhoneCall.objects.get()
+        original = CrmLead.objects.create(organization=self.org, assignee=self.user, title='Synthetic independent target')
+        self.grant.transition_own_leads = True; self.grant.save()
+        execute_lead_command(actor=self.user, organization=self.org, operation_key='synthetic-private-continuation',
+            command_type='lead.transition', subject_id=incoming.pk, expected_revision=incoming.revision,
+            changes={'status':'closed', 'result':'duplicate', 'target_lead_id':original.pk})
+        self.client.force_login(self.user)
+        detail = reverse('crm_live_lead_detail',args=[original.pk])+'?org_id='+str(self.org.pk)
+        analysis = reverse('crm_live_lead_analysis',args=[original.pk,call.pk])+'?org_id='+str(self.org.pk)
+        self.assertEqual(len(self.client.get(detail).json()['sources']), 1)
+        CommunicationAccess.objects.filter(user=self.user,organization=self.org).update(can_listen_calls=True)
+        with patch('pool_service.communication_views.request_call_analysis') as queue:
+            CallPrivateNumber.objects.create(organization=self.org,owner=self.user,phone_key=normalize_phone(call.phone_number))
+            response = self.client.get(detail)
+            self.assertEqual(response.status_code, 200, 'Independent target remains readable')
+            self.assertEqual(response.json()['sources'], [])
+            self.assertEqual(self.client.post(analysis).status_code, 404)
+            queue.assert_not_called()
+
+    def test_contributor_keyset_crosses_empty_batch_and_preserves_cursor_ties(self):
+        from pool_service.services.crm_lead_access import source_metadata_many, source_metadata
+        from pool_service.crm_commercial_models import CrmLeadSource
+        from pool_service.call_processing_models import CallPrivateNumber
+        from pool_service.phone_utils import normalize_phone
+        from django.utils.dateparse import parse_datetime
+        target=CrmLead.objects.create(organization=self.org,title='Synthetic batch target')
+        for index in range(200):
+            CrmLead.objects.create(organization=self.org,title='Synthetic empty contributor '+str(index),
+                status='closed',result='duplicate',duplicate_of=target)
+        self.mapped_call();self.deliver('call')
+        hidden=CrmLead.objects.filter(sources__inbox__source_type='call').get()
+        hidden.status='closed';hidden.result='duplicate';hidden.duplicate_of=target;hidden.save()
+        call=PhoneCall.objects.get()
+        CallPrivateNumber.objects.create(organization=self.org,owner=self.user,phone_key=normalize_phone(call.phone_number))
+        contributors=[]
+        for index in range(2):
+            with patch('django.utils.timezone.now',return_value=self.now):
+                self.incoming(external_conversation_id='synthetic-batch-'+str(index),external_message_id='synthetic-batch-'+str(index))
+            # Claim against the real clock: model next_attempt_at defaults are
+            # callable references, independent of the synthetic capture clock.
+            event=self.deliver();lead=CrmLeadSource.objects.get(inbox=event).lead
+            lead.status='closed';lead.result='duplicate';lead.duplicate_of=target;lead.save();contributors.append(lead)
+        rows=source_metadata_many(user=self.user,organization=self.org,leads=[target,*contributors],limit=1)
+        self.assertEqual(len(rows[target.pk]),1)
+        self.assertEqual([len(rows[lead.pk]) for lead in contributors],[1,1])
+        first=rows[target.pk][0]
+        second=source_metadata(user=self.user,organization=self.org,lead=target,limit=1,
+            before=(parse_datetime(first['received_at']),first['id']))
+        self.assertEqual(len(second),1);self.assertNotEqual(first['id'],second[0]['id'])
+        self.assertEqual(first['received_at'],second[0]['received_at'])
+        self.assertGreater(first['id'],second[0]['id'])
+        self.assertEqual({first['type'],second[0]['type']},{'message'})
+
+    def test_contributor_revoked_between_split_reads_hides_other_public_source(self):
+        from pool_service.services import crm_lead_access as access
+        from pool_service.crm_commercial_models import CrmLeadSource
+        from pool_service.crm_inbox_models import CrmInboxEvent
+        from pool_service.call_processing_models import CallPrivateNumber
+        from pool_service.phone_utils import normalize_phone
+        self.mapped_call();self.deliver('call');contributor=CrmLead.objects.get();call=PhoneCall.objects.get()
+        self.incoming(external_message_id='synthetic-additional-public-source')
+        event=CrmInboxEvent.objects.get(source_type='message')
+        CrmLeadSource.objects.create(organization=self.org,lead=contributor,inbox=event)
+        target=CrmLead.objects.create(organization=self.org,title='Synthetic revocation target')
+        contributor.status='closed';contributor.result='duplicate';contributor.duplicate_of=target;contributor.save()
+        original=access._identity_batches;revoked=[]
+        def batches(queryset,field='pk'):
+            for ids in original(queryset,field):
+                yield ids
+                if contributor.pk in ids and not revoked:
+                    CallPrivateNumber.objects.create(organization=self.org,owner=self.user,phone_key=normalize_phone(call.phone_number))
+                    revoked.append(True)
+        with patch.object(access,'_identity_batches',batches):
+            rows=access.source_metadata_many(user=self.user,organization=self.org,leads=[target])
+        self.assertTrue(revoked)
+        self.assertEqual(rows[target.pk],[],'A newly private call hides the whole contributor including its message')
+
     def test_message_body_only_in_authorized_detail(self):
         self.incoming(participant_name='Synthetic sender');self.deliver();lead=CrmLead.objects.get()
         self.client.force_login(self.user)

@@ -1,3 +1,6 @@
+from . import crm_construction_views
+from . import crm_quote_views
+from . import crm_handoff_views
 from . import crm_service_binding_views
 from django.urls import path
 from .views import (
@@ -422,6 +425,9 @@ urlpatterns = [
     path("crm/workspace/clients/", crm_live_views.clients, name="crm_live_clients"),
     path("crm/workspace/objects/", crm_live_views.objects, name="crm_live_objects"),
     path("crm/workspace/commands/", crm_live_views.command, name="crm_live_command"),
+    path("crm/workspace/deals/<int:deal_id>/quotes/", crm_quote_views.workspace, name="crm_quotes"),
+    path("crm/workspace/deals/<int:deal_id>/construction/", crm_construction_views.workspace, name="crm_construction"),
+    path("crm/workspace/deals/<int:deal_id>/handoff/", crm_handoff_views.workspace, name="crm_handoff"),
     path("crm/workspace/deals/<int:deal_id>/service-documents/", crm_service_binding_views.workspace, name="crm_service_bindings"),
     path("crm/leads/<int:lead_id>/calls/<int:call_id>/analyze/", crm_lead_views.analyze_call, name="crm_live_lead_analysis"),
     path("crm/workspace/deals/<int:deal_id>/", crm_live_views.detail, name="crm_live_detail"),
@@ -560,4 +566,13 @@ urlpatterns = [
     path("clients/create/", client_create, name="client_create"),
     path("clients/<int:client_id>/edit/", client_edit, name="client_edit"),
     path("clients/<int:client_id>/delete/", client_delete, name="client_delete"),
+]
+
+from . import crm_recurring_views
+urlpatterns += [path("crm/workspace/deals/<int:deal_id>/recurring/", crm_recurring_views.workspace, name="crm_recurring")]
+
+from . import crm_material_views
+urlpatterns += [
+    path('crm/workspace/materials/',crm_material_views.workspace,name='crm_materials'),
+    path('crm/workspace/materials/<int:issue_id>/',crm_material_views.workspace,name='crm_material_detail'),
 ]

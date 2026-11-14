@@ -149,3 +149,42 @@ class ProcessLifetimeTests(SimpleTestCase):
                 thread.start()
                 self.assertTrue(worker._lock(second,0.1));thread.join()
             finally:os.close(first);os.close(second)
+
+
+class WakeDiagnosticTests(HostWakeTests):
+    def test_real_effective_uid_mismatch_fails_after_mkdir_before_open(self):
+        actual_uid = worker.os.geteuid()
+        with patch.object(worker.os, 'getuid', return_value=actual_uid + 1), patch.object(worker.subprocess, 'Popen') as spawn:
+            with self.assertRaisesRegex(ValueError, '^unsafe_wakeup_directory_owner$') as caught:
+                worker.launch(self.app, 'python')
+            self.assertEqual(worker.failure_metadata(caught.exception), ('unsafe_wakeup_directory_owner', 'NONE', False))
+            spawn.assert_not_called()
+        self.assertEqual(list((self.app.parent/'tmp'/'crm-intake-wakeup').iterdir()), [])
+
+    def test_dispatch_permission_failure_also_leaves_empty_directory(self):
+        import errno
+        with patch.object(worker.os, 'open', side_effect=PermissionError(errno.EACCES, 'sensitive path')):
+            with self.assertRaises(PermissionError) as caught:
+                worker.launch(self.app, 'python')
+        self.assertEqual(worker.failure_metadata(caught.exception)[:2], ('unexpected_failure', 'EACCES'))
+        self.assertEqual(list((self.app.parent/'tmp'/'crm-intake-wakeup').iterdir()), [])
+
+    def test_unknown_error_and_message_never_logged(self):
+        import errno
+        for error in (ValueError('sensitive caller payload'), OSError(errno.EACCES, 'sensitive path')):
+            with patch('scripts.crm_intake_event_wakeup.launch', side_effect=error):
+                with self.assertLogs('pool_service.services.crm_intake_wakeup', level='WARNING') as logs:
+                    wake()
+            self.assertNotIn('sensitive', str(logs.output))
+            self.assertNotIn(str(self.app), str(logs.output))
+
+
+class ServingRuntimeTests(SimpleTestCase):
+    def test_configuration_gate_is_not_event_or_worker_success(self):
+        from pool_service.services.crm_intake_wakeup import serving_runtime
+        with override_settings(CRM_INTAKE_EVENT_WAKEUP_ENABLED=False):
+            self.assertEqual(serving_runtime(1)["configuration_gate"], "disabled_by_web_settings")
+        with override_settings(CRM_INTAKE_EVENT_WAKEUP_ENABLED=True):
+            self.assertEqual(serving_runtime(1)["configuration_gate"], "enabled")
+            self.assertEqual(serving_runtime(2)["configuration_gate"], "outside_pilot")
+            self.assertEqual(serving_runtime(1)["event_gate"], "not_observed")

@@ -63,6 +63,42 @@ class LeadIntakeTests(Fixture, TestCase):
         self.assertEqual(self.history(user="synthetic-provider", ext="101", **changes).status_code, 200)
         return PhoneCall.objects.get(connection=self.telephony)
 
+    def test_explicit_continuation_routes_context_preserves_sources_and_pages(self):
+        from pool_service.services.crm_lead_commands import execute_lead_command
+        from pool_service.services.crm_lead_access import source_metadata_many
+        self.grant.transition_own_leads = True; self.grant.save()
+        self.incoming(); self.deliver()
+        original = CrmLead.objects.get()
+        self.incoming(external_conversation_id="synthetic-second-context", external_message_id="repeat-first")
+        self.deliver()
+        incoming = CrmLead.objects.exclude(pk=original.pk).get()
+        for lead in (original, incoming):
+            lead.assignee = self.user; lead.save()
+        source_id = CrmLeadSource.objects.get(lead=incoming).pk
+        execute_lead_command(actor=self.user, organization=self.org, operation_key="confirm-context",
+            command_type="lead.transition", subject_id=incoming.pk, expected_revision=incoming.revision,
+            changes={"status": "closed", "result": "duplicate", "target_lead_id": original.pk})
+        self.assertEqual(CrmLeadSource.objects.get(pk=source_id).lead_id, incoming.pk)
+        original.refresh_from_db(); incoming.refresh_from_db()
+        metadata = source_metadata_many(user=self.user, organization=self.org, leads=[incoming, original], limit=20)
+        self.assertEqual(len(metadata[original.pk]), 2)
+        self.assertEqual(len(metadata[incoming.pk]), 1)
+        first = source_metadata(user=self.user, organization=self.org, lead=original, limit=1)[0]
+        from django.utils.dateparse import parse_datetime
+        second = source_metadata(user=self.user, organization=self.org, lead=original, limit=1,
+            before=(parse_datetime(first["received_at"]), first["id"]))
+        self.assertEqual(len(second), 1); self.assertNotEqual(first["id"], second[0]["id"])
+        self.incoming(external_conversation_id="synthetic-second-context", external_message_id="repeat-next")
+        event = self.deliver()
+        self.assertEqual(CrmLeadSource.objects.get(inbox=event).lead_id, original.pk)
+        self.assertEqual(CrmLead.objects.count(), 2)
+        self.assertEqual(ServiceTask.objects.count(), 0)
+        self.incoming(external_conversation_id="synthetic-new-need", external_message_id="independent")
+        self.deliver()
+        self.assertEqual(CrmLead.objects.count(), 3, "A new unconfirmed context remains independent")
+        CommunicationAccess.objects.filter(user=self.user, organization=self.org).update(can_view_conversations=False)
+        self.assertEqual(source_metadata(user=self.user, organization=self.org, lead=original), [])
+
     def test_messages_group_only_confirmed_conversation_and_do_not_copy_content(self):
         self.incoming()
         self.assertEqual(self.deliver().error_code, "lead_created")

@@ -4,6 +4,11 @@ from .models import Pool
 
 
 class PoolServiceDetailsForm(forms.ModelForm):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        from .recurring_pool_guard import protect_form_fields
+        protect_form_fields(self)
+
     class Meta:
         model = Pool
         fields = ["service_monthly_price", "service_frequency", "service_details_comment"]

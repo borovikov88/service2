@@ -110,6 +110,72 @@ class CoverageTests(unittest.TestCase):
             with patch.object(B, cap, 8), self.assertRaises(B.Blocked):
                 B.DumpCoverage(SCHEMA).feed(b'x' * 9)
 
+    def test_raw_cap_is_two_gib_without_changing_other_resource_bounds(self):
+        self.assertEqual(B.MAX_RAW_BYTES, 2 * 1024 ** 3)
+        self.assertEqual(B.MAX_GZIP_BYTES, 512 * 1024 ** 2)
+        self.assertEqual(B.MAX_SECONDS, 300)
+        self.assertEqual(B.MAX_LINE_BYTES, 8 * 1024 ** 2)
+        self.assertEqual(B.MAX_SCHEMA_BYTES, 16 * 1024 ** 2)
+
+    def test_raw_stream_boundary_uses_counters_not_gibibyte_fixtures(self):
+        check = B.DumpCoverage(SCHEMA)
+        check.raw_bytes = 1024 ** 3
+        check.feed(b'x')  # Crossing the old cap is now permitted.
+        self.assertEqual(check.raw_bytes, 1024 ** 3 + 1)
+        check = B.DumpCoverage(SCHEMA)
+        check.raw_bytes = B.MAX_RAW_BYTES - 1
+        check.feed(b'x')
+        self.assertEqual(check.raw_bytes, B.MAX_RAW_BYTES)
+        with self.assertRaises(B.Blocked) as caught:
+            check.feed(b'x')
+        self.assertEqual(caught.exception.reason, 'dump_raw_limit')
+
+    def test_gzip_readback_still_enforces_the_raw_cap_and_exact_size(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'synthetic.sql.gz'
+            with gzip.open(path, 'wb') as stream:
+                stream.write(b'12345678')
+            with patch.object(B, 'MAX_RAW_BYTES', 8):
+                self.assertRegex(B.verify_gzip(path, 8), r'^[0-9a-f]{64}$')
+                with self.assertRaises(B.Blocked):
+                    B.verify_gzip(path, 7)
+            with patch.object(B, 'MAX_RAW_BYTES', 7), self.assertRaises(B.Blocked):
+                B.verify_gzip(path, 8)
+
+    def test_stream_rejections_have_distinct_safe_reasons(self):
+        cases = [
+            (SQL.split(b'-- Dump')[0], SCHEMA, 'dump_footer_missing'),
+            (SQL.replace(b'`id` int', b'`id` bigint'), SCHEMA, 'dump_schema_mismatch'),
+            (SQL + b'PRIVATE\n', SCHEMA, 'dump_trailing_content'),
+            (SQL.replace(b'`synthetic` (', b'`other` ('), SCHEMA, 'dump_unknown_table'),
+            ((DDL + ';\n').encode() + SQL, SCHEMA, 'dump_duplicate_table'),
+            (b'CREATE TABLE `synthetic` (\n', SCHEMA, 'dump_ddl_incomplete'),
+            (SQL, {**SCHEMA, 'missing': SCHEMA['synthetic']}, 'dump_table_coverage'),
+        ]
+        for data, expected, reason in cases:
+            with self.subTest(reason=reason):
+                check = B.DumpCoverage(expected)
+                with self.assertRaises(B.Blocked) as caught:
+                    check.feed(data)
+                    check.finish()
+                self.assertEqual(caught.exception.reason, reason)
+                diagnostic = B.safe_failure(caught.exception)
+                self.assertNotIn('PRIVATE', diagnostic)
+                self.assertIn('reason=' + reason + ' ', diagnostic)
+                self.assertIn(reason, R.HELPER_REASONS)
+        for cap, reason in [('MAX_RAW_BYTES', 'dump_raw_limit'), ('MAX_LINE_BYTES', 'dump_line_limit')]:
+            with patch.object(B, cap, 8), self.assertRaises(B.Blocked) as caught:
+                B.DumpCoverage(SCHEMA).feed(b'x' * 9)
+            self.assertEqual(caught.exception.reason, reason)
+        with patch.object(B, 'MAX_LINE_BYTES', 40), self.assertRaises(B.Blocked) as caught:
+            B.DumpCoverage(SCHEMA).feed(b'CREATE TABLE `synthetic` (\n' + b'x' * 20 + b'\n')
+        self.assertEqual(caught.exception.reason, 'dump_ddl_limit')
+        with tempfile.TemporaryFile() as stream, patch.object(B, 'MAX_GZIP_BYTES', 8):
+            with self.assertRaises(B.Blocked) as caught:
+                B.CappedWriter(stream).write(b'x' * 9)
+            self.assertEqual(caught.exception.reason, 'dump_gzip_limit')
+        self.assertEqual(B.REASONS, R.HELPER_REASONS)
+
     def test_nontransactional_or_unsupported_schema_fails_closed(self):
         class Cursor:
             def __enter__(self): return self
@@ -416,6 +482,21 @@ class HeartbeatTests(unittest.TestCase):
 
 
 class ReceiptWorkflowTests(unittest.TestCase):
+    def test_receipt_raw_bound_matches_helper_and_accepts_old_cap_growth(self):
+        for size in (1024 ** 3 + 1, B.MAX_RAW_BYTES):
+            with self.subTest(size=size):
+                value = {**receipt(), 'uncompressed_bytes': size}
+                self.assertEqual(R.normalize(R.PREFIX + json.dumps(value), SHA), value)
+        for size in (B.MAX_RAW_BYTES + 1, 0, -1, True, 1.5, '2147483648'):
+            with self.subTest(invalid_size=size), self.assertRaises(ValueError):
+                R.normalize(R.PREFIX + json.dumps({**receipt(), 'uncompressed_bytes': size}), SHA)
+
+    def test_receipt_compressed_and_time_bounds_are_not_raised(self):
+        for fields in ({'size_bytes': 512 * 1024 ** 2 + 1},
+                       {'completed_at': '2026-10-26T12:05:01+00:00'}):
+            with self.subTest(fields=fields), self.assertRaises(ValueError):
+                R.normalize(R.PREFIX + json.dumps({**receipt(), **fields}), SHA)
+
     def helper_failure(self, error=None):
         with patch.object(B, 'PHASE', 'lock'):
             return (R.HELPER_PREFIX.decode() + B.safe_failure(error or BlockingIOError(errno.EAGAIN, 'PRIVATE'))).encode()
