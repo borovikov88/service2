@@ -32,6 +32,7 @@ WORKS = (
     ('delivery_concrete','Доставка бетона','рейс','',None),
     ('delivery_rebar','Доставка арматуры','рейс','',None),
     ('delivery_sand','Доставка песка','рейс','',None),
+    ('delivery_gravel','Доставка щебня','рейс','',None),
 )
 EXPECTED_UNITS = {'pkg_'+metric:unit for _,_,unit,metric in MATERIALS}
 EXPECTED_UNITS.update({'pkg_'+r[3]:r[2] for r in WORKS if r[3]})

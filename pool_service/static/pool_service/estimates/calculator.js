@@ -4,7 +4,7 @@ import {productDetails,productTitle} from './product-details.js?v=1';
 import {sections as viewSections, groupFor, moveViewRow} from './layout.js?v=6';
 import {installHelp} from './help.js?v=5';
 import {displayNumber, money, indivisible, exactNumber, cleanNote, bindNumber, rawValue, installNumbers} from './numbers.js?v=3';
-import {constructionScope, setConstructionExcluded, setExcluded, addRow, emptyRow, isWork, samePrice, workPriceTargets, automaticQuantity, quantityRequired, moveRow} from './state.js?v=17';
+import {constructionScope, setConstructionExcluded, setExcluded, addRow, emptyRow, isWork, samePrice, workPriceTargets, automaticQuantity, quantityRequired, moveRow} from './state.js?v=18';
 
 const root = document.querySelector('#pool-estimator');
 const $ = selector => root.querySelector(selector);
@@ -68,9 +68,9 @@ function openCatalog(block, row, draft = null) {
   const plasterQuery=isPlaster?(item.basis==='plaster_mix_bags'?'CR30':'IDROKOL X20'):'';
   const isLiner=item.kind==='liner'||item.id.startsWith('finish_material')&&item.finish_type==='film';
   const finishQuery = item.id.startsWith('finish_material') ? {film: '', tile: 'плитка', mosaic: 'мозаика'}[item.finish_type] : '';
-  $('#pe-catalog-query').value = (item.id==='liner_corner_2m'?'0050032':'') || plasterQuery || finishQuery || (isLiner||['filter_media','filter_gravel','geotextile'].includes(item.kind)?'':q.get('catalog_q')) || '';
+  $('#pe-catalog-query').value = (item.id==='liner_corner_2m'?'0050032':'') || plasterQuery || finishQuery || (isLiner||['filter_media','filter_gravel','geotextile','uv'].includes(item.kind)?'':q.get('catalog_q')) || '';
   $('#pe-catalog-kind').value = isPlaster?'plaster_component':isLiner?'liner':item.id==='liner_corner_2m'?'liner_corner':item.kind === 'other' ? '' : item.kind;
-  $('#pe-catalog-brand').value = !isPlaster && !isLiner && !['filter_media','filter_gravel','geotextile'].includes(item.kind) && [...$('#pe-catalog-brand').options].some(o => o.value === item.brand) ? item.brand : '';
+  $('#pe-catalog-brand').value = !isPlaster && !isLiner && !['filter_media','filter_gravel','geotextile','uv'].includes(item.kind) && [...$('#pe-catalog-brand').options].some(o => o.value === item.brand) ? item.brand : '';
   $('#pe-catalog-dialog').showModal();
   searchCatalog();
 }
@@ -117,7 +117,7 @@ function inputs() {
   const data = new FormData(form);
   if (form.elements.height_mode.value !== 'freeboard') data.delete('freeboard');
   const heating_types = data.getAll('heating_types');
-  return {...Object.fromEntries(data), heating_types, heating: heating_types[0] || 'none'};
+  return {...Object.fromEntries(data), heating_types, heating: heating_types[0] || 'none', uv_enabled: Boolean(form.elements.uv_enabled?.checked)};
 }
 function rememberLocation() {
   const url = new URL(location.href);
@@ -243,20 +243,25 @@ function setHeating(values) {
   for (const checkbox of form.querySelectorAll('[name="heating_types"]')) checkbox.checked = selectedTypes.includes(checkbox.value);
 }
 function fillParameters() {
-  form.querySelectorAll('[name^="tech_"], [name^="construction_"]').forEach(el => { el.value = ''; });
+  form.querySelectorAll('[name^="tech_"], [name^="construction_"], [name^="delivery_"]').forEach(el => { el.value = ''; });
   form.elements.light_color.value=snapshot.inputs.light_color || '';
   form.elements.drain_scheme.value=snapshot.inputs.drain_scheme || 'unknown';
   form.elements.lighting.value=snapshot.inputs.lighting || 'no';
   form.elements.light_count.value=snapshot.inputs.light_count || '';
+  if (form.elements.uv_enabled) form.elements.uv_enabled.checked = snapshot.inputs.uv_enabled === true;
   form.elements.construction_scheme.value = snapshot.construction_version ? 'package' : 'legacy';
   form.elements.height_mode.value = Object.hasOwn(snapshot.inputs,'freeboard') ? 'freeboard' : 'legacy';
   form.elements.freeboard.value = snapshot.inputs.freeboard ?? (snapshot.inputs.bowl_height ? String(Math.max(0,Number(snapshot.inputs.bowl_height)-Number(snapshot.inputs.depth_start))) : '');
+  for (const [key, fallback] of Object.entries({delivery_sand_capacity:'10',delivery_sand_payload:'12',delivery_concrete_capacity:'7',delivery_rebar_capacity:'20',delivery_gravel_capacity:'10',delivery_gravel_payload:'12',delivery_gravel_density:'1.5'})) {
+    const field = form.elements.namedItem(key);
+    if (field) field.value = Object.hasOwn(snapshot.inputs, key) ? snapshot.inputs[key] ?? '' : fallback;
+  }
   // Historical snapshots must not inherit the inputs of a more recent estimate.
   for (const [key, value] of Object.entries({primary_pump_connection:'', primary_valve_connection:'', primary_medium:'', primary_temperature:'', primary_delta:'', primary_flow:'', primary_head:'', bowl_height: '', wall_thickness: '', slab_thickness: '', heating_power: '', water_start: '', water_target: '', heating_hours: '', heating_reserve: '', finish: '', skimmer_area: '25', skimmer_flow: '5', inlet_flow: '3'})) {
     form.elements.namedItem(key).value = snapshot.inputs[key] ?? value;
   }
   for (const [key, value] of Object.entries(snapshot.inputs)) {
-    if (key !== 'heating_types' && form.elements.namedItem(key)) form.elements.namedItem(key).value = form.elements.namedItem(key).type === 'number' ? exactNumber(value) : value ?? '';
+    if (!['heating_types', 'uv_enabled'].includes(key) && form.elements.namedItem(key)) form.elements.namedItem(key).value = form.elements.namedItem(key).type === 'number' ? exactNumber(value) : value ?? '';
   }
   setHeating(snapshot.inputs);
   parametersDirty = false;
@@ -436,6 +441,8 @@ root.addEventListener('click', event => {
   if (el.dataset.edit || el.dataset.add) {
     const block = snapshot.variants[selected].blocks.find(b => b.id === (el.dataset.block || el.dataset.add));
     rowBeingEdited = el.dataset.edit ? structuredClone(block.rows.find(r => r.id === el.dataset.edit)) : emptyRow(crypto.randomUUID());
+    const deliveryCode = ['delivery_sand','delivery_concrete','delivery_rebar','delivery_gravel'].find(code => [rowBeingEdited.work_code,rowBeingEdited.id].includes(code));
+    if (snapshot.delivery_version === 1 && rowBeingEdited.kind === 'work' && !rowBeingEdited.basis && deliveryCode) rowBeingEdited.basis = deliveryCode;
     if(el.dataset.addWork==='true')rowBeingEdited.kind='work';
     const edit = $('#pe-row-form'); edit.reset();
     edit.querySelector('[type=submit]').textContent=el.dataset.edit?'Применить к текущей смете':'Продолжить';
