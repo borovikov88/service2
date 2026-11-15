@@ -48,7 +48,9 @@ jobs:
       service_deploy: ${{ needs.scope.outputs.service_deploy }}
       calculator_deploy: ${{ needs.scope.outputs.calculator_deploy }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Keep the full server and browser gates within a bounded job budget.
+    # Hosted-runner variance exhausted 45 minutes while tests still progressed.
+    timeout-minutes: 60
     env:
       SECRET_KEY: ci-only-secret
       DEBUG: "1"
