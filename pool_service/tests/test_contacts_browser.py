@@ -39,6 +39,6 @@ class ContactsBrowserTests(StaticLiveServerTestCase):
         with patch.object(contact_people, "save_phone", diagnosed):
             result=subprocess.run(["node",str(Path(__file__).with_name("contacts.browser.cjs"))],input=json.dumps(data),text=True,capture_output=True,timeout=120)
         self.assertEqual(result.returncode,0,(result.stdout+result.stderr)[-8000:] + str(failures))
-        self.assertFalse(ClientBusinessRole.objects.get(client=companies[-1]).active)
-        self.assertEqual(ClientBusinessRoleEvent.objects.count(),2)
+        self.assertFalse(ClientBusinessRole.objects.filter(client=companies[-1], active=True).exists())
+        self.assertEqual(ClientBusinessRoleEvent.objects.count(),4)
         self.assertEqual(Client.objects.count(),54)

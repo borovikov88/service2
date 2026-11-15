@@ -59,7 +59,7 @@ const {chromium} = require('playwright');
       && document.querySelector('[data-lead-need="true"]')?.value==='Synthetic suggested requirement');
     console.log('PHASE saved and refreshed');
     console.log('PHASE mobile'); await page.setViewportSize({width:390,height:844}); await page.emulateMedia({colorScheme:'dark'});
-    await page.reload(); await page.locator('[data-lead-need="true"]').waitFor();
+    await page.reload(); await page.getByRole('button',{name:'Редактировать',exact:true}).click(); await page.locator('[data-lead-need="true"]').waitFor();
     assert.equal(await page.locator('[data-lead-need="true"]').inputValue(),'Synthetic suggested requirement');
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
     if(process.env.CRM_SYNTHETIC_SCREENSHOTS)await page.screenshot({path:process.env.CRM_SYNTHETIC_SCREENSHOTS+'/lead-mobile.png'});

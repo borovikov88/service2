@@ -135,17 +135,65 @@ class DraftRaceTests(DraftFixture,TransactionTestCase):
         second=race(False);self.assertEqual(second.count('conflict'),1);self.assertEqual(CrmRecurringRevision.objects.count(),2)
 
 
-class DraftMigrationTests(DraftFixture,TransactionTestCase):
+class DraftMigrationTests(TransactionTestCase):
+    maxDiff = None
+
     def test_additive_migration_preserves_existing_operational_rows(self):
         from django.db.migrations.executor import MigrationExecutor
-        from pool_service.crm_quote_models import CrmQuote
-        models=(Pool,ServiceTask,CrmDeal,CrmQuote)
-        before={m.__name__:list(m.objects.order_by('pk').values()) for m in models}
-        executor=MigrationExecutor(connection);executor.migrate([('pool_service','0165_crm_construction_launch')])
+        from django.utils import timezone
+
+        executor = MigrationExecutor(connection)
+        original_leaves = executor.loader.graph.leaf_nodes()
+        source = [('pool_service', '0165_crm_construction_launch')]
+        target = [('pool_service', '0166_crm_recurring_drafts')]
         try:
-            executor=MigrationExecutor(connection);target=[('pool_service','0166_crm_recurring_drafts')]
-            executor.migrate(target);apps=executor.loader.project_state(target).apps
-            for name,rows in before.items():self.assertEqual(list(apps.get_model('pool_service',name).objects.order_by('pk').values()),rows)
-            for name in ('CrmRecurringDraft','CrmRecurringRevision'):self.assertEqual(apps.get_model('pool_service',name).objects.count(),0)
+            # The finally covers rollback itself too. Current-model fixtures
+            # cannot describe a historical schema (e.g. contact_id arrives in 0181).
+            executor.migrate(source)
+            apps = executor.loader.project_state(source).apps
+            model = lambda name: apps.get_model('pool_service', name)
+            user_model = apps.get_model('auth', 'User')
+            for number in (1, 2):
+                user = user_model.objects.create(username=f'synthetic-migration-{number}',
+                    password='!', last_login=timezone.now())
+                org = model('Organization').objects.create(name=f'Synthetic migration org {number}')
+                customer = model('Client').objects.create(organization=org,
+                    name=f'Synthetic migration client {number}', email=f'migration{number}@example.test')
+                pool = model('Pool').objects.create(organization=org, client=customer,
+                    address=f'Synthetic migration address {number}', volume=number * 10,
+                    service_monthly_price=Decimal('100.25') * number)
+                pipeline = model('CrmPipeline').objects.create(organization=org,
+                    code=f'migration-{number}', name=f'Synthetic pipeline {number}')
+                stage = model('CrmStage').objects.create(pipeline=pipeline,
+                    code=f'migration-{number}', name=f'Synthetic stage {number}')
+                estimate = model('PoolEstimate').objects.create(organization=org,
+                    created_by=user, title=f'Synthetic estimate {number}')
+                version = model('PoolEstimateVersion').objects.create(estimate=estimate,
+                    number=1, snapshot={'synthetic': number}, note=f'Historical version {number}', created_by=user)
+                item = model('CrmItem').objects.create(organization=org, client=customer,
+                    pool=pool, created_by=user, responsible=user, direction='service',
+                    title=f'Synthetic CRM item {number}', amount=Decimal('21.50') * number)
+                model('ServiceTask').objects.create(organization=org, client=customer, pool=pool,
+                    crm_item=item, created_by=user, primary_responsible=user,
+                    title=f'Synthetic task {number}', description=f'Historical task {number}',
+                    start_date=date(2030, number, 1), payload_json={'synthetic': number})
+                deal = model('CrmDeal').objects.create(organization=org, client=customer, pool=pool,
+                    manager=user, pipeline=pipeline, stage=stage, title=f'Synthetic deal {number}',
+                    specialization='service', object_kind='pool', currency='RUB', amount_basis='indicative',
+                    amount=Decimal('30.75') * number)
+                model('CrmQuote').objects.create(organization=org, deal=deal, version=version,
+                    created_by=user, variant='economy', source_hash=str(number) * 64,
+                    scope={'synthetic': number}, amount=Decimal('41.25') * number)
+            names = ('Pool', 'ServiceTask', 'CrmDeal', 'CrmQuote')
+            before = {name: list(model(name).objects.order_by('pk').values()) for name in names}
+            for rows in before.values():
+                self.assertEqual(len(rows), 2)
+            executor = MigrationExecutor(connection)
+            executor.migrate(target)
+            apps = executor.loader.project_state(target).apps
+            for name, rows in before.items():
+                self.assertEqual(list(apps.get_model('pool_service', name).objects.order_by('pk').values()), rows)
+            for name in ('CrmRecurringDraft', 'CrmRecurringRevision'):
+                self.assertEqual(apps.get_model('pool_service', name).objects.count(), 0)
         finally:
-            executor=MigrationExecutor(connection);executor.migrate(executor.loader.graph.leaf_nodes())
+            MigrationExecutor(connection).migrate(original_leaves)

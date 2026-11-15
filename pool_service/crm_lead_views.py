@@ -72,23 +72,43 @@ def _capabilities(user, organization):
     enabled = organization.crm_v2_write and company_has_access(organization)
     names = ("create_own_leads", "take_leads", "edit_own_leads", "transition_own_leads", "qualify_own_leads",
         "create_own_deals", "manage_own_next_action")
-    return {name: bool(enabled and grant and getattr(grant, name, False)) for name in names}
+    capabilities = {name: bool(enabled and grant and getattr(grant, name, False)) for name in names}
+    from .models import OrganizationAccess
+    capabilities['can_categorize_contacts'] = bool(enabled and not user.is_superuser and
+        OrganizationAccess.objects.filter(user=user, organization=organization, role__in=('owner', 'admin')).exists())
+    return capabilities
 
 
 def _queryset(user, organization):
     from .services.crm_lead_access import leads_for_user
-    return leads_for_user(user, organization).select_related("organization", "client", "assignee", "next_task")
+    return leads_for_user(user, organization).select_related("organization", "client", "contact", "assignee", "next_task")
+
+
+def _client_summary(client, *, details=False):
+    if client is None:
+        return None
+    data = {"id": client.pk, "name": client.name, "client_type": client.client_type}
+    if details:
+        from .client_crm_models import ClientBusinessRole
+        data.update(phone=client.phone or '', email=client.email or '',
+            categories=[role.role for role in client.business_roles.all()
+                if role.active and role.role in dict(ClientBusinessRole.ROLE_CHOICES)])
+    return data
 
 
 def _serialize(lead, user, capabilities, *, detail=False, visible_tasks=None):
     own = lead.assignee_id == user.pk
     opened = not lead.is_archived and lead.status != "closed"
+    contact = lead.contact or (lead.client if lead.client_id and lead.client.client_type == 'private' else None)
+    company = lead.client if lead.client_id and lead.client.client_type == 'legal' else None
     row = {"id": lead.pk, "title": lead.title, "revision": lead.revision,
         "column": lead_column(lead), "is_archived": lead.is_archived,
         "can_move": capabilities["transition_own_leads"] and (own or lead.assignee_id is None and lead.status == "new" and capabilities["take_leads"]),
         "status": lead.status, "status_label": STATES.get(lead.status, lead.status),
         "result": lead.result, "result_label": RESULTS.get(lead.result, ""),
-        "client": {"id": lead.client_id, "name": lead.client.name} if lead.client_id else None,
+        "client": _client_summary(lead.client, details=detail),
+        "contact": _client_summary(contact, details=detail),
+        "company": _client_summary(company, details=detail),
         "assignee": {"id": lead.assignee_id,
             "name": (lead.assignee.get_full_name() or lead.assignee.username)} if lead.assignee_id else None,
         "received_at": lead.received_at.isoformat(),
@@ -98,6 +118,7 @@ def _serialize(lead, user, capabilities, *, detail=False, visible_tasks=None):
         "can_transition": own and opened and capabilities["transition_own_leads"],
         "can_qualify": (own or lead.assignee_id is None and lead.status == "new" and capabilities["take_leads"]) and lead.status != "closed" and not lead.result and (not lead.is_archived or capabilities["transition_own_leads"]) and all(capabilities[name] for name in ("qualify_own_leads", "create_own_deals", "manage_own_next_action")),
         "can_edit_conversion_need": capabilities["edit_own_leads"],
+        "can_categorize_contacts": capabilities['can_categorize_contacts'],
         "can_add_deal": own and not lead.is_archived and lead.result == "qualified" and all(capabilities[name] for name in ("qualify_own_leads", "create_own_deals", "manage_own_next_action")),
         "can_new_need": detail and own and not lead.is_archived and lead.result != "spam" and lead.status == "closed" and capabilities["create_own_leads"] and lead.threads.exists(),
         "can_acknowledge": own and not lead.is_archived and lead.result != "spam" and lead.status == "closed" and lead.needs_review and capabilities["edit_own_leads"],
@@ -106,6 +127,10 @@ def _serialize(lead, user, capabilities, *, detail=False, visible_tasks=None):
         "last_activity_at": lead.last_activity_at.isoformat() if lead.last_activity_at else None}
     if detail and row["client"] and readable_clients(user).filter(pk=lead.client_id,organization=lead.organization).exists():
         row["client"]["url"] = reverse("client_detail",args=[lead.client_id])
+    if detail:
+        for key in ('contact', 'company'):
+            if row[key] and readable_clients(user).filter(pk=row[key]['id'], organization=lead.organization).exists():
+                row[key]['url'] = reverse('client_detail', args=[row[key]['id']])
     if lead.next_task_id:
         task = (visible_tasks or {}).get(lead.next_task_id)
         if not task or task.organization_id != lead.organization_id or task.client_id != lead.client_id or task.crm_item_id:
@@ -229,6 +254,7 @@ def _data(request, organization, *, board=None):
         "page": columns[0]["page"] if columns else page.number, "pages": columns[0]["pages"] if columns else paginator.num_pages, "total": total,
         "page_size": PAGE_SIZE, "q": query, "mode": mode, "status": status,
         "can_create": capabilities["create_own_leads"],
+        "can_categorize_contacts": capabilities['can_categorize_contacts'],
         "intake": intake}
 
 
@@ -385,10 +411,18 @@ def clients(request):
     if not any(capabilities[name] for name in ("create_own_leads", "edit_own_leads", "qualify_own_leads")):
         raise PermissionDenied
     query = request.GET.get("q", "").strip()[:200]
+    kind = request.GET.get('kind', '')
+    if kind not in {'', 'private', 'legal'}:
+        raise ValidationError('Выберите контакт или компанию.')
     if len(query) < 3:
         return JsonResponse({"clients": []})
-    queryset = active_clients(Client.objects.filter(organization=organization)).filter(Q(name__icontains=query) | Q(phone__icontains=query))
-    return JsonResponse({"clients": list(queryset.order_by("name", "pk").values("id", "name")[:20])})
+    from .contact_directory import search_contacts
+    queryset = readable_clients(request.user).filter(organization=organization)
+    if kind:
+        queryset = queryset.filter(client_type=kind)
+    queryset = search_contacts(queryset, request.user, query).prefetch_related('business_roles')
+    return JsonResponse({"clients": [_client_summary(client, details=True)
+        for client in queryset.order_by("name", "pk")[:20]]})
 
 
 @_api

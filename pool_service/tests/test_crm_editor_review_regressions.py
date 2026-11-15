@@ -1,4 +1,5 @@
 """Regression coverage for the two editor findings on PR #287."""
+from .onec_review_helpers import post_current_form
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -43,7 +44,7 @@ class CRMEditorReviewRegressionTests(TestCase):
 
     def test_admin_can_edit_client_in_second_authorized_organization(self):
         self.assertEqual(self.client.get(self.url).status_code, 200)
-        response = self.client.post(self.url, {"name": "Updated Company", "return_tab": "contacts"})
+        response = post_current_form(self.client, self.url, {"name": "Updated Company", "return_tab": "contacts"})
         self.assertRedirects(
             response, reverse("client_detail", args=[self.customer.pk]) + "?tab=contacts",
             fetch_redirect_response=False,
@@ -55,17 +56,17 @@ class CRMEditorReviewRegressionTests(TestCase):
     def test_owner_of_first_tenant_cannot_use_manager_access_to_edit_second(self):
         OrganizationAccess.objects.filter(user=self.owner, organization=self.second_org).update(role="manager")
         self.assertEqual(self.client.get(self.url).status_code, 403)
-        self.assertEqual(self.client.post(self.url, {"name": "Denied"}).status_code, 403)
+        self.assertEqual(post_current_form(self.client, self.url, {"name": "Denied"}).status_code, 403)
         self.assert_customer_unchanged()
 
     def test_owner_cannot_edit_unrelated_tenant(self):
         Client.objects.filter(pk=self.customer.pk).update(organization=self.outside_org)
         self.assertEqual(self.client.get(self.url).status_code, 403)
-        self.assertEqual(self.client.post(self.url, {"name": "Denied"}).status_code, 403)
+        self.assertEqual(post_current_form(self.client, self.url, {"name": "Denied"}).status_code, 403)
         self.assert_customer_unchanged()
 
     def test_legacy_company_name_submission_updates_both_names(self):
-        response = self.client.post(self.url, {"company_name": "Legacy New Name"})
+        response = post_current_form(self.client, self.url, {"company_name": "Legacy New Name"})
         self.assertEqual(response.status_code, 302)
         self.customer.refresh_from_db()
         self.profile.refresh_from_db()
@@ -79,26 +80,26 @@ class CRMEditorReviewRegressionTests(TestCase):
         self.assertEqual(self.profile.source, "onec")
 
     def test_explicit_new_name_takes_precedence_over_legacy_alias(self):
-        response = self.client.post(self.url, {"name": "Modern Name", "company_name": "Old Alias"})
+        response = post_current_form(self.client, self.url, {"name": "Modern Name", "company_name": "Old Alias"})
         self.assertEqual(response.status_code, 302)
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.name, "Modern Name")
         self.assertEqual(self.customer.company_name, "Modern Name")
 
     def test_omitted_names_preserve_existing_company(self):
-        response = self.client.post(self.url, {"return_tab": "contacts"})
+        response = post_current_form(self.client, self.url, {"return_tab": "contacts"})
         self.assertEqual(response.status_code, 302)
         self.assert_customer_unchanged()
 
     def test_blank_legacy_name_is_invalid_and_does_not_write_profile(self):
-        response = self.client.post(self.url, {"company_name": "  ", "profile-notes": "Do not save"})
+        response = post_current_form(self.client, self.url, {"company_name": "  ", "profile-notes": "Do not save"})
         self.assertEqual(response.status_code, 200)
         self.assertIn("name", response.context["client_form"].errors)
         self.assert_customer_unchanged()
 
     def test_subscription_write_guard_is_preserved(self):
         with patch("pool_service.client_crm_ui.is_org_access_blocked", return_value=True):
-            response = self.client.post(self.url, {"name": "Denied", "profile-notes": "Do not save"})
+            response = post_current_form(self.client, self.url, {"name": "Denied", "profile-notes": "Do not save"})
         self.assertEqual(response.status_code, 403)
         self.assert_customer_unchanged()
 
@@ -112,7 +113,7 @@ class CRMEditorReviewRegressionTests(TestCase):
         page = self.client.get(url)
         self.assertNotContains(page, "ИНН")
         self.assertNotIn("inn", page.context["client_form"].fields)
-        response = self.client.post(url, {
+        response = post_current_form(self.client, url, {
             "action": "add_extra_phone", "phone": "+7 900 555-66-77", "label": "Рабочий",
         })
         self.assertRedirects(
@@ -128,7 +129,7 @@ class CRMEditorReviewRegressionTests(TestCase):
             organization=self.second_org, client_type="private", name="Старая карточка",
         )
         ClientCRMProfile.objects.create(client=person)
-        response = self.client.post(reverse("client_edit", args=[person.pk]), {
+        response = post_current_form(self.client, reverse("client_edit", args=[person.pk]), {
             "last_name": "Дыченко", "first_name": "Надежда", "profile-middle_name": "Николаевна",
         })
         self.assertEqual(response.status_code, 302)

@@ -53,7 +53,7 @@ class CommercialModel(models.Model):
         super().clean()
         organization_id = getattr(self, "organization_id", None)
         using = self._state.db or router.db_for_write(type(self), instance=self)
-        for name in ("pipeline", "stage", "client", "lead", "deal", "command"):
+        for name in ("pipeline", "stage", "client", "contact", "lead", "deal", "command"):
             field = next((f for f in self._meta.fields if f.name == name), None)
             pk = getattr(self, field.attname, None) if field else None
             if not pk:
@@ -67,6 +67,13 @@ class CommercialModel(models.Model):
                 raise ValidationError({name: "CRM relation must belong to the same organization."})
             if name == "stage" and parent.pipeline_id != self.pipeline_id:
                 raise ValidationError({name: "Stage must belong to the selected pipeline."})
+            if name == "contact" and parent.client_type != "private":
+                raise ValidationError({name: "Контактом может быть только физическое лицо."})
+        if getattr(self, "contact_id", None) and getattr(self, "client_id", None):
+            client_field = self._meta.get_field("client")
+            client = client_field.remote_field.model.objects.using(using).get(pk=self.client_id)
+            if client.client_type == "private" and self.contact_id != self.client_id:
+                raise ValidationError({"contact": "Для клиента-физлица выберите его же контакт или компанию."})
         # Assignment is account identity, not an HR record. Historical assignments
         # survive HR changes; fresh writes require current organization eligibility.
         for name in ("assignee", "manager"):
@@ -184,6 +191,8 @@ class CrmLead(CommercialModel):
     organization = models.ForeignKey("pool_service.Organization", on_delete=models.PROTECT)
     kind = models.CharField(max_length=12, choices=[("client", "Клиент"), ("tender", "Тендер")], default="client")
     client = models.ForeignKey("pool_service.Client", null=True, blank=True, on_delete=models.PROTECT)
+    contact = models.ForeignKey("pool_service.Client", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="contact_leads")
     assignee = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT)
     title = models.CharField(max_length=255)
     need = models.TextField(blank=True)
@@ -255,6 +264,8 @@ class CrmDeal(CommercialModel):
     pipeline = models.ForeignKey(CrmPipeline, on_delete=models.PROTECT, related_name="deals")
     stage = models.ForeignKey(CrmStage, on_delete=models.PROTECT, related_name="deals")
     client = models.ForeignKey("pool_service.Client", null=True, blank=True, on_delete=models.PROTECT)
+    contact = models.ForeignKey("pool_service.Client", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="contact_deals")
     manager = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT)
     title = models.CharField(max_length=255)
     work_subject = models.CharField(max_length=2000, blank=True)

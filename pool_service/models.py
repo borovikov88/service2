@@ -158,6 +158,40 @@ class Client(models.Model):
     contact_position = models.CharField(max_length=120, blank=True, null=True)
     organization = models.ForeignKey(Organization, on_delete=models.SET_NULL, null=True, blank=True, related_name="clients")
 
+    def validate_crm_contact_identity(self, *, client_type=None, previous=None, lock=False):
+        """Retain the identity that existing lead/deal representative links use."""
+        if not self.pk:
+            return
+        using = self._state.db or "default"
+        previous = previous or type(self).objects.using(using).filter(pk=self.pk).values("client_type", "organization_id").first()
+        proposed_type = self.client_type if client_type is None else client_type
+        if not previous:
+            return
+        changed = {field for field, value in (("client_type", proposed_type), ("organization_id", self.organization_id))
+            if previous[field] != value}
+        if not changed:
+            return
+        from .crm_commercial_models import CrmLead, CrmDeal
+        # A selected company/person pair need not have a ClientCompanyLink.
+        # Protect the CRM references themselves, including primary-client scope.
+        references = models.Q(contact_id=self.pk)
+        if "organization_id" in changed:
+            references |= models.Q(client_id=self.pk)
+        if "client_type" in changed and proposed_type == "private":
+            references |= (models.Q(client_id=self.pk, contact_id__isnull=False)
+                & ~models.Q(contact_id=self.pk))
+        leads = CrmLead.objects.using(using).filter(references)
+        deals = CrmDeal.objects.using(using).filter(references)
+        if lock:
+            leads, deals = leads.select_for_update(), deals.select_for_update()
+        if leads.exists() or deals.exists():
+            message = "Тип и организацию контакта, используемого в лидах или сделках, менять нельзя. Для компании создайте отдельную карточку."
+            raise ValidationError({"organization" if field == "organization_id" else field: message for field in changed})
+
+    def clean(self):
+        super().clean()
+        self.validate_crm_contact_identity()
+
     def __str__(self):
         return self.name
 

@@ -51,3 +51,12 @@ MEDIA_ROOT = _TEST_PUBLIC_MEDIA.name
 
 COMMUNICATION_RECORDING_DOWNLOAD_INLINE = False
 COMMUNICATION_CLIENT_ENRICHMENT_ENABLED = False
+
+# Opt-in, disposable local MySQL only. Never reads production DB environment.
+if os.environ.get("SERVICE2_ONEC_MYSQL_TEST") == "1":
+    DATABASES = {"default": {
+        "ENGINE": "django.db.backends.mysql", "NAME": "service2_onec_test",
+        "HOST": "127.0.0.1", "PORT": "33316", "USER": "root", "PASSWORD": "",
+        "OPTIONS": {"charset": "utf8mb4", "isolation_level": "read committed"},
+        "TEST": {"NAME": "test_service2_onec_review"},
+    }}

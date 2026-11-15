@@ -4,6 +4,7 @@ from difflib import SequenceMatcher
 import re
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from .models import Client, ClientAccess, Organization
@@ -17,6 +18,7 @@ from .client_crm_models import (
     ClientBusinessRoleEvent,
     ClientContact,
     ClientImportCandidate,
+    ClientImportProposal,
     ClientImportRun,
 )
 
@@ -190,6 +192,7 @@ def _generic_relations(source, target):
         ClientBusinessRole,
         ClientBusinessRoleEvent,
         ClientImportCandidate,
+        ClientImportProposal,
         ClientAccess,
         # These relations have a separate validated write contract. The source
         # preflight in merge_clients() refuses existing links before any write.
@@ -285,8 +288,8 @@ def merge_clients(source_id, target_id, *, organization_id, actor=None):
     # writer. Inspect every source link, including archived or inconsistent
     # tenant links, before moving any legacy relation. Flags do not bypass this
     # compatibility boundary. Target-only links are retained without changes.
-    if (CrmLead.objects.filter(client_id=source.pk).exists()
-            or CrmDeal.objects.filter(client_id=source.pk).exists()):
+    if (CrmLead.objects.filter(Q(client_id=source.pk) | Q(contact_id=source.pk)).exists()
+            or CrmDeal.objects.filter(Q(client_id=source.pk) | Q(contact_id=source.pk)).exists()):
         raise ValueError(
             "Нельзя автоматически объединить клиента с коммерческими лидами или сделками CRM. "
             "Для переноса этих связей требуется отдельная проверенная операция."
@@ -300,6 +303,8 @@ def merge_clients(source_id, target_id, *, organization_id, actor=None):
     if OrganizationPersonLink.objects.filter(person_id__in=[source.pk, target.pk]).exists():
         raise ValueError("Связь физлица с пользователем требует отдельной сверки перед объединением.")
 
+    # Decisions retain their original target. Never bulk-reparent audit records.
+    ClientImportProposal.objects.filter(client_id__in=[source.pk, target.pk], state="pending").update(state="stale")
     moved = _generic_relations(source, target)
     _merge_staff_access(source, target)
     _merge_contacts(source, target)

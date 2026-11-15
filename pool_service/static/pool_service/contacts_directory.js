@@ -19,6 +19,7 @@
     document.getElementById('contacts-error').hidden = true;
     const active = document.activeElement;
     const group = active?.dataset.clientSearch;
+    const categoryFocused = active?.hasAttribute?.('data-contact-role');
     const caret = group ? active.selectionStart : null;
     try {
       const response = await fetch(desired.pathname + desired.search, {signal: controller.signal, credentials: 'same-origin', headers: {'X-Requested-With': 'XMLHttpRequest'}});
@@ -35,6 +36,7 @@
         input?.focus({preventScroll: true});
         if (caret !== null) input?.setSelectionRange(caret, caret);
       }
+      if (categoryFocused) root().querySelector('[data-contact-role]')?.focus({preventScroll: true});
     } catch (error) {
       if (id === generation && error.name !== 'AbortError') document.getElementById('contacts-error').hidden = false;
     } finally {
@@ -59,6 +61,14 @@
         desired.searchParams.set('clients_tab', group);
         root().setAttribute('aria-busy', 'true');
         timer = setTimeout(() => load(id), 300);
+      });
+    });
+    root().querySelectorAll('[data-contact-role]').forEach(select => {
+      select.addEventListener('change', () => {
+        if (select.value) desired.searchParams.set('category', select.value);
+        else desired.searchParams.delete('category');
+        for (const group of ['companies', 'people', 'suppliers', 'staff']) desired.searchParams.delete(group + '_page');
+        load(invalidate());
       });
     });
     root().querySelectorAll('[data-contact-page]').forEach(link => {

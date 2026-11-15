@@ -272,6 +272,8 @@ class ClientImportCandidate(models.Model):
     email = models.CharField(max_length=255, blank=True)
     birth_date = models.DateField(null=True, blank=True)
     payload = models.JSONField(default=dict, blank=True)
+    review_state = models.JSONField(default=dict, blank=True, editable=False)
+    source_available = models.BooleanField(default=True, editable=False)
     status = models.CharField(
         max_length=16,
         choices=STATUS_CHOICES,
@@ -388,8 +390,17 @@ class ClientImportRun(models.Model):
 
 class ClientBusinessRole(models.Model):
     """Explicit local classification; never an intake or access grant."""
+    ROLE_CHOICES = [
+        ("supplier", "Поставщик"),
+        ("personal", "Личный"),
+        ("internal", "Внутренний"),
+        ("landlord", "Арендодатель"),
+        ("partner", "Партнёр"),
+        ("other", "Другой"),
+    ]
+    ROLE_LABELS = dict(ROLE_CHOICES)
     client = models.ForeignKey("pool_service.Client", on_delete=models.PROTECT, related_name="business_roles")
-    role = models.CharField(max_length=20, choices=[("supplier", "Поставщик")])
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES)
     active = models.BooleanField(default=False)
     revision = models.PositiveIntegerField(default=0)
 
@@ -421,3 +432,25 @@ class ClientBusinessRoleEvent(models.Model):
     revision = models.PositiveIntegerField()
     source_client = models.ForeignKey("pool_service.Client", null=True, on_delete=models.PROTECT, related_name="transferred_business_role_events")
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+class ClientImportProposal(models.Model):
+    """Versioned decisions in the existing 1C import workspace."""
+    candidate = models.ForeignKey(ClientImportCandidate, on_delete=models.PROTECT, related_name="proposals")
+    client = models.ForeignKey("pool_service.Client", on_delete=models.PROTECT, related_name="onec_proposals")
+    field = models.CharField(max_length=100)
+    source_version = models.PositiveIntegerField()
+    before = models.JSONField(null=True)
+    after = models.JSONField()
+    context = models.JSONField(default=dict)
+    state = models.CharField(max_length=12, default="pending", choices=[
+        ("pending", "Ожидает решения"), ("accepted", "Принято"),
+        ("rejected", "Отклонено"), ("stale", "Устарело"),
+    ])
+    decided_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT)
+    decided_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(
+            fields=["candidate", "client", "field", "source_version"], name="onec_proposal_version_uniq")]

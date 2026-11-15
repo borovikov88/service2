@@ -106,6 +106,32 @@ class ContactsPaginationTests(TestCase):
         self.assertContains(response,"По запросу ничего не найдено")
         self.assertNotContains(response,"Поставщики ещё не отмечены")
 
+    def test_category_filter_precedes_pagination_and_preserves_scope(self):
+        last = self.companies[-1]
+        ClientBusinessRole.objects.create(client=last, role="landlord", active=True)
+        ClientBusinessRole.objects.create(client=self.companies[0], role="landlord", active=False)
+        ClientBusinessRole.objects.create(client=self.hidden, role="landlord", active=True)
+        response = self.client.get(self.url, {"category": "landlord", "companies_page": 2})
+        self.assertEqual(response.context["companies_page"].paginator.count, 1)
+        self.assertEqual([c.pk for c in response.context["companies"]], [last.pk])
+        self.assertEqual([c.pk for c in response.context["suppliers"]], [last.pk])
+        self.assertEqual(response.context["private_contacts"], [])
+        self.assertEqual(list(response.context["pool_staff"]), [])
+        self.assertContains(response, 'data-contact-category="landlord"')
+        self.assertNotContains(response, self.hidden.name)
+        self.assertEqual(response.context["companies"][0].contact_categories,
+            [{"code": "supplier", "label": "Поставщик"}, {"code": "landlord", "label": "Арендодатель"}])
+
+    def test_category_and_search_intersect_and_do_not_duplicate_contacts(self):
+        person = self.people[-1]
+        for code in ("personal", "internal"):
+            ClientBusinessRole.objects.create(client=person, role=code, active=True)
+        response = self.client.get(self.url, {"category": "personal", "people_q": person.name})
+        self.assertEqual([c.pk for c in response.context["private_contacts"]], [person.pk])
+        self.assertEqual(response.context["people_page"].paginator.count, 1)
+        response = self.client.get(self.url, {"category": "personal", "people_q": "Missing category match"})
+        self.assertEqual(response.context["people_page"].paginator.count, 0)
+
     def test_pool_staff_is_separately_paged_scoped_and_filtered(self):
         Pool.objects.bulk_create([Pool(client=self.companies[0],organization=self.org,address=f"Synthetic object {i:03}") for i in range(55)])
         pools=list(Pool.objects.filter(client=self.companies[0],organization=self.org).order_by("pk"))

@@ -37,6 +37,8 @@ const {chromium} = require('playwright');
     };
     const noModal=async()=>assert.equal(await page.locator('#lead-dialog').evaluate(node=>node.open),false,'Reload must keep the closed card closed');
     await page.goto(f.base+f.workspace);await inColumn('unparsed');
+    assert.deepEqual(await page.locator('.lead-column h2').allTextContents(),['Не разобраны · 1','В работе · 0','Завершённые · 0']);
+    await page.getByRole('button',{name:'Спам и удалённые',exact:true}).click();
     assert.deepEqual(await page.locator('.lead-column h2').allTextContents(),['Не разобраны · 1','В работе · 0','Завершённые · 0','Спам · 0','Удалённые · 0']);
     const sent=[];let lose=true;
     await context.route('**'+f.command+'*',async route=>{

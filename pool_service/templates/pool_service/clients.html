@@ -26,6 +26,12 @@
       </li>
     </ul>
   </div>
+  <label class="d-flex align-items-center gap-2 mb-3" for="contact-category"><span class="text-muted small">Категория</span>
+    <select class="form-select form-select-sm w-auto" id="contact-category" data-contact-role>
+      <option value="">Все категории</option>
+      {% for code,label in contact_category_choices %}<option value="{{ code }}" {% if contact_category == code %}selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+  </label>
   <div class="tab-content">
     <div class="tab-pane fade show active" id="companies-pane" role="tabpanel" aria-labelledby="companies-tab">
       <div class="mb-3">
@@ -48,7 +54,7 @@
           <tbody>
             {% for company in companies %}
               <tr data-client-row="companies">
-                <td class="fw-semibold"><a class="text-decoration-none" href="{% url 'client_detail' company.id %}">{{ company.name }}</a></td>
+                <td class="fw-semibold"><a class="text-decoration-none" href="{% url 'client_detail' company.id %}">{{ company.name }}</a>{% include "pool_service/_contact_categories.html" with contact=company %}</td>
                 <td>{{ company.phone_display|default:"-" }}</td>
                 <td>{{ company.email|default:"-" }}</td>
                 <td>{{ company.pool_count|default:0 }}</td>
@@ -121,7 +127,7 @@
               </tr>
             {% empty %}
               <tr>
-                <td colspan="{% if user.is_superuser %}6{% elif is_org_staff %}6{% else %}5{% endif %}" class="text-center text-muted py-3">&#1055;&#1086;&#1082;&#1072; &#1085;&#1077;&#1090; &#1082;&#1086;&#1084;&#1087;&#1072;&#1085;&#1080;&#1081;</td>
+                <td colspan="{% if user.is_superuser %}6{% elif is_org_staff %}6{% else %}5{% endif %}" class="text-center text-muted py-3">{% if companies_q or contact_category %}По выбранным условиям компаний нет.{% else %}Пока нет компаний.{% endif %}</td>
               </tr>
             {% endfor %}
           </tbody>
@@ -134,8 +140,8 @@
       {% include "pool_service/_contacts_pager.html" with page=suppliers_page group="suppliers" %}
       <div class="table-responsive"><table class="table align-middle"><thead><tr><th>Контакт</th><th>Телефон</th><th>Email</th></tr></thead><tbody>
       {% for supplier in suppliers %}
-        <tr data-client-row="suppliers"><td><a href="{% url 'client_detail' supplier.id %}">{{ supplier.name }}</a></td><td>{{ supplier.phone_display|default:"—" }}</td><td>{{ supplier.email|default:"—" }}</td></tr>
-      {% empty %}<tr><td colspan="3">{% if suppliers_q %}По запросу ничего не найдено.{% else %}Поставщики ещё не отмечены. Роль можно указать в карточке контакта.{% endif %}</td></tr>{% endfor %}
+        <tr data-client-row="suppliers"><td><a href="{% url 'client_detail' supplier.id %}">{{ supplier.name }}</a>{% include "pool_service/_contact_categories.html" with contact=supplier %}</td><td>{{ supplier.phone_display|default:"—" }}</td><td>{{ supplier.email|default:"—" }}</td></tr>
+      {% empty %}<tr><td colspan="3">{% if suppliers_q or contact_category %}По запросу ничего не найдено.{% else %}Поставщики ещё не отмечены. Роль можно указать в карточке контакта.{% endif %}</td></tr>{% endfor %}
       </tbody></table></div>
     </div>
     <div class="tab-pane fade" id="contacts-pane" role="tabpanel" aria-labelledby="contacts-tab">
@@ -161,7 +167,7 @@
             <tbody>
               {% for client in private_contacts %}
                 <tr data-client-row="people">
-                  <td class="fw-semibold"><a class="text-decoration-none" href="{% url 'client_detail' client.id %}">{{ client.name }}</a></td>
+                  <td class="fw-semibold"><a class="text-decoration-none" href="{% url 'client_detail' client.id %}">{{ client.name }}</a>{% include "pool_service/_contact_categories.html" with contact=client %}</td>
                   <td>{{ client.phone_display|default:"-" }}</td>
                   <td>{{ client.email|default:"-" }}</td>
                   <td>
@@ -220,14 +226,14 @@
                 </tr>
               {% empty %}
                 <tr>
-                  <td colspan="{% if user.is_superuser %}6{% elif is_org_staff %}6{% else %}5{% endif %}" class="text-center text-muted py-3">&#1055;&#1086;&#1082;&#1072; &#1085;&#1077;&#1090; &#1082;&#1086;&#1085;&#1090;&#1072;&#1082;&#1090;&#1086;&#1074;</td>
+                  <td colspan="{% if user.is_superuser %}6{% elif is_org_staff %}6{% else %}5{% endif %}" class="text-center text-muted py-3">{% if people_q or contact_category %}По выбранным условиям контактов нет.{% else %}Пока нет контактов.{% endif %}</td>
                 </tr>
               {% endfor %}
             </tbody>
           </table>
         </div>
       </div>
-      <div>
+      {% if not contact_category %}<div>
         <div class="fw-semibold mb-2">&#1057;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1080; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074;</div>
         {% include "pool_service/_contacts_pager.html" with page=staff_page group="staff" %}
         <div class="table-responsive">
@@ -272,7 +278,7 @@
             </tbody>
           </table>
         </div>
-      </div>
+      </div>{% endif %}
     </div>
   </div>
 </div>
@@ -292,7 +298,7 @@
     </div>
   </div>
 </div>
-<script src="{% static 'pool_service/contacts_directory.js' %}?v=1" defer></script>
+<script src="{% static 'pool_service/contacts_directory.js' %}?v=20261115-categories" defer></script>
 
 </div><!-- /admin-desktop -->
 {% endblock %}

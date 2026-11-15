@@ -172,6 +172,8 @@ def leads_for_user(user, organization):
     return CrmLead.objects.filter(organization_id=organization.pk).filter(
         Q(client__isnull=True) | Q(client__organization_id=organization.pk)
     ).filter(
+        Q(contact__isnull=True) | Q(contact__organization_id=organization.pk, contact__client_type='private')
+    ).filter(
         Q(origin_lead__isnull=True) | Q(origin_lead__organization_id=organization.pk, origin_lead__origin_lead__isnull=True)
     ).annotate(_crm_forbidden_source=Exists(forbidden)).filter(_crm_forbidden_source=False)
 

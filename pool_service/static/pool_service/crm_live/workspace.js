@@ -570,6 +570,45 @@
     }
     function titleNode(text) { const node = element("h2", "", text); node.id = "crm-live-dialog-title"; return node; }
     function section(title) { const node = element("section", "crm-live-section"); node.append(element("h3", "", title)); return node; }
+    function disclosure(title) {
+      const node = element("details", "crm-live-section crm-live-disclosure");
+      node.append(element("summary", "", title)); return node;
+    }
+    function revealField(input) {
+      for (let parent = input.parentElement; parent && parent !== dialogContent; parent = parent.parentElement) {
+        if (parent.tagName === "DETAILS") parent.open = true;
+        if (parent.dataset.detailPanel) selectDetailPanel(parent.dataset.detailPanel);
+      }
+    }
+    function selectDetailPanel(key) {
+      for (const panel of dialogContent.querySelectorAll("[data-detail-panel]")) panel.hidden = panel.dataset.detailPanel !== key;
+      for (const tab of dialogContent.querySelectorAll("[data-detail-tab]")) {
+        const active = tab.dataset.detailTab === key;
+        tab.setAttribute("aria-selected", String(active)); tab.tabIndex = active ? 0 : -1;
+      }
+    }
+    function detailTabs() {
+      const nav = element("div", "crm-detail-tabs"); nav.setAttribute("role", "tablist"); nav.setAttribute("aria-label", "Карточка сделки");
+      const children = Array.from(dialogContent.children);
+      const panels = [];
+      for (const [key, label] of [["overview", "Обзор"], ["tasks", "Дела"], ["edit", "Изменить"], ["history", "История"]]) {
+        const nodes = children.filter(node => (node.dataset.detailSection || "overview") === key && !node.matches("h2,.crm-live-detail-meta,.crm-live-completion-warning"));
+        if (!nodes.length) continue;
+        const panel = element("section", "crm-detail-panel"); panel.dataset.detailPanel = key; panel.id = "crm-detail-panel-" + key;
+        panel.setAttribute("role", "tabpanel"); panel.setAttribute("aria-labelledby", "crm-detail-tab-" + key);
+        panel.append(...nodes); panels.push(panel);
+        const tab = element("button", "", label); tab.type = "button"; tab.dataset.detailTab = key; tab.id = "crm-detail-tab-" + key;
+        tab.setAttribute("role", "tab"); tab.setAttribute("aria-controls", panel.id);
+        tab.addEventListener("click", () => selectDetailPanel(key)); nav.append(tab);
+      }
+      nav.addEventListener("keydown", event => {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        const tabs = Array.from(nav.children), current = tabs.indexOf(doc.activeElement);
+        const index = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+        event.preventDefault(); tabs[index].click(); tabs[index].focus();
+      });
+      dialogContent.append(nav, ...panels); selectDetailPanel("overview");
+    }
     function field(label, type, name, value, required) {
       const wrapper = element("label", "crm-live-field");
       wrapper.append(element("span", "", label));
@@ -598,6 +637,7 @@
       error.hidden = true;
       error.setAttribute("role", "alert");
       form.append(error);
+      form.addEventListener("invalid", event => revealField(event.target), true);
       return form;
     }
     function formError(form, message) {
@@ -732,7 +772,7 @@
       dialogContent.dataset.revision = String(deal.revision);
       dialogContent.append(titleNode(deal.title));
       if(deal.unverified_completion_stage)dialogContent.append(element("p","crm-live-completion-warning",(deal.manual_completion ? "CRM завершена вручную. " : "Финальный этап без подтверждённого итога. ")+deal.completion_warning));
-      const identity = section("Ссылка на сделку");
+      const identity = disclosure("Ссылка на сделку");
       identity.append(element("p", "crm-live-deal-id", "ID сделки: " + deal.id));
       // Share only the authorized entity locator, never search/filter contents.
       const permalink = new URL(win.location.pathname, win.location.origin);
@@ -747,10 +787,10 @@
       copy.addEventListener("click", async () => {
         try {
           await win.navigator.clipboard.writeText(permalink.href);
-          if (feedback.isConnected) feedback.textContent = "Ссылка скопирована.";
+          if (feedback.isConnected) { selectDetailPanel("overview"); identity.open = true; feedback.textContent = "Ссылка скопирована."; }
         } catch (_) {
           if (!link.input.isConnected) return;
-          link.input.focus(); link.input.select();
+          selectDetailPanel("overview"); identity.open = true; link.input.focus(); link.input.select();
           feedback.textContent = "Не удалось скопировать автоматически. Скопируйте выделенную ссылку.";
         }
       });
@@ -761,21 +801,36 @@
       if (href) { const link = element("a", "", deal.client.name); link.href = href; client.append(link); }
       else client.textContent = deal.client?.name || "Клиент не указан";
       dialogContent.append(client);
+      if (deal.contact && !sameId(deal.contact.id, deal.client?.id)) {
+        const contact = element("p", "crm-live-detail-contact"); contact.append(element("span", "crm-live-muted", "Контакт: "));
+        const href = safeLink(deal.contact.url), name = element(href ? "a" : "span", "", deal.contact.name);
+        if (href) name.href = href; contact.append(name); dialogContent.append(contact);
+      }
       const quoteUrl = safeLink(deal.quotes_url);
       if (quoteUrl) { const link = element("a", "btn btn-outline-primary", "КП: версии и решения"); link.href = quoteUrl; dialogContent.append(link); }
       const serviceUrl = safeLink(deal.service_documents_url);
       if (serviceUrl) { const link = element("a", "btn btn-outline-primary", "Документы обслуживания и периоды"); link.href = serviceUrl; dialogContent.append(link); }
       const meta = element("div", "crm-live-detail-meta");
       meta.append(element("span", "crm-live-pill", pipelineFor(deal.pipeline_id)?.name || ""), element("span", "crm-live-pill", stageFor(deal)?.name || ""), element("span", "crm-live-pill", deal.manager?.name || "Без ответственного"));
+      if (deal.can_transition && !deal.is_archived) {
+        const changeStage = element("button", "crm-live-inline-action", "Изменить этап"); changeStage.type = "button";
+        changeStage.addEventListener("click", () => {
+          selectDetailPanel("edit"); const form = dialogContent.querySelector('[data-command-form="transition"]');
+          if (form) { revealField(form); form.querySelector("select")?.focus(); }
+        }); meta.append(changeStage);
+      }
       dialogContent.append(meta);
-      const overview = section("Коммерческие сведения");
+      const overview = section("О сделке");
       const object = deal.object;
       const facts = [["Предмет", deal.work_subject || "Не уточнён"], ["Специализация", deal.specialization || "Не уточнена"],
         ["Исполнение", ({unknown: "Не уточнено", construction: "Строительство / монтаж", service: "Обслуживание", retail: "Поставка", mixed: "Смешанное"})[deal.fulfillment_kind]],
         ["Объект", !object ? "Не выбран" : object.restricted ? "Недоступен" : (object.kind === "planned" ? "Планируемый: " : "") + [object.name, object.address].filter(Boolean).join(" · ")],
         ["Сумма", deal.amount === null ? "Неизвестна" : moneyLabel(deal.amount, deal.currency) + " · " + (deal.amount_basis === "agreed" ? "Согласовано" : "Предварительная оценка")],
         ["Ожидаемое решение", deal.expected_decision_at ? dateText(deal.expected_decision_at) : "Не задано"], ["Исход", deal.unverified_completion_stage ? (deal.manual_completion ? "CRM завершена вручную; подтверждённый итог ещё открыт" : "Итог не подтверждён") : outcomeLabel(deal.outcome)]];
-      for (const [label, value] of facts) overview.append(element("p", "crm-live-fact", label + ": " + (value || "Не уточнено")));
+      for (const [label, value] of facts) {
+        if (["Предмет", "Специализация", "Исполнение", "Объект", "Ожидаемое решение"].includes(label) && [null, undefined, "Не уточнён", "Не уточнена", "Не уточнено", "Не выбран", "Не задано"].includes(value)) continue;
+        const row = element("div", "crm-live-fact"); row.append(element("span", "crm-live-fact-label", label), element("span", "", value || "Не уточнено")); overview.append(row);
+      }
       if (deal.closed_at) overview.append(element("p", "crm-live-fact", "Завершена: " + dateText(deal.closed_at)));
       if (deal.close_reason) overview.append(element("p", "crm-live-fact", "Причина: " + deal.close_reason));
       dialogContent.append(overview);
@@ -798,8 +853,13 @@
         next.append(link);
       }
       dialogContent.append(next);
+      if (deal.can_next_action && !deal.is_archived && !deal.next_action?.restricted && !deal.next_action?.waiting) {
+        const schedule = element("button", "crm-live-button", "Запланировать дело"); schedule.type = "button";
+        schedule.addEventListener("click", () => { selectDetailPanel("tasks"); dialogContent.querySelector('[name="next_title"]')?.focus(); });
+        next.append(schedule);
+      }
       if (deal.can_transition && !deal.is_archived) {
-        const part = section("Этап сделки");
+        const part = disclosure("Изменить этап"); part.dataset.detailSection = "edit";
         const form = newForm("transition", deal.id);
         form.append(element("p", "crm-live-form-note", "Ручной этап отражает работу менеджера. Он не подтверждает оплату, документы, выполнение или разрешение на запуск работ."));
         const stages = field("Перевести на этап", "select", "stage_id", null, true);
@@ -829,6 +889,7 @@
       }
       if (deal.can_next_action && !deal.is_archived && !deal.next_action?.restricted && !deal.next_action?.waiting) {
         const part = section("Следующее действие");
+        part.dataset.detailSection = "tasks";
         const form = newForm("next_action", deal.id);
         nextFields(form, deal.next_action);
         formFooter(form, deal.next_action && !deal.next_action.completed ? "Сохранить следующий шаг" : "Назначить следующий шаг");
@@ -837,6 +898,7 @@
       }
       if (deal.can_edit && !deal.is_archived) {
         const part = section("Изменить карточку сделки");
+        part.dataset.detailSection = "edit";
         const form = newForm("edit", deal.id);
         const title = field("Название", "text", "title", deal.title, true);
         title.input.maxLength = 255;
@@ -847,7 +909,7 @@
         dialogContent.append(part);
       }
       if (deal.can_close_negative) {
-        const part = section("Отказ или отмена");
+        const part = disclosure("Завершить без продажи"); part.dataset.detailSection = "edit";
         const form = newForm("close_negative", deal.id);
         form.append(element("p", "crm-live-form-note", "Сделка завершится, а её активный следующий шаг будет отменён. Выполненным он не станет."));
         selectField(form, "Исход", "outcome", "lost", [["lost", "Отказ / проигрыш"], ["cancelled", "Отмена"]]);
@@ -855,6 +917,7 @@
         form.append(reason.wrapper); formFooter(form, "Зафиксировать исход"); part.append(form); dialogContent.append(part);
       }
       const history = section("История изменений");
+      history.dataset.detailSection = "history";
       if (!events?.length) history.append(element("p", "crm-live-muted", "Изменения сделки будут отображаться здесь."));
       else {
         const list = element("ol", "crm-live-history");
@@ -868,6 +931,9 @@
         history.append(list);
       }
       dialogContent.append(history);
+      // Keep the first screen focused on the customer and next action.
+      dialogContent.append(identity);
+      detailTabs();
       updateFormLocks();
     }
 
@@ -930,7 +996,9 @@
         pipeline.input.append(option);
       });
       form.append(title.wrapper, client.wrapper, clientResults, pipeline.wrapper);
-      cardFields(form, null);
+      const extra = disclosure("Сумма, объект и другие сведения");
+      const extraFields = element("div", "crm-live-fields"); extra.append(extraFields); form.append(extra);
+      cardFields(extraFields, null); form.refreshObjects = extraFields.refreshObjects;
       nextFields(form, null);
       formFooter(form, "Создать сделку");
       dialogContent.append(form);
@@ -1037,6 +1105,7 @@
         const draft = conflictDraft(entry.payload, state.drawer.deal, timezone);
         const form = dialogContent.querySelector(`[data-command-form="${draft.formKind}"]`);
         if (!form) throw new Error("Сейчас нет доступа к изменению этих полей. Ваш черновик сохранён в уведомлении о конфликте.");
+        revealField(form);
         if (draft.formKind === "transition") {
           const select = form.elements.namedItem("stage_id");
           if (!Array.from(select.options).some((option) => option.value === draft.fields.stage_id)) throw new Error("Выбранный ранее этап больше недоступен. Проверьте текущий этап; черновик сохранён в уведомлении.");

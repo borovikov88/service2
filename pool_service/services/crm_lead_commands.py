@@ -33,7 +33,7 @@ CAPABILITIES = {
     "lead.qualify": ("qualify_own_leads", "create_own_deals", "manage_own_next_action"),
     "lead.add_deal": ("qualify_own_leads", "create_own_deals", "manage_own_next_action"),
 }
-EDIT_FIELDS = {"title", "need", "client_id", "direction", "specialization", "location", "desired_at",
+EDIT_FIELDS = {"title", "need", "client_id", "contact_id", "direction", "specialization", "location", "desired_at",
                "acquisition_source", "first_contact_channel", "budget_kind", "budget_min", "budget_max", "currency"}
 ACTIVE_STATES = {"working", "qualifying", "waiting", "deferred"}
 CLOSE_RESULTS = {"linked", "non_target", "spam", "duplicate", "no_deal"}
@@ -127,7 +127,7 @@ def _normalize(kind, changes):
         elif name in {"desired_at", "follow_up_at"}:
             result[name] = _date(value)
         elif name.endswith("_id"):
-            result[name] = None if name == "client_id" and value is None else _positive_id(value)
+            result[name] = None if name in {"client_id", "contact_id"} and value is None else _positive_id(value)
         elif name == "next_action":
             result[name] = _next_action_values(value)
         elif name in {"budget_min", "budget_max"}:
@@ -148,8 +148,10 @@ def _normalize(kind, changes):
                 raise ValidationError("Qualification requires one to ten independent deals.")
             rows = []
             for row in value:
-                if type(row) is not dict or not {"pipeline_id", "title", "next_action"} <= set(row) or not set(row) <= {"pipeline_id", "title", "next_action", "client_id", "new_contact", "reuse_next_action"}:
+                if type(row) is not dict or not {"pipeline_id", "title", "next_action"} <= set(row) or not set(row) <= {"pipeline_id", "title", "next_action", "client_id", "new_contact", "customer", "reuse_next_action"}:
                     raise ValidationError("Each deal requires a pipeline, title and next action.")
+                if len({'client_id', 'new_contact', 'customer'} & set(row)) > 1:
+                    raise ValidationError('Выберите один способ заполнения контакта и компании.')
                 normalized = {"pipeline_id": _positive_id(row["pipeline_id"]),
                               "title": _text(row["title"], 255, True), "next_action": _next_action_values(row["next_action"])}
                 if "client_id" in row:
@@ -158,6 +160,9 @@ def _normalize(kind, changes):
                     if "client_id" in row: raise ValidationError("Choose an existing or new contact, not both.")
                     from .crm_conversion_contacts import normalize_contact
                     normalized["new_contact"] = normalize_contact(row["new_contact"])
+                if "customer" in row:
+                    from .crm_conversion_contacts import normalize_customer
+                    normalized["customer"] = normalize_customer(row["customer"])
                 if "reuse_next_action" in row:
                     if type(row["reuse_next_action"]) is not bool: raise ValidationError("Invalid task transfer.")
                     normalized["reuse_next_action"] = row["reuse_next_action"]
@@ -264,11 +269,24 @@ def _finish_next(using, actor, lead, task):
 def _write_fields(using, lead, values):
     for field in EDIT_FIELDS & set(values):
         value = values[field]
-        if field == "client_id":
-            _client(using, lead.organization_id, value)
+        if field in {"client_id", "contact_id"}:
+            selected = _client(using, lead.organization_id, value)
+            if field == "contact_id" and selected and selected.client_type != 'private':
+                raise ValidationError('Контактом может быть только физическое лицо.')
         elif field == "desired_at":
             value = parse_datetime(value) if value else None
         setattr(lead, field, value)
+    # Older clients submit only client_id. Preserve a company representative only
+    # when its primary client is unchanged; never carry one to another customer.
+    if 'client_id' in values and 'contact_id' not in values:
+        client = _client(using, lead.organization_id, lead.client_id)
+        previous_client = type(lead).objects.using(using).filter(pk=lead.pk).values_list('client_id', flat=True).first() if lead.pk else None
+        if client and client.client_type == 'private':
+            lead.contact_id = client.pk
+        elif previous_client != lead.client_id:
+            lead.contact_id = None
+    if lead.contact_id and not lead.client_id:
+        lead.client_id = lead.contact_id
 
 
 def _new_lead(using, actor, organization, values, origin=None):
@@ -289,6 +307,8 @@ def _visible(using, actor, organization, lead):
     lead.full_clean()
     if lead.client_id:
         _client(using, organization.pk, lead.client_id)
+    if lead.contact_id:
+        _client(using, organization.pk, lead.contact_id)
 
 
 def _existing_target(using, actor, organization, lead, values, *, replay=False):
@@ -627,11 +647,16 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
         if command_type in {"lead.qualify", "lead.add_deal"}:
             ids = []
             for row in values["deals"]:
-                if row.get("new_contact"):
+                if row.get("customer"):
+                    from .crm_conversion_contacts import resolve_conversion_customer
+                    client, contact = resolve_conversion_customer(using, actor, organization, row["customer"])
+                elif row.get("new_contact"):
                     from .crm_conversion_contacts import create_conversion_contact
-                    client = create_conversion_contact(using, actor, organization, row["new_contact"])
+                    client, contact = create_conversion_contact(using, actor, organization, row["new_contact"], return_pair=True)
                 else:
                     client = _client(using, org_id, row.get("client_id", lead.client_id))
+                    contact = client if client and client.client_type == 'private' else (
+                        _client(using, org_id, lead.contact_id) if client and client.pk == lead.client_id else None)
                 if client is None:
                     raise ValidationError("A qualified deal requires a client or preliminary client.")
                 pipeline = CrmPipeline.objects.using(using).select_for_update().filter(pk=row["pipeline_id"], organization=organization, is_active=True).first()
@@ -639,7 +664,7 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
                 stage = CrmStage.objects.using(using).select_for_update().filter(pipeline=pipeline, code=order[0] if order else "", is_active=True).first()
                 if not pipeline or not stage:
                     raise ValidationError("Deal pipeline unavailable.")
-                deal = CrmDeal.objects.using(using).create(organization=organization, client=client,
+                deal = CrmDeal.objects.using(using).create(organization=organization, client=client, contact=contact,
                     pipeline=pipeline, stage=stage, manager=actor, title=row["title"], revision=1)
                 CrmLeadDealLink.objects.using(using).create(organization=organization, lead=lead, deal=deal, command=command,
                     kind="qualification" if command_type == "lead.qualify" else "additional")
@@ -663,6 +688,11 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
                 CrmEvent.objects.using(using).create(organization=organization, deal=deal, command=command,
                     actor=actor, event_type="deal.create", safe_diff={"revision": {"before": 0, "after": 1}})
                 ids.append(deal.pk)
+            # A single conversion keeps the exact confirmed customer on the lead
+            # as well. Multi-deal conversion retains the original lead identity.
+            if command_type == 'lead.qualify' and len(values['deals']) == 1:
+                lead.client, lead.contact = client, contact
+                lead.save(using=using, update_fields=['client', 'contact'])
             additional["deal_ids"] = ids
         if command_type == "lead.transition" and lead.result == "duplicate":
             # Explicit confirmation only. Preserve immutable source evidence on

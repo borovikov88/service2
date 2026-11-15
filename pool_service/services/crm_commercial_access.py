@@ -25,7 +25,9 @@ def can_view_team_deals(user, organization):
 def deals_for_user(user, organization):
     if not can_view_team_deals(user, organization):
         return CrmDeal.objects.none()
-    return CrmDeal.objects.filter(organization_id=organization.pk).filter(Q(client__isnull=True) | Q(client__organization_id=F("organization_id")))
+    return CrmDeal.objects.filter(organization_id=organization.pk).filter(
+        Q(client__isnull=True) | Q(client__organization_id=F("organization_id"))
+    ).filter(Q(contact__isnull=True) | Q(contact__organization_id=F("organization_id"), contact__client_type='private'))
 
 
 def can_write_commercial(user, organization):

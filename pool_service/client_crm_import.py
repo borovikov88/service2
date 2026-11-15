@@ -99,6 +99,8 @@ def _buyer_rows(config, metadata_raw):
             metadata_raw=metadata_raw,
         )
         rows = result.get("rows", [])
+        if result.get("complete") is False and len(rows) < PAGE_SIZE:
+            raise RuntimeError("Incomplete 1C buyer page; refusing reconciliation")
         if not rows:
             break
         for row in rows:
@@ -221,6 +223,8 @@ def _candidate_contacts(row, extra_rows):
     add_phone(row.get("НомерТелефонаДляПоиска"), "Основной")
     add_email(row.get("АдресЭПДляПоиска"), "Основной")
     for contact in extra_rows:
+        if contact.get("Ref_Key") and str(contact["Ref_Key"]) != str(row.get("Ref_Key") or ""):
+            raise ValueError("Контактная информация относится к другому источнику")
         label = str(contact.get("Представление") or "")
         kind = str(contact.get("Тип") or "")
         if "Телефон" in kind:
@@ -351,125 +355,25 @@ def scan_onec_clients(run=None, *, return_seen_refs=False):
         metadata_raw,
     )
 
+    from .client_crm_sync import _stage_recent_candidate
+    from .client_crm_models import ClientImportProposal
     totals = defaultdict(int)
     seen_refs = []
-    processed_rows = 0
-    for row in rows:
-        ref = str(row.get("Ref_Key") or "")
-        if ref:
-            seen_refs.append(ref)
-        name = str(row.get("Description") or row.get("НаименованиеПолное") or "").strip()
-        source_kind = _source_kind(row)
-        existing = ClientImportCandidate.objects.filter(
-            organization=organization,
-            source_ref=ref,
-        ).only("resolution", "applied_at").first()
-        resolution = (
-            existing.resolution
-            if existing is not None
-            else ClientImportCandidate.RESOLUTION_AUTO
-        )
-        effective_kind = _effective_kind(source_kind, resolution)
-        inn = str(row.get("ИНН") or "").strip()
-        phones, emails = _candidate_contacts(row, contacts_by_ref.get(ref, []))
-        if (
-            resolution != ClientImportCandidate.RESOLUTION_AUTO
-            and not (existing and existing.applied_at)
-        ):
-            # Manual classification means "create/import this canonical 1C
-            # client as classified". Legacy Service2 cards are merged later
-            # through the explicit merge workspace, never guessed here.
-            matches, match_reason = [], ""
-        else:
-            matches, match_reason = _match_clients(
-                organization, effective_kind, inn, phones, ref
-            )
-
-        status = ClientImportCandidate.STATUS_READY
-        reason = ""
-        matched_client = None
-        if not ref or not name:
-            status = ClientImportCandidate.STATUS_INVALID
-            reason = "Нет идентификатора или имени в 1С"
-        elif name.casefold().strip() in SYSTEM_NAMES:
-            status = ClientImportCandidate.STATUS_INVALID
-            reason = "Системная карточка 1С"
-        elif len(matches) > 1:
-            status = ClientImportCandidate.STATUS_DUPLICATE
-            reason = f"Несколько карточек Service2 совпали по: {match_reason}"
-        elif len(matches) == 1 and _has_conflicting_onec_identity(matches, ref):
-            status = ClientImportCandidate.STATUS_DUPLICATE
-            reason = (
-                "Совпавший клиент уже связан с другой карточкой 1С: "
-                f"{match_reason}"
-            )
-        elif len(matches) == 1:
-            matched_client = matches[0]
-        elif (
-            effective_kind == ClientImportCandidate.KIND_LEGAL
-            and not inn
-            and resolution == ClientImportCandidate.RESOLUTION_AUTO
-        ):
-            status = ClientImportCandidate.STATUS_REVIEW
-            reason = "У юридического лица не заполнен ИНН"
-        elif (
-            effective_kind == ClientImportCandidate.KIND_PRIVATE
-            and not phones
-            and resolution == ClientImportCandidate.RESOLUTION_AUTO
-            and _has_private_name_conflict(organization, name)
-        ):
-            status = ClientImportCandidate.STATUS_REVIEW
-            reason = "Есть физлицо с тем же ФИО, но нет телефона для безопасного сопоставления"
-
-        if resolution == ClientImportCandidate.RESOLUTION_SKIP:
-            status = ClientImportCandidate.STATUS_SKIPPED
-            reason = "Не импортировать — решение пользователя"
-        elif resolution != ClientImportCandidate.RESOLUTION_AUTO and status not in {
-            ClientImportCandidate.STATUS_INVALID,
-            ClientImportCandidate.STATUS_DUPLICATE,
-        }:
-            status = ClientImportCandidate.STATUS_READY
-            reason = "Тип подтверждён пользователем"
-
-        payload = {
-            "phones": phones,
-            "emails": emails,
-            "onec_type": str(row.get("ВидКонтрагента") or ""),
-            "onec_person_kind": str(row.get("ЮридическоеФизическоеЛицо") or ""),
-            "fio": str(row.get("ФИО") or "").strip(),
-        }
-        candidate, _ = ClientImportCandidate.objects.update_or_create(
-            organization=organization,
-            source_ref=ref,
-            defaults={
-                "source_code": str(row.get("Code") or ""),
-                "source_kind": source_kind,
-                "name": name,
-                "legal_name": str(row.get("НаименованиеПолное") or "").strip(),
-                "inn": inn,
-                "kpp": str(row.get("КПП") or "").strip(),
-                "phone": phones[0]["value"] if phones else "",
-                "email": emails[0]["value"] if emails else "",
-                "birth_date": _parse_date(row.get("ДатаРождения")),
-                "payload": payload,
-                "status": status,
-                "reason": reason,
-                "matched_client": matched_client,
-            },
-        )
-        if candidate.applied_at:
-            candidate.status = ClientImportCandidate.STATUS_IMPORTED
-            candidate.save(update_fields=["status", "updated_at"])
-
-        totals[candidate.status] += 1
-        totals[source_kind] += 1
-        processed_rows += 1
-        if processed_rows % 25 == 0 or processed_rows == len(rows):
-            _update_run_progress(
-                run,
-                processed_rows=processed_rows,
-                totals=totals,
-            )
+    # Network reads finish before locking. Full and incremental share the same
+    # staging rules and organization lock as manual decisions and merges.
+    with transaction.atomic():
+        Organization.objects.select_for_update().get(pk=organization.pk)
+        for row in rows:
+            ref = str(row.get("Ref_Key") or "")
+            if ref:
+                seen_refs.append(ref)
+            candidate = _stage_recent_candidate(organization, row, contacts_by_ref.get(ref, []))
+            totals[candidate.status] += 1
+            totals[candidate.source_kind] += 1
+        absent = ClientImportCandidate.objects.filter(organization=organization).exclude(source_ref__in=seen_refs)
+        ClientImportProposal.objects.filter(candidate__in=absent, state="pending").update(state="stale")
+        absent.update(source_available=False)
+        _update_run_progress(run, processed_rows=len(rows), totals=totals)
 
     totals["total"] = len(rows)
     result = dict(totals)
@@ -770,351 +674,126 @@ def _split_person_name(value):
 
 
 def _sync_contacts(client, candidate):
-    payload = candidate.payload or {}
-    source_name = "onec"
-    desired = set()
-
-    for kind, key in (
-        (ClientContact.KIND_PHONE, "phones"),
-        (ClientContact.KIND_EMAIL, "emails"),
-    ):
-        for item in payload.get(key, []):
-            value = str(item.get("value") or "").strip()
-            if not value:
-                continue
-            match_value = (
-                normalize_phone(value)
-                if kind == ClientContact.KIND_PHONE
-                else normalize_email(value)
-            )
-            if not match_value:
-                continue
-            stored_value = (
-                canonical_phone_value(value)
-                if kind == ClientContact.KIND_PHONE
-                else value
-            )
-            desired.add((kind, match_value))
-
-            contact = (
-                ClientContact.objects.filter(
-                    client=client,
-                    kind=kind,
-                    match_value=match_value,
-                )
-                .order_by("-is_primary", "id")
-                .first()
-            )
-            if contact is None:
-                contact = ClientContact.objects.create(
-                    client=client,
-                    kind=kind,
-                    value=stored_value,
-                    match_value=match_value,
-                    label=str(item.get("label") or "")[:120],
-                    is_primary=False,
-                    sources=[source_name],
-                    source_reference=candidate.source_ref,
-                )
-                continue
-
-            changed_fields = []
-            if contact.value != stored_value:
-                contact.value = stored_value
-                changed_fields.append("value")
-            sources = list(contact.sources or [])
-            if source_name not in sources:
-                sources.append(source_name)
-                contact.sources = sources
-                changed_fields.append("sources")
-            if contact.source_reference != candidate.source_ref:
-                contact.source_reference = candidate.source_ref
-                changed_fields.append("source_reference")
-            label = str(item.get("label") or "")[:120]
-            if label and not contact.label:
-                contact.label = label
-                changed_fields.append("label")
-            if changed_fields:
-                contact.save(update_fields=changed_fields + ["updated_at"])
-
-    onec_contacts = list(
-        ClientContact.objects.filter(
-            client=client,
-            source_reference=candidate.source_ref,
-        )
-    )
-    for contact in onec_contacts:
-        identity = (contact.kind, contact.match_value)
-        if identity in desired:
-            continue
-        sources = [
-            value
-            for value in (contact.sources or [])
-            if value != source_name
-        ]
-        if not sources:
-            contact.delete()
-            continue
-        contact.sources = sources
-        contact.source_reference = ""
-        contact.save(
-            update_fields=[
-                "sources",
-                "source_reference",
-                "updated_at",
-            ]
-        )
+    # Kept for callers: contact reconciliation uses the same non-destructive review.
+    from .client_import_review import reconcile
+    profile = ClientCRMProfile.objects.get(client=client)
+    reconcile(candidate, client, profile, person=client.pk != candidate.matched_client_id)
 
 
-def _find_or_create_ip_person(company, candidate):
-    existing_link = (
-        ClientCompanyLink.objects.filter(
-            company=company,
-            source=ClientCompanyLink.SOURCE_ONEC_IP,
-            source_reference=candidate.source_ref,
-        )
-        .select_related("person")
-        .first()
-    )
-    person = existing_link.person if existing_link else None
-    refresh_linked_person = existing_link is not None
-
-    phones = (candidate.payload or {}).get("phones", [])
-    phone_values = _phone_match_values(phones)
-    person_matches = Client.objects.filter(
-        organization=candidate.organization,
-        client_type="private",
-    )
-    ids = set()
-    if phone_values:
-        ids.update(
-            ClientContact.objects.filter(
-                client__in=person_matches,
-                kind=ClientContact.KIND_PHONE,
-                match_value__in=phone_values,
-            ).values_list("client_id", flat=True)
-        )
-        for candidate_person in person_matches.exclude(phone__isnull=True).exclude(phone="").only("id", "phone"):
-            if normalize_phone(candidate_person.phone) in phone_values:
-                ids.add(candidate_person.id)
-    if person is None:
-        if len(ids) > 1:
-            raise ValueError("Для ИП найдено несколько физлиц с тем же телефоном")
-        person = person_matches.filter(id=next(iter(ids))).first() if ids else None
-
-    last_name, first_name, middle_name = _split_person_name(
-        (candidate.payload or {}).get("fio") or candidate.name
-    )
-    candidate_phone = (
-        canonical_phone_value(candidate.phone)
-        if candidate.phone
-        else None
-    )
-    if person is None:
-        exact_name = " ".join(part for part in [last_name, first_name, middle_name] if part).strip()
-        named = list(person_matches.filter(name__iexact=exact_name)[:2]) if exact_name else []
-        if named:
-            raise ValueError(
-                "Для ИП найдено физлицо с тем же ФИО без подтверждающего телефона"
-            )
-    if person is None:
-        person = Client.objects.create(
-            organization=candidate.organization,
-            client_type="private",
-            name=" ".join(part for part in [last_name, first_name, middle_name] if part).strip() or candidate.name,
-            first_name=first_name or None,
-            last_name=last_name or None,
-            phone=candidate_phone,
-            email=candidate.email or None,
-        )
-    profile, _ = ClientCRMProfile.objects.get_or_create(client=person)
-    if (
-        not refresh_linked_person
-        and candidate_phone
-        and person.phone != candidate_phone
-        and normalize_phone(person.phone) == normalize_phone(candidate_phone)
-    ):
-        # A first-time IP match by phone is already identity-confirmed. Keep the
-        # legacy scalar in the same canonical representation as CRM contacts.
-        person.phone = candidate_phone
-        person.save(update_fields=["phone"])
-    if refresh_linked_person:
-        person_name = " ".join(
-            part for part in [last_name, first_name, middle_name] if part
-        ).strip() or candidate.name
-        person.name = person_name
-        person.first_name = first_name or None
-        person.last_name = last_name or None
-        person.phone = candidate_phone
-        person.email = candidate.email or None
-        person.save(
-            update_fields=[
-                "name",
-                "first_name",
-                "last_name",
-                "phone",
-                "email",
-            ]
-        )
-        profile.middle_name = middle_name
-        profile.birth_date = candidate.birth_date
-        profile.source = ClientCRMProfile.SOURCE_ONEC_IP
-        profile.save(
-            update_fields=[
-                "middle_name",
-                "birth_date",
-                "source",
-                "updated_at",
-            ]
-        )
+def _find_or_create_ip_person(company, candidate, *, allow_create=False):
+    from .client_import_review import reconcile, propose, source_values
+    links = list(ClientCompanyLink.objects.select_for_update().filter(company=company,
+        source=ClientCompanyLink.SOURCE_ONEC_IP, source_reference=candidate.source_ref))
+    if len(links) > 1:
+        raise ValueError("Для ИП найдено несколько связанных физлиц")
+    created = False
+    if links:
+        if company.client_type != "legal" or company.crm_profile.legal_form != "ip":
+            # Classification is an explicit proposal; it cannot implicitly
+            # authorize writes to a linked person while awaiting a decision.
+            return None
+        person = Client.objects.select_for_update().get(pk=links[0].person_id)
+        if person.organization_id != company.organization_id or person.client_type != "private":
+            raise ValueError("Некорректная связь ИП")
+        profile, _ = ClientCRMProfile.objects.get_or_create(client=person)
+        if profile.merged_into_id or profile.onec_ref:
+            raise ValueError("Источник физлица ИП требует проверки")
     else:
-        if middle_name and not profile.middle_name:
-            profile.middle_name = middle_name
-        if candidate.birth_date and not profile.birth_date:
-            profile.birth_date = candidate.birth_date
-        if profile.source == ClientCRMProfile.SOURCE_MANUAL:
-            profile.source = ClientCRMProfile.SOURCE_ONEC_IP
-        profile.save()
-    _sync_contacts(person, candidate)
-    ClientCompanyLink.objects.update_or_create(
-        company=company,
-        person=person,
-        defaults={
-            "is_primary": True,
-            "source": ClientCompanyLink.SOURCE_ONEC_IP,
-            "source_reference": candidate.source_ref,
-            "automatic": True,
-        },
-    )
+        if not allow_create:
+            propose(candidate, company, company.crm_profile, "ip_person",
+                source_values(candidate)["ip_person"])
+            return None
+        if (company.client_type != "legal" or company.crm_profile.legal_form != "ip"
+                or ClientCompanyLink.objects.filter(company=company).exists()):
+            raise ValueError("Сначала проверьте существующие связи ИП")
+        last, first, middle = _split_person_name((candidate.payload or {}).get("fio") or candidate.name)
+        name = " ".join(filter(None, (last, first, middle)))
+        phones = _phone_match_values((candidate.payload or {}).get("phones", []))
+        if candidate.phone:
+            phones.add(normalize_phone(candidate.phone))
+        people = Client.objects.filter(organization=candidate.organization, client_type="private")
+        contact_match = ClientContact.objects.filter(client__in=people, kind="phone", match_value__in=phones).exists()
+        scalar_match = any(normalize_phone(value) in phones for value in people.exclude(phone__isnull=True).exclude(phone="").values_list("phone", flat=True))
+        if contact_match or scalar_match or people.filter(name__iexact=name).exists():
+            raise ValueError("Совпадение ФИО или телефона не подтверждает личность ИП; требуется ручная связь")
+        person = Client.objects.create(organization=candidate.organization, client_type="private", name=name or candidate.name)
+        profile = ClientCRMProfile.objects.create(client=person, source=ClientCRMProfile.SOURCE_ONEC_IP)
+        ClientCompanyLink.objects.create(company=company, person=person, is_primary=True,
+            source=ClientCompanyLink.SOURCE_ONEC_IP, source_reference=candidate.source_ref, automatic=True)
+        created = True
+    reconcile(candidate, person, profile, created=created, person=True)
     return person
 
 
 @transaction.atomic
 def apply_candidate(candidate):
-    candidate = ClientImportCandidate.objects.select_for_update().select_related(
-        "organization", "matched_client"
-    ).get(pk=candidate.pk)
-    if candidate.status not in {
-        ClientImportCandidate.STATUS_READY,
-        ClientImportCandidate.STATUS_IMPORTED,
-    }:
+    from .client_import_review import reconcile, lock_clients
+    # All paths use the same order; stale caller instances never supply values.
+    org_id = ClientImportCandidate.objects.values_list("organization_id", flat=True).get(pk=candidate.pk)
+    Organization.objects.select_for_update().get(pk=org_id)
+    candidate = ClientImportCandidate.objects.get(pk=candidate.pk, organization_id=org_id)
+    locked = lock_clients(candidate)
+    candidate = ClientImportCandidate.objects.select_for_update().get(pk=candidate.pk, organization_id=org_id)
+    if (candidate.status not in {ClientImportCandidate.STATUS_READY, ClientImportCandidate.STATUS_IMPORTED}
+            or not candidate.source_available or not candidate.source_ref
+            or candidate.name.casefold().strip() in SYSTEM_NAMES):
         raise ValueError("Карточка требует ручной проверки")
-
+    linked = ClientCRMProfile.objects.filter(onec_ref=candidate.source_ref).first()
+    if linked and (linked.client_id != candidate.matched_client_id or linked.merged_into_id):
+        raise ValueError("Идентификатор 1С уже связан с другой карточкой")
     kind = candidate.effective_kind
-    candidate_phone = (
-        canonical_phone_value(candidate.phone)
-        if candidate.phone
-        else None
-    )
-    client = candidate.matched_client
-    already_linked_to_same_onec = False
-    preserve_manual_name = False
-    if client is None:
-        client_type = "private" if kind == ClientImportCandidate.KIND_PRIVATE else "legal"
-        last_name = first_name = middle_name = ""
-        if client_type == "private":
-            last_name, first_name, middle_name = _split_person_name(candidate.name)
-        client = Client.objects.create(
-            organization=candidate.organization,
-            client_type=client_type,
-            name=candidate.name,
-            company_name=candidate.name if client_type == "legal" else None,
-            first_name=first_name or None,
-            last_name=last_name or None,
-            phone=candidate_phone,
-            email=candidate.email or None,
-            inn=candidate.inn or None,
-        )
+    created = candidate.matched_client_id is None
+    if created:
+        # Recheck identity after staging: another import/manual edit may have won.
+        matches, _reason = _match_clients(candidate.organization, kind, candidate.inn,
+            (candidate.payload or {}).get("phones", []), candidate.source_ref)
+        if matches and candidate.resolution == ClientImportCandidate.RESOLUTION_AUTO:
+            raise ValueError("Сопоставление изменилось; требуется повторная проверка")
+        if candidate.resolution == ClientImportCandidate.RESOLUTION_AUTO:
+            if kind == "legal" and not candidate.inn:
+                raise ValueError("У юридического лица не заполнен ИНН")
+            if (kind == "private" and not candidate.phone and not _phone_match_values((candidate.payload or {}).get("phones", []))
+                    and _has_private_name_conflict(candidate.organization, candidate.name)):
+                raise ValueError("Совпадение имени требует проверки")
+        if not candidate.name or len(candidate.name) > Client._meta.get_field("name").max_length:
+            raise ValueError("Некорректное имя для новой карточки")
+        client = Client.objects.create(organization_id=org_id,
+            client_type="private" if kind == "private" else "legal", name=candidate.name)
     else:
-        linked_profile = ClientCRMProfile.objects.filter(
-            client=client,
-            onec_ref=candidate.source_ref,
-        ).only("onec_name").first()
-        already_linked_to_same_onec = linked_profile is not None
-        preserve_manual_name = bool(
-            linked_profile and linked_profile.onec_name
-            and client.name.strip() != linked_profile.onec_name.strip()
-        )
-        if already_linked_to_same_onec:
-            if not preserve_manual_name:
-                client.name = candidate.name or client.name
-            client.client_type = (
-                "private"
-                if kind == ClientImportCandidate.KIND_PRIVATE
-                else "legal"
-            )
-            if kind == ClientImportCandidate.KIND_PRIVATE:
-                if not preserve_manual_name:
-                    last_name, first_name, _middle_name = _split_person_name(candidate.name)
-                    client.first_name = first_name or None
-                    client.last_name = last_name or None
-                client.company_name = None
-            else:
-                client.first_name = None
-                client.last_name = None
-                client.company_name = candidate.legal_name or candidate.name or None
-            client.inn = candidate.inn or None
-            client.phone = candidate_phone
-            client.email = candidate.email or None
-        else:
-            if candidate.inn and not client.inn:
-                client.inn = candidate.inn
-            if not client.phone and candidate_phone:
-                client.phone = candidate_phone
-            if not client.email and candidate.email:
-                client.email = candidate.email
-        client.save()
-
+        client = locked[candidate.matched_client_id]
+        if client.organization_id != org_id:
+            raise ValueError("Карточка вне организации источника")
+        previous = ClientCRMProfile.objects.select_for_update().filter(client=client).first()
+        if previous and (previous.merged_into_id or previous.onec_ref and previous.onec_ref != candidate.source_ref):
+            raise ValueError("Идентификатор 1С или карточка изменились")
+        if not linked:
+            # An unlinked phone/name match is insufficient evidence of identity.
+            if not (kind in ("legal", "ip") and client.client_type == "legal"
+                    and candidate.inn and client.inn == candidate.inn):
+                raise ValueError("Личность клиента не подтверждена источником")
+            matches, reason = _match_clients(candidate.organization, kind, candidate.inn, [], candidate.source_ref)
+            if reason != "ИНН" or [item.pk for item in matches] != [client.pk]:
+                raise ValueError("Сопоставление по ИНН неоднозначно")
     profile, _ = ClientCRMProfile.objects.get_or_create(client=client)
-    profile.legal_form = (
-        ClientCRMProfile.LEGAL_FORM_IP
-        if kind == ClientImportCandidate.KIND_IP
-        else ClientCRMProfile.LEGAL_FORM_ENTITY
-        if kind == ClientImportCandidate.KIND_LEGAL
-        else ClientCRMProfile.LEGAL_FORM_NONE
-    )
-    if already_linked_to_same_onec:
-        if not preserve_manual_name:
-            profile.middle_name = (
-                _split_person_name(candidate.name)[2]
-                if client.client_type == "private"
-                else ""
-            )
-        profile.birth_date = candidate.birth_date
-        profile.legal_name = candidate.legal_name
-        profile.kpp = candidate.kpp
-    else:
-        profile.middle_name = profile.middle_name or (
-            _split_person_name(candidate.name)[2]
-            if client.client_type == "private"
-            else ""
-        )
-        profile.birth_date = candidate.birth_date or profile.birth_date
-        profile.legal_name = candidate.legal_name or profile.legal_name
-        profile.kpp = candidate.kpp or profile.kpp
     profile.onec_ref = candidate.source_ref
     profile.onec_code = candidate.source_code
     profile.onec_name = candidate.name
     profile.source = ClientCRMProfile.SOURCE_ONEC
     profile.last_synced_at = timezone.now()
-    profile.save()
-    _sync_contacts(client, candidate)
-
-    if kind == ClientImportCandidate.KIND_IP:
-        _find_or_create_ip_person(client, candidate)
-    elif already_linked_to_same_onec:
-        ClientCompanyLink.objects.filter(
-            company=client,
-            source=ClientCompanyLink.SOURCE_ONEC_IP,
-            source_reference=candidate.source_ref,
-            automatic=True,
-        ).delete()
-
+    profile.save(update_fields=["onec_ref", "onec_code", "onec_name", "source", "last_synced_at", "updated_at"])
     candidate.matched_client = client
+    candidate.save(update_fields=["matched_client"])
+    reconcile(candidate, client, profile, created=created)
+    if kind == ClientImportCandidate.KIND_IP:
+        _find_or_create_ip_person(client, candidate, allow_create=created)
+    else:
+        from .client_crm_models import ClientImportProposal
+        ClientImportProposal.objects.filter(candidate=candidate, state="pending").exclude(client=client).update(state="stale")
+    # Changed source type never removes a relationship implicitly.
     candidate.status = ClientImportCandidate.STATUS_IMPORTED
     candidate.reason = ""
     candidate.applied_at = timezone.now()
-    candidate.save(update_fields=["matched_client", "status", "reason", "applied_at", "updated_at"])
+    candidate.save(update_fields=["status", "reason", "applied_at", "updated_at"])
     return client
 
 

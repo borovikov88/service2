@@ -120,11 +120,24 @@ class ContactPeopleTests(TestCase):
         target.refresh_from_db(); self.assertEqual(target.phone_type, "personal")
 
     def test_import_preserves_phone_type_and_directory_source(self):
-        from types import SimpleNamespace
-        from pool_service.client_crm_import import _sync_contacts
+        from pool_service.client_crm_import import apply_candidate
+        from pool_service.client_crm_models import ClientCRMProfile, ClientImportCandidate
         row = self.save()
-        candidate = SimpleNamespace(source_ref="synthetic-ref", payload={"phones":[{"value":row.value}]})
-        _sync_contacts(self.person, candidate)
-        row.refresh_from_db(); self.assertEqual(row.phone_type,"personal")
-        candidate.payload = {}; _sync_contacts(self.person,candidate)
-        self.assertTrue(ClientContact.objects.filter(pk=row.pk).exists())
+        self.person.refresh_from_db()
+        profile, _ = ClientCRMProfile.objects.get_or_create(client=self.person)
+        profile.onec_ref = "99999999-1111-2222-3333-444444444444"
+        profile.save(update_fields=["onec_ref"])
+        candidate = ClientImportCandidate.objects.create(organization=self.org, source_ref=profile.onec_ref,
+            source_kind="private", name=self.person.name, phone=row.value, status="imported",
+            matched_client=self.person, applied_at=timezone.now(), payload={"phones":[{"value":row.value}]})
+        before = list(ClientContact.objects.filter(client=self.person).order_by("pk").values())
+        apply_candidate(candidate)
+        row.refresh_from_db()
+        self.assertEqual(row.phone_type, "personal")
+        self.assertEqual(list(ClientContact.objects.filter(client=self.person).order_by("pk").values()), before)
+        candidate.payload = {}; candidate.phone = ""
+        candidate.save(update_fields=["payload", "phone"])
+        apply_candidate(candidate)
+        self.person.refresh_from_db()
+        self.assertEqual(self.person.phone, row.value)
+        self.assertEqual(list(ClientContact.objects.filter(client=self.person).order_by("pk").values()), before)

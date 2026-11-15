@@ -1,18 +1,23 @@
 {% extends 'pool_service/base.html' %}
 {% load static %}
 
-{% block title %}CRM · {{ brand_name }}{% endblock %}
+{% block title %}Сделки · {{ brand_name }}{% endblock %}
 
 {% block extra_head %}
-  <link rel="stylesheet" href="{% static 'pool_service/crm_live/workspace.css' %}?v=20261101-compact">
-  <script src="{% static 'pool_service/crm_live/workspace.js' %}?v=20261101-cursor" defer></script>
+  <link rel="stylesheet" href="{% static 'pool_service/crm_live/workspace.css' %}?v=20261115-simple">
+  <script src="{% static 'pool_service/crm_live/workspace.js' %}?v=20261115-simple" defer></script>
 {% endblock %}
 
 {% block content %}
 <section class="crm-live" id="crm-live" aria-label="Рабочее пространство CRM">
-  <nav aria-label="CRM"><a href="{% url 'crm_object_needs' %}?org_id={{ crm_bootstrap.organization_id }}">Потребности объектов</a></nav>
+  <nav class="crm-section-nav" aria-label="Разделы CRM">
+    <a href="{% url 'crm_live_leads' %}?org_id={{ crm_bootstrap.organization_id }}">Лиды</a>
+    <span aria-current="page">Сделки</span>
+    <a href="{% url 'clients_list' %}">Контакты</a>
+    <details class="crm-section-more"><summary>Ещё</summary><a href="{% url 'crm_object_needs' %}?org_id={{ crm_bootstrap.organization_id }}">Потребности объектов</a></details>
+  </nav>
   <div class="crm-live-heading">
-    <h1>CRM</h1>
+    <h1>Сделки</h1>
     <nav class="crm-live-pipelines" id="crm-live-pipelines" aria-label="Воронки CRM"></nav>
     <button class="crm-live-button crm-live-button-primary" type="button" data-action="create" id="crm-live-create" hidden><span aria-hidden="true">+</span> Новая сделка</button>
   </div>
@@ -25,7 +30,7 @@
     <label class="crm-live-owner"><span>Ответственный</span><select id="crm-live-owner"><option value="all">Все сделки</option><option value="me">Мои сделки</option></select></label>
     <div class="crm-live-views" role="group" aria-label="Вид сделок">
       <button type="button" data-view="kanban" aria-pressed="true"><span aria-hidden="true">▥</span> Канбан</button>
-      <button type="button" data-view="table" aria-pressed="false"><span aria-hidden="true">☷</span> Таблица</button>
+      <button type="button" data-view="table" aria-pressed="false"><span aria-hidden="true">☷</span> Список</button>
     </div>
     <button type="button" class="crm-live-refresh" id="crm-live-refresh" aria-label="Обновить сделки" title="Обновить сделки">↻</button>
   </div>
@@ -53,7 +58,6 @@
     <button type="button" class="crm-live-button" data-action="page-next" id="crm-live-page-next">Далее →</button>
   </nav>
   <p class="crm-live-help" id="crm-live-help">Перетащите карточку мышкой в другой этап или измените этап внутри карточки.</p>
-  <p class="crm-live-muted">Живой список: порции загружаются последовательно. Временные фильтры фиксируются на начало загрузки; обновление пересчитывает их. После изменений связанных данных обновите доску.</p>
   <noscript><div class="crm-live-empty"><h2>Для работы CRM нужен JavaScript</h2><p>Включите JavaScript в браузере и обновите страницу.</p></div></noscript>
 
   <dialog class="crm-live-dialog" id="crm-live-dialog" aria-labelledby="crm-live-dialog-title">

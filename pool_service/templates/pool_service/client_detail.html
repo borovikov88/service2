@@ -11,7 +11,7 @@
         <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
           <h4 class="fw-bold mb-0">{{ client.name }}</h4>
           <span class="badge text-bg-secondary">{{ client_kind_label }}</span>
-          {% if supplier_role.active %}<span class="badge text-bg-info" data-supplier-badge>Поставщик</span>{% endif %}
+          {% for role in contact_roles %}{% if role.active %}<span class="badge text-bg-info" data-contact-category="{{ role.code }}" {% if role.code == 'supplier' %}data-supplier-badge{% endif %}>{{ role.label }}</span>{% endif %}{% endfor %}
           {% if profile and profile.source == "onec" %}
             <span class="badge text-bg-primary">1С</span>
           {% endif %}
@@ -29,12 +29,21 @@
       </div>
       <div class="d-flex flex-wrap gap-2">
         {% if can_manage and not profile.merged_into_id %}
-        <form method="post" data-supplier-form>{% csrf_token %}
-          <input type="hidden" name="action" value="set_supplier">
-          <input type="hidden" name="revision" value="{{ supplier_role.revision|default:0 }}">
-          <input type="hidden" name="enabled" value="{% if supplier_role.active %}0{% else %}1{% endif %}">
-          <button class="btn btn-outline-secondary btn-sm" type="submit">{% if supplier_role.active %}Снять роль поставщика{% else %}Отметить поставщиком{% endif %}</button>
-        </form>
+        <details class="border rounded-3 p-2" data-contact-categories>
+          <summary class="small fw-semibold">Категории контакта</summary>
+          <p class="text-muted small mt-2 mb-2">Можно выбрать несколько. Категория «Личный» не меняет доступ к карточке.</p>
+          <div class="d-flex flex-wrap gap-2">
+          {% for role in contact_roles %}
+            <form method="post" {% if role.code == 'supplier' %}data-supplier-form{% endif %}>{% csrf_token %}
+              <input type="hidden" name="action" value="set_contact_role">
+              <input type="hidden" name="role" value="{{ role.code }}">
+              <input type="hidden" name="revision" value="{{ role.revision }}">
+              <input type="hidden" name="enabled" value="{% if role.active %}0{% else %}1{% endif %}">
+              <button class="btn btn-sm {% if role.active %}btn-primary{% else %}btn-outline-secondary{% endif %}" type="submit" aria-pressed="{% if role.active %}true{% else %}false{% endif %}" title="{% if role.active %}Снять категорию{% else %}Добавить категорию{% endif %}">{{ role.label }}{% if role.active %} ✓{% endif %}</button>
+            </form>
+          {% endfor %}
+          </div>
+        </details>
         {% endif %}
         {% if client.phone %}
           <a class="btn btn-outline-primary btn-sm" href="tel:{{ client.phone }}">
@@ -50,7 +59,7 @@
           </a>
         {% endif %}
         <a class="btn btn-outline-secondary btn-sm" href="{% url 'clients_list' %}">
-          <i class="bi bi-arrow-left me-1"></i>К клиентам
+          <i class="bi bi-arrow-left me-1"></i>К контактам
         </a>
       </div>
     </div>

@@ -41,12 +41,13 @@ const {readFileSync}=require('node:fs');
  }
  // Escape cancellation must not leave a visible target or write anything.
  await cards.first().scrollIntoViewIfNeeded();let b=await cards.first().boundingBox();await page.mouse.move(b.x+80,b.y+30);await page.mouse.down();await page.mouse.move(b.x+100,b.y+45,{steps:5});await zone.waitFor({state:'visible'});await page.keyboard.press('Escape');await page.mouse.up();await zone.waitFor({state:'hidden'});
+ await page.getByRole('button',{name:'Спам и удалённые',exact:true}).click();
  const deleted=page.locator(`[data-lead-id="${f.deletedId}"]`);await deleted.scrollIntoViewIfNeeded();await deleted.locator('button').first().click();
  await page.getByRole('button',{name:'Создать сделку',exact:true}).click();await page.getByText('При подтверждении лид будет восстановлен и конвертирован. История удаления сохранится.').waitFor();await page.locator('#lead-close').click();
  await page.setViewportSize({width:390,height:844});await page.evaluate(()=>document.documentElement.setAttribute('data-theme','dark'));
  await cards.last().scrollIntoViewIfNeeded();await cards.last().locator('button').first().tap();await page.getByRole('button',{name:'Создать сделку',exact:true}).tap();await page.getByLabel('Потребность',{exact:true}).waitFor();
- await page.screenshot({path:'/tmp/crm-kanban-mobile.png',fullPage:true});await page.locator('#lead-close').click();
- await page.setViewportSize({width:1440,height:800});await page.evaluate(()=>document.documentElement.setAttribute('data-theme','light'));await cards.last().scrollIntoViewIfNeeded();await page.screenshot({path:'/tmp/crm-kanban-desktop.png',fullPage:true});
+ if(process.env.CRM_SYNTHETIC_SCREENSHOTS)await page.screenshot({path:process.env.CRM_SYNTHETIC_SCREENSHOTS+'/crm-kanban-mobile.png',fullPage:true});await page.locator('#lead-close').click();
+ await page.setViewportSize({width:1440,height:800});await page.evaluate(()=>document.documentElement.setAttribute('data-theme','light'));await cards.last().scrollIntoViewIfNeeded();if(process.env.CRM_SYNTHETIC_SCREENSHOTS)await page.screenshot({path:process.env.CRM_SYNTHETIC_SCREENSHOTS+'/crm-kanban-desktop.png',fullPage:true});
  assert.equal(writes,0);assert.deepEqual(errors,[]);console.log('Long board: 18 cards, first 3 + lower + repeat, real drag/drop, Escape, deleted, mobile/dark and no cancellation writes PASS');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

@@ -5,6 +5,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django import forms
+from django.db import transaction
 from django.db.models import Count, Q
 from django.db.models.deletion import ProtectedError
 from django.http import HttpResponseForbidden, JsonResponse
@@ -32,7 +33,7 @@ from .phone_utils import format_phone
 from .client_merge import merge_clients, merge_suggestions
 from .communication_models import CommunicationAccess, PhoneCall
 from .call_markers import annotate_missed_call_callbacks
-from .models import Client, CrmItem, OrganizationAccess, Pool, ServiceTask
+from .models import Client, CrmItem, Organization, OrganizationAccess, Pool, ServiceTask
 from .services.task_waiting_schedule import waiting_schedule_metadata
 from .services.crm_permissions import crm_items_for_user
 from .services.call_privacy import visible_calls_page
@@ -98,7 +99,12 @@ def _user_label(user):
 
 
 @login_required
+@transaction.atomic
 def client_detail(request, client_id):
+    if request.method == "POST":
+        org_id = Client.objects.filter(pk=client_id).values_list("organization_id", flat=True).first()
+        if org_id:
+            Organization.objects.select_for_update().get(pk=org_id)
     client = get_object_or_404(
         Client.objects.select_related("organization"),
         pk=client_id,
@@ -224,11 +230,12 @@ def client_detail(request, client_id):
                 messages.success(request, "Объект клиента удалён.")
             return redirect(card_url(client.id, "objects"))
 
-        if action == "set_supplier":
-            from .services.contact_roles import set_supplier
+        if action in {"set_supplier", "set_contact_role"}:
+            from .services.contact_roles import set_role
             from django.core.exceptions import PermissionDenied, ValidationError
             try:
-                set_supplier(request.user, client.pk, request.POST.get("enabled"), request.POST.get("revision"))
+                role_code = "supplier" if action == "set_supplier" else request.POST.get("role")
+                set_role(request.user, client.pk, role_code, request.POST.get("enabled"), request.POST.get("revision"))
             except PermissionDenied:
                 return HttpResponseForbidden()
             except ValidationError:
@@ -495,6 +502,11 @@ def client_detail(request, client_id):
     from .services.crm_recurring_effective import attach_terms
     attach_terms(pools, timezone.localdate(), timezone.localdate())
     personal_call_state = contact_state(request.user, client) if client.client_type == "private" and settings_allowed(request.user, client.organization) else None
+    roles_by_code = {role.role: role for role in ClientBusinessRole.objects.filter(client=client)}
+    contact_roles = [{"code": code, "label": label,
+        "active": bool(roles_by_code.get(code) and roles_by_code[code].active),
+        "revision": roles_by_code[code].revision if code in roles_by_code else 0,
+    } for code, label in ClientBusinessRole.ROLE_CHOICES]
     return render(
         request,
         "pool_service/client_detail.html",
@@ -521,7 +533,8 @@ def client_detail(request, client_id):
             "calls_total": calls_total,
             "can_view_calls": can_view_calls,
             "can_manage": can_manage,
-            "supplier_role": ClientBusinessRole.objects.filter(client=client, role="supplier").first(),
+            "supplier_role": roles_by_code.get("supplier"),
+            "contact_roles": contact_roles,
             "can_view_object_finance": bool(
                 request.user.is_superuser
                 or (org_roles & {"owner", "admin", "manager"})
@@ -602,6 +615,8 @@ def client_onec_import(request):
             try:
                 candidate_id = int(request.POST.get("candidate_id") or 0)
             except (TypeError, ValueError):
+                return HttpResponseForbidden()
+            if not ClientImportCandidate.objects.filter(pk=candidate_id, organization_id=organization_id).exists():
                 return HttpResponseForbidden()
             resolution = (request.POST.get("resolution") or "").strip()
             try:
