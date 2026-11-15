@@ -43,6 +43,55 @@ class IntegrationFixture(LeadFixture):
 
 
 class OnecCrmIntegrationTests(IntegrationFixture, TestCase):
+    def test_company_pair_without_link_blocks_type_accept_and_reparent(self):
+        from django.forms import modelform_factory
+        company = Client.objects.create(organization=self.org, client_type='legal',
+            name='Synthetic standalone company')
+        profile = ClientCRMProfile.objects.create(client=company, source='onec',
+            onec_ref='77777777-1111-2222-3333-444444444444')
+        lead = self.create(client_id=company.pk, contact_id=self.client.pk)
+        self.assertFalse(ClientCompanyLink.objects.exists())
+        candidate = ClientImportCandidate.objects.create(organization=self.org,
+            source_ref=profile.onec_ref, source_kind='private', name='Synthetic proposed person',
+            status='imported', matched_client=company, applied_at=timezone.now())
+        apply_candidate(candidate)
+        proposal = ClientImportProposal.objects.get(candidate=candidate, field='classification')
+        with self.assertRaises(ValidationError):
+            self.accept(proposal)
+        company.refresh_from_db(); lead.refresh_from_db(); proposal.refresh_from_db()
+        self.assertEqual(company.client_type, 'legal')
+        self.assertEqual((lead.client_id, lead.contact_id), (company.pk, self.client.pk))
+        self.assertEqual(proposal.state, 'pending')
+        lead.full_clean()
+        foreign = Organization.objects.create(name='Synthetic other scope')
+        form_class = modelform_factory(Client, fields=['client_type', 'name', 'organization'])
+        for kind, org_id, error in [('private', self.org.pk, 'client_type'),
+                ('legal', foreign.pk, 'organization')]:
+            company.refresh_from_db()
+            form = form_class({'client_type': kind, 'name': company.name, 'organization': org_id}, instance=company)
+            self.assertFalse(form.is_valid()); self.assertIn(error, form.errors)
+
+    def test_deal_company_pair_remains_protected_after_manual_link_removed(self):
+        lead = self.create()
+        result = self.command('lead.qualify', {'deals': [self.deal(customer={
+            'contact': {'id': self.client.pk}, 'company': {'name': 'Synthetic standalone deal company'}})]}, lead)
+        deal = CrmDeal.objects.get(pk=result['deal_ids'][0])
+        company = deal.client
+        ClientCompanyLink.objects.filter(company=company).delete()
+        lead.refresh_from_db(); lead.contact = None; lead.save(update_fields=['contact'])
+        profile = ClientCRMProfile.objects.create(client=company, source='onec',
+            onec_ref='88888888-1111-2222-3333-444444444444')
+        candidate = ClientImportCandidate.objects.create(organization=self.org,
+            source_ref=profile.onec_ref, source_kind='private', name='Synthetic proposed person',
+            status='imported', matched_client=company, applied_at=timezone.now())
+        apply_candidate(candidate)
+        with self.assertRaises(ValidationError):
+            self.accept(ClientImportProposal.objects.get(candidate=candidate, field='classification'))
+        company.refresh_from_db(); deal.refresh_from_db()
+        self.assertEqual(company.client_type, 'legal')
+        self.assertEqual((deal.client_id, deal.contact_id), (company.pk, self.client.pk))
+        deal.full_clean()
+
     def test_selected_pair_survives_import_blank_source_and_field_accept(self):
         self.client.phone = '+12025550101'
         self.client.save(update_fields=['phone'])

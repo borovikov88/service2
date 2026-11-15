@@ -172,8 +172,16 @@ class Client(models.Model):
         if not changed:
             return
         from .crm_commercial_models import CrmLead, CrmDeal
-        leads = CrmLead.objects.using(using).filter(contact_id=self.pk)
-        deals = CrmDeal.objects.using(using).filter(contact_id=self.pk)
+        # A selected company/person pair need not have a ClientCompanyLink.
+        # Protect the CRM references themselves, including primary-client scope.
+        references = models.Q(contact_id=self.pk)
+        if "organization_id" in changed:
+            references |= models.Q(client_id=self.pk)
+        if "client_type" in changed and proposed_type == "private":
+            references |= (models.Q(client_id=self.pk, contact_id__isnull=False)
+                & ~models.Q(contact_id=self.pk))
+        leads = CrmLead.objects.using(using).filter(references)
+        deals = CrmDeal.objects.using(using).filter(references)
         if lock:
             leads, deals = leads.select_for_update(), deals.select_for_update()
         if leads.exists() or deals.exists():
