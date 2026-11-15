@@ -38,6 +38,11 @@ selection has a separate CI step. MySQL CI includes the new CRM regressions and
 the reviewed 1C integration/concurrency tests. Main's local Python-only 1C review
 browser harness is unchanged; its server integration is included.
 
+The existing combined Chromium gate reached its five-minute limit in the first
+release run. Shared-workspace scenarios and commercial CRM scenarios now run in
+separate bounded steps with per-test output. Every original test module remains
+enabled, and each step retains the five-minute limit.
+
 Publication must use the existing PR checks and protected Passenger deployment.
 The unchanged deployment path validates exact SHA and preflight, verifies a
 fresh private database backup before migrations, collects static assets and
