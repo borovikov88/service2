@@ -52,14 +52,18 @@ const {chromium} = require('playwright');
     const responseFor = path => page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === path);
     const saveDirectory = async dialog => {
       const responseIndex = directoryResponses.length;
-      const response = responseFor(f.createPath);
-      await dialog.getByRole('button', {name: 'Сохранить', exact: true}).click();
-      const saved = await response;
+      // Saving reloads the current directory URL. Waiting for that URL alone
+      // resolves against the old document and can race the next navigation.
+      const [saved] = await Promise.all([
+        responseFor(f.createPath),
+        page.waitForEvent('load'),
+        dialog.getByRole('button', {name: 'Сохранить', exact: true}).click(),
+      ]);
       const captured = directoryResponses[responseIndex];
       assert.equal(saved.status(), 200, JSON.stringify(captured?.body));
       assert.equal(captured.status, 200);
       const result = captured.body;
-      await page.waitForURL(url => url.pathname === f.directory);
+      assert.equal(new URL(page.url()).pathname, f.directory);
       return result;
     };
 
