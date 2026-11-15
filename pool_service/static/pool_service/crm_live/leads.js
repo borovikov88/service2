@@ -89,6 +89,20 @@
       selected: null, detail: null, loading: false, sequence: 0, detailSequence: 0, listController: null,
       showArchiveQueues: new URL(win.location.href).searchParams.get("queues") === "all"};
     const el = (tag, cls, text) => { const node = doc.createElement(tag); if (cls) node.className = cls; if (text != null) node.textContent = text; return node; };
+    const icon = (name) => {
+      const paths = {
+        user: ["M20 21v-2a7 7 0 0 0-14 0v2", "M17 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0"],
+        phone: ["M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 2 .7 2.9a2 2 0 0 1-.5 2.1L8 10a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.5c.9.3 1.9.6 2.9.7a2 2 0 0 1 1.7 2Z"],
+        message: ["M21 15a3 3 0 0 1-3 3H8l-5 4V6a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3Z", "M7 8h10M7 12h6"],
+        clock: ["M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0", "M12 6v6l4 2"],
+        check: ["M20 6 9 17l-5-5"],
+        note: ["M8 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2h-3", "M8 2h8v4H8zM7 11h10M7 16h7"]
+      };
+      const svg = doc.createElementNS("http://www.w3.org/2000/svg", "svg");
+      for (const [key, value] of Object.entries({viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", focusable: "false", class: "crm-icon"})) svg.setAttribute(key, value);
+      for (const value of paths[name] || paths.note) { const path = doc.createElementNS("http://www.w3.org/2000/svg", "path"); path.setAttribute("d", value); svg.append(path); }
+      return svg;
+    };
     const button = (text, action, primary = false) => { const node = el("button", "crm-live-button" + (primary ? " crm-live-button-primary" : ""), text); node.type = "button"; if (action) node.addEventListener("click", action); return node; };
     const dateText = (value) => value ? new Intl.DateTimeFormat("ru-RU", {timeZone: initial.timezone, dateStyle: "medium", timeStyle: "short"}).format(new Date(value)) : "Срок не указан";
     const notice = (text) => { byId("lead-notice").textContent = text; byId("lead-notice").hidden = !text; };
@@ -187,15 +201,27 @@
     }
     function card(lead) {
       const row = el("article", "lead-row"); row.dataset.leadId = lead.id;
-      const title = el("div"), middle = el("div"), next = el("div");
-      title.append(button(lead.client?.name || lead.source?.contact?.name || lead.source?.contact_name || lead.source?.phone || lead.title,()=>openLead(lead.id)));
-      if(lead.needs_review){const mark=el("span","lead-review-marker","•");mark.title="Есть обращение для разбора";mark.setAttribute("aria-label","Есть обращение для разбора");title.append(mark);}
+      const title = el("div", "lead-card-main"), middle = el("div", "lead-card-owner"), next = el("footer", "lead-card-task");
+      const heading = button(displayTitle(lead), () => openLead(lead.id)); heading.className = "lead-card-heading"; title.append(heading);
+      if(lead.needs_review){const mark=el("span","lead-review-marker");mark.title="Есть обращение для разбора";mark.setAttribute("aria-label","Есть обращение для разбора");title.append(mark);}
+      const customer = lead.client?.name || lead.source?.contact?.name || lead.source?.contact_name || lead.source?.phone;
+      if (customer) title.append(el("p", "lead-card-customer", customer));
       if(lead.need)title.append(el("p","lead-card-need",lead.need.slice(0,160)));
-      title.append(el("p","lead-date",[lead.source?.label,lead.source?.occurred_at?dateText(lead.source.occurred_at):lead.source?.received_at?dateText(lead.source.received_at)+" · время события неизвестно":""].filter(Boolean).join(" · ")));
-      middle.append(el("p","",lead.assignee?.name || "Не назначен"));
+      const meta = el("div", "lead-card-meta"), source = el("span", "lead-card-source");
+      source.append(icon(lead.source?.type === "call" ? "phone" : lead.source?.type === "message" ? "message" : "note"), el("span", "", lead.source?.label || "Обращение")); meta.append(source);
+      const received = lead.source?.occurred_at || lead.source?.received_at;
+      if (received) { const stamp = el("span", "lead-card-received", lead.source.occurred_at ? dateText(received) : "Получено: " + dateText(received) + " · время события неизвестно"); meta.append(stamp); }
+      title.append(meta);
+      const avatar = el("span", "lead-card-avatar"); avatar.setAttribute("aria-hidden", "true");
+      if (lead.assignee?.name) avatar.textContent = lead.assignee.name.trim().split(/\s+/).slice(0, 2).map(part => part[0]).join("").toLocaleUpperCase("ru-RU"); else avatar.append(icon("user"));
+      middle.title = "Ответственный"; middle.append(avatar, el("span", "lead-card-owner-name", lead.assignee?.name || "Не назначен"));
       const action = lead.next_action;
-      next.append(el("p", "", action?.restricted ? "Следующий шаг ограничен доступом" : action?.completed ? "Предыдущий шаг завершён" : action?.title || (lead.can_take ? "Можно взять в работу" : "Следующий шаг не указан")));
-      if (action?.due_at && !action.restricted) next.append(el("p", "lead-date", dateText(action.due_at)));
+      const overdue = action?.due_at && !action.restricted && !action.completed && !action.waiting && new Date(action.due_at).getTime() < Date.now();
+      next.dataset.state = action?.restricted ? "restricted" : action?.completed ? "completed" : action?.waiting ? "waiting" : overdue ? "overdue" : action?.title ? "planned" : "missing";
+      const taskCopy = el("div", "lead-card-task-copy");
+      taskCopy.append(el("p", "lead-card-task-title", action?.restricted ? "Следующий шаг ограничен доступом" : action?.completed ? "Предыдущий шаг завершён" : action?.title || (lead.can_take ? "Можно взять в работу" : "Следующий шаг не указан")));
+      if (action?.due_at && !action.restricted) taskCopy.append(el("p", "lead-card-due" + (overdue ? " is-overdue" : ""), (overdue ? "Просрочено · " : "") + dateText(action.due_at)));
+      next.append(icon(action?.completed ? "check" : "clock"), taskCopy);
       row.append(title, middle, next);
       const targets = moveTargets(lead);
       if (targets.length || lead.can_qualify) {
@@ -230,7 +256,8 @@
         if (!state.showArchiveQueues && ["spam","deleted"].includes(column.key)) continue;
         const section = el("section", "lead-column"); section.dataset.column = column.key;
         section.setAttribute("aria-label", column.label);
-        section.append(el("h2", "", column.label + " · " + column.total));
+        const heading = el("h2", "lead-column-heading"); heading.setAttribute("aria-label", column.label + " · " + column.total);
+        heading.append(el("span", "lead-column-label", column.label), el("span", "lead-column-count", String(column.total))); section.append(heading);
         const cards = el("div", "lead-column-cards");
         if (!column.leads.length) cards.append(el("p", "lead-empty", state.q || state.status ? "Нет совпадений" : "Пока пусто"));
         for (const lead of column.leads) cards.append(card(lead));
@@ -238,8 +265,8 @@
         section.addEventListener("dragover", (event) => { if (dragged && !state.loading && moveTargets(dragged).includes(column.key)) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; section.classList.add("is-drop-target"); } });
         section.addEventListener("dragleave", (event) => { if (!section.contains(event.relatedTarget)) section.classList.remove("is-drop-target"); });
         section.addEventListener("drop", (event) => { event.preventDefault(); section.classList.remove("is-drop-target"); const lead = dragged; dragged = null; conversionDrop.hidden=true; if (lead && !state.loading && moveTargets(lead).includes(column.key)) moveLead(lead, column.key); });
-        section.append(el("p", "lead-column-progress", `Загружено ${column.leads.length} из ${column.total}`));
         if (column.cursor) {
+          section.append(el("p", "lead-column-progress", `Загружено ${column.leads.length} из ${column.total}`));
           const more = button("Показать ещё 50", () => loadList({column:column.key}));
           more.dataset.action="column-more"; more.disabled=state.loading; section.append(more);
         }
@@ -411,13 +438,16 @@
     function qualificationForm(host, lead, additional = false) {
       const form = makeForm(host, "Данные сделки", "Выберите или создайте контакт. Компания необязательна. Все сведения сохранятся при подтверждении.");
       form.classList.add("lead-conversion-form");
-      const fields=el("div","lead-fields");form.append(fields);
+      form.parentElement.classList.add("lead-conversion");
+      const stepHeading=(number,label)=>{const heading=el("h3","lead-conversion-heading"),badge=el("span","lead-step-number",number);badge.setAttribute("aria-hidden","true");heading.append(badge,el("span","lead-step-label",label));return heading;};
+      form.parentElement.firstElementChild.remove();
+      const details=el("section","lead-conversion-section lead-conversion-details"),fields=el("div","lead-fields");details.append(stepHeading("1","Данные сделки"),fields);form.append(details);
       if(!lead.assignee)form.append(el("p","lead-form-note","При подтверждении вы возьмёте свободный лид на себя."));
       if(lead.is_archived)form.append(el("p","lead-form-note","При подтверждении лид будет восстановлен и конвертирован. История удаления сохранится."));
       const title=field(fields,"Название сделки",lead.title,"text",true);title.required=true;title.maxLength=255;
       const pipeline=select(fields,"Воронка",initial.pipelines.map(p=>[String(p.id),p.name]),String(initial.pipelines.find(p=>p.code===lead.direction)?.id || initial.pipelines[0]?.id || ""));pipeline.required=true;
       const need=additional?null:field(fields,"Потребность",lead.need||"","textarea",true);if(need){need.required=true;need.maxLength=10000;need.readOnly=!lead.can_edit_conversion_need;if(!lead.can_edit_conversion_need&&!lead.need)form.append(el("p","lead-error","Для уточнения потребности требуется право редактирования лида."));}
-      const customer=el("div","lead-customer-grid");form.append(customer);
+      const customerSection=el("section","lead-conversion-section lead-conversion-customer"),customer=el("div","lead-customer-grid");customerSection.append(stepHeading("2","Контакт и компания"),customer);form.append(customerSection);
       const contactBox=el("fieldset","lead-customer-box"), companyBox=el("fieldset","lead-customer-box");
       contactBox.append(el("legend","","Контакт"));companyBox.append(el("legend","","Компания"));customer.append(contactBox,companyBox);
       const savedContact=lead.contact || (lead.client?.client_type==="private" ? lead.client : null);
@@ -440,7 +470,7 @@
       const updateCustomer=()=>{toggleFields(contact.element,mode.value==="existing");toggleFields(fresh,mode.value==="new");toggleFields(company.element,companyMode.value==="existing");toggleFields(freshCompany,companyMode.value==="new");companyHint.hidden=companyMode.value!=="none";};
       mode.addEventListener("change",updateCustomer);companyMode.addEventListener("change",updateCustomer);updateCustomer();
       const transferable=!additional&&lead.next_action&&!lead.next_action.completed&&!lead.next_action.restricted&&!lead.next_action.waiting;
-      const nextSection=el("div","lead-conversion-next");nextSection.append(el("h3","","Следующий шаг"));form.append(nextSection);
+      const nextSection=el("section","lead-conversion-section lead-conversion-next");nextSection.append(stepHeading("3","Следующее действие"));form.append(nextSection);
       const reuse=transferable?field(nextSection,"Сохранить открытый следующий шаг","","checkbox"):null;if(reuse){reuse.checked=true;reuse.parentElement.classList.add("lead-checkbox");}
       const transferred=transferable?el("p","lead-transfer-summary",lead.next_action.title+" · "+dateText(lead.next_action.due_at)):null;if(transferred)nextSection.append(transferred);
       const nextHost=el("div","lead-fields");nextSection.append(nextHost);const next=nextFields(nextHost,transferable?lead.next_action:null);

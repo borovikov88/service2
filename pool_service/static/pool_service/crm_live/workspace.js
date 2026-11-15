@@ -390,10 +390,10 @@
       const open = makeButton(deal.title, "open", "crm-live-card-open");
       open.dataset.dealId = deal.id;
       title.append(open);
-      main.append(title, element("p", "crm-live-card-client", deal.client?.name || "Клиент не указан"));
+      main.append(title, element("p", "crm-live-card-amount" + (deal.amount === null ? " is-unknown" : ""), deal.amount === null ? "Сумма не указана" : moneyLabel(deal.amount, deal.currency)), element("p", "crm-live-card-client", deal.client?.name || "Клиент не указан"));
       const object = deal.object;
       if (object) main.append(element("p", "crm-live-card-stage", object.restricted ? "Объект недоступен" : [object.name, object.address].filter(Boolean).join(" · ")));
-      main.append(element("p", "crm-live-card-stage", (deal.amount === null ? "Сумма неизвестна" : moneyLabel(deal.amount, deal.currency)) + (deal.specialization ? " · " + deal.specialization : "")));
+      if (deal.specialization) main.append(element("p", "crm-live-card-specialization", deal.specialization));
       if (deal.unverified_completion_stage) main.append(element("p","crm-live-pill",(deal.manual_completion ? "Завершено вручную" : "Финальный этап CRM")+" · исполнение и оплата не подтверждены"));
       if (deal.outcome !== "open") main.append(element("p", "crm-live-pill", outcomeLabel(deal.outcome)));
       if (table) main.append(element("p", "crm-live-card-stage", stageFor(deal)?.name || "Этап не указан"));
@@ -771,6 +771,7 @@
       state.drawer = {kind: "detail", id: deal.id, deal};
       dialogContent.dataset.revision = String(deal.revision);
       dialogContent.append(titleNode(deal.title));
+      dialogContent.append(element("p", "crm-live-detail-amount" + (deal.amount === null ? " is-unknown" : ""), deal.amount === null ? "Сумма не указана" : moneyLabel(deal.amount, deal.currency)));
       if(deal.unverified_completion_stage)dialogContent.append(element("p","crm-live-completion-warning",(deal.manual_completion ? "CRM завершена вручную. " : "Финальный этап без подтверждённого итога. ")+deal.completion_warning));
       const identity = disclosure("Ссылка на сделку");
       identity.append(element("p", "crm-live-deal-id", "ID сделки: " + deal.id));
@@ -807,9 +808,9 @@
         if (href) name.href = href; contact.append(name); dialogContent.append(contact);
       }
       const quoteUrl = safeLink(deal.quotes_url);
-      if (quoteUrl) { const link = element("a", "btn btn-outline-primary", "КП: версии и решения"); link.href = quoteUrl; dialogContent.append(link); }
+      if (quoteUrl) { const link = element("a", "crm-live-button crm-live-document-link", "КП: версии и решения"); link.href = quoteUrl; dialogContent.append(link); }
       const serviceUrl = safeLink(deal.service_documents_url);
-      if (serviceUrl) { const link = element("a", "btn btn-outline-primary", "Документы обслуживания и периоды"); link.href = serviceUrl; dialogContent.append(link); }
+      if (serviceUrl) { const link = element("a", "crm-live-button crm-live-document-link", "Документы обслуживания и периоды"); link.href = serviceUrl; dialogContent.append(link); }
       const meta = element("div", "crm-live-detail-meta");
       meta.append(element("span", "crm-live-pill", pipelineFor(deal.pipeline_id)?.name || ""), element("span", "crm-live-pill", stageFor(deal)?.name || ""), element("span", "crm-live-pill", deal.manager?.name || "Без ответственного"));
       if (deal.can_transition && !deal.is_archived) {

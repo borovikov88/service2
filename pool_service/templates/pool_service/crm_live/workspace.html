@@ -5,7 +5,8 @@
 
 {% block extra_head %}
   <link rel="stylesheet" href="{% static 'pool_service/crm_live/workspace.css' %}?v=20261115-simple">
-  <script src="{% static 'pool_service/crm_live/workspace.js' %}?v=20261115-simple" defer></script>
+  <link rel="stylesheet" href="{% static 'pool_service/crm_live/design.css' %}?v=20261115-modern">
+  <script src="{% static 'pool_service/crm_live/workspace.js' %}?v=20261115-modern" defer></script>
 {% endblock %}
 
 {% block content %}
@@ -26,13 +27,13 @@
   <div id="crm-live-notice" class="crm-live-notice" role="status" hidden></div>
 
   <div class="crm-live-toolbar">
-    <label class="crm-live-search"><span aria-hidden="true">⌕</span><input id="crm-live-search" type="search" placeholder="Сделка, клиент, предмет или объект" aria-label="Поиск сделки, клиента, предмета или объекта" autocomplete="off"></label>
+    <label class="crm-live-search"><svg class="crm-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg><input id="crm-live-search" type="search" placeholder="Сделка, клиент, предмет или объект" aria-label="Поиск сделки, клиента, предмета или объекта" autocomplete="off"></label>
     <label class="crm-live-owner"><span>Ответственный</span><select id="crm-live-owner"><option value="all">Все сделки</option><option value="me">Мои сделки</option></select></label>
     <div class="crm-live-views" role="group" aria-label="Вид сделок">
-      <button type="button" data-view="kanban" aria-pressed="true"><span aria-hidden="true">▥</span> Канбан</button>
-      <button type="button" data-view="table" aria-pressed="false"><span aria-hidden="true">☷</span> Список</button>
+      <button type="button" data-view="kanban" aria-pressed="true"><svg class="crm-icon" aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="11" rx="1"/><rect x="17" y="4" width="4" height="14" rx="1"/></svg> Канбан</button>
+      <button type="button" data-view="table" aria-pressed="false"><svg class="crm-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M8 5h13M8 12h13M8 19h13M3 5h.01M3 12h.01M3 19h.01"/></svg> Список</button>
     </div>
-    <button type="button" class="crm-live-refresh" id="crm-live-refresh" aria-label="Обновить сделки" title="Обновить сделки">↻</button>
+    <button type="button" class="crm-live-refresh" id="crm-live-refresh" aria-label="Обновить сделки" title="Обновить сделки"><svg class="crm-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M5.2 7a8 8 0 0 1 13-2L20 8M4 16l1.8 3a8 8 0 0 0 13-2"/></svg></button>
   </div>
 
   <div id="crm-live-linked-filters" class="crm-live-linked-filters" hidden>
