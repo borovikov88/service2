@@ -129,7 +129,9 @@ def git(root, *args):
 
 def current_refs(root, control):
     origin = git(root, 'config', '--get', 'remote.origin.url').decode().strip()
-    require(origin in ('https://github.com/borovikov88/service2.git', 'git@github.com:borovikov88/service2.git'))
+    # actions/checkout uses the exact HTTPS repository URL without a .git suffix.
+    require(origin in ('https://github.com/borovikov88/service2',
+                       'https://github.com/borovikov88/service2.git', 'git@github.com:borovikov88/service2.git'))
     rows = git(root, 'ls-remote', '--exit-code', 'origin', 'refs/heads/main', CONTROL_REF).decode().splitlines()
     require(set(rows) == {BASE + '\trefs/heads/main', control + '\t' + CONTROL_REF})
 

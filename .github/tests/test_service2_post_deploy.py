@@ -55,6 +55,35 @@ class RequestTests(unittest.TestCase):
         with patch.object(post, 'git', return_value=b'https://example.invalid/foreign.git\n'), self.assertRaises(post.Failure):
             post.current_refs(ROOT, control)
 
+    def test_current_refs_accept_only_canonical_repository_aliases(self):
+        control = 'a'*40
+        refs = f'{post.BASE}\trefs/heads/main\n{control}\t{post.CONTROL_REF}\n'.encode()
+        for origin in ('https://github.com/borovikov88/service2',
+                       'https://github.com/borovikov88/service2.git',
+                       'git@github.com:borovikov88/service2.git'):
+            with self.subTest(origin=origin), patch.object(post, 'git', side_effect=[origin.encode()+b'\n', refs]) as git:
+                post.current_refs(ROOT, control)
+            self.assertEqual(git.call_args_list[-1].args,
+                (ROOT, 'ls-remote', '--exit-code', 'origin', 'refs/heads/main', post.CONTROL_REF))
+
+    def test_current_refs_reject_hostile_urls_before_network(self):
+        origins = ('https://github.com.evil.invalid/borovikov88/service2',
+            'https://github.com@evil.invalid/borovikov88/service2',
+            'https://token@github.com/borovikov88/service2',
+            'https://github.com/foreign/service2', 'https://github.com/borovikov88/service2-extra',
+            'https://github.com/borovikov88/service2.git/extra',
+            'https://github.com/borovikov88/service2?redirect=evil',
+            'https://github.com/borovikov88/service2#fragment',
+            'https://github.com:443/borovikov88/service2',
+            'https://github.com/borovikov88/%73ervice2',
+            'http://github.com/borovikov88/service2', 'file:///synthetic/service2',
+            'git@evil.invalid:borovikov88/service2.git')
+        for origin in origins:
+            with self.subTest(origin=origin), patch.object(post, 'git', return_value=origin.encode()+b'\n') as git:
+                with self.assertRaises(post.Failure):
+                    post.current_refs(ROOT, 'a'*40)
+                git.assert_called_once_with(ROOT, 'config', '--get', 'remote.origin.url')
+
     def test_public_output_excludes_private_exceptions(self):
         for args in ([], ['run'], ['remote', 'PRIVATE']):
             out = io.StringIO()
@@ -125,6 +154,22 @@ class GitFixture(unittest.TestCase):
             with self.assertRaises(post.Failure):
                 post.clean(self.app, self.base)
             self.git('update-index', undo, 'code.py')
+
+    def test_runner_file_modes_keep_production_regular_guard_strict(self):
+        path = self.app / 'code.py'
+        for mode in (0o600, 0o644, 0o700, 0o755):
+            path.chmod(mode)
+            post.regular(path)
+        for mode in (0o620, 0o664, 0o666, 0o775, 0o777):
+            path.chmod(mode)
+            with self.subTest(mode=oct(mode)), self.assertRaises(post.Failure):
+                post.regular(path)
+        path.chmod(0o644)
+        post.clean(self.app, self.base)
+        for mode in (0o664, 0o666):
+            path.chmod(mode)
+            with self.subTest(mode=oct(mode)), self.assertRaises(post.Failure):
+                post.clean(self.app, self.base)
 
     def test_symlink_and_hardlink_source_rejected(self):
         target = self.app / 'code.py'
