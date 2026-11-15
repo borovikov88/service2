@@ -138,3 +138,6 @@
 Использованы сценарии Битрикс24: [конвертация лида](https://helpdesk.bitrix24.ru/open/23260824/),
 [канбан](https://helpdesk.bitrix24.ru/open/21839648/),
 [контакты](https://helpdesk.bitrix24.ru/open/25042958/).
+
+Связь сделки с заказом, процентами выполнения/оплаты и автозавершением
+описана в [crm-order-finance.md](crm-order-finance.md).

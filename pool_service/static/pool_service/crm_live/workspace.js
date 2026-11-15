@@ -246,14 +246,14 @@
       if (error.status === 409) return "Карточка уже изменилась. Проверьте актуальные данные перед новым сохранением.";
       return error.message || "Не удалось выполнить действие.";
     };
-    async function requestJSON(url, options, externalSignal) {
+    async function requestJSON(url, options, externalSignal, timeoutMs = 20000) {
       const controller = new AbortController();
       const abort = () => controller.abort();
       if (externalSignal) {
         if (externalSignal.aborted) controller.abort();
         else externalSignal.addEventListener("abort", abort, {once: true});
       }
-      const timer = win.setTimeout(abort, 20000);
+      const timer = win.setTimeout(abort, timeoutMs);
       try {
         const requestOptions = Object.assign({credentials: "same-origin", cache: "no-store"}, options || {}, {signal: controller.signal});
         requestOptions.headers = Object.assign({"X-Requested-With": "XMLHttpRequest"}, options?.headers || {});
@@ -336,7 +336,7 @@
             retry.dataset.operationKey = entry.payload.operation_key;
             actions.append(retry);
           } else if (entry.status === "failed") {
-            if (entry.error?.status === 409) {
+            if (entry.error?.status === 409 && !["deal.bind_order", "deal.unbind_order"].includes(entry.payload.command_type)) {
               const restore = makeButton("Вернуть мои изменения", "restore-conflict");
               restore.dataset.operationKey = entry.payload.operation_key;
               actions.append(restore);
@@ -650,12 +650,13 @@
     function updateFormLocks() {
       for (const form of dialogContent.querySelectorAll("[data-command-form]")) {
         const subjectId = form.dataset.subjectId || null;
-        const busy = Boolean(queue.forSubject(subjectId)) || (state.drawer?.kind === "loading" && sameId(state.drawer.id, subjectId));
+        const busy = Boolean(queue.forSubject(subjectId)) || form.dataset.orderRefreshing === "true" || (state.drawer?.kind === "loading" && sameId(state.drawer.id, subjectId));
         for (const input of form.querySelectorAll("input, select, textarea, button")) input.disabled = busy;
         if (!busy && form.dataset.commandForm === "create" && state.drawer?.kind === "create") {
           form.elements.namedItem("client_search").disabled = state.drawer.useCustomer;
           state.drawer.customerEditor?.setEnabled(state.drawer.useCustomer);
         }
+        form.updateOrderButtons?.(busy);
       }
       byId("crm-live-create").disabled = Boolean(queue.forSubject(null));
     }
@@ -771,6 +772,158 @@
         expected_decision_at: expected ? deadlineISO(expected, offset) : null};
     }
 
+    function accountingDate(value) {
+      const instant = new Date(/^\d{4}-\d{2}-\d{2}$/.test(value || "") ? value + "T12:00:00" + offset : value);
+      return Number.isFinite(instant.getTime()) ? new Intl.DateTimeFormat("ru-RU", {timeZone:timezone, day:"numeric", month:"short", year:"numeric"}).format(instant) : "";
+    }
+    function orderCaption(order) {
+      return [order.number ? "Заказ № " + order.number : "Заказ без номера", accountingDate(order.date)].filter(Boolean).join(" · ");
+    }
+    function orderBindingForm(host, deal, finance) {
+      const part = disclosure(finance.order ? "Параметры связи с заказом" : "Привязать заказ");
+      part.classList.add("crm-onec-binding"); host.append(part);
+      const form = newForm("bind_order", deal.id); part.append(form);
+      const search = field("Найти заказ клиента", "search", "order_search", "", false);
+      search.input.placeholder = "Номер заказа"; search.input.autocomplete = "off"; search.input.maxLength = 80;
+      const searchRow = element("div", "crm-onec-search-row"), refresh = makeButton("Найти в 1С");
+      refresh.dataset.orderRefresh = ""; refresh.hidden = !bootstrap.urls.order_refresh;
+      searchRow.append(search.wrapper, refresh); searchRow.hidden = Boolean(finance.order);
+      form.updateOrderButtons = busy => { refresh.disabled = busy || !search.input.value.trim(); };
+      const results = element("div", "crm-onec-order-results"), selected = element("div", "crm-onec-order-selected");
+      results.setAttribute("aria-live", "polite"); selected.hidden = true;
+      const recurring = field("Постоянное обслуживание", "checkbox", "recurring", "yes", false);
+      recurring.wrapper.classList.add("crm-onec-checkbox");
+      recurring.input.checked = typeof finance.recurring === "boolean" ? finance.recurring : deal.fulfillment_kind === "service" || pipelineFor(deal.pipeline_id)?.code === "service";
+      const behavior = element("p", "crm-live-form-note crm-onec-behavior");
+      const explain = () => { behavior.textContent = recurring.input.checked ? "Постоянная сделка останется открытой после выполнения и оплаты текущего заказа. Новый период можно связать со следующим заказом." : "Разовая сделка завершится автоматически, когда 1С подтвердит полное выполнение и полную оплату заказа."; };
+      recurring.input.addEventListener("change", explain); explain();
+      const confirm = field("Подтверждаю связь выбранного заказа со сделкой", "checkbox", "confirm_order", "yes", true);
+      confirm.wrapper.classList.add("crm-onec-checkbox");
+      form.append(element("p", "crm-live-form-note", finance.order ? "Чтобы выбрать другой заказ или перейти к следующему периоду, сначала отвяжите текущий заказ. Прежняя связь останется в истории." : "В поиске — последние 200 заказов и заказы, уже связанные со сделками. Показаны заказы выбранного клиента."), searchRow);
+      if (!finance.order && bootstrap.urls.order_refresh) form.append(element("p", "crm-live-form-note", "Для более раннего заказа введите полный номер и нажмите «Найти в 1С». Связь со сделкой сохранится только после вашего подтверждения."));
+      form.append(results, selected, recurring.wrapper, behavior, confirm.wrapper);
+      formFooter(form, finance.order ? "Сохранить связь" : "Привязать заказ");
+      const cancel = makeButton("Отмена"); form.querySelector(".crm-live-form-footer").append(cancel);
+      let timer, controller, generation = 0;
+      const active = () => form.isConnected && dialog.open && state.drawer?.kind === "detail" && sameId(state.drawer.id, deal.id);
+      const choose = (order) => {
+        if (queue.forSubject(deal.id)) return;
+        form.selectedOrder = order; search.input.value = order.number || ""; confirm.input.checked = false;
+        selected.replaceChildren(element("strong", "", orderCaption(order)));
+        if (order.amount != null && order.currency) selected.append(element("span", "", moneyLabel(order.amount, order.currency)));
+        if (order.state) selected.append(element("small", "crm-live-muted", order.state));
+        selected.hidden = false; results.replaceChildren(); formError(form, ""); form.updateOrderButtons(false);
+      };
+      if (finance.order) choose(finance.order);
+      const showResults = response => {
+        results.replaceChildren();
+        for (const order of response.orders || []) {
+          const button = makeButton(orderCaption(order), null, "crm-onec-order-option");
+          if (order.amount != null && order.currency) button.append(element("small", "", moneyLabel(order.amount, order.currency)));
+          button.addEventListener("click", () => choose(order)); results.append(button);
+        }
+        if (!response.orders?.length) results.append(element("p", "crm-live-muted", response.reason || "Заказы не найдены. Проверьте номер и связь клиента с 1С."));
+      };
+      const load = () => {
+        if (finance.order || form.dataset.orderRefreshing === "true") return;
+        win.clearTimeout(timer); controller?.abort(); const mine = ++generation;
+        results.replaceChildren();
+        timer = win.setTimeout(async () => {
+          if (!active() || !part.open || queue.forSubject(deal.id)) return;
+          controller = new AbortController();
+          const url = scopedURL(bootstrap.urls.order_candidates); url.searchParams.set("deal_id", deal.id); url.searchParams.set("q", search.input.value.trim());
+          results.append(element("p", "crm-live-muted", "Ищем заказы…"));
+          try {
+            const response = await requestJSON(url, {headers:{Accept:"application/json"}}, controller.signal);
+            if (!active() || mine !== generation) return;
+            showResults(response);
+          } catch (error) {
+            if (!controller.signal.aborted && active() && mine === generation) results.replaceChildren(element("p", "crm-live-form-error", friendlyError(error)));
+          }
+        }, 300);
+      };
+      search.input.addEventListener("input", () => { form.selectedOrder = null; selected.hidden = true; confirm.input.checked = false; form.updateOrderButtons(false); load(); });
+      refresh.addEventListener("click", async () => {
+        const query = search.input.value.trim();
+        if (!query || !bootstrap.urls.order_refresh || !active() || queue.forSubject(deal.id) || form.dataset.orderRefreshing === "true") return;
+        win.clearTimeout(timer); controller?.abort(); const mine = ++generation;
+        form.selectedOrder = null; selected.hidden = true; confirm.input.checked = false;
+        form.dataset.orderRefreshing = "true"; refresh.textContent = "Поиск в 1С…"; updateFormLocks(); formError(form, "");
+        results.replaceChildren(element("p", "crm-live-muted", "Проверяем заказ в 1С…"));
+        try {
+          const response = await requestJSON(scopedURL(bootstrap.urls.order_refresh), {method:"POST", headers:{"Content-Type":"application/json",Accept:"application/json","X-CSRFToken":csrf ? csrf.value : ""}, body:JSON.stringify({deal_id:deal.id,q:query})}, undefined, 120000);
+          if (active() && mine === generation) showResults(response);
+        } catch (error) {
+          if (active() && mine === generation) results.replaceChildren(element("p", "crm-live-form-error", error.name === "AbortError" ? "Поиск занял больше времени. Повторите поиск в сохранённых данных через несколько секунд." : friendlyError(error)));
+        } finally { delete form.dataset.orderRefreshing; refresh.textContent = "Найти в 1С"; updateFormLocks(); }
+      });
+      part.addEventListener("toggle", () => { if (part.open) load(); else if (form.dataset.orderRefreshing !== "true") { win.clearTimeout(timer); controller?.abort(); ++generation; } });
+      cancel.addEventListener("click", () => { if (queue.forSubject(deal.id)) return; openDetail(deal.id, true); });
+      form.updateOrderButtons(false);
+    }
+    function financeSection(deal) {
+      const finance = deal.onec_finance;
+      if (!finance) return null;
+      const box = section("Заказ и расчёты 1С"); box.classList.add("crm-onec-finance"); box.dataset.financeState = finance.state;
+      if (finance.state === "restricted") {
+        box.append(element("p", "crm-live-muted", "Данные 1С доступны сотрудникам с правом просмотра финансов.")); return box;
+      }
+      const order = finance.order;
+      if (order) {
+        const heading = element("div", "crm-onec-order"); heading.append(element("strong", "", orderCaption(order)));
+        if (order.amount != null && order.currency) heading.append(element("span", "", moneyLabel(order.amount, order.currency)));
+        box.append(heading);
+        if (order.state) box.append(element("p", "crm-live-muted crm-onec-order-state", order.state));
+      } else box.append(element("p", "crm-live-muted", finance.state === "unlinked" ? "Заказ клиента пока не привязан." : "Данные связанного заказа сейчас недоступны."));
+      if (["stale", "review"].includes(finance.state)) {
+        box.append(element("p", "crm-onec-warning", finance.state === "stale" ? "Данные 1С требуют обновления" : "Связь или документы требуют сверки"));
+      }
+      const hasPolicyNote = order && (finance.completed_automatically || finance.recurring || finance.auto_complete);
+      if (finance.reason && (finance.state !== "current" || !hasPolicyNote)) box.append(element("p", "crm-live-form-note", finance.reason));
+      if (order) {
+        if (finance.period_label) box.append(element("p", "crm-onec-period", finance.period_label));
+        const metrics = element("div", "crm-onec-metrics");
+        for (const [key, label, percent, amount] of [["completion", "Выполнение по 1С", finance.completion_percent, finance.realized_amount], ["payment", "Оплата", finance.payment_percent, finance.paid_amount]]) {
+          const known = percent !== null && percent !== undefined && percent !== "" && Number.isFinite(Number(percent)) && Number(percent) >= 0;
+          const metric = element("div", "crm-onec-metric"), header = element("div", "crm-onec-metric-heading"); metric.dataset.financeMetric = key;
+          const value = known ? new Intl.NumberFormat("ru-RU", {maximumFractionDigits:2}).format(Number(percent)) + "%" : "Не подтверждено";
+          header.append(element("span", "", label), element("strong", "", value)); metric.append(header);
+          const track = element("div", "crm-onec-progress" + (known ? "" : " is-unknown"));
+          if (known) { track.setAttribute("role", "progressbar"); track.setAttribute("aria-label", label); track.setAttribute("aria-valuemin", "0"); track.setAttribute("aria-valuemax", "100"); track.setAttribute("aria-valuenow", String(Math.min(100, Number(percent)))); track.setAttribute("aria-valuetext", value); const fill = element("span"); fill.style.width = Math.min(100, Number(percent)) + "%"; track.append(fill); }
+          else track.setAttribute("aria-hidden", "true");
+          metric.append(track);
+          if (amount != null && order.currency) metric.append(element("small", "crm-live-muted", moneyLabel(amount, order.currency) + (order.amount != null ? " из " + moneyLabel(order.amount, order.currency) : "")));
+          metrics.append(metric);
+        }
+        box.append(metrics);
+        if (finance.source_at) box.append(element("p", "crm-onec-source", "Данные 1С на " + dateText(finance.source_at)));
+        if (finance.completed_automatically) box.append(element("p", "crm-onec-result", "Сделка завершена автоматически: выполнение и оплата подтверждены 1С."));
+        else if (finance.recurring) box.append(element("p", "crm-live-form-note", "Постоянное обслуживание: выполнение и оплата текущего заказа не закрывают сделку."));
+        else if (finance.auto_complete) box.append(element("p", "crm-live-form-note", "Сделка завершится автоматически после подтверждения полного выполнения и полной оплаты в 1С."));
+        if (finance.open_action_preserved) box.append(element("p", "crm-live-form-note", "Открытые задачи сохранены — проверьте их отдельно."));
+      }
+      if (finance.documents?.length) {
+        const documents = disclosure("Документы 1С · " + finance.documents.length); documents.classList.add("crm-onec-documents");
+        for (const document of finance.documents) {
+          const row = element("div", "crm-onec-document"); row.append(element("strong", "", document.number || "Документ без номера"));
+          if (document.date) row.append(element("span", "crm-live-muted", accountingDate(document.date)));
+          if (document.amount != null && order?.currency) row.append(element("span", "", moneyLabel(document.amount, order.currency)));
+          if (document.paid_amount != null && order?.currency) row.append(element("small", "crm-live-muted", "Оплачено: " + moneyLabel(document.paid_amount, order.currency)));
+          documents.append(row);
+        }
+        box.append(documents);
+      }
+      if (finance.can_bind && bootstrap.urls.order_candidates && (!finance.can_unbind || order)) orderBindingForm(box, deal, finance);
+      if (finance.can_unbind) {
+        const part = disclosure("Отвязать заказ"), form = newForm("unbind_order", deal.id);
+        part.classList.add("crm-onec-binding");
+        form.append(element("p", "crm-live-form-note", "Связь сохранится в истории сделки. Документы и суммы 1С не изменятся."));
+        const reason = field("Причина отвязки", "textarea", "reason", "", true); reason.input.maxLength = 500;
+        form.append(reason.wrapper); formFooter(form, "Отвязать заказ"); part.append(form); box.append(part);
+      }
+      return box;
+    }
+
     function renderDetail(deal, events) {
       dialogContent.replaceChildren();
       state.drawer = {kind: "detail", id: deal.id, deal};
@@ -826,6 +979,7 @@
         }); meta.append(changeStage);
       }
       dialogContent.append(meta);
+      const finance = financeSection(deal); if (finance) dialogContent.append(finance);
       const overview = section("О сделке");
       const object = deal.object;
       const facts = [["Предмет", deal.work_subject || "Не уточнён"], ["Специализация", deal.specialization || "Не уточнена"],
@@ -1201,6 +1355,14 @@
           const title = String(values.get("title") || "").trim();
           if (!title) throw new Error("Укажите название сделки.");
           await send("deal.edit", deal.id, deal.revision, {title, ...cardChanges(values)}, "Карточка сделки «" + deal.title + "»");
+        } else if (kind === "bind_order") {
+          if (!deal.onec_finance?.can_bind || !form.selectedOrder) throw new Error("Выберите заказ из результатов поиска.");
+          if (!form.elements.namedItem("confirm_order").checked) throw new Error("Подтвердите связь заказа со сделкой.");
+          await send("deal.bind_order", deal.id, deal.revision, {order_id:form.selectedOrder.id, recurring:form.elements.namedItem("recurring").checked}, "Заказ 1С для «" + deal.title + "»");
+        } else if (kind === "unbind_order") {
+          if (!deal.onec_finance?.can_unbind) throw new Error("Отвязка заказа сейчас недоступна.");
+          const reason = String(values.get("reason") || "").trim(); if (!reason) throw new Error("Укажите причину отвязки.");
+          await send("deal.unbind_order", deal.id, deal.revision, {reason}, "Отвязка заказа 1С от «" + deal.title + "»");
         } else if (kind === "close_negative") {
           const reason = String(values.get("reason") || "").trim();
           if (!reason) throw new Error("Укажите причину отказа или отмены.");

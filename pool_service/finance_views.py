@@ -1307,6 +1307,8 @@ def _finance_data_run_result(run):
         return "Ошибка", "danger"
     if run.status == OneCODataSyncRun.STATUS_PARTIAL_FAILED:
         return "Частично выполнено", "warning"
+    if progress.get("crm_orders_state") in {"retryable_error", "failed"}:
+        return "Частично выполнено", "warning"
     if progress.get("outcome") == "no_change":
         return "Без изменений", "secondary"
     return "Успешно", "success"
@@ -1379,6 +1381,11 @@ def _finance_data_history(request, organization):
                 )
             )
             technical_kind = "Обновление"
+
+        if (run.progress or {}).get("crm_orders_state") in {"retryable_error", "failed"}:
+            result_label, result_tone = "Частично выполнено", "warning"
+            error_message = " · ".join(item for item in [error_message,
+                "Заказы, выполнение и оплаты CRM не обновлены; предыдущие данные требуют сверки."] if item)
 
         rows.append({
             "created_at": run.created_at,

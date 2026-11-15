@@ -137,6 +137,35 @@ html[data-theme=dark] :is(#crm-live, #crm-leads) {
 #crm-live-dialog .crm-detail-tabs { gap: 26px; margin: 0 0 20px; }
 #crm-live-dialog .crm-detail-panel > .crm-live-section { padding: 20px; margin: 0 0 16px; background: var(--crm-panel); border: 1px solid var(--crm-line); border-radius: 12px; }
 #crm-live-dialog .crm-live-section h3 { font-size: 15px; margin-bottom: 14px; }
+#crm-live-dialog .crm-detail-panel > .crm-onec-finance { border-top: 3px solid var(--crm-blue); }
+#crm-live-dialog .crm-onec-order { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 18px; margin-bottom: 6px; font-size: 15px; overflow-wrap: anywhere; }
+#crm-live-dialog .crm-onec-order-state, #crm-live-dialog .crm-onec-period { margin: 5px 0 14px; font-size: 12px; }
+#crm-live-dialog .crm-onec-period { color: var(--crm-muted); }
+#crm-live-dialog .crm-onec-metrics { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 24px; margin: 18px 0 14px; }
+#crm-live-dialog .crm-onec-metric { min-width: 0; }
+#crm-live-dialog .crm-onec-metric-heading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 10px; margin-bottom: 10px; font-size: 13px; }
+#crm-live-dialog .crm-onec-metric-heading strong { font-size: 14px; }
+#crm-live-dialog .crm-onec-metric small { display: block; font-size: 11px; line-height: 1.6; margin-top: 8px; }
+#crm-live-dialog .crm-onec-progress { height: 7px; overflow: hidden; border-radius: 10px; background: var(--crm-soft); }
+#crm-live-dialog .crm-onec-progress > span { display: block; height: 100%; background: var(--crm-blue); border-radius: inherit; }
+#crm-live-dialog [data-finance-metric=payment] .crm-onec-progress > span { background: #2aa58a; }
+#crm-live-dialog .crm-onec-progress.is-unknown { background: repeating-linear-gradient(120deg,var(--crm-soft),var(--crm-soft) 5px,var(--crm-line) 5px,var(--crm-line) 7px); }
+#crm-live-dialog .crm-onec-source { color: var(--crm-muted); font-size: 11px; margin: 12px 0; }
+#crm-live-dialog .crm-onec-warning, #crm-live-dialog .crm-onec-result { padding: 10px 12px; border-radius: 8px; background: var(--crm-blue-soft); font-size: 12px; margin: 12px 0; }
+#crm-live-dialog .crm-onec-warning { border-left: 3px solid var(--crm-stage-amber); }
+#crm-live-dialog .crm-onec-result { color: var(--crm-blue); }
+#crm-live-dialog .crm-onec-binding, #crm-live-dialog .crm-onec-documents { margin: 16px 0 0; padding: 14px 0 0; border-top: 1px solid var(--crm-line); }
+#crm-live-dialog .crm-onec-binding > summary, #crm-live-dialog .crm-onec-documents > summary { font-size: 13px; color: var(--crm-blue); }
+#crm-live-dialog .crm-onec-binding .crm-live-fields { margin-top: 14px; }
+#crm-live-dialog .crm-onec-order-results { display: grid; gap: 6px; grid-column: 1 / -1; }
+#crm-live-dialog .crm-onec-search-row { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: end; gap: 10px; }
+#crm-live-dialog .crm-onec-search-row > .crm-live-button { white-space: nowrap; }
+#crm-live-dialog .crm-onec-order-option { display: flex; gap: 8px 14px; justify-content: space-between; align-items: baseline; flex-wrap: wrap; padding: 12px; border: 1px solid var(--crm-line); background: var(--crm-panel); color: var(--crm-text); border-radius: 9px; text-align: left; font-size: 13px; overflow-wrap: anywhere; }
+#crm-live-dialog .crm-onec-order-option:hover { border-color: var(--crm-blue); background: var(--crm-blue-soft); }
+#crm-live-dialog .crm-onec-order-selected { display: grid; gap: 4px; grid-column: 1 / -1; border: 1px solid var(--crm-blue); background: var(--crm-blue-soft); border-radius: 9px; padding: 13px; font-size: 13px; overflow-wrap: anywhere; }
+#crm-live-dialog .crm-onec-checkbox { display: flex; flex-direction: row; align-items: flex-start; gap: 9px; grid-column: 1 / -1; }
+#crm-live-dialog .crm-onec-checkbox input { flex: none; order: -1; width: 18px; height: 18px; min-height: 18px; margin-top: 2px; padding: 0; }
+#crm-live-dialog .crm-onec-document { display: flex; flex-wrap: wrap; gap: 6px 16px; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--crm-line); font-size: 12px; overflow-wrap: anywhere; }
 #crm-live-dialog .crm-live-fact { padding: 8px 0; font-size: 13px; }
 #crm-live-dialog .crm-live-detail-next { padding: 20px; border: 1px solid var(--crm-line); border-left: 3px solid var(--crm-blue); border-radius: 12px; margin-bottom: 18px; }
 #crm-live-dialog .crm-live-detail-next.is-overdue { border-left-color: var(--crm-red); }
@@ -211,6 +240,8 @@ html[data-theme=dark] :is(#crm-live, #crm-leads) {
   :is(#crm-live, #crm-leads) .crm-live-dialog h2 { font-size: 23px; }
   #crm-live-dialog .crm-detail-panel > .crm-live-section, #crm-live-dialog .crm-live-detail-next { padding: 16px; }
   #crm-live-dialog .crm-detail-tabs { gap: 24px; }
+  #crm-live-dialog .crm-onec-metrics { grid-template-columns: minmax(0,1fr); gap: 18px; }
+  #crm-live-dialog .crm-onec-search-row { grid-template-columns: minmax(0,1fr); }
   :is(#crm-live, #crm-leads) :is(.crm-live-field,.lead-field) :is(input,select,textarea) { font-size: 16px; }
   :is(#crm-live, #crm-leads) .crm-live-dialog .crm-live-button { min-height: 44px; font-size: 13px; }
   #crm-leads .lead-customer-box, #crm-leads .lead-dialog .lead-conversion-next, #crm-leads .lead-deal-form { padding: 16px; }

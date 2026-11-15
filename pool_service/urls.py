@@ -2,6 +2,7 @@ from . import crm_construction_views
 from . import crm_quote_views
 from . import crm_handoff_views
 from . import crm_service_binding_views
+from . import crm_order_views
 from django.urls import path
 from .views import (
     home,
@@ -425,6 +426,8 @@ urlpatterns = [
     path("crm/workspace/data/", crm_live_views.data, name="crm_live_data"),
     path("crm/workspace/clients/", crm_live_views.clients, name="crm_live_clients"),
     path("crm/workspace/objects/", crm_live_views.objects, name="crm_live_objects"),
+    path("crm/workspace/orders/", crm_order_views.candidates, name="crm_order_candidates"),
+    path("crm/workspace/orders/refresh/", crm_order_views.refresh, name="crm_order_refresh"),
     path("crm/workspace/commands/", crm_live_views.command, name="crm_live_command"),
     path("crm/workspace/deals/<int:deal_id>/quotes/", crm_quote_views.workspace, name="crm_quotes"),
     path("crm/workspace/deals/<int:deal_id>/construction/", crm_construction_views.workspace, name="crm_construction"),

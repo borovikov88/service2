@@ -154,7 +154,7 @@ class ColumnLoadingTests(PilotFixture, TestCase):
         self.assertEqual(sum(r['count'] for r in result['stage_totals']),53)
         self.assertEqual(self.data(org_id=Organization.objects.create(name='Foreign synthetic').pk).status_code,403)
         response=self.client.get(reverse('crm_live_workspace'),{'org_id':self.org.pk})
-        self.assertContains(response,'workspace.js?v=20261115-unified')
+        self.assertContains(response,'workspace.js?v=20261115-onec')
         self.assertEqual(response.context['crm_bootstrap']['layout'],'board')
 
     def test_epoch_is_transactional_and_get_does_not_write(self):

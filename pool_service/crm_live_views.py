@@ -44,6 +44,10 @@ EVENT_LABELS = {
     "deal.close_negative": "Сделка завершена отказом или отменой",
     "deal.transition": "Этап сделки изменён",
     "deal.next_action": "Следующее действие изменено",
+    "deal.bind_order": "Заказ 1С связан со сделкой",
+    "deal.unbind_order": "Связь с заказом 1С снята",
+    "deal.onec_completed": "Сделка автоматически завершена по данным 1С",
+    "deal.onec_review": "Данные 1С требуют сверки",
 }
 
 
@@ -260,6 +264,9 @@ def _serialize_deals(deals, user, organization, grant, *, detail=False):
                 and not (next_action and (next_action.get("restricted") or next_action.get("waiting"))),
             "next_action": next_action,
         })
+        if detail:
+            from .services.crm_order_finance import finance_projection
+            rows[-1]['onec_finance'] = finance_projection(deal, user, organization)
     return rows
 
 
@@ -461,6 +468,8 @@ def workspace(request):
         "urls": {"data": reverse("crm_live_data") + scope,
             "clients": reverse("crm_live_clients") + scope,
             "objects": reverse("crm_live_objects") + scope,
+            "order_candidates": reverse("crm_order_candidates") + scope,
+            "order_refresh": reverse("crm_order_refresh") + scope,
             "command": reverse("crm_live_command") + scope,
             "detail_prefix": reverse("crm_live_detail", args=[1]).rsplit("1/", 1)[0]},
     })
@@ -549,7 +558,7 @@ def detail(request, deal_id):
         # Task content remains in its protected source. Only stage-change
         # reasons belong on the team-visible deal timeline in this release.
         "manual_completion_exception": event.safe_diff.get("manual_completion_exception", {}).get("after", False),
-        "reason": event.reason if event.event_type in {"deal.transition", "deal.close_negative"} else "",
+        "reason": event.reason if event.event_type in {"deal.transition", "deal.close_negative", "deal.bind_order", "deal.unbind_order", "deal.onec_completed", "deal.onec_review"} else "",
     } for event in events]})
 
 
@@ -594,6 +603,10 @@ def command(request):
             expected_revision=payload.get("expected_revision"), **changes)
     elif kind in ("deal.edit", "deal.transition"):
         result = execute_commercial_command(**common, command_type=kind, subject_id=payload.get("subject_id"),
+            expected_revision=payload.get("expected_revision"), changes=changes)
+    elif kind in ("deal.bind_order", "deal.unbind_order"):
+        from .services.crm_order_finance import execute_order_command
+        result = execute_order_command(**common, command_type=kind, subject_id=payload.get("subject_id"),
             expected_revision=payload.get("expected_revision"), changes=changes)
     else:
         raise ValidationError("Эта команда недоступна в рабочей CRM.")

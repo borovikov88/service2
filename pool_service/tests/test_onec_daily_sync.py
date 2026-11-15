@@ -33,6 +33,9 @@ class DailyFinanceTests(TestCase):
         )
         self.config.enable()
         self.addCleanup(self.config.disable)
+        forecast = patch(MODULE + ".finalize_money_forecast_step", return_value="completed")
+        forecast.start()
+        self.addCleanup(forecast.stop)
         # Coverage semantics independently exercised by integration tests.
         for target in [MODULE + ".auto_coverage_config",
                        "pool_service.finance_imports.odata_payroll_drafts.auto_coverage_config"]:
@@ -89,6 +92,20 @@ class DailyFinanceTests(TestCase):
             self.assertEqual(hourly.sync_scope[report]["end"], "2025-01-01")
         self.assertNotIn("_schedule_day", hourly.sync_scope)
         self.assertEqual(hourly.sync_scope["_schedule_slot"], "2025-01-01T08")
+
+    def test_completed_slot_retries_crm_without_repeating_reports(self):
+        run = self.run_record(status=OneCODataSyncRun.STATUS_COMPLETED,
+            sync_scope={"_schedule_slot": "2025-01-01T07"},
+            progress={"crm_orders_state": "retryable_error"})
+        with patch(MODULE + ".step_unified_sync") as step, patch(
+            MODULE + ".finalize_finance_position_step", return_value="completed"
+        ), patch(MODULE + ".finalize_crm_orders_step", return_value="completed") as crm:
+            result = worker_tick(now=NOW)
+        step.assert_not_called()
+        self.assertEqual(result["run"], str(run.pk))
+        self.assertEqual(result["crm_orders_state"], "completed")
+        self.assertEqual(len(crm.call_args.args), 1)  # Fresh CRM clock, not the worker's start.
+        self.assertEqual(OneCODataSyncRun.objects.count(), 1)
 
     def test_disabled_schedule_creates_nothing(self):
         with override_settings(ONEC_FINANCE_DAILY_ENABLED=False):
