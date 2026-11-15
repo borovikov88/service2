@@ -11,6 +11,20 @@ on:
         description: "Exact 40-character SHA of the current main commit to test and deploy"
         required: true
         type: string
+      release_mode:
+        description: Ordinary release, or one addressed operation from the reviewed control branch
+        required: true
+        type: choice
+        default: release
+        options: [release, post-deploy]
+      confirm_control_sha:
+        description: Exact reviewed control SHA; required only for post-deploy
+        type: string
+      post_operation:
+        description: One operation only; setup does not prove successful worker processing
+        type: choice
+        default: status
+        options: [status, mcp, avito-outbox, avito-services]
 
 permissions:
   contents: read
@@ -20,7 +34,61 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  post-deploy:
+    name: Address one operation on the already installed release
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.release_mode == 'post-deploy' &&
+      github.repository == 'borovikov88/service2' &&
+      github.ref == 'refs/heads/codex/service2-post-deploy-5590'
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    concurrency:
+      group: service2-addressed-post-deploy
+      cancel-in-progress: false
+    env:
+      RELEASE_MODE: ${{ inputs.release_mode }}
+      CONFIRM_MAIN_SHA: ${{ inputs.confirm_main_sha }}
+      CONFIRM_CONTROL_SHA: ${{ inputs.confirm_control_sha }}
+      POST_OPERATION: ${{ inputs.post_operation }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Confirm exact source, unchanged application and current main
+        run: python3 -B .github/scripts/service2_post_deploy.py validate
+      - name: Check addressed entrypoint regressions
+        run: python3 -B -m unittest discover -s .github/tests -p test_service2_post_deploy.py -v
+      - name: Configure the existing pinned hosting identity
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_post_deploy
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/service2_post_deploy_known_hosts
+          chmod 600 ~/.ssh/service2_post_deploy ~/.ssh/service2_post_deploy_known_hosts
+          if ! ssh-keygen -y -P '' -f ~/.ssh/service2_post_deploy >/dev/null 2>/dev/null; then
+            echo 'SERVICE2_POST_DEPLOY_BLOCKED category=guard phase=identity'
+            exit 2
+          fi
+      - name: Run only the selected addressed operation
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: python3 -B .github/scripts/service2_post_deploy.py run
+      - name: Remove runner identity material
+        if: always()
+        run: rm -f -- ~/.ssh/service2_post_deploy ~/.ssh/service2_post_deploy_known_hosts
+
   scope:
+    if: github.event_name != 'workflow_dispatch' || inputs.release_mode != 'post-deploy'
     name: Identify isolated calculator changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
