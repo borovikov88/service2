@@ -30,6 +30,7 @@ CAPABILITIES = {
     "lead.acknowledge": ("edit_own_leads",),
     "lead.edit": ("edit_own_leads",),
     "lead.transition": ("transition_own_leads",),
+    "lead.complete_customer": ("transition_own_leads",),
     "lead.qualify": ("qualify_own_leads", "create_own_deals", "manage_own_next_action"),
     "lead.add_deal": ("qualify_own_leads", "create_own_deals", "manage_own_next_action"),
 }
@@ -65,6 +66,9 @@ def _authorize_lead(using, actor_id, organization, kind):
         from pool_service.services.crm_commercial_access import can_view_team_deals
         if not can_view_team_deals(actor, organization):
             raise PermissionDenied("Qualification deal access unavailable.")
+    if kind == "lead.complete_customer":
+        from .crm_conversion_contacts import _authorize
+        _authorize(using, actor, organization)
     return actor
 
 
@@ -104,6 +108,7 @@ def _normalize(kind, changes):
         "lead.acknowledge": set(),
         "lead.edit": EDIT_FIELDS | {"next_action", "expected_task_version"},
         "lead.transition": {"status", "result", "reason", "follow_up_at", "target_deal_id", "target_lead_id", "next_action", "expected_task_version"},
+        "lead.complete_customer": {"customer", "reason", "expected_task_version"},
         "lead.qualify": {"deals", "need", "reason", "expected_task_version"},
         "lead.add_deal": {"deals", "reason"},
     }[kind]
@@ -113,6 +118,7 @@ def _normalize(kind, changes):
         "lead.create": {"title", "need", "next_action"}, "lead.new_need": {"title", "need", "next_action"},
         "lead.take": {"next_action"},
         "lead.disposition": {"column"}, "lead.transition": {"status"},
+        "lead.complete_customer": {"customer"},
         "lead.qualify": {"deals"}, "lead.add_deal": {"deals"},
     }.get(kind, set())
     if not required <= set(changes):
@@ -130,6 +136,9 @@ def _normalize(kind, changes):
             result[name] = None if name in {"client_id", "contact_id"} and value is None else _positive_id(value)
         elif name == "next_action":
             result[name] = _next_action_values(value)
+        elif name == "customer":
+            from .crm_conversion_contacts import normalize_customer
+            result[name] = normalize_customer(value)
         elif name in {"budget_min", "budget_max"}:
             if value is None:
                 result[name] = None
@@ -378,7 +387,7 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
             if not lead:
                 raise PermissionDenied("Lead unavailable.")
             _visible(using, actor, organization, lead)
-            if command_type in {"lead.take", "lead.disposition", "lead.qualify"}:
+            if command_type in {"lead.take", "lead.disposition", "lead.qualify", "lead.complete_customer"}:
                 if lead.assignee_id not in {None, actor.pk}:
                     raise CommercialConflict("Обращение уже взял другой сотрудник.")
             elif lead.assignee_id != actor.pk:
@@ -396,7 +405,7 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
                 _validate_task(using, replay_lead, tasks.get(replay_lead.next_task_id), actor)
                 if replay_lead.next_task_id not in tasks:
                     raise PermissionDenied("Lead task unavailable.")
-            if command_type == "lead.disposition":
+            if command_type in {"lead.disposition", "lead.complete_customer"}:
                 recorded_task = tasks.get(previous.result.get("task_id"))
                 if previous.result.get("task_id") and not recorded_task:
                     raise PermissionDenied("Recorded lead task unavailable.")
@@ -596,6 +605,30 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
                     raise ValidationError("An active lead requires a next action with a date.")
             lead.status, lead.reason = target, reason
             lead.revision += 1
+        elif command_type == "lead.complete_customer":
+            if lead.status not in ACTIVE_STATES | {"new"} or lead.result:
+                raise ValidationError("Контакт и компанию можно сохранить только из незавершённого лида.")
+            if lead.assignee_id is None:
+                grant = CrmAccess.objects.using(using).select_for_update().get(user=actor, organization=organization)
+                if not grant.take_leads or lead.status != "new":
+                    raise PermissionDenied("Free lead completion requires take access.")
+                lead.assignee = actor
+            if not _terminal(task):
+                from pool_service.services.task_feedback import version_for
+                if values.get("expected_task_version") != version_for(task):
+                    raise CommercialConflict("Следующий шаг изменён. Обновите карточку перед завершением лида.")
+            from .crm_conversion_contacts import resolve_conversion_customer
+            lead.client, lead.contact = resolve_conversion_customer(using, actor, organization, values["customer"])
+            _finish_next(using, actor, lead, task)
+            # Retain task provenance and its original client. A closed lead has
+            # no current reminder, even if its confirmed customer has changed.
+            if task:
+                additional["task_id"] = task.pk
+            lead.next_task = None
+            lead.status, lead.result = "closed", "customer_saved"
+            lead.reason = values.get("reason") or "Контакт или компания сохранены без создания сделки."
+            lead.follow_up_at = None
+            lead.revision += 1
         else:
             if command_type == "lead.qualify" and (lead.status not in ACTIVE_STATES | {"new"} or lead.result):
                 raise ValidationError("Only active leads can be qualified.")
@@ -722,6 +755,11 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
             diff["is_archived"] = {"before": before_archived, "after": lead.is_archived}
             diff["assignee_id"] = {"before": before_owner, "after": lead.assignee_id}
             diff["need_changed"] = {"before": False, "after": lead.need != before_need}
+        if command_type == "lead.complete_customer":
+            diff["result"] = {"before": before_result, "after": lead.result}
+            diff["assignee_id"] = {"before": before_owner, "after": lead.assignee_id}
+            diff["needs_review"] = {"before": before_review, "after": lead.needs_review}
+            diff["next_action_changed"] = {"before": False, "after": bool(task)}
         if command_type == "lead.disposition":
             diff["column"] = {"before": before_column, "after": lead_column(lead)}
             diff["result"] = {"before": before_result, "after": lead.result}
@@ -733,7 +771,7 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
         if command_type == "lead.edit":
             diff["need_changed"] = {"before": False, "after": True}
         event = CrmEvent.objects.using(using).create(organization=organization, lead=lead, command=command,
-            actor=actor, event_type=command_type, safe_diff=diff, reason=(lead.reason if command_type == "lead.disposition" and values["column"] == "history" else values.get("reason", "")))
+            actor=actor, event_type=command_type, safe_diff=diff, reason=(lead.reason if command_type == "lead.complete_customer" or command_type == "lead.disposition" and values["column"] == "history" else values.get("reason", "")))
         result = {"lead_id": lead.pk, "event_id": event.pk, "revision": lead.revision, **additional}
         if lead.next_task_id:
             result["task_id"] = lead.next_task_id

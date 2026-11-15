@@ -149,6 +149,7 @@ html[data-theme=dark] :is(#crm-live, #crm-leads) {
 :is(#crm-live, #crm-leads) :is(.crm-live-form-note,.lead-form-note) { font-size: 12px; line-height: 1.6; }
 #crm-leads .lead-dialog .lead-panel, #crm-leads .lead-dialog .lead-timeline { border-radius: 13px; padding: 20px; box-shadow: var(--crm-shadow); }
 #crm-leads .lead-dialog .lead-panel h3 { font-size: 13px; }
+#crm-leads .lead-dialog .lead-panel a { overflow-wrap: anywhere; }
 #crm-leads .lead-dialog .lead-customer-grid { gap: 20px; }
 #crm-leads .lead-customer-box { background: var(--crm-panel); border-radius: 13px; padding: 20px; gap: 16px; box-shadow: var(--crm-shadow); }
 #crm-leads .lead-customer-box legend { font-size: 15px; }
@@ -160,6 +161,24 @@ html[data-theme=dark] :is(#crm-live, #crm-leads) {
 #crm-leads .lead-conversion-details .lead-field:first-child { grid-column: auto; }
 #crm-leads .lead-conversion-heading { display: flex; align-items: center; gap: 9px; font-size: 15px; font-weight: 650; }
 #crm-leads .lead-step-number { display: inline-grid; place-items: center; width: 25px; height: 25px; border-radius: 8px; background: var(--crm-blue-soft); color: var(--crm-blue); font-size: 12px; }
+#crm-leads .lead-completion-intro { color: var(--crm-muted); font-size: 14px; margin: 0 0 20px; }
+#crm-leads .lead-completion-options { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; margin-bottom: 24px; }
+#crm-leads .lead-completion-option { display: grid; grid-template-columns: 34px minmax(0,1fr); gap: 7px 11px; align-content: start; text-align: left; border: 1px solid var(--crm-line); border-radius: 13px; padding: 18px; background: var(--crm-panel); color: var(--crm-text); min-width: 0; transition: border-color .15s, background .15s; }
+#crm-leads .lead-completion-option:hover, #crm-leads .lead-completion-option:focus-visible { border-color: var(--crm-blue); outline-color: var(--crm-blue); }
+#crm-leads .lead-completion-option[aria-pressed=true] { background: var(--crm-blue-soft); border-color: var(--crm-blue); box-shadow: inset 0 0 0 1px var(--crm-blue); }
+#crm-leads .lead-completion-option strong { align-self: center; font-size: 14px; line-height: 1.4; overflow-wrap: anywhere; }
+#crm-leads .lead-completion-symbol { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 9px; background: var(--crm-soft); color: var(--crm-blue); }
+#crm-leads .lead-completion-option[aria-pressed=true] .lead-completion-symbol { background: var(--crm-blue); color: #fff; }
+#crm-leads .lead-completion-symbol .crm-icon { width: 19px; height: 19px; }
+#crm-leads .lead-completion-description { grid-column: 2; font-size: 12px; line-height: 1.65; color: var(--crm-muted); }
+#crm-leads .lead-completion-panel > section { margin-top: 0; border-top: 0; padding-top: 0; }
+#crm-leads .lead-completion-panel > section > h3 { font-size: 16px; margin-bottom: 12px; }
+#crm-leads .lead-completion-summary { border: 1px solid var(--crm-line); border-radius: 12px; padding: 16px 18px; background: var(--crm-panel); margin: 20px 0 0; font-size: 13px; line-height: 1.6; }
+#crm-leads .lead-completion-summary strong { display: block; margin-bottom: 5px; }
+#crm-leads .lead-completion-summary p { margin: 4px 0 0; color: var(--crm-muted); }
+#crm-leads .lead-completion-result { display: flex; align-items: flex-start; gap: 12px; border: 1px solid var(--crm-line); background: var(--crm-blue-soft); padding: 15px 18px; border-radius: 12px; margin: 0 0 22px; font-size: 14px; }
+#crm-leads .lead-completion-result .crm-icon { color: var(--crm-blue); flex: none; margin-top: 2px; }
+#crm-leads .lead-completion-result p { margin: 0; }
 #crm-leads .lead-dialog .lead-checkbox input { width: 18px; height: 18px; min-height: 18px; padding: 0; }
 #crm-live .crm-live-table .crm-live-card { margin: 0; border: 0; border-top: 1px solid var(--crm-line); border-radius: 0; box-shadow: none; }
 #crm-live .crm-live-table .crm-live-card-owner { margin: 0; }
@@ -196,6 +215,10 @@ html[data-theme=dark] :is(#crm-live, #crm-leads) {
   :is(#crm-live, #crm-leads) .crm-live-dialog .crm-live-button { min-height: 44px; font-size: 13px; }
   #crm-leads .lead-customer-box, #crm-leads .lead-dialog .lead-conversion-next, #crm-leads .lead-deal-form { padding: 16px; }
   #crm-leads .lead-conversion-details .lead-fields { grid-template-columns: minmax(0,1fr); }
+  #crm-leads .lead-completion-options { grid-template-columns: minmax(0,1fr); gap: 9px; }
+  #crm-leads .lead-completion-option { padding: 13px 14px; gap: 2px 11px; }
+  #crm-leads .lead-completion-symbol { grid-row: 1 / span 2; }
+  #crm-leads .lead-completion-description { line-height: 1.5; }
   #crm-live .crm-live-table .crm-live-card { border: 1px solid var(--crm-line); border-radius: 12px; margin-bottom: 12px; }
   #crm-live .crm-live-table .crm-live-next { border-top: 1px solid var(--crm-line); padding-top: 12px; }
 }

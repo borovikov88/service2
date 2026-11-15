@@ -39,6 +39,7 @@ RESULTS = dict(CrmLead._meta.get_field("result").choices)
 EVENTS = {"lead.create": "Лид создан", "lead.take": "Обращение взято в работу",
     "lead.edit": "Карточка изменена", "lead.disposition": "Лид перемещён", "lead.transition": "Состояние изменено",
     "lead.qualify": "Квалификация завершена", "lead.add_deal": "Добавлена сделка",
+    "lead.complete_customer": "Контакт или компания сохранены без сделки",
     "lead.new_need": "Открыта новая потребность", "lead.incoming": "Поступило обращение",
     "lead.acknowledge": "Новое обращение разобрано как продолжение текущей работы",
     "lead.continuation": "Подтверждено продолжение потребности"}
@@ -76,6 +77,9 @@ def _capabilities(user, organization):
     from .models import OrganizationAccess
     capabilities['can_categorize_contacts'] = bool(enabled and not user.is_superuser and
         OrganizationAccess.objects.filter(user=user, organization=organization, role__in=('owner', 'admin')).exists())
+    from .client_queries import CONTACT_STAFF_ROLES
+    capabilities['can_save_customer'] = bool(enabled and not user.is_superuser and
+        OrganizationAccess.objects.filter(user=user, organization=organization, role__in=CONTACT_STAFF_ROLES).exists())
     return capabilities
 
 
@@ -116,6 +120,7 @@ def _serialize(lead, user, capabilities, *, detail=False, visible_tasks=None):
         "can_take": opened and lead.status == "new" and lead.assignee_id is None and capabilities["take_leads"],
         "can_edit": own and opened and capabilities["edit_own_leads"],
         "can_transition": own and opened and capabilities["transition_own_leads"],
+        "can_complete_customer": opened and not lead.result and capabilities["transition_own_leads"] and capabilities["can_save_customer"] and (own or lead.assignee_id is None and lead.status == "new" and capabilities["take_leads"]),
         "can_qualify": (own or lead.assignee_id is None and lead.status == "new" and capabilities["take_leads"]) and lead.status != "closed" and not lead.result and (not lead.is_archived or capabilities["transition_own_leads"]) and all(capabilities[name] for name in ("qualify_own_leads", "create_own_deals", "manage_own_next_action")),
         "can_edit_conversion_need": capabilities["edit_own_leads"],
         "can_categorize_contacts": capabilities['can_categorize_contacts'],
@@ -466,7 +471,7 @@ def command(request):
     allowed = {"operation_key", "command_type", "subject_id", "expected_revision", "changes"}
     if type(payload) is not dict or not payload.keys() <= allowed or not {"operation_key", "command_type", "changes"} <= payload.keys():
         raise ValidationError("Некорректный состав запроса.")
-    if type(payload["command_type"]) is not str or type(payload["changes"]) is not dict or payload["command_type"] not in {"lead.create", "lead.take", "lead.edit", "lead.transition", "lead.qualify", "lead.add_deal", "lead.new_need", "lead.acknowledge", "lead.disposition"}:
+    if type(payload["command_type"]) is not str or type(payload["changes"]) is not dict or payload["command_type"] not in {"lead.create", "lead.take", "lead.edit", "lead.transition", "lead.qualify", "lead.add_deal", "lead.new_need", "lead.acknowledge", "lead.disposition", "lead.complete_customer"}:
         raise ValidationError("Эта команда недоступна.")
     from .services.crm_lead_commands import execute_lead_command
     result = execute_lead_command(actor=request.user, organization=organization, **payload)

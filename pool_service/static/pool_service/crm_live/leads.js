@@ -276,6 +276,7 @@
       renderOperations();
     }
     async function moveLead(snapshot, target) {
+      if (target === "history") { conversionDialog(snapshot, false, null); return; }
       if (operations.forSubject(snapshot.id)) { notice("Сначала проверьте предыдущее сохранение этой карточки."); return; }
       const sequence = ++state.detailSequence; state.selected = snapshot.id; urlState();
       content.replaceChildren(el("h2", "", "Перемещение лида")); content.firstChild.id = "lead-dialog-title";
@@ -422,6 +423,8 @@
       const form = makeForm(host, "Результат разбора / ожидание"), fields = el("div", "lead-fields"); form.append(fields);
       const status = select(fields, "Состояние", [["working", "В работе"], ["qualifying", "Уточнение"], ["waiting", "Ожидание"], ["deferred", "Отложен"], ["closed", "Разбор завершён"]], lead.status === "new" ? "working" : lead.status);
       const result = select(fields, "Результат завершения", [["non_target", "Нецелевой"], ["spam", "Спам"], ["duplicate", "Продолжение существующей потребности"], ["no_deal", "Закрыт без сделки"], ["linked", "Относится к существующей сделке"]]);
+      if (lead.can_qualify) { const option = el("option", "", "Создать сделку, контакт/компанию"); option.value = "create_deal"; result.append(option); }
+      if (lead.can_complete_customer) { const option = el("option", "", "Сохранить контакт/компанию без сделки"); option.value = "save_customer"; result.append(option); }
       const reason = field(fields, "Причина / пояснение", "", "textarea", true); reason.maxLength = 500;
       const follow = field(fields, "Когда вернуться · " + initial.timezone, localDateTime(lead.follow_up_at, initial.timezone), "datetime-local");
       fields.append(el("p", "lead-field wide lead-form-note", "Подтвердите, что это та же потребность: телефон сам по себе не основание для связи. История сохранится, открытый шаг исходного лида отменится. Задачи и сделки выбранной работы не изменятся. Доступны ваши активные независимые лиды."));
@@ -429,14 +432,25 @@
       const update = () => { result.parentElement.hidden = status.value !== "closed"; follow.parentElement.hidden = !["waiting", "deferred"].includes(status.value); targets.element.hidden = status.value !== "closed" || !["duplicate", "linked"].includes(result.value); targets.clear(); };
       status.addEventListener("change", update); result.addEventListener("change", update); update();
       formSubmit(form, "Сохранить состояние", () => {
+        if (status.value === "closed" && ["create_deal", "save_customer"].includes(result.value)) { conversionDialog(lead, false, result.value === "create_deal" ? "deal" : "customer"); return; }
         const changes = {status: status.value, reason: reason.value.trim()};
         if (["waiting", "deferred"].includes(status.value)) { changes.follow_up_at = deadlineISO(follow.value, initial.utc_offset); if (lead.next_action && !lead.next_action.restricted && !lead.next_action.completed) changes.expected_task_version = lead.next_action.version; }
         if (status.value === "closed") { changes.result = result.value; if (result.value === "linked") changes.target_deal_id = targets.value(); if (result.value === "duplicate") changes.target_lead_id = targets.value(); }
         submit(form, "lead.transition", lead, changes);
       });
     }
-    function qualificationForm(host, lead, additional = false) {
-      const form = makeForm(host, "Данные сделки", "Выберите или создайте контакт. Компания необязательна. Все сведения сохранятся при подтверждении.");
+    function customerFields(host, lead, newByDefault = false, shared = null) {
+      if (shared?.editor) { host.append(shared.editor.element); return shared.editor; }
+      const savedContact = lead.contact || (lead.client?.client_type === "private" ? lead.client : null);
+      const savedCompany = lead.company || (lead.client?.client_type === "legal" ? lead.client : null);
+      const editor = win.Service2CustomerEditor.mount(host, {lookupUrl:initial.urls.clients, organizationId:initial.organization_id, canCategorize:initial.can_categorize_contacts,
+        contact:savedContact || {name:lead.source?.contact_name || "", phone:lead.source?.phone || ""}, company:savedCompany,
+        contactMode:newByDefault || lead.source?.phone || lead.source?.contact_name ? "new" : "existing"});
+      if (shared) shared.editor = editor;
+      return editor;
+    }
+    function qualificationForm(host, lead, additional = false, sharedCustomer = null) {
+      const form = makeForm(host, "Данные сделки", "Можно создать контакт, компанию или оба сразу. Они будут связаны между собой и со сделкой после подтверждения.");
       form.classList.add("lead-conversion-form");
       form.parentElement.classList.add("lead-conversion");
       const stepHeading=(number,label)=>{const heading=el("h3","lead-conversion-heading"),badge=el("span","lead-step-number",number);badge.setAttribute("aria-hidden","true");heading.append(badge,el("span","lead-step-label",label));return heading;};
@@ -448,11 +462,8 @@
       const pipeline=select(fields,"Воронка",initial.pipelines.map(p=>[String(p.id),p.name]),String(initial.pipelines.find(p=>p.code===lead.direction)?.id || initial.pipelines[0]?.id || ""));pipeline.required=true;
       const need=additional?null:field(fields,"Потребность",lead.need||"","textarea",true);if(need){need.required=true;need.maxLength=10000;need.readOnly=!lead.can_edit_conversion_need;if(!lead.can_edit_conversion_need&&!lead.need)form.append(el("p","lead-error","Для уточнения потребности требуется право редактирования лида."));}
       const customerSection=el("section","lead-conversion-section lead-conversion-customer");customerSection.append(stepHeading("2","Контакт и компания"));form.append(customerSection);
-      const savedContact=lead.contact || (lead.client?.client_type==="private" ? lead.client : null);
-      const savedCompany=lead.company || (lead.client?.client_type==="legal" ? lead.client : null);
-      const customerEditor=win.Service2CustomerEditor.mount(customerSection, {lookupUrl:initial.urls.clients,organizationId:initial.organization_id,canCategorize:initial.can_categorize_contacts,
-        contact:savedContact || {name:lead.source?.contact_name || "",phone:lead.source?.phone || ""},company:savedCompany,
-        contactMode:lead.source?.phone||lead.source?.contact_name?"new":"existing"});
+      const customerEditor=customerFields(customerSection, lead, false, sharedCustomer);
+      sharedCustomer?.hosts.set("deal", customerSection);
       const toggleFields=(container,visible)=>{container.hidden=!visible;container.querySelectorAll("input,select,textarea").forEach(input=>{input.disabled=!visible;});};
       const transferable=!additional&&lead.next_action&&!lead.next_action.completed&&!lead.next_action.restricted&&!lead.next_action.waiting;
       const nextSection=el("section","lead-conversion-section lead-conversion-next");nextSection.append(stepHeading("3","Следующее действие"));form.append(nextSection);
@@ -468,12 +479,79 @@
       });
       const cancel=button("Отмена",()=>openLead(lead.id));cancel.classList.add("lead-cancel");form.append(cancel);
     }
+    function completeCustomerForm(host, lead, sharedCustomer = null) {
+      const form = makeForm(host, "Контакт и компания", "Сохраните контакт, компанию или оба сразу. Они останутся связаны с этим лидом. Сделка не создаётся.");
+      form.dataset.completionForm = "customer";
+      if (!lead.assignee) form.append(el("p", "lead-form-note", "При подтверждении вы возьмёте свободный лид на себя."));
+      const customerHost = el("div"); form.append(customerHost);
+      const editor = customerFields(customerHost, lead, true, sharedCustomer);
+      sharedCustomer?.hosts.set("customer", customerHost);
+      const reason = field(form, "Комментарий к завершению", "", "textarea", true); reason.maxLength = 500;
+      const summary = el("div", "lead-completion-summary");
+      summary.append(el("strong", "", "Что произойдёт после сохранения"), el("p", "", "Лид перейдёт в «Завершённые». Выбранные записи сохранятся в справочнике."));
+      if (lead.next_action && !lead.next_action.completed) summary.append(el("p", "", "Незавершённый шаг лида будет отменён с сохранением истории."));
+      form.append(summary);
+      formSubmit(form, "Сохранить и завершить лид", () => {
+        const changes = {customer:editor.value(), reason:reason.value.trim()};
+        if (lead.next_action?.version && !lead.next_action.completed) changes.expected_task_version = lead.next_action.version;
+        submit(form, "lead.complete_customer", lead, changes);
+      });
+      const cancel = button("Отмена", () => openLead(lead.id)); cancel.classList.add("lead-cancel"); form.append(cancel);
+    }
+    function completeEmptyForm(host, lead) {
+      const form = makeForm(host, "Завершить без создания", "Новые записи не создаются. История и уже связанные контакты, компании и сделки сохранятся.");
+      form.dataset.completionForm = "empty";
+      const reason = field(form, "Комментарий к завершению", "", "textarea", true); reason.maxLength = 500;
+      if (lead.next_action && !lead.next_action.completed) form.append(el("p", "lead-form-note", "Незавершённый шаг лида будет отменён с сохранением истории."));
+      formSubmit(form, "Подтвердить завершение", () => {
+        const changes = {column:"history", reason:reason.value.trim()};
+        if (lead.next_action?.version && !lead.next_action.completed) changes.expected_task_version = lead.next_action.version;
+        submit(form, "lead.disposition", lead, changes);
+      });
+      const cancel = button("Отмена", () => openLead(lead.id)); cancel.classList.add("lead-cancel"); form.append(cancel);
+    }
+    function completionOptions(host, lead, selectedMode) {
+      const choices = el("div", "lead-completion-options"); choices.setAttribute("role", "group"); choices.setAttribute("aria-label", "Результат завершения лида");
+      host.append(el("p", "lead-completion-intro", "Выберите, что нужно сохранить по итогам обращения."), choices);
+      const panels = new Map(), buttons = new Map(), customer = {editor:null, hosts:new Map()};
+      const definitions = [
+        ["deal", "Создать сделку", "Сделка", "Контакт, компания или оба — вместе со сделкой.", lead.can_qualify, () => qualificationForm(panels.get("deal"), lead, false, customer)],
+        ["customer", "Сохранить контакт/компанию", "Контакт / компания", "Сохранить в справочник и завершить лид без сделки.", lead.can_complete_customer, () => completeCustomerForm(panels.get("customer"), lead, customer)],
+        ["empty", "Завершить без создания", "Без создания", "Завершить разбор обращения без новых записей.", moveTargets(lead).includes("history"), () => completeEmptyForm(panels.get("empty"), lead)]
+      ];
+      const activate = (key, build) => {
+        if (operations.forSubject(lead.id)) return;
+        for (const [mode, panel] of panels) { panel.hidden = mode !== key; buttons.get(mode).setAttribute("aria-pressed", String(mode === key)); }
+        const panel = panels.get(key); if (!panel.childNodes.length) build();
+        // Keep entered identities when the user changes the completion result.
+        if (customer.hosts.has(key)) customer.hosts.get(key).append(customer.editor.element);
+        byId("lead-dialog-title").textContent = key === "deal" ? "Создать сделку" : key === "customer" ? "Сохранить контакт/компанию" : "Завершить лид";
+        renderOperations();
+      };
+      for (const [key, name, label, description, allowed, build] of definitions) {
+        if (!allowed) continue;
+        const option = button("", () => activate(key, build)); option.className = "lead-completion-option"; option.dataset.completionMode = key;
+        option.setAttribute("aria-label", name); option.setAttribute("aria-pressed", "false");
+        const symbol = el("span", "lead-completion-symbol"); symbol.append(icon(key === "deal" ? "note" : key === "customer" ? "user" : "check"));
+        option.append(symbol, el("strong", "", label), el("span", "lead-completion-description", description)); choices.append(option); buttons.set(key, option);
+        const panel = el("div", "lead-completion-panel"); panel.dataset.completionPanel = key; panel.hidden = true; panels.set(key, panel); host.append(panel);
+      }
+      const selected = definitions.find(([key,,,, allowed]) => key === selectedMode && allowed);
+      if (selected) activate(selected[0], selected[5]);
+      else if (!buttons.size) host.append(el("p", "lead-error", "Завершение этого лида сейчас недоступно."));
+    }
     function renderDetail(data) {
       const lead=data.lead;state.detail=data;content.replaceChildren();
       content.append(el("h2","",displayTitle(lead)));content.firstChild.id="lead-dialog-title";
       content.append(el("p","lead-summary",[lead.status_label,lead.source?.label,lead.assignee?.name || "Не назначен"].filter(Boolean).join(" · ")));
       const primaryActions=el("div","lead-primary-actions");content.append(primaryActions);
       if(lead.can_qualify)primaryActions.append(button("Создать сделку",()=>conversionDialog(lead),true));
+      if(lead.can_complete_customer || moveTargets(lead).includes("history")) primaryActions.append(button("Завершить лид",()=>conversionDialog(lead,false,null),!lead.can_qualify));
+      if (lead.result === "customer_saved") {
+        const result = el("div", "lead-completion-result");
+        result.append(icon("check"), el("p", "", (lead.contact && lead.company ? "Контакт и компания сохранены." : lead.company ? "Компания сохранена." : "Контакт сохранён.") + " Сделка не создавалась."));
+        content.append(result);
+      }
       const layout=el("div","lead-detail-grid"), left=el("div","lead-detail-main"), right=el("section","lead-timeline");layout.append(left,right);content.append(layout);
       const need=el("section","lead-panel lead-overview");need.append(el("h3","","Потребность"),el("p","lead-need",lead.need || "Уточните, что требуется клиенту."));left.append(need);
       const contact=el("section","lead-panel");contact.append(el("h3","","Контакт и компания"));
@@ -531,10 +609,10 @@
       const audit=el("details","lead-audit");audit.append(el("summary","","Служебная история"));
       for(const event of data.events||[])audit.append(el("p","",[event.label,dateText(event.at),event.actor,event.movement,event.reason].filter(Boolean).join(" · ")));content.append(audit);renderOperations();
     }
-    async function conversionDialog(snapshot, additional = false) {
+    async function conversionDialog(snapshot, additional = false, selectedMode = "deal") {
       if(operations.forSubject(snapshot.id))return;
-      const sequence=++state.detailSequence;state.selected=snapshot.id;urlState();content.replaceChildren(el("h2","",additional?"Дополнительная сделка":"Создать сделку"));content.firstChild.id="lead-dialog-title";if(!dialog.open)dialog.showModal();
-      try{const data=await read(initial.urls.detail_prefix+snapshot.id+"/?org_id="+initial.organization_id);if(sequence!==state.detailSequence)return;if(!(additional?data.lead.can_add_deal:data.lead.can_qualify))throw new Error("Создание сделки сейчас недоступно. Обновите карточку лида.");if(data.lead.revision!==snapshot.revision)throw new Error("Лид изменился. Откройте его повторно.");qualificationForm(content,data.lead,additional);renderOperations();}catch(error){if(sequence===state.detailSequence)errorNode(content,error);}
+      const sequence=++state.detailSequence;state.selected=snapshot.id;urlState();content.replaceChildren(el("h2","",additional?"Дополнительная сделка":selectedMode==="deal"?"Создать сделку":"Завершить лид"));content.firstChild.id="lead-dialog-title";if(!dialog.open)dialog.showModal();
+      try{const data=await read(initial.urls.detail_prefix+snapshot.id+"/?org_id="+initial.organization_id);if(sequence!==state.detailSequence)return;if(additional&&!data.lead.can_add_deal)throw new Error("Создание сделки сейчас недоступно. Обновите карточку лида.");if(data.lead.revision!==snapshot.revision)throw new Error("Лид изменился. Откройте его повторно.");if(additional)qualificationForm(content,data.lead,true);else completionOptions(content,data.lead,selectedMode);renderOperations();}catch(error){if(sequence===state.detailSequence)errorNode(content,error);}
     }
     async function openLead(id) {
       const sequence = ++state.detailSequence; state.selected = Number(id); urlState(); content.replaceChildren(el("p", "", "Загружаем карточку…")); if (!dialog.open) dialog.showModal();

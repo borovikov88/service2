@@ -75,7 +75,8 @@ const {chromium} = require('playwright');
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1),'390px page must not overflow outside the scrollable board');
     await page.reload();await inColumn('unparsed');await noModal();
     await page.setViewportSize({width:1440,height:1000});await card().dragTo(page.locator('[data-column=history] h2'));
-    await page.getByText('Лид будет завершён без создания сделки. Открытый следующий шаг отменится; сделки, выполнение и оплата не изменятся.').waitFor();
+    await page.getByRole('button',{name:'Завершить без создания',exact:true}).click();
+    await page.getByText('Новые записи не создаются. История и уже связанные контакты, компании и сделки сохранятся.').waitFor();
     assert.equal(await page.getByLabel('Причина перемещения',{exact:true}).count(),0);await confirm();await inColumn('history');await close();assert.deepEqual(errors,[]);
     console.log('Lead kanban: real drag, immutable replay, reload, spam/trash restore, live search, keyboard, 390px and dark passed');
   } finally {await browser.close();}
