@@ -9,7 +9,8 @@ const {chromium} = require('playwright');
   const bootstrap=readFileSync(require.resolve('bootstrap/dist/js/bootstrap.bundle.min.js'),'utf8');
   const browser=await chromium.launch({headless:true});
   try {
-    const context=await browser.newContext({viewport:{width:1440,height:1000},hasTouch:true,serviceWorkers:'block'});
+    // Show all six archive queues for cross-column native drag; the failure dock is tested at 1440px separately.
+    const context=await browser.newContext({viewport:{width:1760,height:1000},hasTouch:true,serviceWorkers:'block'});
     await context.addCookies([{name:f.sessionCookieName,value:f.sessionCookie,url:f.base}]);
     await context.route('**/*',route=>{
       const url=route.request().url();
@@ -22,7 +23,7 @@ const {chromium} = require('playwright');
     page.on('response',async response=>{if(new URL(response.url()).pathname===f.command&&response.request().method()==='POST'){
       try{const data=await response.json();commandResults.push({status:response.status(),code:data.code,error:data.error,lead:data.lead&&{status:data.lead.status,result:data.lead.result,revision:data.lead.revision}});}catch(_){}
     }});
-    const inColumn=async key=>{try{await page.locator(`[data-column="${key}"] [data-lead-id="${f.leadId}"]`).waitFor();}
+    const inColumn=async key=>{try{await page.waitForFunction(({key,id})=>document.querySelector('#lead-list')?.getAttribute('aria-busy')==='false'&&document.querySelector(`[data-column="${key}"] [data-lead-id="${id}"]`)&&document.querySelector('#lead-operations')?.children.length===0,{key,id:f.leadId});}
       catch(error){throw new Error(error.message+'\nSynthetic command results: '+JSON.stringify(commandResults)+'\nSynthetic navigation: '+JSON.stringify({url:page.url(),title:await page.title(),text:(await page.locator('body').innerText()).slice(0,1800),errors}));}};
     const confirm=async(next=false)=>{
       await page.locator('#lead-dialog button[type=submit]').waitFor();
@@ -37,9 +38,10 @@ const {chromium} = require('playwright');
     };
     const noModal=async()=>assert.equal(await page.locator('#lead-dialog').evaluate(node=>node.open),false,'Reload must keep the closed card closed');
     await page.goto(f.base+f.workspace);await inColumn('unparsed');
-    assert.deepEqual(await page.locator('.lead-column h2').allTextContents(),['Не разобраны · 1','В работе · 0','Завершённые · 0']);
+    const columnHeadings=()=>page.locator('.lead-column h2').evaluateAll(nodes=>nodes.map(node=>node.getAttribute('aria-label')));
+    assert.deepEqual(await columnHeadings(),['Не разобраны · 1','В работе · 0','Завершённые · 0','Лид провален · 0']);
     await page.getByRole('button',{name:'Спам и удалённые',exact:true}).click();
-    assert.deepEqual(await page.locator('.lead-column h2').allTextContents(),['Не разобраны · 1','В работе · 0','Завершённые · 0','Спам · 0','Удалённые · 0']);
+    assert.deepEqual(await columnHeadings(),['Не разобраны · 1','В работе · 0','Завершённые · 0','Лид провален · 0','Спам · 0','Удалённые · 0']);
     const sent=[];let lose=true;
     await context.route('**'+f.command+'*',async route=>{
       if(route.request().method()!=='POST')return route.continue();
@@ -74,7 +76,8 @@ const {chromium} = require('playwright');
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1),'390px page must not overflow outside the scrollable board');
     await page.reload();await inColumn('unparsed');await noModal();
     await page.setViewportSize({width:1440,height:1000});await card().dragTo(page.locator('[data-column=history] h2'));
-    await page.getByText('Лид будет завершён без создания сделки. Открытый следующий шаг отменится; сделки, выполнение и оплата не изменятся.').waitFor();
+    await page.getByRole('button',{name:'Завершить без создания',exact:true}).click();
+    await page.getByText('Новые записи не создаются. История и уже связанные контакты, компании и сделки сохранятся.').waitFor();
     assert.equal(await page.getByLabel('Причина перемещения',{exact:true}).count(),0);await confirm();await inColumn('history');await close();assert.deepEqual(errors,[]);
     console.log('Lead kanban: real drag, immutable replay, reload, spam/trash restore, live search, keyboard, 390px and dark passed');
   } finally {await browser.close();}

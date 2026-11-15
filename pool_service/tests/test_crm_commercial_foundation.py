@@ -236,7 +236,7 @@ class CommercialFoundationTests(TestCase):
         from pool_service.models import CrmItem
         legacy = CrmItem.objects.create(organization=self.a, title="Legacy", direction="project", stage="prj_idea")
         before = CrmItem.objects.filter(pk=legacy.pk).values().get()
-        self.assertEqual(bootstrap_commercial_settings(self.a.pk), (4, 30))
+        self.assertEqual(bootstrap_commercial_settings(self.a.pk), (4, 34))
         pipeline = CrmPipeline.objects.get(organization=self.a, code="construction")
         stage = pipeline.stages.get(code="need")
         pipeline.name, pipeline.position, pipeline.is_active = "Custom", 99, False

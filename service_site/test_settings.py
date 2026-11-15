@@ -24,6 +24,10 @@ if SQLITE_LIVE_SERVER_TEST:
     DATABASES["default"]["TEST"] = {
         "NAME": os.path.join(_TEST_DATABASE_DIR.name, "test.sqlite3"),
     }
+    # Acquire SQLite's writer reservation at atomic() entry. Deferred upgrades
+    # can fail immediately when background browser lookups overlap a POST.
+    # This applies only to the disposable LiveServer DB, never production MySQL.
+    DATABASES["default"]["OPTIONS"] = {"transaction_mode": "IMMEDIATE"}
 DEBUG = True
 ALLOWED_HOSTS = ["testserver", "localhost", "127.0.0.1"]
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]

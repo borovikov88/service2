@@ -828,6 +828,7 @@ class Notification(models.Model):
         ("finance", "finance"),
         ("development", "development"),
         ("communication", "communication"),
+        ("crm_assignment", "crm_assignment"),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="notifications")
@@ -3389,3 +3390,5 @@ from . import crm_recurring_models  # noqa: E402,F401
 from . import crm_board_models  # noqa: E402,F401
 
 from . import crm_material_models  # noqa: F401,E402
+from . import crm_order_models  # noqa: F401,E402
+from . import crm_assignment_models  # noqa: F401,E402

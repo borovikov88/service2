@@ -100,7 +100,7 @@ def _create_identity(using, actor, organization, kind, value):
         inn=value.get('inn') or None, email=value.get('email') or '')
     if key:
         contact.phone=canonical_phone_value(value['phone']);contact.save(using=using, update_fields=['phone'])
-        ClientContact.objects.using(using).create(client=contact,kind='phone',value=contact.phone,match_value=key,is_primary=True,phone_type='other',source_reference='crm-explicit-conversion')
+        ClientContact.objects.using(using).create(client=contact,kind='phone',value=contact.phone,match_value=key,is_primary=True,phone_type='other',sources=['manual'],source_reference='crm-explicit-conversion')
     if value.get('email'):
         ClientContact.objects.using(using).create(client=contact, kind='email', value=value['email'],
             match_value=value['email'].casefold(), is_primary=True, sources=['manual'], source_reference='crm-explicit-conversion')

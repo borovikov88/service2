@@ -5,7 +5,6 @@ from django.test import SimpleTestCase
 class AdminDesktopRedesignTests(SimpleTestCase):
     templates = [
         "pool_service/clients.html",
-        "pool_service/client_create.html",
         "pool_service/users.html",
         "pool_service/organization_norms.html",
         "pool_service/profile.html",
@@ -44,6 +43,12 @@ class AdminDesktopRedesignTests(SimpleTestCase):
         self.assertIn("admin-page-header", source)
         self.assertIn("admin-card", source)
         self.assertIn("admin-form", source)
+
+    def test_contact_creation_uses_shared_crm_editor(self):
+        source = get_template("pool_service/client_create.html").template.source
+        self.assertIn("pool_service/customer_editor.css", source)
+        self.assertIn("pool_service/customer_editor.js", source)
+        self.assertIn('id="contact-create-root"', source)
 
     def test_visual_qa_desktop_density_regressions(self):
         reading = get_template("pool_service/water_reading_form.html").template.source

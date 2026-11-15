@@ -162,6 +162,39 @@ class CRMCallPageIntegrationTests(TestCase):
         call.refresh_from_db()
         self.assertIsNone(call.client_id)
 
+    def test_created_call_phone_remains_manual_when_replaced(self):
+        from pool_service.client_crm_ui import sync_primary_contact
+        from pool_service.client_phone_matching import clients_by_phone
+        call = self.call()
+        result = self.client.post(reverse("communication_call_client_create", args=[call.pk]), {"name": "Synthetic manual phone", "client_type": "private"})
+        self.assertEqual(result.status_code, 302)
+        customer = Client.objects.get(name="Synthetic manual phone")
+        self.assertEqual(customer.crm_contacts.get(kind="phone").sources, ["manual"])
+        old_phone = customer.phone
+        customer.phone = "+7 900 555 0019"
+        customer.save(update_fields=["phone"])
+        sync_primary_contact(customer, ClientContact.KIND_PHONE, old_phone, customer.phone)
+        self.assertEqual(customer.crm_contacts.filter(kind="phone").count(), 1)
+        self.assertFalse(clients_by_phone(self.org, old_phone))
+        call.refresh_from_db()
+        self.assertIsNone(call.client_id)
+
+    def test_call_creation_uses_shared_identity_validation_and_fields(self):
+        call = self.call()
+        url = reverse("communication_call_client_create", args=[call.pk])
+        page = self.client.get(url)
+        self.assertContains(page, "customer_editor.js?v=20261115-unified")
+        self.assertEqual(page.context["call_customer_bootstrap"]["phone"], "+7 900 123 4567")
+        self.customer(name="Existing synthetic identity", phone="+7 900 555 0001", email="existing@example.invalid")
+        before = Client.objects.count()
+        duplicate = self.client.post(url, {"client_type": "private", "name": "New synthetic name", "email": "existing@example.invalid"})
+        self.assertEqual(duplicate.status_code, 200)
+        self.assertTrue(duplicate.context["client_form"].non_field_errors())
+        invalid = self.client.post(url, {"client_type": "legal", "name": "New synthetic company", "inn": "bad-inn"})
+        self.assertEqual(invalid.status_code, 200)
+        self.assertTrue(invalid.context["client_form"].non_field_errors())
+        self.assertEqual(Client.objects.count(), before)
+
     def test_invalid_form_is_atomic_and_external_return_is_not_used(self):
         call = self.call()
         url = reverse("communication_call_client_create", args=[call.pk])

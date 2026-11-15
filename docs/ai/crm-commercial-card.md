@@ -91,8 +91,9 @@ The existing crm_close default stays OFF; no activation or permission grant is
 included. The frontend hides this action when unavailable; closed history
 remains readable regardless of that write flag.
 
-Only lost/cancelled from the current first three preparatory stages are
-supported. A fresh nonempty reason up to 500 characters and the current task
+Lost/cancelled are supported from any open, nonarchived deal in an active
+pipeline and stage. Lost also requires an active `failed` stage and moves the
+deal into it; cancellation retains the current stage. A fresh nonempty reason up to 500 characters and the current task
 version (or explicit NULL when no pointer exists) are required. Organization,
 pointer, current/replay tasks, current authority and the deal graph are checked
 under the existing lock order. The active own reminder is cancelled and

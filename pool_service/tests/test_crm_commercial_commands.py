@@ -175,7 +175,7 @@ class CommercialCommandTests(CommandFixture, TestCase):
 
     def test_all_manual_stages_keep_financial_and_execution_facts_unknown(self):
         for pipeline in CrmPipeline.objects.filter(organization=self.org):
-            stages = list(pipeline.stages.order_by("position", "pk"))
+            stages = list(pipeline.stages.exclude(code="failed").order_by("position", "pk"))
             deal = CrmDeal.objects.create(organization=self.org, manager=self.user,
                 pipeline=pipeline, stage=stages[0], title="Synthetic manual progress")
             revision = 0

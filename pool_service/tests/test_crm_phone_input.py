@@ -77,7 +77,9 @@ class CRMPhoneWidgetTests(SimpleTestCase):
         source = get_template("pool_service/client_create.html").template.source
         self.assertNotIn("formatPhone", source)
         self.assertNotIn(".phone-mask", source)
-        self.assertIn("{% crm_phone_input form.phone %}", source)
+        self.assertIn("pool_service/customer_editor.js", source)
+        editor = Path(finders.find("pool_service/customer_editor.js")).read_text(encoding="utf-8")
+        self.assertIn("crmPhone", editor)
 
     def test_shared_mask_excludes_crm_marker_from_every_selector(self):
         path = finders.find("assets/js/base-shell-post-a.js")
@@ -109,12 +111,12 @@ class CRMPhoneBrowserFormTests(TestCase):
             "inn": "", "contact_position": "",
         }
 
-    def test_create_form_phone_is_not_selected_by_global_mask(self):
+    def test_create_form_mounts_shared_phone_editor(self):
         response = self.client.get(reverse("client_create"))
         self.assertEqual(response.status_code, 200)
-        field = crm_input(response.content.decode())
-        self.assertEqual(field["name"], "phone")
-        self.assertNotIn("phone-mask", field["class"].split())
+        self.assertContains(response, "pool_service/customer_editor.js")
+        self.assertContains(response, 'id="contact-create-bootstrap"')
+        self.assertEqual(response.context["contact_create_bootstrap"]["organization_id"], self.organization.pk)
 
     def test_foreign_phone_survives_edit_of_another_field(self):
         for phone in ("+358 40 123 4567", "358401234567", "+49 30 123456"):
@@ -140,12 +142,13 @@ class CRMPhoneBrowserFormTests(TestCase):
 
     def test_invalid_form_redisplays_foreign_phone_unchanged(self):
         data = self.payload("+358 40 123 4567")
+        data["first_name"] = ""
         data["last_name"] = ""
         response = post_current_form(self.client, reverse("client_create"), data)
         self.assertEqual(response.status_code, 200)
-        field = crm_input(response.content.decode())
-        self.assertEqual(field["value"], data["phone"])
-        self.assertNotIn("phone-mask", field["class"].split())
+        draft = response.context["contact_create_bootstrap"]
+        self.assertEqual(draft["customer"]["contact"]["phone"], data["phone"])
+        self.assertTrue(draft["errors"])
         self.assertFalse(Client.objects.filter(organization=self.organization).exists())
 
     def test_unmasked_russian_input_is_formatted_by_server(self):

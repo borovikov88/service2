@@ -15,7 +15,7 @@ from pool_service.call_processing_models import CallPrivateNumber
 from pool_service.communication_models import CommunicationAccess, PhoneCall, TelephonyEmployeeIdentity
 from pool_service.crm_commercial_models import CrmAccess, CrmEvent, CrmIntakeActivation, CrmLead, CrmLeadSource, CrmLeadThread
 from pool_service.crm_inbox_models import CrmInboxEvent
-from pool_service.models import Employee, Organization, OrganizationAccess, ServiceTask
+from pool_service.models import Employee, Notification, Organization, OrganizationAccess, ServiceTask
 from pool_service.services.crm_inbox import claim_one, deliver_claim
 from pool_service.services.crm_lead_access import can_read_lead, leads_for_user, source_metadata
 from pool_service.services.crm_lead_intake import consume_incoming
@@ -140,6 +140,9 @@ class LeadIntakeTests(Fixture, TestCase):
         self.assertTrue(lead.needs_review)
         self.assertIsNone(lead.next_task_id)
         self.assertIsNone(lead.follow_up_at)
+        notice = Notification.objects.get(kind='crm_assignment', user=self.user)
+        self.assertIn(f'lead={lead.pk}', notice.action_url)
+        self.assertEqual(Notification.objects.filter(kind='crm_assignment').count(), 1)
 
     def test_missed_or_unmapped_stays_free_and_late_answer_cannot_replace_owner(self):
         self.mapped_call(status="missed")
@@ -253,7 +256,7 @@ class LeadIntakeTests(Fixture, TestCase):
         self.assertEqual(execute_lead_command(**payload), first)
         self.client.force_login(self.user)
         url = reverse("crm_live_lead_data") + "?org_id=" + str(self.org.pk)
-        self.assertEqual({column["key"]: column["total"] for column in self.client.get(url).json()["columns"]}, {"unparsed": 0, "working": 0, "history": 0, "spam": 1, "deleted": 0})
+        self.assertEqual({column["key"]: column["total"] for column in self.client.get(url).json()["columns"]}, {"unparsed": 0, "working": 0, "history": 0, "failed": 0, "spam": 1, "deleted": 0})
         execute_lead_command(actor=self.user, organization=self.org, operation_key="source-trash-synthetic",
             command_type="lead.disposition", subject_id=lead.pk, expected_revision=lead.revision,
             changes={"column": "deleted", "reason": "Synthetic removal"})
@@ -261,7 +264,7 @@ class LeadIntakeTests(Fixture, TestCase):
         lead.refresh_from_db()
         self.assertTrue(lead.is_archived)
         self.assertEqual((lead.status, lead.result, CrmLeadSource.objects.filter(lead=lead).count()), ("closed", "spam", 3))
-        self.assertEqual({column["key"]: column["total"] for column in self.client.get(url).json()["columns"]}, {"unparsed": 0, "working": 0, "history": 0, "spam": 0, "deleted": 1})
+        self.assertEqual({column["key"]: column["total"] for column in self.client.get(url).json()["columns"]}, {"unparsed": 0, "working": 0, "history": 0, "failed": 0, "spam": 0, "deleted": 1})
         CommunicationAccess.objects.filter(user=self.user, organization=self.org).update(can_view_conversations=False)
         self.assertEqual(self.client.get(url).json()["total"], 0)
         self.assertEqual(self.client.get(reverse("crm_live_lead_detail", args=[lead.pk]) + "?org_id=" + str(self.org.pk)).status_code, 404)

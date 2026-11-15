@@ -228,6 +228,13 @@
 
   async function finishRefresh(stepUrl, cursor) {
     const finished = await runSteps(stepUrl, cursor);
+    const sourceProgress = finished.progress || {};
+    if ([sourceProgress.finance_position_state, sourceProgress.money_forecast_state,
+      sourceProgress.crm_orders_state].some(state => ["retryable_error", "failed"].includes(state))) {
+      throw new Error(finished.message || sourceProgress.crm_orders_error ||
+        sourceProgress.money_forecast_error || sourceProgress.finance_position_error ||
+        "Не все данные 1С обновлены. Проверьте состояние источников.");
+    }
     if (finished.status !== "completed") {
       throw new Error(
         finished.message ||

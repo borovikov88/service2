@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.db.models import Count, F, Q, Sum, OuterRef, Subquery
+from django.db.models import Case, Count, F, Q, Sum, OuterRef, Subquery, Value, When, BigIntegerField
 from django.db import transaction
 from .services.crm_board_cursor import BoardReset, epoch, portion, cursor_time
 from django.http import Http404, JsonResponse
@@ -25,11 +25,11 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_POST
 
 from .client_queries import active_clients
-from .crm_commercial_models import CrmAccess, CrmDeal, CrmEvent, CrmPipeline
+from .crm_commercial_models import CrmAccess, CrmDeal, CrmEvent, CrmPipeline, CrmStage
 from .models import Client, Organization, OrganizationAccess, ServiceTask
 from .services.crm_commercial_access import can_view_team_deals
 from .services.crm_commercial_commands import (
-    CARD_FIELDS, PREPARATORY_STAGES, MANUAL_STAGES, FINAL_STAGE_REASON, CommercialConflict, close_commercial_deal_negative, create_commercial_deal,
+    CARD_FIELDS, MANUAL_STAGES, FINAL_STAGE_REASON, CommercialConflict, close_commercial_deal_negative, create_commercial_deal,
     execute_commercial_command, set_deal_next_action,
 )
 from .services.task_feedback import version_for, waiting_control
@@ -44,6 +44,11 @@ EVENT_LABELS = {
     "deal.close_negative": "Сделка завершена отказом или отменой",
     "deal.transition": "Этап сделки изменён",
     "deal.next_action": "Следующее действие изменено",
+    "deal.bind_order": "Заказ 1С связан со сделкой",
+    "deal.unbind_order": "Связь с заказом 1С снята",
+    "deal.onec_completed": "Сделка автоматически завершена по данным 1С",
+    "deal.onec_review": "Данные 1С требуют сверки",
+    "deal.assign": "Ответственный за сделку изменён",
 }
 
 
@@ -184,6 +189,8 @@ def _object_data(deal, pools, owned):
 
 
 def _serialize_deals(deals, user, organization, grant, *, detail=False):
+    failure_pipelines = set(CrmStage.objects.filter(pipeline__organization=organization,
+        code="failed", is_active=True).values_list("pipeline_id", flat=True))
     deals = list(deals)
     final_ids = [deal.pk for deal in deals if deal.stage.code == "completed" and deal.outcome == "open"]
     evidence = dict(CrmDeal.objects.filter(organization=organization,pk__in=final_ids).annotate(
@@ -226,6 +233,7 @@ def _serialize_deals(deals, user, organization, grant, *, detail=False):
         rows.append({
             "id": deal.pk, "title": deal.title, "revision": deal.revision,
             "pipeline_id": deal.pipeline_id, "stage_id": deal.stage_id,
+            "board_stage_id": getattr(deal, "board_stage_id", deal.stage_id),
             "outcome": deal.outcome, "is_archived": deal.is_archived,
             "unverified_completion_stage": deal.stage.code == "completed" and deal.outcome == "open",
             "manual_completion": deal.pk in final_ids and (evidence.get(deal.pk) or {}).get("manual_completion_exception",{}).get("after") is True,
@@ -239,7 +247,8 @@ def _serialize_deals(deals, user, organization, grant, *, detail=False):
             "can_close_negative": writable and organization.crm_close
                 and _write_capability(grant, organization, "transition_own_deals")
                 and _write_capability(grant, organization, "manage_own_next_action")
-                and deal.stage.code in PREPARATORY_STAGES.get(deal.pipeline.code, ())
+                and deal.pipeline.is_active and deal.stage.is_active
+                and deal.pipeline_id in failure_pipelines
                 and not (next_action and (next_action.get("restricted") or next_action.get("waiting"))),
             "client": {"id": deal.client_id, "name": deal.client.name,
                 "url": reverse("client_detail", args=[deal.client_id]) if client_card_access else ""} if deal.client_id else None,
@@ -260,6 +269,13 @@ def _serialize_deals(deals, user, organization, grant, *, detail=False):
                 and not (next_action and (next_action.get("restricted") or next_action.get("waiting"))),
             "next_action": next_action,
         })
+        if detail:
+            from .services.crm_assignments import assignment_available, assignment_task_data, ASSIGNMENT_NOTE
+            rows[-1]['can_assign'] = assignment_available(user, organization, deal)
+            rows[-1]['assignment_note'] = ASSIGNMENT_NOTE
+            rows[-1]['assignment_task'] = assignment_task_data(deal, user) if rows[-1]['can_assign'] else None
+            from .services.crm_order_finance import finance_projection
+            rows[-1]['onec_finance'] = finance_projection(deal, user, organization)
     return rows
 
 
@@ -281,7 +297,7 @@ def _workspace_data(request, organization, *, board=None):
     page = _id(request.GET.get("page", "1"))
     if page > 10000:
         raise ValidationError("Уточните фильтры, чтобы перейти к нужным сделкам.")
-    outcome = request.GET.get("outcome", "open")
+    outcome = request.GET.get("outcome", "all")
     if outcome not in {"open", "lost", "cancelled", "won", "unknown", "all"}:
         raise ValidationError("Некорректный исход сделки.")
     object_kind = request.GET.get("object", "")
@@ -292,12 +308,19 @@ def _workspace_data(request, organization, *, board=None):
         raise ValidationError("Некорректный этап.")
     specialization = request.GET.get("specialization", "").strip()[:40]
     queryset = _deal_queryset(request.user, organization).filter(pipeline_id=pipeline_id, is_archived=False)
+    failed_stage = next((item.pk for pipeline in pipelines if pipeline.pk == pipeline_id
+        for item in pipeline.stages.all() if item.code == "failed"), None)
+    # Older negative closes kept their original stage. Project them into the
+    # failure lane without rewriting their commercial history on a GET.
+    queryset = queryset.annotate(board_stage_id=Case(
+        When(outcome="lost", then=Value(failed_stage)), default=F("stage_id"),
+        output_field=BigIntegerField()) if failed_stage else F("stage_id"))
     if outcome != "all":
         queryset = queryset.filter(outcome=outcome)
     if object_kind:
         queryset = queryset.filter(object_kind=object_kind)
     if stage:
-        queryset = queryset.filter(stage_id=stage)
+        queryset = queryset.filter(board_stage_id=stage)
     if specialization:
         queryset = queryset.filter(specialization__icontains=specialization)
     for key, lookup in (("decision_from", "gte"), ("decision_to", "lt")):
@@ -333,10 +356,10 @@ def _workspace_data(request, organization, *, board=None):
         matched_ids = _attention_ids(queryset, request.user, organization, attention, as_of=as_of)
         attention_total = len(matched_ids)
         queryset = queryset.filter(pk__in=matched_ids)
-    stage_totals = [{"stage_id": row["stage_id"], "currency": row["currency"],
+    stage_totals = [{"stage_id": row["board_stage_id"], "currency": row["currency"],
         "amount": format(row["amount_total"], ".2f") if row["amount_total"] is not None else None,
         "count": row["count"], "unknown_count": row["count"] - row["known_count"]}
-        for row in queryset.order_by().values("stage_id", "currency").annotate(
+        for row in queryset.order_by().values("board_stage_id", "currency").annotate(
             amount_total=Sum("amount"), count=Count("pk"), known_count=Count("amount"))]
     column_windows = []
     if board:
@@ -352,7 +375,7 @@ def _workspace_data(request, organization, *, board=None):
         deals=[]
         for stage_id in stage_ids:
             if requested and requested!=str(stage_id): continue
-            rows,cursor=portion(queryset.filter(stage_id=stage_id),scope=scope,column=stage_id,
+            rows,cursor=portion(queryset.filter(board_stage_id=stage_id),scope=scope,column=stage_id,
                 revision=revision,cursor=request.GET.get('cursor','') if requested else '',as_of=as_of)
             deals.extend(rows)
             column_windows.append({'stage_id':stage_id,'cursor':cursor,'loaded':len(rows),'has_more':bool(cursor)})
@@ -362,11 +385,14 @@ def _workspace_data(request, organization, *, board=None):
 
     return {
         "organization_id": organization.pk, "organization_name": organization.name, "actor_id": request.user.pk,
+        "can_categorize_contacts": not request.user.is_superuser and OrganizationAccess.objects.filter(
+            organization=organization, user=request.user, role__in=("owner", "admin")).exists(),
         "capabilities": {"create": _write_capability(grant, organization, "create_own_deals")
             and _write_capability(grant, organization, "manage_own_next_action") and bool(pipelines)},
         "pipelines": [{"id": pipeline.pk, "code": pipeline.code, "name": pipeline.name,
             "stages": [{"id": stage.pk, "code": stage.code, "name": stage.name, "position": stage.position,
                 "can_transition": stage.is_active and stage.code in MANUAL_STAGES.get(pipeline.code, ()),
+                "is_failure": stage.code == "failed", "can_close_negative": stage.is_active and stage.code == "failed",
                 "requires_manual_confirmation": stage.code == "completed",
                 "transition_block_reason": "Этап отключён" if not stage.is_active else ""}
                 for stage in pipeline.stages.all()]} for pipeline in pipelines],
@@ -459,6 +485,9 @@ def workspace(request):
         "urls": {"data": reverse("crm_live_data") + scope,
             "clients": reverse("crm_live_clients") + scope,
             "objects": reverse("crm_live_objects") + scope,
+            "order_candidates": reverse("crm_order_candidates") + scope,
+            "order_refresh": reverse("crm_order_refresh") + scope,
+            "responsibles": reverse("crm_assignment_candidates") + scope,
             "command": reverse("crm_live_command") + scope,
             "detail_prefix": reverse("crm_live_detail", args=[1]).rsplit("1/", 1)[0]},
     })
@@ -482,12 +511,22 @@ def clients(request):
     if not _write_capability(_grant(request.user, organization), organization, "create_own_deals"):
         raise PermissionDenied
     query = request.GET.get("q", "").strip()[:200]
+    kind = request.GET.get("kind", "")
+    if kind not in {"", "private", "legal"}:
+        raise ValidationError("Выберите контакт или компанию.")
     if len(query) < 3:
         return JsonResponse({"clients": []})
-    rows = active_clients(Client.objects.filter(organization=organization)).filter(
-        Q(name__icontains=query) | Q(phone__icontains=query),
-    ).order_by("name", "pk")[:20]
-    return JsonResponse({"clients": [{"id": client.pk, "name": client.name} for client in rows]})
+    from .client_queries import readable_clients
+    from .client_crm_models import ClientBusinessRole
+    from .contact_directory import search_contacts
+    queryset = readable_clients(request.user).filter(organization=organization)
+    if kind:
+        queryset = queryset.filter(client_type=kind)
+    rows = search_contacts(queryset, request.user, query).prefetch_related("business_roles").order_by("name", "pk")[:20]
+    return JsonResponse({"clients": [{"id": client.pk, "name": client.name,
+        "client_type": client.client_type, "phone": client.phone or "", "email": client.email or "",
+        "categories": [role.role for role in client.business_roles.all()
+            if role.active and role.role in dict(ClientBusinessRole.ROLE_CHOICES)]} for client in rows]})
 
 
 @_api
@@ -537,7 +576,7 @@ def detail(request, deal_id):
         # Task content remains in its protected source. Only stage-change
         # reasons belong on the team-visible deal timeline in this release.
         "manual_completion_exception": event.safe_diff.get("manual_completion_exception", {}).get("after", False),
-        "reason": event.reason if event.event_type in {"deal.transition", "deal.close_negative"} else "",
+        "reason": event.reason if event.event_type in {"deal.transition", "deal.close_negative", "deal.bind_order", "deal.unbind_order", "deal.onec_completed", "deal.onec_review", "deal.assign"} else "",
     } for event in events]})
 
 
@@ -564,7 +603,10 @@ def command(request):
         raise ValidationError("Некорректная команда.")
     common = {"actor": request.user, "organization": organization, "operation_key": payload["operation_key"]}
     if kind == "deal.create":
-        if not {"title", "client_id", "pipeline_id", "next_action"} <= changes.keys() or not changes.keys() <= {"title", "client_id", "pipeline_id", "next_action", "card_fields"} or payload.get("subject_id") is not None or payload.get("expected_revision") is not None:
+        if (not {"title", "pipeline_id", "next_action"} <= changes.keys()
+                or len({"client_id", "customer"} & changes.keys()) != 1
+                or not changes.keys() <= {"title", "client_id", "customer", "pipeline_id", "next_action", "card_fields", "responsible_id"}
+                or payload.get("subject_id") is not None or payload.get("expected_revision") is not None):
             raise ValidationError("Укажите клиента, название, воронку и следующее действие с датой.")
         result = create_commercial_deal(**common, **changes)
     elif kind == "deal.next_action":
@@ -580,6 +622,14 @@ def command(request):
     elif kind in ("deal.edit", "deal.transition"):
         result = execute_commercial_command(**common, command_type=kind, subject_id=payload.get("subject_id"),
             expected_revision=payload.get("expected_revision"), changes=changes)
+    elif kind in ("deal.bind_order", "deal.unbind_order"):
+        from .services.crm_order_finance import execute_order_command
+        result = execute_order_command(**common, command_type=kind, subject_id=payload.get("subject_id"),
+            expected_revision=payload.get("expected_revision"), changes=changes)
+    elif kind == "deal.assign":
+        from .services.crm_assignments import execute_assignment
+        result = execute_assignment(**common, command_type=kind, subject_id=payload.get("subject_id"),
+            expected_revision=payload.get("expected_revision"), changes=changes)
     else:
         raise ValidationError("Эта команда недоступна в рабочей CRM.")
     # Recheck current read access after commit. A lost/denied read must not be
@@ -589,6 +639,8 @@ def command(request):
         deal = get_object_or_404(_deal_queryset(request.user, organization), pk=result["deal_id"])
         row = _serialize_deals([deal], request.user, organization, _grant(request.user, organization), detail=True)[0]
     except (PermissionDenied, Http404):
+        if result.get('assignment_saved'):
+            return JsonResponse({'result': {**result, 'can_open': False}, 'deal': None})
         return JsonResponse({"error": "Результат сохранения сейчас недоступен. Повторите проверку той же операции.",
             "code": "verify_required"}, status=503)
     return JsonResponse({"result": result, "deal": row})

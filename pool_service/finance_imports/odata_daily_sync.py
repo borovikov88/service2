@@ -13,6 +13,7 @@ from django.utils import timezone
 from pool_service.models import OneCODataSyncRun, Organization
 from .finance_position import sync_finance_position
 from .money_forecast import sync_money_forecast
+from .crm_orders import sync_crm_orders
 from .odata_finance_position import calendar_timezone
 from .odata_payroll_drafts import auto_coverage_config
 from .odata_profit import ODataPreviewError, validate_config
@@ -124,7 +125,8 @@ def _select_run(config, now):
         if previous_slot:
             if (
                 previous_slot.status == OneCODataSyncRun.STATUS_COMPLETED
-                and (previous_slot.progress or {}).get("finance_position_state") == "retryable_error"
+                and any((previous_slot.progress or {}).get(key) == "retryable_error"
+                    for key in ("finance_position_state", "money_forecast_state", "crm_orders_state"))
             ):
                 return previous_slot, "finance_position_retry"
             return None, "already_attempted"
@@ -290,6 +292,45 @@ def finalize_money_forecast_step(run, now=None):
     return "completed"
 
 
+def finalize_crm_orders_step(run, now=None):
+    """Persist factual order progress after a completed authorized import.
+
+    A failed refresh invalidates freshness, not the last successful evidence.
+    CRM GET requests only read this projection; explicit order lookup has its own POST.
+    """
+    run.refresh_from_db()
+    progress = run.progress or {}
+    if run.status != OneCODataSyncRun.STATUS_COMPLETED or run.mode != OneCODataSyncRun.MODE_AUTO_APPLY:
+        return progress.get("crm_orders_state")
+    if progress.get("crm_orders_state") in {"completed", "failed", "disabled"}:
+        return progress["crm_orders_state"]
+    if not run.organization.crm_v2_read:
+        _worker_note(run.pk, crm_orders_state="disabled")
+        return "disabled"
+    now = now or timezone.now()
+    error = "Заказы, выполнение и оплаты CRM не обновлены; предыдущие данные требуют сверки."
+    try:
+        user = _actor(run.requested_by_id, run.organization, run.requested_report_types)
+        result = sync_crm_orders(run.organization, user, now=now)
+    except PermissionDenied:
+        _worker_note(run.pk, crm_orders_state="failed", crm_orders_error=error)
+        return "failed"
+    except (ValidationError, ODataPreviewError):
+        from pool_service.services.crm_order_finance import mark_crm_order_sync_error
+        try:
+            mark_crm_order_sync_error(actor=user, organization=run.organization)
+        except PermissionDenied:
+            _worker_note(run.pk, crm_orders_state="failed", crm_orders_error=error)
+            return "failed"
+        _worker_note(run.pk, crm_orders_state="retryable_error", crm_orders_error=error)
+        return "retryable_error"
+    _worker_note(run.pk, crm_orders_state="completed", crm_orders_error="",
+        crm_orders_updated_at=now.isoformat(),
+        crm_orders_count=result.get("orders", 0),
+        crm_orders_completed_count=result.get("completed", 0))
+    return "completed"
+
+
 def worker_tick(*, max_steps=4, max_seconds=240, now=None):
     if not 1 <= max_steps <= 100 or not 1 <= max_seconds <= 240:
         raise DailyConfigError("Недопустимый лимит worker.")
@@ -354,11 +395,14 @@ def worker_tick(*, max_steps=4, max_seconds=240, now=None):
     run.refresh_from_db()
     forecast_state = finalize_money_forecast_step(run, now)
     run.refresh_from_db()
+    crm_state = finalize_crm_orders_step(run)
+    run.refresh_from_db()
     visible_state = (
         position_state
         if run.status == OneCODataSyncRun.STATUS_COMPLETED
         and position_state in {"retryable_error", "failed"}
-        else run.status
+        else crm_state if run.status == OneCODataSyncRun.STATUS_COMPLETED
+        and crm_state in {"retryable_error", "failed"} else run.status
     )
     return {
         "state": visible_state,
@@ -366,4 +410,5 @@ def worker_tick(*, max_steps=4, max_seconds=240, now=None):
         "steps": steps,
         "finance_position_state": position_state,
         "money_forecast_state": forecast_state,
+        "crm_orders_state": crm_state,
     }

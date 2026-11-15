@@ -10,7 +10,7 @@ from urllib.parse import urlencode
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core import signing
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
 from django.db.models import Q
 from django.http import Http404, HttpResponseBadRequest, JsonResponse
@@ -22,7 +22,6 @@ from . import communication_views as legacy
 from .client_crm_models import ClientContact, ClientCRMProfile
 from .client_crm_ui import (
     ClientEditorForm, CRMProfileEditorForm, LOOKUP_LIMIT, search_tokens,
-    sync_primary_contact,
 )
 from .client_phone_matching import clients_by_phone, clients_by_phones
 from .client_queries import active_clients
@@ -374,21 +373,35 @@ def call_client_create(request, call_id):
                     # if the call changed while the form was being validated.
                     if normalize_phone(client_form.cleaned_data["phone"]) != normalize_phone(call.phone_number):
                         return HttpResponseBadRequest("Номер звонка изменился. Откройте форму повторно.")
-                    saved = client_form.save(commit=False)
-                    if kind == "legal":
-                        saved.company_name = saved.name
-                    saved.save()
-                    profile_form.save()
-                    sync_primary_contact(saved, ClientContact.KIND_PHONE, "", saved.phone)
-                    sync_primary_contact(saved, ClientContact.KIND_EMAIL, "", saved.email)
-                    messages.success(request, "Клиент создан. Ранее поступившие звонки с этим номером теперь подписываются автоматически.")
-                    return redirect(return_url)
+                    from .services.crm_conversion_contacts import normalize_customer, resolve_conversion_customer
+                    try:
+                        with transaction.atomic():
+                            value = {"name": client_form.cleaned_data["name"], "phone": phone,
+                                     "email": client_form.cleaned_data.get("email", "") or ""}
+                            if kind == "legal":
+                                value["inn"] = client_form.cleaned_data.get("inn", "") or ""
+                            payload = normalize_customer({"company" if kind == "legal" else "contact": value})
+                            saved, _ = resolve_conversion_customer(call._state.db or "default", request.user, call.organization, payload)
+                            if kind == "private":
+                                for key in ("first_name", "last_name", "contact_position"):
+                                    setattr(saved, key, client_form.cleaned_data.get(key, "") or "")
+                                saved.save(update_fields=["first_name", "last_name", "contact_position"])
+                            profile_form.instance.client = saved
+                            profile_form.save()
+                    except ValidationError as error:
+                        client_form.add_error(None, error)
+                    else:
+                        messages.success(request, "Клиент создан. Ранее поступившие звонки с этим номером теперь подписываются автоматически.")
+                        return redirect(return_url)
         if existing:
             messages.info(request, "Номер уже есть в CRM. Новая карточка не создана.")
     base_url = reverse("communication_call_client_create", args=[call.pk])
+    editor_bootstrap = {"kind": "company" if kind == "legal" else "contact", "phone": phone,
+                        "values": {key: client_form[key].value() or "" for key in ("name", "email", "inn") if key in client_form.fields}}
     return render(request, "pool_service/communications/client_from_call.html", {
         "call": call, "phone_display": format_phone(call.phone_number), "client_type": kind,
         "client_form": client_form, "profile_form": profile_form, "existing_matches": existing,
+        "call_customer_bootstrap": editor_bootstrap,
         "return_url": return_url, "back": token,
         "person_url": base_url + "?" + urlencode({"back": token, "client_type": "private"}),
         "company_url": base_url + "?" + urlencode({"back": token, "client_type": "legal"}),

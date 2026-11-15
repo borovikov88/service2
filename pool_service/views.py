@@ -3681,6 +3681,7 @@ def clients_list(request):
         return HttpResponseForbidden()
 
     from .contact_directory import directory_context
+    from .contact_creation import can_create
     directory = directory_context(request)
 
     response = render(
@@ -3691,12 +3692,9 @@ def clients_list(request):
             "page_subtitle": "Контакты и объекты клиентов в одном списке",
             **directory,
             "active_tab": "clients",
-            "page_action_label": None if request.user.is_superuser else "Добавить клиента",
-            "page_action_url": (
-                None
-                if request.user.is_superuser
-                else f"{reverse('client_create')}?{urlencode({'return_to': CLIENT_CREATE_RETURN_CLIENTS_LIST})}"
-            ),
+            "page_action_label": None,
+            "page_action_url": None,
+            "can_create_contact": can_create(request.user),
             "show_search": False,
             "show_add_button": False,
             "add_url": None,
@@ -5627,100 +5625,8 @@ def _client_create_return_context(request):
 @never_cache
 
 def client_create(request):
-
-    readonly = _deny_superuser_write(request)
-
-    if readonly:
-
-        return readonly
-
-    client_staff_block = _deny_client_staff_write(request)
-
-    if client_staff_block:
-
-        return client_staff_block
-
-    blocked = _redirect_if_access_blocked(request)
-
-    if blocked:
-
-        return blocked
-
-
-
-    roles = list(OrganizationAccess.objects.filter(user=request.user).values_list("role", flat=True))
-
-    if not request.user.is_superuser and not any(r in ORG_STAFF_ROLES for r in roles):
-
-        return HttpResponseForbidden()
-
-
-
-    return_context = _client_create_return_context(request)
-
-
-
-    if request.method == "POST":
-
-        form = ClientCreateForm(request.POST)
-
-        if form.is_valid():
-
-            client = form.save()
-
-            org_access = (
-
-                OrganizationAccess.objects.filter(user=request.user, role__in=ORG_STAFF_ROLES)
-
-                .select_related("organization")
-
-                .first()
-
-            )
-
-            if org_access and org_access.organization_id:
-
-                client.organization = org_access.organization
-
-                client.save(update_fields=["organization"])
-
-            messages.success(request, "Клиент создан")
-
-            if return_context["client_return_token"] == CLIENT_CREATE_RETURN_POOL_CREATE:
-
-                pool_create_url = reverse("pool_create")
-                return redirect(f"{pool_create_url}?{urlencode({'client_id': client.id})}")
-
-            return redirect("pool_list")
-
-    else:
-
-        form = ClientCreateForm()
-
-    page_title = "\u0421\u043e\u0437\u0434\u0430\u043d\u0438\u0435 \u043a\u043b\u0438\u0435\u043d\u0442\u0430"
-
-    return render(
-
-        request,
-
-        "pool_service/client_create.html",
-
-        {
-
-            "form": form,
-
-            "page_title": page_title,
-
-            **return_context,
-
-            "is_edit": False,
-
-        },
-
-    )
-
-
-
+    from .contact_creation import create
+    return create(request)
 
 
 @login_required
@@ -5795,7 +5701,7 @@ def client_edit(request, client_id):
 
         request,
 
-        "pool_service/client_create.html",
+        "pool_service/client_legacy_form.html",
 
         {
 

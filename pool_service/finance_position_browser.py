@@ -11,6 +11,7 @@ from django.http import JsonResponse
 from pool_service.finance_imports.odata_daily_sync import (
     finalize_finance_position_step,
     finalize_money_forecast_step,
+    finalize_crm_orders_step,
 )
 from pool_service.finance_views import (
     _auto_run_payload,
@@ -38,6 +39,14 @@ def _safe_payload(run):
         progress["money_forecast_state"] = forecast_state
         if forecast_state in {"retryable_error", "failed"}:
             progress["money_forecast_error"] = "План денег не обновлён; предыдущий снимок сохранён."
+    crm_state = (run.progress or {}).get("crm_orders_state")
+    if crm_state in VISIBLE_FINANCE_POSITION_STATES:
+        progress["crm_orders_state"] = crm_state
+        if crm_state in {"retryable_error", "failed"}:
+            progress["crm_orders_error"] = "Заказы, выполнение и оплаты CRM не обновлены; предыдущие данные требуют сверки."
+            payload["message"] = progress["crm_orders_error"]
+            if crm_state == "retryable_error":
+                progress["step_state"] = "retryable_error"
     payload["progress"] = progress
     return payload
 
@@ -59,10 +68,12 @@ def finance_onec_refresh_apply_step(request, run_id):
         return response
     if run.status == OneCODataSyncRun.STATUS_COMPLETED:
         # Idempotent on success; on retryable_error this retries ONLY the
-        # point-in-time Balance layer and never reruns the completed monthly sync.
+        # pending finalizers and never reruns the completed monthly sync.
         finalize_finance_position_step(run)
         run.refresh_from_db()
         finalize_money_forecast_step(run)
+        run.refresh_from_db()
+        finalize_crm_orders_step(run)
         run.refresh_from_db()
     return JsonResponse(_safe_payload(run))
 

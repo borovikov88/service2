@@ -128,7 +128,8 @@ class LiveWorkspaceTests(TestCase):
         Client.objects.create(organization=foreign, name="Synthetic foreign identity")
         self.assertEqual(self.client.get(self.url("crm_live_clients") + "&q=Sy").json(), {"clients": []})
         rows = self.client.get(self.url("crm_live_clients") + "&q=Synthetic").json()["clients"]
-        self.assertEqual(rows, [{"id": self.customer.pk, "name": self.customer.name}])
+        self.assertEqual(rows, [{"id": self.customer.pk, "name": self.customer.name,
+            "client_type": self.customer.client_type, "phone": "", "email": "", "categories": []}])
 
     def test_all_pipeline_manual_stages_are_exposed_and_writes_preserve_tasks(self):
         for pipeline in CrmPipeline.objects.filter(organization=self.org):
@@ -137,6 +138,10 @@ class LiveWorkspaceTests(TestCase):
             stages = next(p for p in data["pipelines"] if p["id"] == pipeline.pk)["stages"]
             task_count = ServiceTask.objects.count()
             for stage in stages:
+                if stage['code'] == 'failed':
+                    self.assertFalse(stage['can_transition'])
+                    self.assertTrue(stage['is_failure'])
+                    continue
                 self.assertTrue(stage["can_transition"])
                 self.assertEqual(stage["requires_manual_confirmation"], stage["code"] == "completed")
                 if stage["id"] == row["stage_id"]: continue

@@ -154,6 +154,10 @@
       draft.formKind = "close_negative";
       draft.fields.outcome = changes.outcome;
       draft.fields.reason = changes.reason;
+    } else if (payload.command_type === "deal.assign") {
+      draft.formKind = "assign";
+      draft.fields.responsible_id = String(changes.responsible_id);
+      draft.fields.transfer_next_action = Boolean(changes.transfer_next_action);
     } else if (payload.command_type === "deal.transition") {
       draft.formKind = "transition";
       draft.fields.stage_id = String(changes.stage_id);
@@ -193,7 +197,7 @@
     }
     const state = {
       data: bootstrap, pipelineId: bootstrap.selected_pipeline_id, page: bootstrap.page || 1,
-      filters: Object.fromEntries(["outcome", "stage", "object", "specialization", "decision_from", "decision_to"].map((key) => [key, params.get(key) || (key === "outcome" ? "open" : "")])),
+      filters: Object.fromEntries(["outcome", "stage", "object", "specialization", "decision_from", "decision_to"].map((key) => [key, params.get(key) || (key === "outcome" ? "all" : "")])),
       query: params.get("q") || "", owner: params.get("owner") === "me" ? "me" : "all",
       view: params.get("view") === "table" ? "table" : "kanban",
       attention: ["today", "overdue", "missing"].includes(params.get("attention")) ? params.get("attention") : "all",
@@ -246,14 +250,14 @@
       if (error.status === 409) return "Карточка уже изменилась. Проверьте актуальные данные перед новым сохранением.";
       return error.message || "Не удалось выполнить действие.";
     };
-    async function requestJSON(url, options, externalSignal) {
+    async function requestJSON(url, options, externalSignal, timeoutMs = 20000) {
       const controller = new AbortController();
       const abort = () => controller.abort();
       if (externalSignal) {
         if (externalSignal.aborted) controller.abort();
         else externalSignal.addEventListener("abort", abort, {once: true});
       }
-      const timer = win.setTimeout(abort, 20000);
+      const timer = win.setTimeout(abort, timeoutMs);
       try {
         const requestOptions = Object.assign({credentials: "same-origin", cache: "no-store"}, options || {}, {signal: controller.signal});
         requestOptions.headers = Object.assign({"X-Requested-With": "XMLHttpRequest"}, options?.headers || {});
@@ -285,7 +289,8 @@
       const response = await requestJSON(scopedURL(bootstrap.urls.command), {
         method: "POST", headers: {"Content-Type": "application/json", "Accept": "application/json", "X-CSRFToken": csrf ? csrf.value : ""}, body: JSON.stringify(payload),
       });
-      if (!response.result || !response.deal || !sameId(response.result.deal_id, response.deal.id)) throw new Error("Сервер не подтвердил результат сохранения.");
+      const transferred = response.result?.assignment_saved === true && response.result.can_open === false && Number.isInteger(response.result.deal_id);
+      if (!transferred && (!response.result || !response.deal || !sameId(response.result.deal_id, response.deal.id))) throw new Error("Сервер не подтвердил результат сохранения.");
       return response;
     }, () => { renderOperations(); renderContent(); updateFormLocks(); });
 
@@ -300,7 +305,7 @@
       }
       if (state.view === "table" && state.page > 1) url.searchParams.set("page", state.page); else url.searchParams.delete("page");
       for (const [key, value] of Object.entries(state.filters)) {
-        if (value && !(key === "outcome" && value === "open")) url.searchParams.set(key, value);
+        if (value && !(key === "outcome" && value === "all")) url.searchParams.set(key, value);
         else url.searchParams.delete(key);
       }
       win.history.replaceState(win.history.state, "", url);
@@ -336,7 +341,7 @@
             retry.dataset.operationKey = entry.payload.operation_key;
             actions.append(retry);
           } else if (entry.status === "failed") {
-            if (entry.error?.status === 409) {
+            if (entry.error?.status === 409 && !["deal.bind_order", "deal.unbind_order"].includes(entry.payload.command_type)) {
               const restore = makeButton("Вернуть мои изменения", "restore-conflict");
               restore.dataset.operationKey = entry.payload.operation_key;
               actions.append(restore);
@@ -384,16 +389,16 @@
       const pending = queue.forSubject(deal.id);
       const card = element("article", "crm-live-card" + (pending ? " is-pending" : ""));
       card.dataset.dealId = deal.id;
-      card.draggable = !table && Boolean(deal.can_transition) && !deal.is_archived && !pending;
+      card.draggable = !table && !state.loading && Boolean(deal.can_transition || deal.can_close_negative) && !deal.is_archived && !pending;
       const main = element("div", "crm-live-card-main");
       const title = element("h3");
       const open = makeButton(deal.title, "open", "crm-live-card-open");
       open.dataset.dealId = deal.id;
       title.append(open);
-      main.append(title, element("p", "crm-live-card-client", deal.client?.name || "Клиент не указан"));
+      main.append(title, element("p", "crm-live-card-amount" + (deal.amount === null ? " is-unknown" : ""), deal.amount === null ? "Сумма не указана" : moneyLabel(deal.amount, deal.currency)), element("p", "crm-live-card-client", deal.client?.name || "Клиент не указан"));
       const object = deal.object;
       if (object) main.append(element("p", "crm-live-card-stage", object.restricted ? "Объект недоступен" : [object.name, object.address].filter(Boolean).join(" · ")));
-      main.append(element("p", "crm-live-card-stage", (deal.amount === null ? "Сумма неизвестна" : moneyLabel(deal.amount, deal.currency)) + (deal.specialization ? " · " + deal.specialization : "")));
+      if (deal.specialization) main.append(element("p", "crm-live-card-specialization", deal.specialization));
       if (deal.unverified_completion_stage) main.append(element("p","crm-live-pill",(deal.manual_completion ? "Завершено вручную" : "Финальный этап CRM")+" · исполнение и оплата не подтверждены"));
       if (deal.outcome !== "open") main.append(element("p", "crm-live-pill", outcomeLabel(deal.outcome)));
       if (table) main.append(element("p", "crm-live-card-stage", stageFor(deal)?.name || "Этап не указан"));
@@ -420,7 +425,7 @@
         root.querySelector(`[data-attention="${kind}"]`).setAttribute("aria-pressed", String(state.attention === kind));
       }
       byId("crm-live-result-status").textContent = state.loading ? "Обновляем…" : (state.view === "kanban" ? "Загружено: " : "На странице: ") + filtered.length + (state.data.attention_total == null ? "" : " · по фильтру: " + state.data.attention_total);
-      byId("crm-live-linked-filters").hidden = !Object.entries(state.filters).some(([key, value]) => value && !(key === "outcome" && value === "open"));
+      byId("crm-live-linked-filters").hidden = !Object.entries(state.filters).some(([key, value]) => value && !(key === "outcome" && value === "all"));
       byId("crm-live-limit").hidden = !state.data.has_more;
       root.querySelector(".crm-live-pagination").hidden = state.view !== "table" || (!state.data.has_more && !state.data.has_previous);
       byId("crm-live-page-prev").disabled = state.loading || !state.data.has_previous;
@@ -443,7 +448,7 @@
       }
       if (!filtered.length && !(state.data.stage_totals || []).some(row => row.count > 0)) {
         const empty = element("div", "crm-live-empty");
-        const hasFilters = state.query || state.owner === "me" || state.attention !== "all" || Object.entries(state.filters).some(([key, value]) => value && !(key === "outcome" && value === "open"));
+        const hasFilters = state.query || state.owner === "me" || state.attention !== "all" || Object.entries(state.filters).some(([key, value]) => value && !(key === "outcome" && value === "all"));
         empty.append(element("h2", "", hasFilters ? "По этим условиям сделок нет" : "Первая сделка начинается с клиента"), element("p", "", hasFilters ? "Измените поисковый запрос или сбросьте фильтры." : "Выберите существующего клиента, задайте следующий шаг и срок. Сделка появится на первом этапе."));
         if (hasFilters) empty.append(makeButton("Сбросить фильтры", "reset"));
         else if (state.data.capabilities?.create) empty.append(makeButton("Создать сделку", "create", "crm-live-button crm-live-button-primary"));
@@ -461,10 +466,12 @@
         const board = element("div", "crm-live-board");
         board.setAttribute("aria-label", "Канбан: " + pipeline.name);
         for (const stage of pipeline.stages || []) {
-          const deals = filtered.filter((deal) => sameId(deal.stage_id, stage.id));
+          const deals = filtered.filter((deal) => sameId(deal.board_stage_id || deal.stage_id, stage.id));
           const lane = element("section", "crm-live-lane");
           lane.dataset.stageId = stage.id;
           lane.dataset.canTransition = String(Boolean(stage.can_transition));
+          lane.dataset.failure = String(Boolean(stage.is_failure));
+          lane.dataset.canCloseNegative = String(Boolean(stage.can_close_negative));
           const heading = element("h2");
           const totals = (state.data.stage_totals || []).filter(row => sameId(row.stage_id, stage.id));
           const count = totals.reduce((sum, row) => sum + row.count, 0);
@@ -473,8 +480,8 @@
           const known = totals.filter(row => row.amount !== null).map(row => moneyLabel(row.amount, row.currency));
           const unknown = totals.reduce((sum, row) => sum + row.unknown_count, 0);
           lane.append(element("p", "crm-live-stage-total", (known.length ? known.join(" + ") : unknown ? "Сумма неизвестна" : "0,00 ₽") + (unknown ? " · без суммы: " + unknown : "")));
-          if (!stage.can_transition) lane.append(element("p", "crm-live-lane-unavailable", stage.transition_block_reason || "Перенос в этот этап недоступен"));
-          if (!deals.length) lane.append(element("p", "crm-live-lane-empty", count > 0 ? "На этой странице нет сделок этого этапа" : stage.can_transition ? "Нет сделок на этом этапе" : ""));
+          if (!stage.can_transition && !stage.can_close_negative) lane.append(element("p", "crm-live-lane-unavailable", stage.transition_block_reason || "Перенос в этот этап недоступен"));
+          if (!deals.length) lane.append(element("p", "crm-live-lane-empty", count > 0 ? "На этой странице нет сделок этого этапа" : "Нет сделок на этом этапе"));
           else deals.forEach((deal) => lane.append(renderCard(deal, false)));
           const window = (state.data.column_windows || []).find(item => sameId(item.stage_id, stage.id));
           if (window?.has_more) {
@@ -563,6 +570,7 @@
       if (updateURL) setDealURL(null, true);
       if (state.detailController) state.detailController.abort();
       if (state.clientController) state.clientController.abort();
+      state.drawer?.customerEditor?.destroy();
       state.detailGeneration += 1;
       state.clientGeneration += 1;
       state.drawer = null;
@@ -649,8 +657,13 @@
     function updateFormLocks() {
       for (const form of dialogContent.querySelectorAll("[data-command-form]")) {
         const subjectId = form.dataset.subjectId || null;
-        const busy = Boolean(queue.forSubject(subjectId)) || (state.drawer?.kind === "loading" && sameId(state.drawer.id, subjectId));
+        const busy = Boolean(queue.forSubject(subjectId)) || form.dataset.orderRefreshing === "true" || (state.drawer?.kind === "loading" && sameId(state.drawer.id, subjectId));
         for (const input of form.querySelectorAll("input, select, textarea, button")) input.disabled = busy;
+        if (!busy && form.dataset.commandForm === "create" && state.drawer?.kind === "create") {
+          form.elements.namedItem("client_search").disabled = state.drawer.useCustomer;
+          state.drawer.customerEditor?.setEnabled(state.drawer.useCustomer);
+        }
+        form.updateOrderButtons?.(busy);
       }
       byId("crm-live-create").disabled = Boolean(queue.forSubject(null));
     }
@@ -666,7 +679,7 @@
     }
 
     function outcomeLabel(value) {
-      return ({open: "Открыта", lost: "Отказ / проигрыш", cancelled: "Отменена", won: "Успех", unknown: "Legacy: не определён"})[value] || value;
+      return ({open: "Открыта", lost: "Сделка провалена", cancelled: "Отменена", won: "Успех", unknown: "Legacy: не определён"})[value] || value;
     }
 
     function selectField(form, label, name, selected, choices) {
@@ -675,6 +688,26 @@
         const option = element("option", "", text); option.value = value; option.selected = value === selected; item.input.append(option);
       }
       form.append(item.wrapper); return item;
+    }
+    function responsibleField(form, deal = null) {
+      if (!bootstrap.urls.responsibles) return null;
+      const item = field("Ответственный", "select", "responsible_id", null, true);
+      item.input.setAttribute("aria-label", "Ответственный");
+      const placeholder = element("option", "", "Загружаем сотрудников…"); placeholder.value = ""; item.input.append(placeholder);
+      const note = element("small", "crm-live-form-note", "Выбранный сотрудник получит уведомление согласно своим настройкам.");
+      const retry = makeButton("Повторить загрузку сотрудников"); retry.hidden = true; item.wrapper.append(note, retry); form.append(item.wrapper);
+      const load = async () => {
+        retry.hidden = true;
+        try {
+          const url = scopedURL(bootstrap.urls.responsibles); url.searchParams.set("kind", "deal"); if (deal) url.searchParams.set("subject_id", deal.id);
+          const data = await requestJSON(url, {headers:{Accept:"application/json"}}); if (!item.wrapper.isConnected) return;
+          const empty = element("option", "", "Выберите сотрудника"); empty.value = ""; item.input.replaceChildren(empty);
+          for (const user of data.users || []) { const option = element("option", "", user.name); option.value = user.id; item.input.append(option); }
+          item.input.value = String(deal?.manager?.id ?? data.current_user_id ?? "");
+          note.textContent = data.users?.length ? "Выбранный сотрудник получит уведомление согласно своим настройкам." : "Нет сотрудников, которым доступна эта карточка.";
+        } catch (error) { if (!item.wrapper.isConnected) return; note.textContent = friendlyError(error); retry.hidden = false; }
+      };
+      retry.addEventListener("click", () => { form.responsiblesReady = load(); }); form.responsiblesReady = load(); return item.input;
     }
 
     function cardFields(form, deal) {
@@ -766,11 +799,164 @@
         expected_decision_at: expected ? deadlineISO(expected, offset) : null};
     }
 
+    function accountingDate(value) {
+      const instant = new Date(/^\d{4}-\d{2}-\d{2}$/.test(value || "") ? value + "T12:00:00" + offset : value);
+      return Number.isFinite(instant.getTime()) ? new Intl.DateTimeFormat("ru-RU", {timeZone:timezone, day:"numeric", month:"short", year:"numeric"}).format(instant) : "";
+    }
+    function orderCaption(order) {
+      return [order.number ? "Заказ № " + order.number : "Заказ без номера", accountingDate(order.date)].filter(Boolean).join(" · ");
+    }
+    function orderBindingForm(host, deal, finance) {
+      const part = disclosure(finance.order ? "Параметры связи с заказом" : "Привязать заказ");
+      part.classList.add("crm-onec-binding"); host.append(part);
+      const form = newForm("bind_order", deal.id); part.append(form);
+      const search = field("Найти заказ клиента", "search", "order_search", "", false);
+      search.input.placeholder = "Номер заказа"; search.input.autocomplete = "off"; search.input.maxLength = 80;
+      const searchRow = element("div", "crm-onec-search-row"), refresh = makeButton("Найти в 1С");
+      refresh.dataset.orderRefresh = ""; refresh.hidden = !bootstrap.urls.order_refresh;
+      searchRow.append(search.wrapper, refresh); searchRow.hidden = Boolean(finance.order);
+      form.updateOrderButtons = busy => { refresh.disabled = busy || !search.input.value.trim(); };
+      const results = element("div", "crm-onec-order-results"), selected = element("div", "crm-onec-order-selected");
+      results.setAttribute("aria-live", "polite"); selected.hidden = true;
+      const recurring = field("Постоянное обслуживание", "checkbox", "recurring", "yes", false);
+      recurring.wrapper.classList.add("crm-onec-checkbox");
+      recurring.input.checked = typeof finance.recurring === "boolean" ? finance.recurring : deal.fulfillment_kind === "service" || pipelineFor(deal.pipeline_id)?.code === "service";
+      const behavior = element("p", "crm-live-form-note crm-onec-behavior");
+      const explain = () => { behavior.textContent = recurring.input.checked ? "Постоянная сделка останется открытой после выполнения и оплаты текущего заказа. Новый период можно связать со следующим заказом." : "Разовая сделка завершится автоматически, когда 1С подтвердит полное выполнение и полную оплату заказа."; };
+      recurring.input.addEventListener("change", explain); explain();
+      const confirm = field("Подтверждаю связь выбранного заказа со сделкой", "checkbox", "confirm_order", "yes", true);
+      confirm.wrapper.classList.add("crm-onec-checkbox");
+      form.append(element("p", "crm-live-form-note", finance.order ? "Чтобы выбрать другой заказ или перейти к следующему периоду, сначала отвяжите текущий заказ. Прежняя связь останется в истории." : "В поиске — последние 200 заказов и заказы, уже связанные со сделками. Показаны заказы выбранного клиента."), searchRow);
+      if (!finance.order && bootstrap.urls.order_refresh) form.append(element("p", "crm-live-form-note", "Для более раннего заказа введите полный номер и нажмите «Найти в 1С». Связь со сделкой сохранится только после вашего подтверждения."));
+      form.append(results, selected, recurring.wrapper, behavior, confirm.wrapper);
+      formFooter(form, finance.order ? "Сохранить связь" : "Привязать заказ");
+      const cancel = makeButton("Отмена"); form.querySelector(".crm-live-form-footer").append(cancel);
+      let timer, controller, generation = 0;
+      const active = () => form.isConnected && dialog.open && state.drawer?.kind === "detail" && sameId(state.drawer.id, deal.id);
+      const choose = (order) => {
+        if (queue.forSubject(deal.id)) return;
+        form.selectedOrder = order; search.input.value = order.number || ""; confirm.input.checked = false;
+        selected.replaceChildren(element("strong", "", orderCaption(order)));
+        if (order.amount != null && order.currency) selected.append(element("span", "", moneyLabel(order.amount, order.currency)));
+        if (order.state) selected.append(element("small", "crm-live-muted", order.state));
+        selected.hidden = false; results.replaceChildren(); formError(form, ""); form.updateOrderButtons(false);
+      };
+      if (finance.order) choose(finance.order);
+      const showResults = response => {
+        results.replaceChildren();
+        for (const order of response.orders || []) {
+          const button = makeButton(orderCaption(order), null, "crm-onec-order-option");
+          if (order.amount != null && order.currency) button.append(element("small", "", moneyLabel(order.amount, order.currency)));
+          button.addEventListener("click", () => choose(order)); results.append(button);
+        }
+        if (!response.orders?.length) results.append(element("p", "crm-live-muted", response.reason || "Заказы не найдены. Проверьте номер и связь клиента с 1С."));
+      };
+      const load = () => {
+        if (finance.order || form.dataset.orderRefreshing === "true") return;
+        win.clearTimeout(timer); controller?.abort(); const mine = ++generation;
+        results.replaceChildren();
+        timer = win.setTimeout(async () => {
+          if (!active() || !part.open || queue.forSubject(deal.id)) return;
+          controller = new AbortController();
+          const url = scopedURL(bootstrap.urls.order_candidates); url.searchParams.set("deal_id", deal.id); url.searchParams.set("q", search.input.value.trim());
+          results.append(element("p", "crm-live-muted", "Ищем заказы…"));
+          try {
+            const response = await requestJSON(url, {headers:{Accept:"application/json"}}, controller.signal);
+            if (!active() || mine !== generation) return;
+            showResults(response);
+          } catch (error) {
+            if (!controller.signal.aborted && active() && mine === generation) results.replaceChildren(element("p", "crm-live-form-error", friendlyError(error)));
+          }
+        }, 300);
+      };
+      search.input.addEventListener("input", () => { form.selectedOrder = null; selected.hidden = true; confirm.input.checked = false; form.updateOrderButtons(false); load(); });
+      refresh.addEventListener("click", async () => {
+        const query = search.input.value.trim();
+        if (!query || !bootstrap.urls.order_refresh || !active() || queue.forSubject(deal.id) || form.dataset.orderRefreshing === "true") return;
+        win.clearTimeout(timer); controller?.abort(); const mine = ++generation;
+        form.selectedOrder = null; selected.hidden = true; confirm.input.checked = false;
+        form.dataset.orderRefreshing = "true"; refresh.textContent = "Поиск в 1С…"; updateFormLocks(); formError(form, "");
+        results.replaceChildren(element("p", "crm-live-muted", "Проверяем заказ в 1С…"));
+        try {
+          const response = await requestJSON(scopedURL(bootstrap.urls.order_refresh), {method:"POST", headers:{"Content-Type":"application/json",Accept:"application/json","X-CSRFToken":csrf ? csrf.value : ""}, body:JSON.stringify({deal_id:deal.id,q:query})}, undefined, 120000);
+          if (active() && mine === generation) showResults(response);
+        } catch (error) {
+          if (active() && mine === generation) results.replaceChildren(element("p", "crm-live-form-error", error.name === "AbortError" ? "Поиск занял больше времени. Повторите поиск в сохранённых данных через несколько секунд." : friendlyError(error)));
+        } finally { delete form.dataset.orderRefreshing; refresh.textContent = "Найти в 1С"; updateFormLocks(); }
+      });
+      part.addEventListener("toggle", () => { if (part.open) load(); else if (form.dataset.orderRefreshing !== "true") { win.clearTimeout(timer); controller?.abort(); ++generation; } });
+      cancel.addEventListener("click", () => { if (queue.forSubject(deal.id)) return; openDetail(deal.id, true); });
+      form.updateOrderButtons(false);
+    }
+    function financeSection(deal) {
+      const finance = deal.onec_finance;
+      if (!finance) return null;
+      const box = section("Заказ и расчёты 1С"); box.classList.add("crm-onec-finance"); box.dataset.financeState = finance.state;
+      if (finance.state === "restricted") {
+        box.append(element("p", "crm-live-muted", "Данные 1С доступны сотрудникам с правом просмотра финансов.")); return box;
+      }
+      const order = finance.order;
+      if (order) {
+        const heading = element("div", "crm-onec-order"); heading.append(element("strong", "", orderCaption(order)));
+        if (order.amount != null && order.currency) heading.append(element("span", "", moneyLabel(order.amount, order.currency)));
+        box.append(heading);
+        if (order.state) box.append(element("p", "crm-live-muted crm-onec-order-state", order.state));
+      } else box.append(element("p", "crm-live-muted", finance.state === "unlinked" ? "Заказ клиента пока не привязан." : "Данные связанного заказа сейчас недоступны."));
+      if (["stale", "review"].includes(finance.state)) {
+        box.append(element("p", "crm-onec-warning", finance.state === "stale" ? "Данные 1С требуют обновления" : "Связь или документы требуют сверки"));
+      }
+      const hasPolicyNote = order && (finance.completed_automatically || finance.recurring || finance.auto_complete);
+      if (finance.reason && (finance.state !== "current" || !hasPolicyNote)) box.append(element("p", "crm-live-form-note", finance.reason));
+      if (order) {
+        if (finance.period_label) box.append(element("p", "crm-onec-period", finance.period_label));
+        const metrics = element("div", "crm-onec-metrics");
+        for (const [key, label, percent, amount] of [["completion", "Выполнение по 1С", finance.completion_percent, finance.realized_amount], ["payment", "Оплата", finance.payment_percent, finance.paid_amount]]) {
+          const known = percent !== null && percent !== undefined && percent !== "" && Number.isFinite(Number(percent)) && Number(percent) >= 0;
+          const metric = element("div", "crm-onec-metric"), header = element("div", "crm-onec-metric-heading"); metric.dataset.financeMetric = key;
+          const value = known ? new Intl.NumberFormat("ru-RU", {maximumFractionDigits:2}).format(Number(percent)) + "%" : "Не подтверждено";
+          header.append(element("span", "", label), element("strong", "", value)); metric.append(header);
+          const track = element("div", "crm-onec-progress" + (known ? "" : " is-unknown"));
+          if (known) { track.setAttribute("role", "progressbar"); track.setAttribute("aria-label", label); track.setAttribute("aria-valuemin", "0"); track.setAttribute("aria-valuemax", "100"); track.setAttribute("aria-valuenow", String(Math.min(100, Number(percent)))); track.setAttribute("aria-valuetext", value); const fill = element("span"); fill.style.width = Math.min(100, Number(percent)) + "%"; track.append(fill); }
+          else track.setAttribute("aria-hidden", "true");
+          metric.append(track);
+          if (amount != null && order.currency) metric.append(element("small", "crm-live-muted", moneyLabel(amount, order.currency) + (order.amount != null ? " из " + moneyLabel(order.amount, order.currency) : "")));
+          metrics.append(metric);
+        }
+        box.append(metrics);
+        if (finance.source_at) box.append(element("p", "crm-onec-source", "Данные 1С на " + dateText(finance.source_at)));
+        if (finance.completed_automatically) box.append(element("p", "crm-onec-result", "Сделка завершена автоматически: выполнение и оплата подтверждены 1С."));
+        else if (finance.recurring) box.append(element("p", "crm-live-form-note", "Постоянное обслуживание: выполнение и оплата текущего заказа не закрывают сделку."));
+        else if (finance.auto_complete) box.append(element("p", "crm-live-form-note", "Сделка завершится автоматически после подтверждения полного выполнения и полной оплаты в 1С."));
+        if (finance.open_action_preserved) box.append(element("p", "crm-live-form-note", "Открытые задачи сохранены — проверьте их отдельно."));
+      }
+      if (finance.documents?.length) {
+        const documents = disclosure("Документы 1С · " + finance.documents.length); documents.classList.add("crm-onec-documents");
+        for (const document of finance.documents) {
+          const row = element("div", "crm-onec-document"); row.append(element("strong", "", document.number || "Документ без номера"));
+          if (document.date) row.append(element("span", "crm-live-muted", accountingDate(document.date)));
+          if (document.amount != null && order?.currency) row.append(element("span", "", moneyLabel(document.amount, order.currency)));
+          if (document.paid_amount != null && order?.currency) row.append(element("small", "crm-live-muted", "Оплачено: " + moneyLabel(document.paid_amount, order.currency)));
+          documents.append(row);
+        }
+        box.append(documents);
+      }
+      if (finance.can_bind && bootstrap.urls.order_candidates && (!finance.can_unbind || order)) orderBindingForm(box, deal, finance);
+      if (finance.can_unbind) {
+        const part = disclosure("Отвязать заказ"), form = newForm("unbind_order", deal.id);
+        part.classList.add("crm-onec-binding");
+        form.append(element("p", "crm-live-form-note", "Связь сохранится в истории сделки. Документы и суммы 1С не изменятся."));
+        const reason = field("Причина отвязки", "textarea", "reason", "", true); reason.input.maxLength = 500;
+        form.append(reason.wrapper); formFooter(form, "Отвязать заказ"); part.append(form); box.append(part);
+      }
+      return box;
+    }
+
     function renderDetail(deal, events) {
       dialogContent.replaceChildren();
       state.drawer = {kind: "detail", id: deal.id, deal};
       dialogContent.dataset.revision = String(deal.revision);
       dialogContent.append(titleNode(deal.title));
+      dialogContent.append(element("p", "crm-live-detail-amount" + (deal.amount === null ? " is-unknown" : ""), deal.amount === null ? "Сумма не указана" : moneyLabel(deal.amount, deal.currency)));
       if(deal.unverified_completion_stage)dialogContent.append(element("p","crm-live-completion-warning",(deal.manual_completion ? "CRM завершена вручную. " : "Финальный этап без подтверждённого итога. ")+deal.completion_warning));
       const identity = disclosure("Ссылка на сделку");
       identity.append(element("p", "crm-live-deal-id", "ID сделки: " + deal.id));
@@ -807,11 +993,15 @@
         if (href) name.href = href; contact.append(name); dialogContent.append(contact);
       }
       const quoteUrl = safeLink(deal.quotes_url);
-      if (quoteUrl) { const link = element("a", "btn btn-outline-primary", "КП: версии и решения"); link.href = quoteUrl; dialogContent.append(link); }
+      if (quoteUrl) { const link = element("a", "crm-live-button crm-live-document-link", "КП: версии и решения"); link.href = quoteUrl; dialogContent.append(link); }
       const serviceUrl = safeLink(deal.service_documents_url);
-      if (serviceUrl) { const link = element("a", "btn btn-outline-primary", "Документы обслуживания и периоды"); link.href = serviceUrl; dialogContent.append(link); }
+      if (serviceUrl) { const link = element("a", "crm-live-button crm-live-document-link", "Документы обслуживания и периоды"); link.href = serviceUrl; dialogContent.append(link); }
       const meta = element("div", "crm-live-detail-meta");
       meta.append(element("span", "crm-live-pill", pipelineFor(deal.pipeline_id)?.name || ""), element("span", "crm-live-pill", stageFor(deal)?.name || ""), element("span", "crm-live-pill", deal.manager?.name || "Без ответственного"));
+      if (deal.can_assign && bootstrap.urls.responsibles) {
+        const assign = makeButton(deal.manager ? "Сменить ответственного" : "Назначить ответственного", null, "crm-live-inline-action");
+        assign.addEventListener("click", () => { selectDetailPanel("edit"); const form = dialogContent.querySelector('[data-command-form="assign"]'); form?.scrollIntoView({block:"nearest"}); form?.querySelector("select")?.focus(); }); meta.append(assign);
+      }
       if (deal.can_transition && !deal.is_archived) {
         const changeStage = element("button", "crm-live-inline-action", "Изменить этап"); changeStage.type = "button";
         changeStage.addEventListener("click", () => {
@@ -820,6 +1010,7 @@
         }); meta.append(changeStage);
       }
       dialogContent.append(meta);
+      const finance = financeSection(deal); if (finance) dialogContent.append(finance);
       const overview = section("О сделке");
       const object = deal.object;
       const facts = [["Предмет", deal.work_subject || "Не уточнён"], ["Специализация", deal.specialization || "Не уточнена"],
@@ -853,6 +1044,17 @@
         next.append(link);
       }
       dialogContent.append(next);
+      if (deal.can_assign && bootstrap.urls.responsibles) {
+        const part = section("Ответственный"); part.dataset.detailSection = "edit"; part.classList.add("crm-assignment");
+        const form = newForm("assign", deal.id); responsibleField(form, deal);
+        form.append(element("p", "crm-live-form-note", deal.assignment_note || "Передачу текущего следующего действия можно подтвердить отдельно."));
+        const task = deal.assignment_task;
+        if (task?.can_transfer) {
+          const transfer = field("Передать текущее следующее действие", "checkbox", "transfer_next_action", "yes", false); transfer.input.checked = true; transfer.wrapper.classList.add("crm-onec-checkbox"); form.append(transfer.wrapper);
+          form.append(element("p", "crm-live-form-note", (task.title || "Текущий шаг") + ". Остальные задачи сохранят своих исполнителей."));
+        } else if (task?.reason) form.append(element("p", "crm-live-form-note", task.reason));
+        formFooter(form, "Назначить ответственного"); const cancel = makeButton("Отмена"); cancel.addEventListener("click", () => openDetail(deal.id, true)); form.querySelector(".crm-live-form-footer").append(cancel); part.append(form); dialogContent.append(part);
+      }
       if (deal.can_next_action && !deal.is_archived && !deal.next_action?.restricted && !deal.next_action?.waiting) {
         const schedule = element("button", "crm-live-button", "Запланировать дело"); schedule.type = "button";
         schedule.addEventListener("click", () => { selectDetailPanel("tasks"); dialogContent.querySelector('[name="next_title"]')?.focus(); });
@@ -909,10 +1111,10 @@
         dialogContent.append(part);
       }
       if (deal.can_close_negative) {
-        const part = disclosure("Завершить без продажи"); part.dataset.detailSection = "edit";
+        const part = disclosure("Сделка провалена / отменена"); part.dataset.detailSection = "edit";
         const form = newForm("close_negative", deal.id);
         form.append(element("p", "crm-live-form-note", "Сделка завершится, а её активный следующий шаг будет отменён. Выполненным он не станет."));
-        selectField(form, "Исход", "outcome", "lost", [["lost", "Отказ / проигрыш"], ["cancelled", "Отмена"]]);
+        selectField(form, "Исход", "outcome", "lost", [["lost", "Сделка провалена"], ["cancelled", "Отмена"]]);
         const reason = field("Причина", "textarea", "reason", "", true); reason.input.maxLength = 500;
         form.append(reason.wrapper); formFooter(form, "Зафиксировать исход"); part.append(form); dialogContent.append(part);
       }
@@ -964,13 +1166,31 @@
       }
     }
 
+    async function failureDialog(snapshot) {
+      if (!snapshot?.can_close_negative || state.loading || queue.forSubject(snapshot.id)) return;
+      await openDetail(snapshot.id);
+      if (!dialog.open || state.drawer?.kind !== "detail" || !sameId(state.drawer.id, snapshot.id)) return;
+      const deal = state.drawer.deal;
+      if (deal.revision !== snapshot.revision || !deal.can_close_negative) {
+        notice("Сделка изменилась или завершение недоступно. Проверьте актуальную карточку.", true); return;
+      }
+      dialogContent.replaceChildren(titleNode("Сделка провалена"), element("p", "crm-live-detail-client", deal.title));
+      const form = newForm("close_negative", deal.id);
+      const outcome = element("input"); outcome.type = "hidden"; outcome.name = "outcome"; outcome.value = "lost"; form.append(outcome);
+      form.append(element("p", "crm-live-form-note", "Сделка перейдёт в проваленные после подтверждения. Активный следующий шаг будет отменён; история, контакты и документы сохранятся."));
+      const reason = field("Причина провала", "textarea", "reason", "", true); reason.input.maxLength = 500;
+      form.append(reason.wrapper); formFooter(form, "Подтвердить провал");
+      form.querySelector(".crm-live-form-footer").append(makeButton("Отмена", "close"));
+      dialogContent.append(form); openDialog("Завершение сделки"); updateFormLocks(); reason.input.focus();
+    }
+
     function createDialog() {
       if (!state.data.capabilities?.create || queue.forSubject(null)) return;
       if (state.detailController) state.detailController.abort();
       state.detailGeneration += 1;
       setDealURL(null, false);
-      state.drawer = {kind: "create", selectedClient: null};
-      dialogContent.replaceChildren(titleNode("Новая сделка"), element("p", "crm-live-form-note", "Выберите клиента и договоритесь о следующем шаге. Ответственным станете вы."));
+      state.drawer = {kind: "create", selectedClient: null, useCustomer: false, customerEditor: null};
+      dialogContent.replaceChildren(titleNode("Новая сделка"), element("p", "crm-live-form-note", "Выберите клиента, ответственного и договоритесь о следующем шаге."));
       const form = newForm("create", null);
       const title = field("Название сделки", "text", "title", "", true);
       title.input.placeholder = "Например, строительство бассейна";
@@ -996,12 +1216,45 @@
         pipeline.input.append(option);
       });
       form.append(title.wrapper, client.wrapper, clientResults, pipeline.wrapper);
+      responsibleField(form);
+      const customerToggle = makeButton("Создать контакт или компанию", null, "crm-live-button");
+      const customerHost = element("div", "crm-live-customer-host"); customerHost.hidden = true;
+      form.append(customerToggle, customerHost);
       const extra = disclosure("Сумма, объект и другие сведения");
       const extraFields = element("div", "crm-live-fields"); extra.append(extraFields); form.append(extra);
       cardFields(extraFields, null); form.refreshObjects = extraFields.refreshObjects;
       nextFields(form, null);
       formFooter(form, "Создать сделку");
       dialogContent.append(form);
+      const updateCustomerSelection = item => {
+        if (state.drawer?.kind !== "create") return;
+        const previousId = state.drawer.selectedClient?.id ?? null;
+        state.drawer.selectedClient = item;
+        if (previousId === (item?.id ?? null)) return;
+        const objects = form.elements.namedItem("object_ref");
+        for (const option of Array.from(objects.options)) if (!["none", "planned"].includes(option.value)) option.remove();
+        if (!["none", "planned"].includes(objects.value)) objects.value = "none";
+        form.refreshObjects?.();
+      };
+      customerToggle.addEventListener("click", () => {
+        if (state.drawer?.kind !== "create") return;
+        state.drawer.useCustomer = !state.drawer.useCustomer;
+        const active = state.drawer.useCustomer;
+        client.wrapper.hidden = active; client.input.disabled = active; clientResults.hidden = true;
+        state.clientController?.abort(); state.clientGeneration += 1;
+        customerHost.hidden = !active; customerToggle.textContent = active ? "Выбрать существующего клиента" : "Создать контакт или компанию";
+        if (active && !state.drawer.customerEditor) state.drawer.customerEditor = win.Service2CustomerEditor.mount(customerHost, {
+          lookupUrl: bootstrap.urls.clients, organizationId: bootstrap.organization_id, canCategorize: state.data.can_categorize_contacts ?? bootstrap.can_categorize_contacts,
+          contactMode: "new", onChange: item => {
+            if (state.drawer?.kind !== "create" || !state.drawer.useCustomer) return;
+            updateCustomerSelection(item);
+          }
+        });
+        state.drawer.customerEditor?.setEnabled(active);
+        if (active) updateCustomerSelection(state.drawer.customerEditor.primarySelection());
+        else { updateCustomerSelection(null); client.input.value = ""; selected.hidden = true; }
+        form.refreshObjects?.();
+      });
       let clientTimer;
       client.input.addEventListener("input", () => {
         win.clearTimeout(clientTimer);
@@ -1074,10 +1327,13 @@
     async function performExisting(key) {
       const entry = await queue.run(key);
       if (entry.status === "succeeded") {
+        if (entry.response.result?.assignment_saved && entry.response.result.can_open === false) {
+          queue.dismiss(key); closeDialog(); notice("Ответственный назначен. Карточка передана сотруднику и больше недоступна в вашем списке."); await loadData({keepNotice:true}); return entry;
+        }
         const deal = entry.response.deal;
         if (entry.payload.command_type === "deal.create") {
           state.pipelineId = deal.pipeline_id;
-          state.page = 1; state.filters.outcome = "open"; state.filters.stage = "";
+          state.page = 1; state.filters.outcome = "all"; state.filters.stage = "";
           state.query = "";
           state.attention = "all";
           byId("crm-live-search").value = "";
@@ -1105,6 +1361,10 @@
         const draft = conflictDraft(entry.payload, state.drawer.deal, timezone);
         const form = dialogContent.querySelector(`[data-command-form="${draft.formKind}"]`);
         if (!form) throw new Error("Сейчас нет доступа к изменению этих полей. Ваш черновик сохранён в уведомлении о конфликте.");
+        if (draft.formKind === "assign") {
+          await form.responsiblesReady;
+          if (!Array.from(form.elements.namedItem("responsible_id").options).some(option => option.value === draft.fields.responsible_id)) throw new Error("Ранее выбранный сотрудник больше недоступен для назначения. Выберите другого ответственного.");
+        }
         revealField(form);
         if (draft.formKind === "transition") {
           const select = form.elements.namedItem("stage_id");
@@ -1115,6 +1375,7 @@
         for (const [name, value] of Object.entries(draft.fields)) {
           const input = form.elements.namedItem(name);
           if (input) {
+            if (input.type === "checkbox") { input.checked = Boolean(value); input.dispatchEvent(new Event("change", {bubbles:true})); continue; }
             if (name === "object_ref" && !Array.from(input.options).some((option) => option.value === value)) {
               const option = element("option", "", "Ранее выбранный объект — проверьте доступность"); option.value = value; input.append(option);
             }
@@ -1151,16 +1412,32 @@
       const deal = state.drawer?.deal;
       try {
         if (kind === "create") {
-          if (!state.drawer?.selectedClient) throw new Error("Выберите клиента из результатов поиска.");
-          const changes = {title: String(values.get("title") || "").trim(), client_id: state.drawer.selectedClient.id, pipeline_id: Number(values.get("pipeline_id")), next_action: {title: String(values.get("next_title") || "").trim(), due_at: deadlineISO(values.get("due_at"), offset)}};
+          if (!state.drawer?.useCustomer && !state.drawer?.selectedClient) throw new Error("Выберите клиента из результатов поиска.");
+          const changes = {title: String(values.get("title") || "").trim(), pipeline_id: Number(values.get("pipeline_id")), next_action: {title: String(values.get("next_title") || "").trim(), due_at: deadlineISO(values.get("due_at"), offset)}};
+          if (form.elements.namedItem("responsible_id")) { if (!values.get("responsible_id")) throw new Error("Выберите ответственного."); changes.responsible_id = Number(values.get("responsible_id")); }
+          if (state.drawer.useCustomer) changes.customer = state.drawer.customerEditor.value();
+          else changes.client_id = state.drawer.selectedClient.id;
           changes.card_fields = cardChanges(values);
           if (!changes.title || !changes.next_action.title) throw new Error("Заполните название сделки и следующий шаг.");
           await send("deal.create", null, null, changes, "Новая сделка «" + changes.title + "»");
         } else if (!deal) throw new Error("Обновите карточку перед сохранением.");
-        else if (kind === "edit") {
+        else if (kind === "assign") {
+          if (!deal.can_assign || !values.get("responsible_id")) throw new Error("Выберите доступного сотрудника.");
+          const changes = {responsible_id:Number(values.get("responsible_id")), transfer_next_action:Boolean(form.elements.namedItem("transfer_next_action")?.checked)};
+          if (changes.transfer_next_action) changes.expected_task_version = deal.assignment_task.version;
+          await send("deal.assign", deal.id, deal.revision, changes, "Ответственный за «" + deal.title + "»");
+        } else if (kind === "edit") {
           const title = String(values.get("title") || "").trim();
           if (!title) throw new Error("Укажите название сделки.");
           await send("deal.edit", deal.id, deal.revision, {title, ...cardChanges(values)}, "Карточка сделки «" + deal.title + "»");
+        } else if (kind === "bind_order") {
+          if (!deal.onec_finance?.can_bind || !form.selectedOrder) throw new Error("Выберите заказ из результатов поиска.");
+          if (!form.elements.namedItem("confirm_order").checked) throw new Error("Подтвердите связь заказа со сделкой.");
+          await send("deal.bind_order", deal.id, deal.revision, {order_id:form.selectedOrder.id, recurring:form.elements.namedItem("recurring").checked}, "Заказ 1С для «" + deal.title + "»");
+        } else if (kind === "unbind_order") {
+          if (!deal.onec_finance?.can_unbind) throw new Error("Отвязка заказа сейчас недоступна.");
+          const reason = String(values.get("reason") || "").trim(); if (!reason) throw new Error("Укажите причину отвязки.");
+          await send("deal.unbind_order", deal.id, deal.revision, {reason}, "Отвязка заказа 1С от «" + deal.title + "»");
         } else if (kind === "close_negative") {
           const reason = String(values.get("reason") || "").trim();
           if (!reason) throw new Error("Укажите причину отказа или отмены.");
@@ -1219,12 +1496,12 @@
       else if (button.dataset.action === "restore-conflict") restoreConflict(button.dataset.operationKey);
       else if (button.dataset.action === "dismiss-operation") queue.dismiss(button.dataset.operationKey);
       else if (button.dataset.action === "clear-linked-filters") {
-        for (const key of Object.keys(state.filters)) state.filters[key] = key === "outcome" ? "open" : "";
+        for (const key of Object.keys(state.filters)) state.filters[key] = key === "outcome" ? "all" : "";
         state.page = 1; loadData();
       }
       else if (button.dataset.action === "reset") {
         state.query = ""; state.owner = "all"; state.attention = "all"; state.page = 1;
-        for (const key of Object.keys(state.filters)) { state.filters[key] = key === "outcome" ? "open" : ""; }
+        for (const key of Object.keys(state.filters)) { state.filters[key] = key === "outcome" ? "all" : ""; }
         byId("crm-live-search").value = ""; byId("crm-live-owner").value = "all";
         loadData();
       }
@@ -1248,19 +1525,36 @@
     byId("crm-live-owner").addEventListener("change", (event) => { state.owner = event.target.value; state.page = 1; loadData(); });
     byId("crm-live-refresh").addEventListener("click", () => loadData());
 
+    const dragActions = element("div", "crm-drag-actions"); dragActions.hidden = true;
+    const failureDrop = element("div", "crm-failure-drop crm-drag-target", "Сделка провалена");
+    dragActions.append(failureDrop); root.append(dragActions);
+    failureDrop.addEventListener("dragover", event => {
+      if (state.loading || !state.dragging || !dealFor(state.dragging.id)?.can_close_negative) return;
+      event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = "move";
+      failureDrop.classList.add("is-drop-target");
+    });
+    failureDrop.addEventListener("dragleave", () => failureDrop.classList.remove("is-drop-target"));
+    failureDrop.addEventListener("drop", event => {
+      event.preventDefault(); event.stopPropagation(); const dragging = state.dragging; endDrag();
+      const deal = dragging && dealFor(dragging.id);
+      if (deal?.revision === dragging?.revision) failureDialog(deal);
+    });
     root.addEventListener("dragstart", (event) => {
       const card = event.target.closest(".crm-live-card[draggable=true]");
       if (!card || !event.dataTransfer) return;
       const deal = dealFor(card.dataset.dealId);
-      if (!deal || queue.forSubject(deal.id)) { event.preventDefault(); return; }
+      if (!deal || state.loading || isClosed(deal) || queue.forSubject(deal.id)) { event.preventDefault(); return; }
       state.dragging = {id: deal.id, revision: deal.revision};
+      dragActions.hidden = !deal.can_close_negative;
       event.dataTransfer.effectAllowed = "move";
       event.dataTransfer.setData("application/x-service2-crm-deal", String(deal.id));
       card.classList.add("is-dragging");
     });
     root.addEventListener("dragover", (event) => {
       const lane = event.target.closest(".crm-live-lane");
-      if (!lane || !state.dragging || lane.dataset.canTransition !== "true") return;
+      if (!lane || state.loading || !state.dragging) return;
+      const deal = dealFor(state.dragging.id);
+      if (lane.dataset.failure === "true" ? !(lane.dataset.canCloseNegative === "true" && deal?.can_close_negative) : !(lane.dataset.canTransition === "true" && deal?.can_transition)) return;
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
       root.querySelectorAll(".is-drop-target").forEach((item) => { if (item !== lane) item.classList.remove("is-drop-target"); });
@@ -1273,9 +1567,12 @@
     function endDrag() {
       root.querySelectorAll(".is-drop-target,.is-dragging").forEach((item) => item.classList.remove("is-drop-target", "is-dragging"));
       state.dragging = null;
+      dragActions.hidden = true;
       state.suppressClickUntil = Date.now() + 250;
     }
     root.addEventListener("dragend", endDrag);
+    win.addEventListener("blur", endDrag);
+    win.addEventListener("keydown", event => { if (event.key === "Escape") endDrag(); });
     root.addEventListener("drop", async (event) => {
       const lane = event.target.closest(".crm-live-lane");
       const dragging = state.dragging;
@@ -1286,6 +1583,10 @@
         const deal = dealFor(dragging.id);
         if (!deal || deal.revision !== dragging.revision) throw new Error("Сделка изменилась во время переноса. Обновите данные и повторите действие.");
         if (queue.forSubject(deal.id)) throw new Error("Сначала проверьте результат предыдущего сохранения этой сделки.");
+        if (lane.dataset.failure === "true") {
+          if (lane.dataset.canCloseNegative === "true") await failureDialog(deal);
+          return;
+        }
         const intent = transitionIntent(deal, lane.dataset.stageId, pipelineFor(deal.pipeline_id));
         if (!intent) return;
         if (intent.needsReason || intent.manualCompletion) transitionDialog(deal, intent);
@@ -1306,7 +1607,7 @@
       state.attention = ["today", "overdue", "missing"].includes(current.get("attention")) ? current.get("attention") : "all";
       state.view = current.get("view") === "table" ? "table" : "kanban";
       state.pipelineId = current.get("pipeline") || state.pipelineId;
-      for (const key of Object.keys(state.filters)) { state.filters[key] = current.get(key) || (key === "outcome" ? "open" : ""); }
+      for (const key of Object.keys(state.filters)) { state.filters[key] = current.get(key) || (key === "outcome" ? "all" : ""); }
       byId("crm-live-search").value = state.query;
       byId("crm-live-owner").value = state.owner;
       const linked = current.get("deal");

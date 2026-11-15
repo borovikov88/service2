@@ -37,15 +37,17 @@ MAX_BODY_BYTES = 65536
 STATES = dict(CrmLead._meta.get_field("status").choices)
 RESULTS = dict(CrmLead._meta.get_field("result").choices)
 EVENTS = {"lead.create": "Лид создан", "lead.take": "Обращение взято в работу",
+    "lead.assign": "Ответственный за лид изменён",
     "lead.edit": "Карточка изменена", "lead.disposition": "Лид перемещён", "lead.transition": "Состояние изменено",
     "lead.qualify": "Квалификация завершена", "lead.add_deal": "Добавлена сделка",
+    "lead.complete_customer": "Контакт или компания сохранены без сделки",
     "lead.new_need": "Открыта новая потребность", "lead.incoming": "Поступило обращение",
     "lead.acknowledge": "Новое обращение разобрано как продолжение текущей работы",
     "lead.continuation": "Подтверждено продолжение потребности"}
 INTAKE_REASONS = {"unassigned": "Требуется ответственный", "missed_call": "Пропущенный звонок",
     "employee_unmapped": "Принявший сотрудник не сопоставлен", "employee_ambiguous": "Неоднозначное сопоставление сотрудника",
     "employee_unavailable": "Принявший сотрудник недоступен", "needs_qualification": "Требуется квалификация"}
-COLUMNS = {"unparsed": "Не разобраны", "working": "В работе", "history": "Завершённые", "spam": "Спам", "deleted": "Удалённые"}
+COLUMNS = {"unparsed": "Не разобраны", "working": "В работе", "history": "Завершённые", "failed": "Лид провален", "spam": "Спам", "deleted": "Удалённые"}
 
 
 ROUTING_REASONS = {"unassigned", "employee_unmapped", "employee_ambiguous", "employee_unavailable"}
@@ -76,6 +78,9 @@ def _capabilities(user, organization):
     from .models import OrganizationAccess
     capabilities['can_categorize_contacts'] = bool(enabled and not user.is_superuser and
         OrganizationAccess.objects.filter(user=user, organization=organization, role__in=('owner', 'admin')).exists())
+    from .client_queries import CONTACT_STAFF_ROLES
+    capabilities['can_save_customer'] = bool(enabled and not user.is_superuser and
+        OrganizationAccess.objects.filter(user=user, organization=organization, role__in=CONTACT_STAFF_ROLES).exists())
     return capabilities
 
 
@@ -116,6 +121,7 @@ def _serialize(lead, user, capabilities, *, detail=False, visible_tasks=None):
         "can_take": opened and lead.status == "new" and lead.assignee_id is None and capabilities["take_leads"],
         "can_edit": own and opened and capabilities["edit_own_leads"],
         "can_transition": own and opened and capabilities["transition_own_leads"],
+        "can_complete_customer": opened and not lead.result and capabilities["transition_own_leads"] and capabilities["can_save_customer"] and (own or lead.assignee_id is None and lead.status == "new" and capabilities["take_leads"]),
         "can_qualify": (own or lead.assignee_id is None and lead.status == "new" and capabilities["take_leads"]) and lead.status != "closed" and not lead.result and (not lead.is_archived or capabilities["transition_own_leads"]) and all(capabilities[name] for name in ("qualify_own_leads", "create_own_deals", "manage_own_next_action")),
         "can_edit_conversion_need": capabilities["edit_own_leads"],
         "can_categorize_contacts": capabilities['can_categorize_contacts'],
@@ -128,6 +134,10 @@ def _serialize(lead, user, capabilities, *, detail=False, visible_tasks=None):
     if detail and row["client"] and readable_clients(user).filter(pk=lead.client_id,organization=lead.organization).exists():
         row["client"]["url"] = reverse("client_detail",args=[lead.client_id])
     if detail:
+        from .services.crm_assignments import assignment_available, assignment_task_data, ASSIGNMENT_NOTE
+        row['can_assign'] = assignment_available(user, lead.organization, lead)
+        row['assignment_note'] = ASSIGNMENT_NOTE
+        row['assignment_task'] = assignment_task_data(lead, user) if row['can_assign'] else None
         for key in ('contact', 'company'):
             if row[key] and readable_clients(user).filter(pk=row[key]['id'], organization=lead.organization).exists():
                 row[key]['url'] = reverse('client_detail', args=[row[key]['id']])
@@ -220,7 +230,8 @@ def _data(request, organization, *, board=None):
         predicates = {
             "unparsed": Q(is_archived=False) & ~spam & (Q(status="new") | Q(needs_review=True)),
             "working": Q(is_archived=False, needs_review=False) & ~Q(status__in=["new", "closed"]),
-            "history": Q(is_archived=False, needs_review=False, status="closed") & ~spam,
+            "history": Q(is_archived=False, needs_review=False, status="closed") & ~spam & ~Q(result="lost"),
+            "failed": Q(is_archived=False, needs_review=False, status="closed", result="lost"),
             "spam": Q(is_archived=False) & spam,
             "deleted": Q(is_archived=True),
         }
@@ -310,6 +321,7 @@ def workspace(request):
             "command": reverse("crm_live_lead_command") + scope,
             "clients": reverse("crm_live_lead_clients") + scope,
             "targets": reverse("crm_live_lead_targets") + scope,
+            "responsibles": reverse("crm_assignment_candidates") + scope,
             "detail_prefix": reverse("crm_live_lead_detail", args=[1]).rsplit("1/", 1)[0],
             "deals": reverse("crm_live_workspace") + scope})
     return render(request, "pool_service/crm_live/leads.html", {
@@ -466,16 +478,22 @@ def command(request):
     allowed = {"operation_key", "command_type", "subject_id", "expected_revision", "changes"}
     if type(payload) is not dict or not payload.keys() <= allowed or not {"operation_key", "command_type", "changes"} <= payload.keys():
         raise ValidationError("Некорректный состав запроса.")
-    if type(payload["command_type"]) is not str or type(payload["changes"]) is not dict or payload["command_type"] not in {"lead.create", "lead.take", "lead.edit", "lead.transition", "lead.qualify", "lead.add_deal", "lead.new_need", "lead.acknowledge", "lead.disposition"}:
+    if type(payload["command_type"]) is not str or type(payload["changes"]) is not dict or payload["command_type"] not in {"lead.create", "lead.take", "lead.edit", "lead.transition", "lead.qualify", "lead.add_deal", "lead.new_need", "lead.acknowledge", "lead.disposition", "lead.complete_customer", "lead.assign"}:
         raise ValidationError("Эта команда недоступна.")
     from .services.crm_lead_commands import execute_lead_command
-    result = execute_lead_command(actor=request.user, organization=organization, **payload)
+    if payload['command_type'] == 'lead.assign':
+        from .services.crm_assignments import execute_assignment
+        result = execute_assignment(actor=request.user, organization=organization, **payload)
+    else:
+        result = execute_lead_command(actor=request.user, organization=organization, **payload)
     # A committed write followed by loss of read rights is uncertain to the
     # browser. It must keep the original immutable key/payload for verification.
     try:
         organization = _organization(request)
         response = _detail(request, organization, result["lead_id"])
     except (PermissionDenied, Http404):
+        if result.get('assignment_saved'):
+            return JsonResponse({'result': {**result, 'can_open': False}, 'lead': None})
         return JsonResponse({"error": "Результат сохранения сейчас недоступен. Проверьте ту же операцию.", "code": "verify_required"}, status=503)
     response["result"] = result
     return JsonResponse(response)

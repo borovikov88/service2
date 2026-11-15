@@ -2,6 +2,8 @@ from . import crm_construction_views
 from . import crm_quote_views
 from . import crm_handoff_views
 from . import crm_service_binding_views
+from . import crm_order_views
+from . import crm_assignment_views
 from django.urls import path
 from .views import (
     home,
@@ -88,6 +90,7 @@ from . import crm_live_views, crm_pilot_views, crm_lead_views, crm_object_need_v
 from .estimate_views import estimate_page, estimate_api, estimate_print, estimate_document
 from .client_crm_views import client_detail, client_merge_index, client_merge_search, client_onec_import
 from .client_crm_ui import client_edit
+from .contact_creation import lookup as contact_create_lookup
 from .security_views import (
     security_lock,
     security_pin_disable,
@@ -424,6 +427,9 @@ urlpatterns = [
     path("crm/workspace/data/", crm_live_views.data, name="crm_live_data"),
     path("crm/workspace/clients/", crm_live_views.clients, name="crm_live_clients"),
     path("crm/workspace/objects/", crm_live_views.objects, name="crm_live_objects"),
+    path("crm/workspace/orders/", crm_order_views.candidates, name="crm_order_candidates"),
+    path("crm/workspace/responsibles/", crm_assignment_views.candidates, name="crm_assignment_candidates"),
+    path("crm/workspace/orders/refresh/", crm_order_views.refresh, name="crm_order_refresh"),
     path("crm/workspace/commands/", crm_live_views.command, name="crm_live_command"),
     path("crm/workspace/deals/<int:deal_id>/quotes/", crm_quote_views.workspace, name="crm_quotes"),
     path("crm/workspace/deals/<int:deal_id>/construction/", crm_construction_views.workspace, name="crm_construction"),
@@ -564,6 +570,7 @@ urlpatterns = [
     path("development/tasks/<int:task_id>/update/", development_task_update, name="development_task_update"),
     path("development/tasks/<int:task_id>/iterations/new/", development_iteration_create, name="development_iteration_create"),
     path("clients/create/", client_create, name="client_create"),
+    path("clients/create/lookup/", contact_create_lookup, name="contact_create_lookup"),
     path("clients/<int:client_id>/edit/", client_edit, name="client_edit"),
     path("clients/<int:client_id>/delete/", client_delete, name="client_delete"),
 ]
