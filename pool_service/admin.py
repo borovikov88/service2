@@ -154,9 +154,11 @@ class PoolAdmin(admin.ModelAdmin):
         return "-"
     formatted_description.short_description = "Описание объекта"
 
+from .client_crm_admin import ClientConcurrencyAdminMixin
+
 # Client admin
 @admin.register(Client)
-class ClientAdmin(admin.ModelAdmin):
+class ClientAdmin(ClientConcurrencyAdminMixin, admin.ModelAdmin):
     list_display = ('name',)
 
 

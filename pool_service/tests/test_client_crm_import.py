@@ -96,33 +96,13 @@ class ClientCRMImportTests(TestCase):
             },
         )
 
-        company = apply_candidate(candidate)
-
-        link = ClientCompanyLink.objects.get(
-            company=company,
-            source=ClientCompanyLink.SOURCE_ONEC_IP,
-        )
-        self.assertEqual(link.person_id, person.pk)
-        company.refresh_from_db()
+        # A shared phone (even with the same name) is not verified IP identity.
+        with self.assertRaisesMessage(ValueError, "не подтверждает личность"):
+            apply_candidate(candidate)
         person.refresh_from_db()
-        self.assertEqual(company.phone, "+7 913 000 0001")
-        self.assertEqual(person.phone, "+7 913 000 0001")
-        self.assertTrue(
-            ClientContact.objects.filter(
-                client=person,
-                kind=ClientContact.KIND_PHONE,
-                value="+7 913 000 0001",
-                match_value="9130000001",
-            ).exists()
-        )
-        self.assertEqual(
-            Client.objects.filter(
-                organization=self.organization,
-                client_type="private",
-                name="Иванов Иван Иванович",
-            ).count(),
-            1,
-        )
+        self.assertEqual(person.phone, "+7 913 000 00 01")
+        self.assertFalse(ClientCompanyLink.objects.exists())
+        self.assertFalse(ClientCRMProfile.objects.filter(onec_ref=candidate.source_ref).exists())
 
     def test_ip_does_not_merge_existing_person_by_name_only(self):
         existing = Client.objects.create(
@@ -142,7 +122,7 @@ class ClientCRMImportTests(TestCase):
 
         with self.assertRaisesMessage(
             ValueError,
-            "тем же ФИО без подтверждающего телефона",
+            "не подтверждает личность",
         ):
             apply_candidate(candidate)
 

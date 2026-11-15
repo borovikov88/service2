@@ -15,7 +15,7 @@ from django.views.decorators.http import require_http_methods
 
 from .client_crm_models import ClientCompanyLink, ClientContact, ClientCRMProfile
 from .client_queries import active_clients
-from .models import Client
+from .models import Client, Organization
 from .phone_utils import canonical_phone_value, format_phone, normalize_phone
 from .services.permissions import is_org_access_blocked
 
@@ -243,6 +243,10 @@ def client_edit(request, client_id):
     if readonly:
         return readonly
     with transaction.atomic():
+        if request.method == "POST":
+            org_id = Client.objects.filter(pk=client_id).values_list("organization_id", flat=True).first()
+            if org_id:
+                Organization.objects.select_for_update().get(pk=org_id)
         queryset = Client.objects.select_related("organization")
         if request.method == "POST":
             queryset = queryset.select_for_update()
@@ -258,6 +262,11 @@ def client_edit(request, client_id):
         if request.method == "POST":
             profiles = profiles.select_for_update()
         profile = profiles.first() or ClientCRMProfile(client=client)
+        from .client_import_review import editor_revision
+        revision = editor_revision(client, profile)
+        if request.method == "POST" and request.POST.get("editor_revision") != revision:
+            from django.http import HttpResponse
+            return HttpResponse("Карточка изменилась или форма устарела. Обновите страницу перед сохранением.", status=409)
         tab = card_tab(request.POST.get("return_tab") if request.method == "POST" else request.GET.get("tab"))
         if profile.merged_into_id:
             return redirect(card_url(profile.merged_into_id, tab))
@@ -320,6 +329,7 @@ def client_edit(request, client_id):
                     return redirect(card_url(updated.pk, tab))
         contacts = list(ClientContact.objects.filter(client=client).order_by("kind", "-is_primary", "id"))
     return render(request, "pool_service/client_edit.html", {
+        "editor_revision": revision,
         "client": client, "profile": profile, "client_form": client_form,
         "profile_form": profile_form, "contacts": contacts, "return_tab": tab,
         "return_url": card_url(client.pk, tab), "contacts_url": card_url(client.pk, "contacts"),

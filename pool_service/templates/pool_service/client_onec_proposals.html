@@ -1,0 +1,49 @@
+{% extends 'pool_service/base.html' %}
+{% block title %}Предложения изменений из 1С{% endblock %}
+{% block content %}
+{% include 'pool_service/_admin_workspace_styles.html' %}
+<div class="admin-desktop"><div class="admin-card card card-soft p-4">
+  <div class="d-flex flex-wrap justify-content-between gap-3 mb-3">
+    <h4>Предложения изменений из 1С</h4>
+    <a href="{% url 'client_onec_import' %}" class="btn btn-outline-secondary">К импорту клиентов</a>
+  </div>
+  <p>Пустые поля заполняются автоматически. Сохранённые значения заменяются только после принятия предложения. Пустые значения 1С не удаляют данные и связи.</p>
+  <nav class="d-flex flex-wrap gap-2 mb-3" aria-label="Состояние предложений">
+    {% for key,label in states %}<a class="btn btn-sm {% if state == key %}btn-primary{% else %}btn-outline-primary{% endif %}" href="?state={{ key }}">{{ label }}</a>{% endfor %}
+  </nav>
+  {% for row in page %}
+  <article class="border rounded-3 p-3 mb-3" data-proposal="{{ row.pk }}">
+    <div class="d-flex flex-wrap justify-content-between gap-2">
+      <h5><a href="{% url 'client_detail' row.client_id %}">{{ row.client.name }}</a> · {{ row.label }}</h5>
+      <span class="text-muted">{{ row.get_state_display }}</span>
+    </div>
+    <p class="text-muted small">Источник: 1С · {{ row.candidate.source_code }} · {{ row.context.source_ref }} · версия значения {{ row.source_version }}</p>
+    <div class="row g-3 mb-3">
+      <div class="col-12 col-md-6"><strong>Было при сравнении</strong><div class="text-break">{{ row.before_display }}</div></div>
+      <div class="col-12 col-md-6"><strong>Предложено из 1С</strong><div class="text-break">{{ row.after_display }}</div></div>
+    </div>
+    {% if row.field == 'classification' %}
+      {% if row.removes_ip_links %}<p class="small">При принятии будут удалены показанные автоматические связи ИП с этим источником 1С. Карточки физлиц сохранятся.</p>{% endif %}
+      <p class="small">Ручные и другие связи сохраняются. Если меняется тип между компанией и физлицом, сначала проверьте эти связи в карточке.</p>
+      {% for link in row.before.links %}<p class="small">Связь #{{ link.pk }}: {{ link.person__name }} — {{ link.company__name }} · {{ link.source }} · {% if link.automatic %}автоматическая{% else %}ручная{% endif %}</p>{% endfor %}
+    {% endif %}
+    {% if row.field == 'ip_person' %}<dl class="row small">{% for label,value in row.person_values %}<dt class="col-5">{{ label }}</dt><dd class="col-7 text-break">{{ value }}</dd>{% endfor %}</dl>{% endif %}
+    {% if row.state == 'pending' %}
+    <form method="post" class="d-flex flex-wrap gap-2">{% csrf_token %}
+      <input type="hidden" name="proposal_id" value="{{ row.pk }}"><input type="hidden" name="token" value="{{ row.token }}">
+      <button name="decision" value="accepted" class="btn btn-success">Принять</button>
+      <button name="decision" value="rejected" class="btn btn-outline-danger">Отклонить</button>
+    </form>
+    {% elif row.state == 'stale' %}
+    <p class="small">Данные изменились. Обновите сравнение, затем проверьте его перед решением. Если источник уже содержит новую версию, используйте её предложение.</p>
+    <form method="post">{% csrf_token %}<input type="hidden" name="proposal_id" value="{{ row.pk }}"><input type="hidden" name="token" value="{{ row.token }}"><button name="decision" value="refresh" class="btn btn-outline-primary">Обновить сравнение</button></form>
+    {% else %}<p class="small text-muted">{{ row.decided_by }} · {{ row.decided_at }}</p>{% endif %}
+  </article>
+  {% empty %}<p class="text-muted">Предложений в этом состоянии нет.</p>{% endfor %}
+  <nav class="d-flex align-items-center gap-3" aria-label="Страницы">
+    {% if page.has_previous %}<a href="?state={{ state }}&amp;page={{ page.previous_page_number }}">Назад</a>{% endif %}
+    <span>{{ page.number }} / {{ page.paginator.num_pages }}</span>
+    {% if page.has_next %}<a href="?state={{ state }}&amp;page={{ page.next_page_number }}">Далее</a>{% endif %}
+  </nav>
+</div></div>
+{% endblock %}

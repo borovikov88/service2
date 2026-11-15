@@ -1,3 +1,4 @@
+from .onec_review_helpers import post_current_form
 from datetime import timedelta
 from html.parser import HTMLParser
 from pathlib import Path
@@ -130,7 +131,7 @@ class CRMPhoneBrowserFormTests(TestCase):
                 self.assertNotIn("phone-mask", field["class"].split())
                 data = self.payload(field["value"])
                 data["first_name"] = "Updated"
-                self.assertEqual(self.client.post(url, data).status_code, 302)
+                self.assertEqual(post_current_form(self.client, url, data).status_code, 302)
                 customer.refresh_from_db()
                 self.assertEqual(customer.phone, phone)
                 self.assertEqual(customer.first_name, "Updated")
@@ -140,7 +141,7 @@ class CRMPhoneBrowserFormTests(TestCase):
     def test_invalid_form_redisplays_foreign_phone_unchanged(self):
         data = self.payload("+358 40 123 4567")
         data["last_name"] = ""
-        response = self.client.post(reverse("client_create"), data)
+        response = post_current_form(self.client, reverse("client_create"), data)
         self.assertEqual(response.status_code, 200)
         field = crm_input(response.content.decode())
         self.assertEqual(field["value"], data["phone"])
