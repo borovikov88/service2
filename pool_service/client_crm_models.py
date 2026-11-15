@@ -388,8 +388,17 @@ class ClientImportRun(models.Model):
 
 class ClientBusinessRole(models.Model):
     """Explicit local classification; never an intake or access grant."""
+    ROLE_CHOICES = [
+        ("supplier", "Поставщик"),
+        ("personal", "Личный"),
+        ("internal", "Внутренний"),
+        ("landlord", "Арендодатель"),
+        ("partner", "Партнёр"),
+        ("other", "Другой"),
+    ]
+    ROLE_LABELS = dict(ROLE_CHOICES)
     client = models.ForeignKey("pool_service.Client", on_delete=models.PROTECT, related_name="business_roles")
-    role = models.CharField(max_length=20, choices=[("supplier", "Поставщик")])
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES)
     active = models.BooleanField(default=False)
     revision = models.PositiveIntegerField(default=0)
 

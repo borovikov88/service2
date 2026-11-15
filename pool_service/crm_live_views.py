@@ -91,8 +91,10 @@ def _deal_queryset(user, organization):
         organization=organization,
         pipeline__organization_id=organization.pk,
         stage__pipeline_id=F("pipeline_id"),
-    ).filter(Q(client__isnull=True) | Q(client__organization_id=organization.pk)).select_related(
-        "client", "manager", "pipeline", "stage", "next_action__task_link__task",
+    ).filter(Q(client__isnull=True) | Q(client__organization_id=organization.pk)).filter(
+        Q(contact__isnull=True) | Q(contact__organization_id=organization.pk, contact__client_type='private')
+    ).select_related(
+        "client", "contact", "manager", "pipeline", "stage", "next_action__task_link__task",
     )
 
 
@@ -241,6 +243,13 @@ def _serialize_deals(deals, user, organization, grant, *, detail=False):
                 and not (next_action and (next_action.get("restricted") or next_action.get("waiting"))),
             "client": {"id": deal.client_id, "name": deal.client.name,
                 "url": reverse("client_detail", args=[deal.client_id]) if client_card_access else ""} if deal.client_id else None,
+            "contact": {"id": (deal.contact_id or deal.client_id),
+                "name": (deal.contact or deal.client).name,
+                "url": reverse("client_detail", args=[deal.contact_id or deal.client_id]) if client_card_access else ""}
+                if deal.contact_id or deal.client_id and deal.client.client_type == 'private' else None,
+            "company": {"id": deal.client_id, "name": deal.client.name,
+                "url": reverse("client_detail", args=[deal.client_id]) if client_card_access else ""}
+                if deal.client_id and deal.client.client_type == 'legal' else None,
             "quotes_url": reverse("crm_quotes",args=[deal.pk])+"?org_id="+str(organization.pk) if detail else "",
             "service_documents_url": reverse("crm_service_bindings",args=[deal.pk])+"?org_id="+str(organization.pk) if detail and deal.pipeline.code=="service" and writable and _write_capability(grant, organization, "edit_own_deals") else "",
             "manager": {"id": deal.manager_id, "name": _label(deal.manager)},

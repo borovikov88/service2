@@ -4,6 +4,7 @@ from difflib import SequenceMatcher
 import re
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from .models import Client, ClientAccess, Organization
@@ -285,8 +286,8 @@ def merge_clients(source_id, target_id, *, organization_id, actor=None):
     # writer. Inspect every source link, including archived or inconsistent
     # tenant links, before moving any legacy relation. Flags do not bypass this
     # compatibility boundary. Target-only links are retained without changes.
-    if (CrmLead.objects.filter(client_id=source.pk).exists()
-            or CrmDeal.objects.filter(client_id=source.pk).exists()):
+    if (CrmLead.objects.filter(Q(client_id=source.pk) | Q(contact_id=source.pk)).exists()
+            or CrmDeal.objects.filter(Q(client_id=source.pk) | Q(contact_id=source.pk)).exists()):
         raise ValueError(
             "Нельзя автоматически объединить клиента с коммерческими лидами или сделками CRM. "
             "Для переноса этих связей требуется отдельная проверенная операция."

@@ -86,7 +86,8 @@
     const byId = (id) => doc.getElementById(id);
     const dialog = byId("lead-dialog"), content = byId("lead-dialog-content");
     const state = {data: initial, q: initial.q, mode: initial.mode, status: initial.status, page: initial.page, pages: Object.fromEntries((initial.columns || []).map((column) => [column.key, column.page])),
-      selected: null, detail: null, loading: false, sequence: 0, detailSequence: 0, listController: null};
+      selected: null, detail: null, loading: false, sequence: 0, detailSequence: 0, listController: null,
+      showArchiveQueues: new URL(win.location.href).searchParams.get("queues") === "all"};
     const el = (tag, cls, text) => { const node = doc.createElement(tag); if (cls) node.className = cls; if (text != null) node.textContent = text; return node; };
     const button = (text, action, primary = false) => { const node = el("button", "crm-live-button" + (primary ? " crm-live-button-primary" : ""), text); node.type = "button"; if (action) node.addEventListener("click", action); return node; };
     const dateText = (value) => value ? new Intl.DateTimeFormat("ru-RU", {timeZone: initial.timezone, dateStyle: "medium", timeStyle: "short"}).format(new Date(value)) : "Срок не указан";
@@ -101,6 +102,7 @@
         if (value && value !== base) url.searchParams.set(key, value); else url.searchParams.delete(key);
       }
       for (const key of ["unparsed", "working", "history", "spam", "deleted"]) url.searchParams.delete("page_" + key);
+      if (state.showArchiveQueues) url.searchParams.set("queues", "all"); else url.searchParams.delete("queues");
       if (state.selected) url.searchParams.set("lead", state.selected); else url.searchParams.delete("lead");
       win.history.replaceState({}, "", url);
     }
@@ -209,8 +211,10 @@
     }
     function renderList() {
       const data = state.data, list = byId("lead-list"), scrollLeft = list.scrollLeft; list.replaceChildren(); list.setAttribute("aria-busy", String(state.loading));
-      list.className = state.mode === "closed" ? "lead-history-list" : "lead-board";
-      byId("lead-count").textContent = state.loading ? "Обновляем…" : "Найдено: " + data.total;
+      list.className = state.mode === "closed" ? "lead-history-list" : "lead-board" + (state.showArchiveQueues ? " lead-board-all" : "");
+      byId("lead-archive-toggle")?.setAttribute("aria-pressed",String(state.showArchiveQueues));
+      const archivedMatches=state.mode!=="closed"&&!state.showArchiveQueues?(data.columns||[]).filter(column=>["spam","deleted"].includes(column.key)).reduce((total,column)=>total+column.total,0):0;
+      byId("lead-count").textContent = state.loading ? "Обновляем…" : "Найдено: " + data.total + (archivedMatches ? " · " + archivedMatches + " в спаме и удалённых" : "");
       byId("lead-page").textContent = `${data.page} / ${data.pages}`;
       byId("lead-prev").parentElement.hidden = state.mode !== "closed";
       byId("lead-prev").disabled = state.loading || data.page <= 1; byId("lead-next").disabled = state.loading || data.page >= data.pages;
@@ -223,6 +227,7 @@
         if (!data.leads.length) list.append(el("p", "lead-empty", "Завершённых лидов по этим условиям нет."));
         for (const lead of data.leads) list.append(card(lead));
       } else for (const column of data.columns || []) {
+        if (!state.showArchiveQueues && ["spam","deleted"].includes(column.key)) continue;
         const section = el("section", "lead-column"); section.dataset.column = column.key;
         section.setAttribute("aria-label", column.label);
         section.append(el("h2", "", column.label + " · " + column.total));
@@ -324,7 +329,10 @@
           if (input.value.trim().length < 3) return;
           controller = new AbortController(); const url = new URL(endpoint, win.location.origin); url.searchParams.set("q", input.value.trim()); if (kind) url.searchParams.set("kind", kind());
           try { const data = await read(url, controller.signal); if (sequence !== current) return; results.replaceChildren();
-            for (const row of data[collection]) results.append(button(row.name || row.title, () => { selected = row; input.value = row.name || row.title; chosen.textContent = "Выбрано: " + input.value; results.replaceChildren(); }));
+            for (const row of data[collection]) {
+              const option = button([row.name || row.title, row.phone, ...(row.categories || []).map(value => typeof value === "string" ? ({personal:"Личный",internal:"Внутренний",landlord:"Арендодатель",supplier:"Поставщик",partner:"Партнёр",other:"Другой"}[value] || value) : value.label)].filter(Boolean).join(" · "), () => { selected = row; input.value = row.name || row.title; chosen.textContent = "Выбрано: " + input.value; results.replaceChildren(); });
+              results.append(option);
+            }
             if (!data[collection].length) results.append(el("span", "crm-live-muted", "Совпадений нет"));
           } catch (error) { if (error.name !== "AbortError" && sequence === current) chosen.textContent = error.message; }
         }, 300);
@@ -346,17 +354,18 @@
     }
     function editForm(host, lead, kind = "lead.edit") {
       const creating = kind !== "lead.edit", form = makeForm(host, creating ? kind === "lead.new_need" ? "Новая потребность" : "Новый лид" : "Потребность",
-        creating ? "Телефон и клиент не обязательны. Опишите контекст и назначьте следующий шаг. Для создания сделки потребуется выбрать клиента." : "");
+        creating ? "Опишите обращение и запланируйте следующий шаг. Остальные сведения можно заполнить позже." : "");
       const fields = el("div", "lead-fields"); form.append(fields);
       const title = field(fields, "Название", creating ? "" : lead.title, "text", true); title.required = true; title.maxLength = 255;
       const need = field(fields, "Что требуется / контекст", creating ? "" : lead.need, "textarea", true); need.required = true; need.maxLength = 10000;
       if (!creating) need.dataset.leadNeed = "true";
-      const client = picker(fields, "Клиент · можно уточнить позже", initial.urls.clients, "clients", creating ? null : lead.client);
+      const client = picker(fields, "Клиент / компания", initial.urls.clients, "clients", creating ? null : lead.client);
+      const contact = picker(fields, "Контактное лицо", initial.urls.clients, "clients", creating ? null : lead.contact, () => "private");
       const direction = select(fields, "Направление", [["", "Пока не определено"], ...initial.pipelines.map((p) => [p.code, p.name])], creating ? "" : lead.direction);
       const specialization = field(fields, "Специализация", creating ? "" : lead.specialization); specialization.maxLength = 40;
       const location = field(fields, "Место / объект", creating ? "" : lead.location); location.maxLength = 255;
       const desired = field(fields, "Желаемый срок · " + initial.timezone, creating ? "" : localDateTime(lead.desired_at, initial.timezone), "datetime-local");
-      if(!creating){const details=el("details"), business=el("div","lead-fields");details.append(el("summary","","Уточнить сведения"),business);business.append(title.parentElement,client.element,direction.parentElement,specialization.parentElement,location.parentElement,desired.parentElement);form.append(details);}
+      const details=el("details"), business=el("div","lead-fields");details.append(el("summary","","Контакты и дополнительные сведения"),business);business.append(client.element,contact.element,direction.parentElement,specialization.parentElement,location.parentElement,desired.parentElement);form.append(details);
       const extra = el("details"), more = el("div", "lead-fields"); extra.append(el("summary", "", "Источник и бюджет"), more); form.append(extra);
       const source = field(more, "Источник привлечения", creating || lead.acquisition_source === "manual" ? "Ручное обращение" : lead.acquisition_source); source.maxLength = 80;
       const channel = field(more, "Канал первого обращения", creating || lead.first_contact_channel === "manual" ? "Ручной ввод" : lead.first_contact_channel); channel.maxLength = 40;
@@ -370,7 +379,7 @@
       const nextAction = canNext ? nextFields(next, creating ? null : lead.next_action) : null;
       if (!canNext) form.append(el("p", "lead-form-note", lead.next_action?.waiting ? "Режим ожидания изменяется в карточке задачи. Эта форма сохраняет бизнес-поля лида." : "Следующее действие ограничено доступом и этой формой не изменяется."));
       formSubmit(form, creating ? "Создать лид" : "Сохранить изменения", () => {
-        const changes = {title: title.value.trim(), need: need.value.trim(), client_id: client.value(), direction: direction.value,
+        const changes = {title: title.value.trim(), need: need.value.trim(), client_id: client.value(), contact_id: contact.value(), direction: direction.value,
           specialization: specialization.value.trim(), location: location.value.trim(), desired_at: desired.value ? deadlineISO(desired.value, initial.utc_offset) : null,
           acquisition_source: source.value.trim() === "Ручное обращение" ? "manual" : source.value.trim(),
           first_contact_channel: channel.value.trim() === "Ручной ввод" ? "manual" : channel.value.trim(), budget_kind: budgetKind.value,
@@ -400,58 +409,86 @@
       });
     }
     function qualificationForm(host, lead, additional = false) {
-      const form = makeForm(host, additional ? "Дополнительная сделка" : "Создать сделку", "Создание произойдёт только после подтверждения. Совпадения контактов требуют явного выбора.");
+      const form = makeForm(host, "Данные сделки", "Выберите или создайте контакт. Компания необязательна. Все сведения сохранятся при подтверждении.");
+      form.classList.add("lead-conversion-form");
       const fields=el("div","lead-fields");form.append(fields);
       if(!lead.assignee)form.append(el("p","lead-form-note","При подтверждении вы возьмёте свободный лид на себя."));
       if(lead.is_archived)form.append(el("p","lead-form-note","При подтверждении лид будет восстановлен и конвертирован. История удаления сохранится."));
-      const need=additional?null:field(fields,"Потребность",lead.need||"","textarea",true);if(need){need.required=true;need.maxLength=10000;need.readOnly=!lead.can_edit_conversion_need;if(!lead.can_edit_conversion_need&&!lead.need)form.append(el("p","lead-error","Для уточнения потребности требуется право редактирования лида."));}
       const title=field(fields,"Название сделки",lead.title,"text",true);title.required=true;title.maxLength=255;
       const pipeline=select(fields,"Воронка",initial.pipelines.map(p=>[String(p.id),p.name]),String(initial.pipelines.find(p=>p.code===lead.direction)?.id || initial.pipelines[0]?.id || ""));pipeline.required=true;
-      const mode=select(fields,"Контакт",[["existing","Выбрать существующий"],["private","Новое физлицо"],["legal","Новая компания"],["both","Новое физлицо и компания"]],"existing");
-      const client=picker(fields,"Существующий клиент",initial.urls.clients,"clients",lead.client);
-      const fresh=el("div","lead-fields wide");fields.append(fresh);
-      const person=field(fresh,"Имя физлица"), company=field(fresh,"Название компании"), phone=field(fresh,"Телефон","","tel"),inn=field(fresh,"ИНН");
-      person.maxLength=company.maxLength=255;phone.maxLength=inn.maxLength=20;
-      const update=()=>{client.element.hidden=mode.value!=="existing";fresh.hidden=mode.value==="existing";person.parentElement.hidden=!["private","both"].includes(mode.value);company.parentElement.hidden=!["legal","both"].includes(mode.value);inn.parentElement.hidden=company.parentElement.hidden;person.required=!person.parentElement.hidden;company.required=!company.parentElement.hidden;};mode.addEventListener("change",update);update();
+      const need=additional?null:field(fields,"Потребность",lead.need||"","textarea",true);if(need){need.required=true;need.maxLength=10000;need.readOnly=!lead.can_edit_conversion_need;if(!lead.can_edit_conversion_need&&!lead.need)form.append(el("p","lead-error","Для уточнения потребности требуется право редактирования лида."));}
+      const customer=el("div","lead-customer-grid");form.append(customer);
+      const contactBox=el("fieldset","lead-customer-box"), companyBox=el("fieldset","lead-customer-box");
+      contactBox.append(el("legend","","Контакт"));companyBox.append(el("legend","","Компания"));customer.append(contactBox,companyBox);
+      const savedContact=lead.contact || (lead.client?.client_type==="private" ? lead.client : null);
+      const savedCompany=lead.company || (lead.client?.client_type==="legal" ? lead.client : null);
+      const mode=select(contactBox,"Контакт",[["existing","Выбрать существующий"],["new","Создать контакт"],["none","Без контактного лица"]],savedContact?"existing":lead.source?.phone||lead.source?.contact_name?"new":"existing");
+      const contact=picker(contactBox,"Найти контакт",initial.urls.clients,"clients",savedContact,()=>"private");
+      const fresh=el("div","lead-fields");contactBox.append(fresh);
+      const person=field(fresh,"Имя контакта",lead.source?.contact_name || "","text",true), phone=field(fresh,"Телефон",lead.source?.phone || "","tel"), email=field(fresh,"Email",savedContact?.email || "","email");
+      person.maxLength=255;person.required=true;phone.maxLength=20;email.maxLength=254;
+      const category=select(fresh,"Категория контакта",[["","Клиент"],["personal","Личный"],["internal","Внутренний"],["landlord","Арендодатель"],["supplier","Поставщик"],["partner","Партнёр"],["other","Другой"]]);
+      category.parentElement.hidden=!initial.can_categorize_contacts;
+      const categoryNote=el("p","lead-form-note wide","Категория не меняет доступ к контакту.");fresh.append(categoryNote);
+      category.addEventListener("change",()=>{categoryNote.hidden=category.value!=="personal";});categoryNote.hidden=true;
+      const companyMode=select(companyBox,"Компания",[["none","Без компании"],["existing","Выбрать существующую"],["new","Создать компанию"]],savedCompany?"existing":"none");
+      const company=picker(companyBox,"Найти компанию",initial.urls.clients,"clients",savedCompany,()=>"legal");
+      const freshCompany=el("div","lead-fields");companyBox.append(freshCompany);
+      const companyName=field(freshCompany,"Название компании","","text",true),inn=field(freshCompany,"ИНН","","text",true);companyName.maxLength=255;companyName.required=true;inn.maxLength=20;
+      const companyHint=el("p","lead-form-note","Для частного клиента достаточно контакта.");companyBox.append(companyHint);
+      const toggleFields=(container,visible)=>{container.hidden=!visible;container.querySelectorAll("input,select,textarea").forEach(input=>{input.disabled=!visible;});};
+      const updateCustomer=()=>{toggleFields(contact.element,mode.value==="existing");toggleFields(fresh,mode.value==="new");toggleFields(company.element,companyMode.value==="existing");toggleFields(freshCompany,companyMode.value==="new");companyHint.hidden=companyMode.value!=="none";};
+      mode.addEventListener("change",updateCustomer);companyMode.addEventListener("change",updateCustomer);updateCustomer();
       const transferable=!additional&&lead.next_action&&!lead.next_action.completed&&!lead.next_action.restricted&&!lead.next_action.waiting;
-      const reuse=transferable?field(fields,"Сохранить открытый следующий шаг","","checkbox"):null;if(reuse)reuse.checked=true;
-      const nextHost=el("div","lead-fields wide");fields.append(nextHost);const next=nextFields(nextHost,transferable?lead.next_action:null);
-      const toggle=()=>{for(const input of nextHost.querySelectorAll("input"))input.disabled=Boolean(reuse?.checked);};if(reuse)reuse.addEventListener("change",toggle);toggle();
+      const nextSection=el("div","lead-conversion-next");nextSection.append(el("h3","","Следующий шаг"));form.append(nextSection);
+      const reuse=transferable?field(nextSection,"Сохранить открытый следующий шаг","","checkbox"):null;if(reuse){reuse.checked=true;reuse.parentElement.classList.add("lead-checkbox");}
+      const transferred=transferable?el("p","lead-transfer-summary",lead.next_action.title+" · "+dateText(lead.next_action.due_at)):null;if(transferred)nextSection.append(transferred);
+      const nextHost=el("div","lead-fields");nextSection.append(nextHost);const next=nextFields(nextHost,transferable?lead.next_action:null);
+      const toggle=()=>{toggleFields(nextHost,!reuse?.checked);if(transferred)transferred.hidden=!reuse?.checked;};if(reuse)reuse.addEventListener("change",toggle);toggle();
       formSubmit(form,"Подтвердить создание сделки",()=>{
         const row={title:title.value.trim(),pipeline_id:Number(pipeline.value),next_action:reuse?.checked?{title:lead.next_action.title,due_at:lead.next_action.due_at}:next()};
-        if(mode.value==="existing"){if(!client.value())throw new Error("Выберите существующего клиента из результатов поиска.");row.client_id=client.value();}
-        else row.new_contact={type:mode.value,person_name:person.value.trim(),company_name:company.value.trim(),phone:phone.value.trim(),inn:inn.value.trim()};
+        if(mode.value==="existing"&&!contact.value())throw new Error("Выберите контакт из результатов поиска или создайте новый.");
+        if(companyMode.value==="existing"&&!company.value())throw new Error("Выберите компанию из результатов поиска или создайте новую.");
+        if(mode.value==="none"&&companyMode.value==="none")throw new Error("Для сделки нужен контакт или компания.");
+        row.customer={contact:mode.value==="none"?null:mode.value==="existing"?{id:contact.value()}:{name:person.value.trim(),phone:phone.value.trim(),email:email.value.trim(),category:initial.can_categorize_contacts?category.value:""},company:companyMode.value==="none"?null:companyMode.value==="existing"?{id:company.value()}:{name:companyName.value.trim(),inn:inn.value.trim()}};
         const changes={deals:[row]};if(need)changes.need=need.value.trim();if(reuse?.checked){row.reuse_next_action=true;changes.expected_task_version=lead.next_action.version;}
         submit(form,additional?"lead.add_deal":"lead.qualify",lead,changes);
       });
+      const cancel=button("Отмена",()=>openLead(lead.id));cancel.classList.add("lead-cancel");form.append(cancel);
     }
     function renderDetail(data) {
       const lead=data.lead;state.detail=data;content.replaceChildren();
-      content.append(el("h2","",lead.client?.name || lead.source?.contact?.name || lead.source?.contact_name || lead.source?.phone || lead.title));content.firstChild.id="lead-dialog-title";
+      content.append(el("h2","",displayTitle(lead)));content.firstChild.id="lead-dialog-title";
       content.append(el("p","lead-summary",[lead.status_label,lead.source?.label,lead.assignee?.name || "Не назначен"].filter(Boolean).join(" · ")));
+      const primaryActions=el("div","lead-primary-actions");content.append(primaryActions);
+      if(lead.can_qualify)primaryActions.append(button("Создать сделку",()=>conversionDialog(lead),true));
       const layout=el("div","lead-detail-grid"), left=el("div","lead-detail-main"), right=el("section","lead-timeline");layout.append(left,right);content.append(layout);
-      const contact=el("section","lead-panel");contact.append(el("h3","","Контакт"));
-      const person=lead.source?.contact || lead.client;
+      const need=el("section","lead-panel lead-overview");need.append(el("h3","","Потребность"),el("p","lead-need",lead.need || "Уточните, что требуется клиенту."));left.append(need);
+      const contact=el("section","lead-panel");contact.append(el("h3","","Контакт и компания"));
+      const person=lead.contact || lead.source?.contact || lead.client;
       if(person?.url){const link=el("a","lead-contact",person.name);link.href=person.url;contact.append(link);}
       else contact.append(el("p","",person?.name || "Контакт не определён"));
-      if(lead.client && person?.id!==lead.client.id){const company=el(lead.client.url?"a":"p","",lead.client.name);if(lead.client.url)company.href=lead.client.url;contact.append(company);}
-      if(lead.source?.phone)contact.append(el("p","",lead.source.phone));left.append(contact);
-      if(lead.can_edit)editForm(left,lead);
-      else {const need=el("section","lead-panel");need.append(el("h3","","Потребность"),el("p","",lead.need || "Пока не уточнена"));left.append(need);}
+      const companyRecord=lead.company || lead.client;
+      if(companyRecord && person?.id!==companyRecord.id){const company=el(companyRecord.url?"a":"p","",companyRecord.name);if(companyRecord.url)company.href=companyRecord.url;contact.append(company);}
+      if(person?.phone || lead.source?.phone)contact.append(el("p","",person?.phone || lead.source.phone));left.append(contact);
+      let editor=null;
+      if(lead.can_edit){editor=el("details","lead-panel lead-editor");editor.append(el("summary","","Изменить сведения"));editForm(editor,lead);primaryActions.append(button("Редактировать",()=>{editor.open=true;editor.scrollIntoView({block:"nearest"});editor.querySelector("input,textarea")?.focus();}));}
+      const next=el("section","lead-panel lead-next-panel");next.append(el("h3","","Следующий шаг"),el("p","",lead.next_action?.restricted?"Ограничено доступом":lead.next_action?.completed?"Предыдущий шаг завершён":lead.next_action?.title || "Пока не назначен"));
+      if(lead.next_action?.due_at&&!lead.next_action.restricted)next.append(el("p","lead-date",dateText(lead.next_action.due_at)));left.append(next);
       if(lead.can_take){
-        const form=makeForm(left,"Следующее действие","");form.classList.add("lead-next-panel");
-        const fields=el("div","lead-fields");form.append(fields);const next=nextFields(fields,null);
-        formSubmit(form,"Взять в работу",()=>submit(form,"lead.take",lead,{next_action:next()}));
-      } else if(!lead.can_edit && lead.next_action){
-        const next=el("section","lead-panel lead-next-panel");next.append(el("h3","","Следующее действие"),el("p","",lead.next_action.restricted?"Ограничено доступом":lead.next_action.title));left.append(next);
+        const take=el("details","lead-take-form");take.append(el("summary","","Взять в работу"));next.append(take);
+        primaryActions.append(button("Взять в работу",()=>{take.open=true;take.scrollIntoView({block:"nearest"});take.querySelector("input")?.focus();},!lead.can_qualify));
+        const form=makeForm(take,"Запланируйте действие","");
+        const fields=el("div","lead-fields");form.append(fields);const nextAction=nextFields(fields,null);
+        formSubmit(form,"Взять в работу",()=>submit(form,"lead.take",lead,{next_action:nextAction()}));
       }
+      if(editor)left.append(editor);
       const actions=el("details","lead-panel");actions.append(el("summary","","Действия с лидом"));
       if(lead.can_transition)transitionForm(actions,lead);
-      if(lead.can_qualify)left.append(button("Создать сделку",()=>conversionDialog(lead)));
       if(moveTargets(lead).length){const movement=el("details","lead-detail-moves");movement.append(el("summary","","Изменить этап"));for(const target of moveTargets(lead))movement.append(button(columnLabels[target],()=>moveLead(lead,target)));left.append(movement);}
-      if(lead.can_add_deal)qualificationForm(actions,lead,true);
+      if(lead.can_add_deal)actions.append(button("Дополнительная сделка",()=>conversionDialog(lead,true)));
       if(lead.can_acknowledge){const f=makeForm(actions,"Продолжение работы","");formSubmit(f,"Отметить разобранным",()=>submit(f,"lead.acknowledge",lead,{}));}
-      if(lead.can_new_need)editForm(actions,lead,"lead.new_need");left.append(actions);
+      if(lead.can_new_need){const fresh=el("details");fresh.append(el("summary","","Создать новую потребность"));editForm(fresh,lead,"lead.new_need");actions.append(fresh);}if(actions.childNodes.length>1)left.append(actions);
       if(data.duplicate_of){const related=el("section","lead-panel");related.append(el("h3","","Продолжение потребности"),button(data.duplicate_of.title,()=>openLead(data.duplicate_of.id)));left.append(related);}
       if(data.deals?.length){const links=el("section","lead-panel");links.append(el("h3","","Сделки"));for(const deal of data.deals){const a=el("a","",deal.title);a.href=deal.url;links.append(a);}left.append(links);}
       right.append(el("h3","","История общения"));const filters=el("div","lead-timeline-filters"), items=el("div");right.append(filters,items);
@@ -467,7 +504,7 @@
             if(media?.recording_url){const audio=el("audio");audio.controls=true;audio.preload="none";audio.src=media.recording_url;audio.setAttribute("aria-label","Запись разговора");row.append(audio);}
             else row.append(el("p","lead-form-note",source.call_result==="missed"?"Разговор не состоялся; записи нет.":"Запись недоступна."));
             if(media?.summary||media?.transcript){const text=el("details");text.append(el("summary","","Резюме и расшифровка"));if(media.summary)text.append(el("p","lead-transcript",media.summary));if(media.transcript)text.append(el("p","lead-transcript",media.transcript));row.append(text);}
-            if(media?.facts?.request && lead.can_edit)row.append(button("Предложить текст потребности",()=>{const input=content.querySelector('[data-lead-need="true"]');if(input&&(!input.value||input.value===lead.need)){input.value=media.facts.request;input.focus();}}));
+            if(media?.facts?.request && lead.can_edit)row.append(button("Предложить текст потребности",()=>{const input=content.querySelector('[data-lead-need="true"]');if(input&&(!input.value||input.value===lead.need)){editor.open=true;input.value=media.facts.request;input.focus();}}));
             if(media?.analysis_url){const ai=button(media.analysis_status==="ready"?"Повторить анализ":"Расшифровать",async()=>{
               if(ai.disabled)return;ai.disabled=true;
               try{const response=await win.fetch(media.analysis_url,{method:"POST",credentials:"same-origin",headers:{"X-CSRFToken":csrf(),Accept:"application/json"}});if(!response.ok)throw new Error("Запуск недоступен. Проверьте права и состояние записи.");ai.textContent="Запрос передан в очередь";}catch(error){if(row.isConnected){errorNode(row,error);ai.disabled=false;}}
@@ -482,10 +519,10 @@
       const audit=el("details","lead-audit");audit.append(el("summary","","Служебная история"));
       for(const event of data.events||[])audit.append(el("p","",[event.label,dateText(event.at),event.actor,event.movement,event.reason].filter(Boolean).join(" · ")));content.append(audit);renderOperations();
     }
-    async function conversionDialog(snapshot) {
+    async function conversionDialog(snapshot, additional = false) {
       if(operations.forSubject(snapshot.id))return;
-      const sequence=++state.detailSequence;state.selected=snapshot.id;urlState();content.replaceChildren(el("h2","","Создать сделку"));content.firstChild.id="lead-dialog-title";if(!dialog.open)dialog.showModal();
-      try{const data=await read(initial.urls.detail_prefix+snapshot.id+"/?org_id="+initial.organization_id);if(sequence!==state.detailSequence)return;if(!data.lead.can_qualify)throw new Error("Сначала возьмите лид в работу и уточните потребность.");if(data.lead.revision!==snapshot.revision)throw new Error("Лид изменился. Откройте его повторно.");qualificationForm(content,data.lead);renderOperations();}catch(error){if(sequence===state.detailSequence)errorNode(content,error);}
+      const sequence=++state.detailSequence;state.selected=snapshot.id;urlState();content.replaceChildren(el("h2","",additional?"Дополнительная сделка":"Создать сделку"));content.firstChild.id="lead-dialog-title";if(!dialog.open)dialog.showModal();
+      try{const data=await read(initial.urls.detail_prefix+snapshot.id+"/?org_id="+initial.organization_id);if(sequence!==state.detailSequence)return;if(!(additional?data.lead.can_add_deal:data.lead.can_qualify))throw new Error("Создание сделки сейчас недоступно. Обновите карточку лида.");if(data.lead.revision!==snapshot.revision)throw new Error("Лид изменился. Откройте его повторно.");qualificationForm(content,data.lead,additional);renderOperations();}catch(error){if(sequence===state.detailSequence)errorNode(content,error);}
     }
     async function openLead(id) {
       const sequence = ++state.detailSequence; state.selected = Number(id); urlState(); content.replaceChildren(el("p", "", "Загружаем карточку…")); if (!dialog.open) dialog.showModal();
@@ -514,12 +551,14 @@
     byId("lead-search").addEventListener("input", (event) => { state.q = event.target.value; state.page = 1; state.pages = {}; if(state.listController)state.listController.abort(); ++state.sequence; state.loading=true; renderList(); win.clearTimeout(searchTimer); searchTimer = win.setTimeout(loadList, 300); });
     byId("lead-status").addEventListener("change", (event) => { state.status = event.target.value; state.page = 1; state.pages = {}; loadList(); });
     byId("lead-modes").addEventListener("click", (event) => { const target = event.target.closest("[data-mode]"); if (target) { state.mode = target.dataset.mode; state.page = 1; state.pages = {}; loadList(); } });
+    byId("lead-archive-toggle")?.addEventListener("click",()=>{state.showArchiveQueues=!state.showArchiveQueues;urlState();renderList();});
     byId("lead-prev").addEventListener("click", () => { if (state.page > 1) { state.page -= 1; loadList(); } });
     byId("lead-next").addEventListener("click", () => { if (state.page < state.data.pages) { state.page += 1; loadList(); } });
     win.addEventListener("beforeunload", (event) => { if (operations.pending().length) { event.preventDefault(); event.returnValue = ""; } });
     win.addEventListener("popstate",()=>{
       const params=new URL(win.location.href).searchParams;
       state.q=params.get("q") || ""; state.mode=params.get("mode") || "all"; state.status=params.get("status") || "";
+      state.showArchiveQueues=params.get("queues")==="all";
       state.page=Number(params.get("page")) || 1; state.pages={};
       byId("lead-search").value=state.q; byId("lead-status").value=state.status;
       const selected=params.get("lead"); state.selected=null;

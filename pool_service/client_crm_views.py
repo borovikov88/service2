@@ -224,11 +224,12 @@ def client_detail(request, client_id):
                 messages.success(request, "Объект клиента удалён.")
             return redirect(card_url(client.id, "objects"))
 
-        if action == "set_supplier":
-            from .services.contact_roles import set_supplier
+        if action in {"set_supplier", "set_contact_role"}:
+            from .services.contact_roles import set_role
             from django.core.exceptions import PermissionDenied, ValidationError
             try:
-                set_supplier(request.user, client.pk, request.POST.get("enabled"), request.POST.get("revision"))
+                role_code = "supplier" if action == "set_supplier" else request.POST.get("role")
+                set_role(request.user, client.pk, role_code, request.POST.get("enabled"), request.POST.get("revision"))
             except PermissionDenied:
                 return HttpResponseForbidden()
             except ValidationError:
@@ -495,6 +496,11 @@ def client_detail(request, client_id):
     from .services.crm_recurring_effective import attach_terms
     attach_terms(pools, timezone.localdate(), timezone.localdate())
     personal_call_state = contact_state(request.user, client) if client.client_type == "private" and settings_allowed(request.user, client.organization) else None
+    roles_by_code = {role.role: role for role in ClientBusinessRole.objects.filter(client=client)}
+    contact_roles = [{"code": code, "label": label,
+        "active": bool(roles_by_code.get(code) and roles_by_code[code].active),
+        "revision": roles_by_code[code].revision if code in roles_by_code else 0,
+    } for code, label in ClientBusinessRole.ROLE_CHOICES]
     return render(
         request,
         "pool_service/client_detail.html",
@@ -521,7 +527,8 @@ def client_detail(request, client_id):
             "calls_total": calls_total,
             "can_view_calls": can_view_calls,
             "can_manage": can_manage,
-            "supplier_role": ClientBusinessRole.objects.filter(client=client, role="supplier").first(),
+            "supplier_role": roles_by_code.get("supplier"),
+            "contact_roles": contact_roles,
             "can_view_object_finance": bool(
                 request.user.is_superuser
                 or (org_roles & {"owner", "admin", "manager"})

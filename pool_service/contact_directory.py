@@ -98,15 +98,26 @@ def _bounded(queryset, partition):
 
 def directory_context(request):
     allowed = readable_clients(request.user)
+    category = request.GET.get("category", "")
+    if category not in ClientBusinessRole.ROLE_LABELS:
+        category = ""
+    categorized = allowed
+    if category:
+        categorized = allowed.filter(pk__in=ClientBusinessRole.objects.filter(
+            role=category, active=True).values("client_id"))
     supplier_ids = ClientBusinessRole.objects.filter(role="supplier", active=True).values("client_id")
-    groups = {"companies": allowed.filter(client_type="legal"), "people": allowed.filter(client_type="private"),
-              "suppliers": allowed.filter(pk__in=supplier_ids)}
+    groups = {"companies": categorized.filter(client_type="legal"), "people": categorized.filter(client_type="private"),
+              "suppliers": categorized.filter(pk__in=supplier_ids)}
     pages = {}
     for group, queryset in groups.items():
         query = request.GET.get(group + "_q", "")
         queryset = search_contacts(queryset, request.user, query)
         pages[group] = page(queryset.annotate(pool_count=Count("pool")).select_related("organization", "crm_profile").order_by("name", "pk"), request, group)
     clients = {client.pk: client for result in pages.values() for client in result.object_list}
+    categories_by_client = {}
+    for client_id, role_code in ClientBusinessRole.objects.filter(client_id__in=clients,
+            active=True, role__in=ClientBusinessRole.ROLE_LABELS).values_list("client_id", "role"):
+        categories_by_client.setdefault(client_id, []).append(role_code)
     links = readable_company_links(request.user)
     people_by_company, companies_by_person = {}, {}
     for link in _bounded(links.filter(company_id__in=clients), "company_id").select_related("person"):
@@ -120,6 +131,9 @@ def directory_context(request):
         staff_by_company.setdefault(access.client_id, []).append(access)
     for item in clients.values():
         item.phone_display = format_phone(item.phone)
+        item.contact_categories = [{"code": code, "label": label}
+            for code, label in ClientBusinessRole.ROLE_CHOICES
+            if code in categories_by_client.get(item.pk, [])]
         if item.client_type == "legal":
             item.primary_contact = {"name": " ".join(part for part in [item.first_name, item.last_name] if part),
                 "position": item.contact_position, "phone": item.phone_display, "email": item.email}
@@ -141,6 +155,9 @@ def directory_context(request):
         result.object_list = [clients[item.pk] for item in result.object_list]
     staff = PoolAccess.objects.filter(pool__client_id__in=allowed.values("pk"),
         pool__organization_id=F("pool__client__organization_id"))
+    if category:
+        # Access accounts are not classified Client records.
+        staff = staff.none()
     staff_query = request.GET.get("people_q", "")
     tokens = _tokens(staff_query)
     if len(staff_query) > 160 or len(tokens) > 12 or (staff_query.strip() and not tokens):
@@ -149,6 +166,7 @@ def directory_context(request):
         staff = staff.filter(_clause(("user__first_name", "user__last_name", "user__username", "user__email", "pool__client__name", "pool__address"), token))
     staff_page = page(staff.select_related("pool__client", "pool__organization", "user").order_by("pool__client__name", "pk"), request, "staff")
     return {"companies": pages["companies"].object_list, "private_contacts": pages["people"].object_list,
+        "contact_category": category, "contact_category_choices": ClientBusinessRole.ROLE_CHOICES,
         "suppliers": pages["suppliers"].object_list, "pool_staff": staff_page.object_list,
         "companies_page": pages["companies"], "people_page": pages["people"], "suppliers_page": pages["suppliers"], "staff_page": staff_page,
         "companies_q": request.GET.get("companies_q", "")[:160], "people_q": staff_query[:160], "suppliers_q": request.GET.get("suppliers_q", "")[:160]}

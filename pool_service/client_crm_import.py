@@ -11,6 +11,7 @@ import sys
 import threading
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.utils import timezone
 
@@ -991,9 +992,15 @@ def _find_or_create_ip_person(company, candidate):
 
 @transaction.atomic
 def apply_candidate(candidate):
+    # Serialize contact type refreshes with CRM conversion before locking the
+    # candidate/client. Some batch callers do not already hold this mutex.
+    organization_id = candidate.organization_id
+    Organization.objects.select_for_update().get(pk=organization_id)
     candidate = ClientImportCandidate.objects.select_for_update().select_related(
         "organization", "matched_client"
     ).get(pk=candidate.pk)
+    if candidate.organization_id != organization_id:
+        raise ValueError("Организация карточки изменилась; требуется повторная проверка")
     if candidate.status not in {
         ClientImportCandidate.STATUS_READY,
         ClientImportCandidate.STATUS_IMPORTED,
@@ -1026,6 +1033,7 @@ def apply_candidate(candidate):
             inn=candidate.inn or None,
         )
     else:
+        previous_identity = {'client_type': client.client_type, 'organization_id': client.organization_id}
         linked_profile = ClientCRMProfile.objects.filter(
             client=client,
             onec_ref=candidate.source_ref,
@@ -1063,6 +1071,10 @@ def apply_candidate(candidate):
                 client.phone = candidate_phone
             if not client.email and candidate.email:
                 client.email = candidate.email
+        try:
+            client.validate_crm_contact_identity(previous=previous_identity, lock=True)
+        except ValidationError as exc:
+            raise ValueError('Тип контакта используется в CRM; требуется отдельная сверка с 1С') from exc
         client.save()
 
     profile, _ = ClientCRMProfile.objects.get_or_create(client=client)

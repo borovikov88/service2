@@ -7,7 +7,7 @@ from django.utils import timezone
 from pool_service.models import Client, Organization, OrganizationAccess
 from pool_service.client_crm_models import ClientBusinessRole, ClientBusinessRoleEvent, ClientCompanyLink, ClientCRMProfile
 from pool_service.client_queries import readable_clients
-from pool_service.services.contact_roles import set_supplier
+from pool_service.services.contact_roles import set_role, set_supplier
 from pool_service.client_merge import merge_clients
 
 
@@ -146,3 +146,58 @@ class ContactsRolesTests(TestCase):
         self.assertEqual(response.status_code,302)
         self.assertTrue(Client.objects.filter(pk=self.company.pk).exists())
         self.assertEqual(ClientBusinessRoleEvent.objects.count(),1)
+
+    def test_multiple_categories_have_independent_revisions_and_audit(self):
+        url = reverse("client_detail", args=[self.person.pk])
+        for role in ("personal", "internal", "landlord", "partner", "other"):
+            with self.subTest(role=role):
+                payload = {"action": "set_contact_role", "role": role, "enabled": "1", "revision": "0"}
+                self.assertEqual(self.client.post(url, payload).status_code, 302)
+                self.assertEqual(self.client.post(url, payload).status_code, 409)
+        set_role(self.owner, self.person.pk, "personal", "0", 1)
+        self.assertFalse(ClientBusinessRole.objects.get(client=self.person, role="personal").active)
+        self.assertTrue(ClientBusinessRole.objects.get(client=self.person, role="landlord").active)
+        self.assertEqual(ClientBusinessRoleEvent.objects.filter(client=self.person).count(), 6)
+        response = self.client.get(url)
+        self.assertContains(response, 'data-contact-category="landlord"')
+        self.assertNotContains(response, 'data-contact-category="personal"')
+        self.assertContains(response, 'Категория «Личный» не меняет доступ к карточке.')
+        self.assertEqual(Client.objects.count(), 3)
+
+    def test_categories_do_not_grant_access_or_create_staff_identity(self):
+        from pool_service.client_crm_models import OrganizationPersonLink
+        before = set(readable_clients(self.owner).values_list("pk", flat=True))
+        for code in ("personal", "internal"):
+            set_role(self.owner, self.person.pk, code, "1", 0)
+        self.assertEqual(set(readable_clients(self.owner).values_list("pk", flat=True)), before)
+        self.assertFalse(OrganizationPersonLink.objects.exists())
+        self.membership.role = "manager"
+        self.membership.save()
+        response = self.client.post(reverse("client_detail", args=[self.person.pk]), {
+            "action": "set_contact_role", "role": "internal", "enabled": "0", "revision": 1})
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(ClientBusinessRole.objects.get(client=self.person, role="internal").active)
+
+    def test_unknown_category_and_foreign_target_cannot_be_written(self):
+        for code in ("", "admin", "unknown"):
+            with self.assertRaises(ValidationError):
+                set_role(self.owner, self.person.pk, code, "1", 0)
+        with self.assertRaises(PermissionDenied):
+            set_role(self.owner, self.foreign.pk, "personal", "1", 0)
+        self.assertFalse(ClientBusinessRole.objects.exists())
+        self.assertFalse(ClientBusinessRoleEvent.objects.exists())
+
+    def test_merge_preserves_all_known_categories_and_original_history(self):
+        target = Client.objects.create(name="Synthetic target person", organization=self.org, client_type="private")
+        ClientCRMProfile.objects.create(client=target, onec_ref="00000000-0000-0000-0000-000000000790")
+        for code in ("personal", "landlord", "internal"):
+            set_role(self.owner, self.person.pk, code, "1", 0)
+        set_role(self.owner, target.pk, "personal", "1", 0)
+        ClientBusinessRole.objects.create(client=self.person, role="unknown", active=True)
+        merge_clients(self.person.pk, target.pk, organization_id=self.org.pk, actor=self.owner)
+        self.assertEqual(set(ClientBusinessRole.objects.filter(client=target, active=True)
+            .values_list("role", flat=True)), {"personal", "landlord", "internal"})
+        self.assertEqual(ClientBusinessRoleEvent.objects.filter(client=self.person).count(), 3)
+        self.assertEqual(ClientBusinessRoleEvent.objects.filter(client=target, role="personal").count(), 1)
+        self.assertEqual(set(ClientBusinessRoleEvent.objects.filter(client=target,
+            source_client=self.person).values_list("role", flat=True)), {"landlord", "internal"})
