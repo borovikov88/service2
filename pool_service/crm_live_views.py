@@ -48,6 +48,7 @@ EVENT_LABELS = {
     "deal.unbind_order": "Связь с заказом 1С снята",
     "deal.onec_completed": "Сделка автоматически завершена по данным 1С",
     "deal.onec_review": "Данные 1С требуют сверки",
+    "deal.assign": "Ответственный за сделку изменён",
 }
 
 
@@ -265,6 +266,10 @@ def _serialize_deals(deals, user, organization, grant, *, detail=False):
             "next_action": next_action,
         })
         if detail:
+            from .services.crm_assignments import assignment_available, assignment_task_data, ASSIGNMENT_NOTE
+            rows[-1]['can_assign'] = assignment_available(user, organization, deal)
+            rows[-1]['assignment_note'] = ASSIGNMENT_NOTE
+            rows[-1]['assignment_task'] = assignment_task_data(deal, user) if rows[-1]['can_assign'] else None
             from .services.crm_order_finance import finance_projection
             rows[-1]['onec_finance'] = finance_projection(deal, user, organization)
     return rows
@@ -470,6 +475,7 @@ def workspace(request):
             "objects": reverse("crm_live_objects") + scope,
             "order_candidates": reverse("crm_order_candidates") + scope,
             "order_refresh": reverse("crm_order_refresh") + scope,
+            "responsibles": reverse("crm_assignment_candidates") + scope,
             "command": reverse("crm_live_command") + scope,
             "detail_prefix": reverse("crm_live_detail", args=[1]).rsplit("1/", 1)[0]},
     })
@@ -558,7 +564,7 @@ def detail(request, deal_id):
         # Task content remains in its protected source. Only stage-change
         # reasons belong on the team-visible deal timeline in this release.
         "manual_completion_exception": event.safe_diff.get("manual_completion_exception", {}).get("after", False),
-        "reason": event.reason if event.event_type in {"deal.transition", "deal.close_negative", "deal.bind_order", "deal.unbind_order", "deal.onec_completed", "deal.onec_review"} else "",
+        "reason": event.reason if event.event_type in {"deal.transition", "deal.close_negative", "deal.bind_order", "deal.unbind_order", "deal.onec_completed", "deal.onec_review", "deal.assign"} else "",
     } for event in events]})
 
 
@@ -587,7 +593,7 @@ def command(request):
     if kind == "deal.create":
         if (not {"title", "pipeline_id", "next_action"} <= changes.keys()
                 or len({"client_id", "customer"} & changes.keys()) != 1
-                or not changes.keys() <= {"title", "client_id", "customer", "pipeline_id", "next_action", "card_fields"}
+                or not changes.keys() <= {"title", "client_id", "customer", "pipeline_id", "next_action", "card_fields", "responsible_id"}
                 or payload.get("subject_id") is not None or payload.get("expected_revision") is not None):
             raise ValidationError("Укажите клиента, название, воронку и следующее действие с датой.")
         result = create_commercial_deal(**common, **changes)
@@ -608,6 +614,10 @@ def command(request):
         from .services.crm_order_finance import execute_order_command
         result = execute_order_command(**common, command_type=kind, subject_id=payload.get("subject_id"),
             expected_revision=payload.get("expected_revision"), changes=changes)
+    elif kind == "deal.assign":
+        from .services.crm_assignments import execute_assignment
+        result = execute_assignment(**common, command_type=kind, subject_id=payload.get("subject_id"),
+            expected_revision=payload.get("expected_revision"), changes=changes)
     else:
         raise ValidationError("Эта команда недоступна в рабочей CRM.")
     # Recheck current read access after commit. A lost/denied read must not be
@@ -617,6 +627,8 @@ def command(request):
         deal = get_object_or_404(_deal_queryset(request.user, organization), pk=result["deal_id"])
         row = _serialize_deals([deal], request.user, organization, _grant(request.user, organization), detail=True)[0]
     except (PermissionDenied, Http404):
+        if result.get('assignment_saved'):
+            return JsonResponse({'result': {**result, 'can_open': False}, 'deal': None})
         return JsonResponse({"error": "Результат сохранения сейчас недоступен. Повторите проверку той же операции.",
             "code": "verify_required"}, status=503)
     return JsonResponse({"result": result, "deal": row})

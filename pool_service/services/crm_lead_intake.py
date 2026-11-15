@@ -129,6 +129,9 @@ def consume_incoming(event, source, operation_identity):
         diff["assignee_id"] = {"before": old_assignee, "after": lead.assignee_id}
     if old_status != lead.status:
         diff["status"] = {"before": old_status, "after": lead.status}
-    CrmEvent.objects.create(organization=organization, lead=lead,
+    assignment_event = CrmEvent.objects.create(organization=organization, lead=lead,
         event_type="lead.incoming", occurred_at=stamp, safe_diff=diff)
+    if lead.assignee_id and old_assignee != lead.assignee_id:
+        from .crm_assignment_notifications import notify_assignment
+        notify_assignment(assignment_event, lead.assignee)
     return "lead_created" if created else "lead_linked"

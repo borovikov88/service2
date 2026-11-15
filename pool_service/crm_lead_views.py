@@ -37,6 +37,7 @@ MAX_BODY_BYTES = 65536
 STATES = dict(CrmLead._meta.get_field("status").choices)
 RESULTS = dict(CrmLead._meta.get_field("result").choices)
 EVENTS = {"lead.create": "Лид создан", "lead.take": "Обращение взято в работу",
+    "lead.assign": "Ответственный за лид изменён",
     "lead.edit": "Карточка изменена", "lead.disposition": "Лид перемещён", "lead.transition": "Состояние изменено",
     "lead.qualify": "Квалификация завершена", "lead.add_deal": "Добавлена сделка",
     "lead.complete_customer": "Контакт или компания сохранены без сделки",
@@ -133,6 +134,10 @@ def _serialize(lead, user, capabilities, *, detail=False, visible_tasks=None):
     if detail and row["client"] and readable_clients(user).filter(pk=lead.client_id,organization=lead.organization).exists():
         row["client"]["url"] = reverse("client_detail",args=[lead.client_id])
     if detail:
+        from .services.crm_assignments import assignment_available, assignment_task_data, ASSIGNMENT_NOTE
+        row['can_assign'] = assignment_available(user, lead.organization, lead)
+        row['assignment_note'] = ASSIGNMENT_NOTE
+        row['assignment_task'] = assignment_task_data(lead, user) if row['can_assign'] else None
         for key in ('contact', 'company'):
             if row[key] and readable_clients(user).filter(pk=row[key]['id'], organization=lead.organization).exists():
                 row[key]['url'] = reverse('client_detail', args=[row[key]['id']])
@@ -315,6 +320,7 @@ def workspace(request):
             "command": reverse("crm_live_lead_command") + scope,
             "clients": reverse("crm_live_lead_clients") + scope,
             "targets": reverse("crm_live_lead_targets") + scope,
+            "responsibles": reverse("crm_assignment_candidates") + scope,
             "detail_prefix": reverse("crm_live_lead_detail", args=[1]).rsplit("1/", 1)[0],
             "deals": reverse("crm_live_workspace") + scope})
     return render(request, "pool_service/crm_live/leads.html", {
@@ -471,16 +477,22 @@ def command(request):
     allowed = {"operation_key", "command_type", "subject_id", "expected_revision", "changes"}
     if type(payload) is not dict or not payload.keys() <= allowed or not {"operation_key", "command_type", "changes"} <= payload.keys():
         raise ValidationError("Некорректный состав запроса.")
-    if type(payload["command_type"]) is not str or type(payload["changes"]) is not dict or payload["command_type"] not in {"lead.create", "lead.take", "lead.edit", "lead.transition", "lead.qualify", "lead.add_deal", "lead.new_need", "lead.acknowledge", "lead.disposition", "lead.complete_customer"}:
+    if type(payload["command_type"]) is not str or type(payload["changes"]) is not dict or payload["command_type"] not in {"lead.create", "lead.take", "lead.edit", "lead.transition", "lead.qualify", "lead.add_deal", "lead.new_need", "lead.acknowledge", "lead.disposition", "lead.complete_customer", "lead.assign"}:
         raise ValidationError("Эта команда недоступна.")
     from .services.crm_lead_commands import execute_lead_command
-    result = execute_lead_command(actor=request.user, organization=organization, **payload)
+    if payload['command_type'] == 'lead.assign':
+        from .services.crm_assignments import execute_assignment
+        result = execute_assignment(actor=request.user, organization=organization, **payload)
+    else:
+        result = execute_lead_command(actor=request.user, organization=organization, **payload)
     # A committed write followed by loss of read rights is uncertain to the
     # browser. It must keep the original immutable key/payload for verification.
     try:
         organization = _organization(request)
         response = _detail(request, organization, result["lead_id"])
     except (PermissionDenied, Http404):
+        if result.get('assignment_saved'):
+            return JsonResponse({'result': {**result, 'can_open': False}, 'lead': None})
         return JsonResponse({"error": "Результат сохранения сейчас недоступен. Проверьте ту же операцию.", "code": "verify_required"}, status=503)
     response["result"] = result
     return JsonResponse(response)

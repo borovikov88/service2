@@ -134,7 +134,8 @@
           headers: {"Content-Type": "application/json", "X-CSRFToken": csrf(), Accept: "application/json"}, body: JSON.stringify(payload)});
         let body; try { body = await response.json(); } catch (_error) { throw new Error("Результат сохранения неизвестен. Проверьте эту же операцию."); }
         if (!response.ok) { const error = new Error(body.error || "Не удалось сохранить."); error.code = body.code; error.definitive = response.status >= 400 && response.status < 500 && ![408, 429].includes(response.status); throw error; }
-        if (!body.result || !body.lead || body.result.lead_id !== body.lead.id || !Number.isInteger(body.lead.revision)) throw new Error("Сервер не подтвердил результат. Проверьте эту же операцию.");
+        const transferred = body.result?.assignment_saved === true && body.result.can_open === false && Number.isInteger(body.result.lead_id);
+        if (!transferred && (!body.result || !body.lead || body.result.lead_id !== body.lead.id || !Number.isInteger(body.lead.revision))) throw new Error("Сервер не подтвердил результат. Проверьте эту же операцию.");
         return body;
       } finally { win.clearTimeout(timer); }
     }, renderOperations);
@@ -150,10 +151,15 @@
       }
       const pending = operations.forSubject(state.selected);
       content.querySelectorAll("button[type=submit]").forEach((node) => { node.disabled = Boolean(pending); });
+      content.querySelectorAll("[data-assignment-form] input,[data-assignment-form] select,[data-assignment-form] button").forEach(node => { node.disabled = Boolean(pending); });
       byId("lead-create").disabled = Boolean(operations.forSubject(null));
     }
     function applyResult(item) {
       if (item.status === "succeeded") {
+        if (item.response.result?.assignment_saved && item.response.result.can_open === false) {
+          clearSelection(); dialog.close(); operations.dismiss(item.payload.operation_key);
+          notice("Ответственный назначен. Карточка передана сотруднику и больше недоступна в вашем списке."); loadList({keepNotice:true}); return item;
+        }
         if (state.selected === item.payload.subject_id || state.selected === null && item.payload.subject_id === null) {
           state.selected = item.response.lead.id; state.detail = item.response; renderDetail(item.response); dialog.scrollTop = 0; urlState();
         }
@@ -345,6 +351,44 @@
       for (const [id, text] of choices) { const option = el("option", "", text); option.value = id; input.append(option); } input.value = value;
       wrap.append(input); host.append(wrap); return input;
     }
+    function responsibleField(host, {kind="lead", subjectId=null, leadId=null, selectedId=null} = {}) {
+      if (!initial.urls.responsibles) return null;
+      const input = select(host, "Ответственный", [["", "Загружаем сотрудников…"]]);
+      input.name = "responsible_id"; input.required = true; input.setAttribute("aria-label", "Ответственный");
+      const message = el("small", "lead-form-note", "Выбранный сотрудник получит уведомление согласно своим настройкам."); input.parentElement.append(message);
+      const retry = button("Повторить загрузку сотрудников"), wrap = input.parentElement;
+      retry.hidden = true; wrap.append(retry);
+      const load = async () => {
+        retry.hidden = true; input.replaceChildren(el("option", "", "Загружаем сотрудников…")); input.firstChild.value = "";
+        try {
+          const url = new URL(initial.urls.responsibles, win.location.origin); url.searchParams.set("kind", kind);
+          if (subjectId != null) url.searchParams.set("subject_id", subjectId); if (leadId != null) url.searchParams.set("lead_id", leadId);
+          const data = await read(url); if (!wrap.isConnected) return;
+          input.replaceChildren(); const placeholder = el("option", "", "Выберите сотрудника"); placeholder.value = ""; input.append(placeholder);
+          for (const user of data.users || []) { const option = el("option", "", user.name); option.value = user.id; input.append(option); }
+          input.value = String(selectedId ?? data.current_user_id ?? "");
+          message.textContent = data.users?.length ? "Выбранный сотрудник получит уведомление согласно своим настройкам." : "Нет сотрудников, которым доступна эта карточка.";
+        } catch (error) { if (!wrap.isConnected) return; input.replaceChildren(); const empty = el("option", "", "Сотрудники не загружены"); empty.value = ""; input.append(empty); message.textContent = error.message; retry.hidden = false; }
+      };
+      retry.addEventListener("click", load); load(); return input;
+    }
+    function assignmentForm(host, lead) {
+      const form = makeForm(host, "Назначить ответственного", lead.assignment_note || "Выберите нового ответственного. Передачу текущего следующего действия можно подтвердить отдельно.");
+      form.dataset.assignmentForm = "";
+      const fields = el("div", "lead-fields"); form.append(fields);
+      const responsible = responsibleField(fields, {subjectId:lead.id, selectedId:lead.assignee?.id});
+      const task = lead.assignment_task;
+      const transfer = task?.can_transfer ? field(form, "Передать текущее следующее действие", "", "checkbox") : null;
+      if (transfer) { transfer.checked = true; transfer.name = "transfer_next_action"; transfer.parentElement.classList.add("lead-checkbox"); form.append(el("p", "lead-form-note", (task.title || "Текущий шаг") + ". Остальные задачи сохранят своих исполнителей.")); }
+      else if (task?.reason) form.append(el("p", "lead-form-note", task.reason));
+      formSubmit(form, "Назначить ответственного", () => {
+        if (!responsible?.value) throw new Error("Выберите сотрудника из списка.");
+        const changes = {responsible_id:Number(responsible.value), transfer_next_action:Boolean(transfer?.checked)};
+        if (transfer?.checked) changes.expected_task_version = task.version;
+        submit(form, "lead.assign", lead, changes);
+      });
+      const cancel = button("Отмена", () => openLead(lead.id)); cancel.classList.add("lead-cancel"); form.append(cancel);
+    }
     function picker(host, label, endpoint, collection, initialValue, kind) {
       const wrap = el("div", "lead-field wide"), inputLabel = el("label"), input = el("input"), results = el("div", "lead-picker-results"), chosen = el("div", "lead-picker-selection");
       let selected = initialValue || null, timer, controller, sequence = 0;
@@ -386,7 +430,13 @@
       const fields = el("div", "lead-fields"); form.append(fields);
       const title = field(fields, "Название", creating ? "" : lead.title, "text", true); title.required = true; title.maxLength = 255;
       const need = field(fields, "Что требуется / контекст", creating ? "" : lead.need, "textarea", true); need.required = true; need.maxLength = 10000;
+      const responsible = creating ? responsibleField(fields, {leadId:kind === "lead.new_need" ? lead.id : null}) : null;
       if (!creating) need.dataset.leadNeed = "true";
+      if (!creating && lead.next_action?.restricted) {
+        form.append(el("p", "lead-form-note", "Следующее действие осталось у прежнего исполнителя и ограничено доступом. Здесь можно изменить название и потребность лида."));
+        formSubmit(form, "Сохранить изменения", () => submit(form, "lead.edit", lead, {title:title.value.trim(), need:need.value.trim()}));
+        return;
+      }
       const client = picker(fields, "Клиент / компания", initial.urls.clients, "clients", creating ? null : lead.client);
       const contact = picker(fields, "Контактное лицо", initial.urls.clients, "clients", creating ? null : lead.contact, () => "private");
       const direction = select(fields, "Направление", [["", "Пока не определено"], ...initial.pipelines.map((p) => [p.code, p.name])], creating ? "" : lead.direction);
@@ -415,6 +465,7 @@
           budget_max: budgetKind.value === "unknown" ? null : budgetKind.value === "exact" ? minimum.value : maximum.value,
           currency: budgetKind.value === "unknown" ? "" : currency.value.trim()};
         if (nextAction) changes.next_action = nextAction();
+        if (responsible) { if (!responsible.value) throw new Error("Выберите ответственного."); changes.responsible_id = Number(responsible.value); }
         if (!creating && canNext && lead.next_action && !lead.next_action.restricted && !lead.next_action.completed) changes.expected_task_version = lead.next_action.version;
         submit(form, kind, kind === "lead.create" ? null : lead, changes);
       });
@@ -460,6 +511,7 @@
       if(lead.is_archived)form.append(el("p","lead-form-note","При подтверждении лид будет восстановлен и конвертирован. История удаления сохранится."));
       const title=field(fields,"Название сделки",lead.title,"text",true);title.required=true;title.maxLength=255;
       const pipeline=select(fields,"Воронка",initial.pipelines.map(p=>[String(p.id),p.name]),String(initial.pipelines.find(p=>p.code===lead.direction)?.id || initial.pipelines[0]?.id || ""));pipeline.required=true;
+      const responsible = responsibleField(fields, {kind:"deal", leadId:lead.id});
       const need=additional?null:field(fields,"Потребность",lead.need||"","textarea",true);if(need){need.required=true;need.maxLength=10000;need.readOnly=!lead.can_edit_conversion_need;if(!lead.can_edit_conversion_need&&!lead.need)form.append(el("p","lead-error","Для уточнения потребности требуется право редактирования лида."));}
       const customerSection=el("section","lead-conversion-section lead-conversion-customer");customerSection.append(stepHeading("2","Контакт и компания"));form.append(customerSection);
       const customerEditor=customerFields(customerSection, lead, false, sharedCustomer);
@@ -468,11 +520,13 @@
       const transferable=!additional&&lead.next_action&&!lead.next_action.completed&&!lead.next_action.restricted&&!lead.next_action.waiting;
       const nextSection=el("section","lead-conversion-section lead-conversion-next");nextSection.append(stepHeading("3","Следующее действие"));form.append(nextSection);
       const reuse=transferable?field(nextSection,"Сохранить открытый следующий шаг","","checkbox"):null;if(reuse){reuse.checked=true;reuse.parentElement.classList.add("lead-checkbox");}
+      if (transferable) nextSection.append(el("p", "lead-form-note", "Сохранённый шаг будет передан выбранному ответственному за сделку. Остальные задачи сохранят своих исполнителей."));
       const transferred=transferable?el("p","lead-transfer-summary",lead.next_action.title+" · "+dateText(lead.next_action.due_at)):null;if(transferred)nextSection.append(transferred);
       const nextHost=el("div","lead-fields");nextSection.append(nextHost);const next=nextFields(nextHost,transferable?lead.next_action:null);
       const toggle=()=>{toggleFields(nextHost,!reuse?.checked);if(transferred)transferred.hidden=!reuse?.checked;};if(reuse)reuse.addEventListener("change",toggle);toggle();
       formSubmit(form,"Подтвердить создание сделки",()=>{
         const row={title:title.value.trim(),pipeline_id:Number(pipeline.value),next_action:reuse?.checked?{title:lead.next_action.title,due_at:lead.next_action.due_at}:next()};
+        if (responsible) { if (!responsible.value) throw new Error("Выберите ответственного."); row.responsible_id = Number(responsible.value); }
         row.customer=customerEditor.value();
         const changes={deals:[row]};if(need)changes.need=need.value.trim();if(reuse?.checked){row.reuse_next_action=true;changes.expected_task_version=lead.next_action.version;}
         submit(form,additional?"lead.add_deal":"lead.qualify",lead,changes);
@@ -554,6 +608,10 @@
       }
       const layout=el("div","lead-detail-grid"), left=el("div","lead-detail-main"), right=el("section","lead-timeline");layout.append(left,right);content.append(layout);
       const need=el("section","lead-panel lead-overview");need.append(el("h3","","Потребность"),el("p","lead-need",lead.need || "Уточните, что требуется клиенту."));left.append(need);
+      if (lead.can_assign && initial.urls.responsibles) {
+        const assignment = el("details", "lead-panel crm-assignment"); assignment.append(el("summary", "", "Ответственный · " + (lead.assignee?.name || "Не назначен"))); left.append(assignment); assignmentForm(assignment, lead);
+        primaryActions.append(button(lead.assignee ? "Сменить ответственного" : "Назначить ответственного", () => { assignment.open = true; assignment.scrollIntoView({block:"nearest"}); assignment.querySelector("select")?.focus(); }));
+      }
       const contact=el("section","lead-panel");contact.append(el("h3","","Контакт и компания"));
       const person=lead.contact || lead.source?.contact || lead.client;
       if(person?.url){const link=el("a","lead-contact",person.name);link.href=person.url;contact.append(link);}

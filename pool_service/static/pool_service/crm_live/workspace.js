@@ -154,6 +154,10 @@
       draft.formKind = "close_negative";
       draft.fields.outcome = changes.outcome;
       draft.fields.reason = changes.reason;
+    } else if (payload.command_type === "deal.assign") {
+      draft.formKind = "assign";
+      draft.fields.responsible_id = String(changes.responsible_id);
+      draft.fields.transfer_next_action = Boolean(changes.transfer_next_action);
     } else if (payload.command_type === "deal.transition") {
       draft.formKind = "transition";
       draft.fields.stage_id = String(changes.stage_id);
@@ -285,7 +289,8 @@
       const response = await requestJSON(scopedURL(bootstrap.urls.command), {
         method: "POST", headers: {"Content-Type": "application/json", "Accept": "application/json", "X-CSRFToken": csrf ? csrf.value : ""}, body: JSON.stringify(payload),
       });
-      if (!response.result || !response.deal || !sameId(response.result.deal_id, response.deal.id)) throw new Error("Сервер не подтвердил результат сохранения.");
+      const transferred = response.result?.assignment_saved === true && response.result.can_open === false && Number.isInteger(response.result.deal_id);
+      if (!transferred && (!response.result || !response.deal || !sameId(response.result.deal_id, response.deal.id))) throw new Error("Сервер не подтвердил результат сохранения.");
       return response;
     }, () => { renderOperations(); renderContent(); updateFormLocks(); });
 
@@ -682,6 +687,26 @@
       }
       form.append(item.wrapper); return item;
     }
+    function responsibleField(form, deal = null) {
+      if (!bootstrap.urls.responsibles) return null;
+      const item = field("Ответственный", "select", "responsible_id", null, true);
+      item.input.setAttribute("aria-label", "Ответственный");
+      const placeholder = element("option", "", "Загружаем сотрудников…"); placeholder.value = ""; item.input.append(placeholder);
+      const note = element("small", "crm-live-form-note", "Выбранный сотрудник получит уведомление согласно своим настройкам.");
+      const retry = makeButton("Повторить загрузку сотрудников"); retry.hidden = true; item.wrapper.append(note, retry); form.append(item.wrapper);
+      const load = async () => {
+        retry.hidden = true;
+        try {
+          const url = scopedURL(bootstrap.urls.responsibles); url.searchParams.set("kind", "deal"); if (deal) url.searchParams.set("subject_id", deal.id);
+          const data = await requestJSON(url, {headers:{Accept:"application/json"}}); if (!item.wrapper.isConnected) return;
+          const empty = element("option", "", "Выберите сотрудника"); empty.value = ""; item.input.replaceChildren(empty);
+          for (const user of data.users || []) { const option = element("option", "", user.name); option.value = user.id; item.input.append(option); }
+          item.input.value = String(deal?.manager?.id ?? data.current_user_id ?? "");
+          note.textContent = data.users?.length ? "Выбранный сотрудник получит уведомление согласно своим настройкам." : "Нет сотрудников, которым доступна эта карточка.";
+        } catch (error) { if (!item.wrapper.isConnected) return; note.textContent = friendlyError(error); retry.hidden = false; }
+      };
+      retry.addEventListener("click", () => { form.responsiblesReady = load(); }); form.responsiblesReady = load(); return item.input;
+    }
 
     function cardFields(form, deal) {
       form.append(element("p", "crm-live-form-note", "Эти сведения видит команда CRM. Планируемый объект — описание сделки; действующий объект и обслуживание здесь не создаются."));
@@ -971,6 +996,10 @@
       if (serviceUrl) { const link = element("a", "crm-live-button crm-live-document-link", "Документы обслуживания и периоды"); link.href = serviceUrl; dialogContent.append(link); }
       const meta = element("div", "crm-live-detail-meta");
       meta.append(element("span", "crm-live-pill", pipelineFor(deal.pipeline_id)?.name || ""), element("span", "crm-live-pill", stageFor(deal)?.name || ""), element("span", "crm-live-pill", deal.manager?.name || "Без ответственного"));
+      if (deal.can_assign && bootstrap.urls.responsibles) {
+        const assign = makeButton(deal.manager ? "Сменить ответственного" : "Назначить ответственного", null, "crm-live-inline-action");
+        assign.addEventListener("click", () => { selectDetailPanel("edit"); const form = dialogContent.querySelector('[data-command-form="assign"]'); form?.scrollIntoView({block:"nearest"}); form?.querySelector("select")?.focus(); }); meta.append(assign);
+      }
       if (deal.can_transition && !deal.is_archived) {
         const changeStage = element("button", "crm-live-inline-action", "Изменить этап"); changeStage.type = "button";
         changeStage.addEventListener("click", () => {
@@ -1013,6 +1042,17 @@
         next.append(link);
       }
       dialogContent.append(next);
+      if (deal.can_assign && bootstrap.urls.responsibles) {
+        const part = section("Ответственный"); part.dataset.detailSection = "edit"; part.classList.add("crm-assignment");
+        const form = newForm("assign", deal.id); responsibleField(form, deal);
+        form.append(element("p", "crm-live-form-note", deal.assignment_note || "Передачу текущего следующего действия можно подтвердить отдельно."));
+        const task = deal.assignment_task;
+        if (task?.can_transfer) {
+          const transfer = field("Передать текущее следующее действие", "checkbox", "transfer_next_action", "yes", false); transfer.input.checked = true; transfer.wrapper.classList.add("crm-onec-checkbox"); form.append(transfer.wrapper);
+          form.append(element("p", "crm-live-form-note", (task.title || "Текущий шаг") + ". Остальные задачи сохранят своих исполнителей."));
+        } else if (task?.reason) form.append(element("p", "crm-live-form-note", task.reason));
+        formFooter(form, "Назначить ответственного"); const cancel = makeButton("Отмена"); cancel.addEventListener("click", () => openDetail(deal.id, true)); form.querySelector(".crm-live-form-footer").append(cancel); part.append(form); dialogContent.append(part);
+      }
       if (deal.can_next_action && !deal.is_archived && !deal.next_action?.restricted && !deal.next_action?.waiting) {
         const schedule = element("button", "crm-live-button", "Запланировать дело"); schedule.type = "button";
         schedule.addEventListener("click", () => { selectDetailPanel("tasks"); dialogContent.querySelector('[name="next_title"]')?.focus(); });
@@ -1130,7 +1170,7 @@
       state.detailGeneration += 1;
       setDealURL(null, false);
       state.drawer = {kind: "create", selectedClient: null, useCustomer: false, customerEditor: null};
-      dialogContent.replaceChildren(titleNode("Новая сделка"), element("p", "crm-live-form-note", "Выберите клиента и договоритесь о следующем шаге. Ответственным станете вы."));
+      dialogContent.replaceChildren(titleNode("Новая сделка"), element("p", "crm-live-form-note", "Выберите клиента, ответственного и договоритесь о следующем шаге."));
       const form = newForm("create", null);
       const title = field("Название сделки", "text", "title", "", true);
       title.input.placeholder = "Например, строительство бассейна";
@@ -1156,6 +1196,7 @@
         pipeline.input.append(option);
       });
       form.append(title.wrapper, client.wrapper, clientResults, pipeline.wrapper);
+      responsibleField(form);
       const customerToggle = makeButton("Создать контакт или компанию", null, "crm-live-button");
       const customerHost = element("div", "crm-live-customer-host"); customerHost.hidden = true;
       form.append(customerToggle, customerHost);
@@ -1266,6 +1307,9 @@
     async function performExisting(key) {
       const entry = await queue.run(key);
       if (entry.status === "succeeded") {
+        if (entry.response.result?.assignment_saved && entry.response.result.can_open === false) {
+          queue.dismiss(key); closeDialog(); notice("Ответственный назначен. Карточка передана сотруднику и больше недоступна в вашем списке."); await loadData({keepNotice:true}); return entry;
+        }
         const deal = entry.response.deal;
         if (entry.payload.command_type === "deal.create") {
           state.pipelineId = deal.pipeline_id;
@@ -1297,6 +1341,10 @@
         const draft = conflictDraft(entry.payload, state.drawer.deal, timezone);
         const form = dialogContent.querySelector(`[data-command-form="${draft.formKind}"]`);
         if (!form) throw new Error("Сейчас нет доступа к изменению этих полей. Ваш черновик сохранён в уведомлении о конфликте.");
+        if (draft.formKind === "assign") {
+          await form.responsiblesReady;
+          if (!Array.from(form.elements.namedItem("responsible_id").options).some(option => option.value === draft.fields.responsible_id)) throw new Error("Ранее выбранный сотрудник больше недоступен для назначения. Выберите другого ответственного.");
+        }
         revealField(form);
         if (draft.formKind === "transition") {
           const select = form.elements.namedItem("stage_id");
@@ -1307,6 +1355,7 @@
         for (const [name, value] of Object.entries(draft.fields)) {
           const input = form.elements.namedItem(name);
           if (input) {
+            if (input.type === "checkbox") { input.checked = Boolean(value); input.dispatchEvent(new Event("change", {bubbles:true})); continue; }
             if (name === "object_ref" && !Array.from(input.options).some((option) => option.value === value)) {
               const option = element("option", "", "Ранее выбранный объект — проверьте доступность"); option.value = value; input.append(option);
             }
@@ -1345,13 +1394,19 @@
         if (kind === "create") {
           if (!state.drawer?.useCustomer && !state.drawer?.selectedClient) throw new Error("Выберите клиента из результатов поиска.");
           const changes = {title: String(values.get("title") || "").trim(), pipeline_id: Number(values.get("pipeline_id")), next_action: {title: String(values.get("next_title") || "").trim(), due_at: deadlineISO(values.get("due_at"), offset)}};
+          if (form.elements.namedItem("responsible_id")) { if (!values.get("responsible_id")) throw new Error("Выберите ответственного."); changes.responsible_id = Number(values.get("responsible_id")); }
           if (state.drawer.useCustomer) changes.customer = state.drawer.customerEditor.value();
           else changes.client_id = state.drawer.selectedClient.id;
           changes.card_fields = cardChanges(values);
           if (!changes.title || !changes.next_action.title) throw new Error("Заполните название сделки и следующий шаг.");
           await send("deal.create", null, null, changes, "Новая сделка «" + changes.title + "»");
         } else if (!deal) throw new Error("Обновите карточку перед сохранением.");
-        else if (kind === "edit") {
+        else if (kind === "assign") {
+          if (!deal.can_assign || !values.get("responsible_id")) throw new Error("Выберите доступного сотрудника.");
+          const changes = {responsible_id:Number(values.get("responsible_id")), transfer_next_action:Boolean(form.elements.namedItem("transfer_next_action")?.checked)};
+          if (changes.transfer_next_action) changes.expected_task_version = deal.assignment_task.version;
+          await send("deal.assign", deal.id, deal.revision, changes, "Ответственный за «" + deal.title + "»");
+        } else if (kind === "edit") {
           const title = String(values.get("title") || "").trim();
           if (!title) throw new Error("Укажите название сделки.");
           await send("deal.edit", deal.id, deal.revision, {title, ...cardChanges(values)}, "Карточка сделки «" + deal.title + "»");

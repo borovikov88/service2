@@ -101,8 +101,8 @@ def _normalize(kind, changes):
     if type(kind) is not str or kind not in CAPABILITIES or type(changes) is not dict:
         raise ValidationError("Unknown lead command.")
     allowed = {
-        "lead.create": EDIT_FIELDS | {"next_action"},
-        "lead.new_need": EDIT_FIELDS | {"next_action"},
+        "lead.create": EDIT_FIELDS | {"next_action", "responsible_id"},
+        "lead.new_need": EDIT_FIELDS | {"next_action", "responsible_id"},
         "lead.take": {"next_action"},
         "lead.disposition": {"column", "reason", "next_action", "expected_task_version"},
         "lead.acknowledge": set(),
@@ -157,12 +157,14 @@ def _normalize(kind, changes):
                 raise ValidationError("Qualification requires one to ten independent deals.")
             rows = []
             for row in value:
-                if type(row) is not dict or not {"pipeline_id", "title", "next_action"} <= set(row) or not set(row) <= {"pipeline_id", "title", "next_action", "client_id", "new_contact", "customer", "reuse_next_action"}:
+                if type(row) is not dict or not {"pipeline_id", "title", "next_action"} <= set(row) or not set(row) <= {"pipeline_id", "title", "next_action", "client_id", "new_contact", "customer", "reuse_next_action", "responsible_id"}:
                     raise ValidationError("Each deal requires a pipeline, title and next action.")
                 if len({'client_id', 'new_contact', 'customer'} & set(row)) > 1:
                     raise ValidationError('Выберите один способ заполнения контакта и компании.')
                 normalized = {"pipeline_id": _positive_id(row["pipeline_id"]),
                               "title": _text(row["title"], 255, True), "next_action": _next_action_values(row["next_action"])}
+                if "responsible_id" in row:
+                    normalized["responsible_id"] = _positive_id(row["responsible_id"])
                 if "client_id" in row:
                     normalized["client_id"] = _positive_id(row["client_id"])
                 if "new_contact" in row:
@@ -212,13 +214,13 @@ def create_lead_next_task(using, actor, lead, values):
         payload["source_call_id"] = call_id
     task = ServiceTask.objects.using(using).create(
         organization_id=lead.organization_id, client_id=lead.client_id,
-        created_by=actor, primary_responsible=actor, title=values["title"],
+        created_by=actor, primary_responsible=lead.assignee or actor, title=values["title"],
         task_type=ServiceTask.TYPE_CRM_FOLLOWUP, source_type=ServiceTask.SOURCE_MANAGER,
         visibility=ServiceTask.VISIBILITY_PRIVATE, due_at=due,
         start_date=local.date(), end_date=local.date(), start_time=local.time(), end_time=local.time(),
         payload_json=payload,
     )
-    task.responsibles.add(actor)
+    task.responsibles.add(lead.assignee or actor)
     CrmLeadTaskLink.objects.using(using).create(organization_id=lead.organization_id, lead=lead, task=task, created_by=actor)
     ServiceTaskChange.objects.using(using).create(task=task, changed_by=actor,
         action=ServiceTaskChange.ACTION_CREATED, field_name="crm_lead_next_action")
@@ -304,6 +306,10 @@ def _new_lead(using, actor, organization, values, origin=None):
     lead.origin_lead = origin
     _write_fields(using, lead, values)
     lead.save(using=using)
+    if "responsible_id" in values:
+        from .crm_assignments import assignment_recipient
+        lead.assignee = assignment_recipient(using, organization, values["responsible_id"], 'lead', subject=lead)
+        lead.save(using=using)
     create_lead_next_task(using, actor, lead, values["next_action"])
     lead.save(using=using)
     return lead
@@ -350,6 +356,7 @@ def _existing_target(using, actor, organization, lead, values, *, replay=False):
 def execute_lead_command(*, actor, organization, operation_key, command_type,
                          subject_id=None, expected_revision=None, changes):
     values = _normalize(command_type, changes)
+    safe_card_edit = command_type == 'lead.edit' and bool(values) and set(values) <= {'title', 'need'}
     actor_id = _positive_id(getattr(actor, "pk", None))
     org_id = _positive_id(getattr(organization, "pk", None))
     if type(operation_key) is not str or len(operation_key) > 100:
@@ -397,11 +404,11 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
                 raise CommercialConflict("Operation key was used with different content.")
             replay_lead = CrmLead.objects.using(using).select_for_update().get(pk=previous.result["lead_id"], organization=organization)
             _visible(using, actor, organization, replay_lead)
-            if replay_lead.assignee_id != actor.pk:
+            if replay_lead.assignee_id != actor.pk and command_type not in {"lead.create", "lead.new_need"}:
                 raise PermissionDenied("Lead ownership changed.")
             if command_type == "lead.transition" and values.get("result") in {"linked", "duplicate"}:
                 _existing_target(using, actor, organization, replay_lead, values, replay=True)
-            if replay_lead.next_task_id:
+            if replay_lead.next_task_id and not safe_card_edit:
                 _validate_task(using, replay_lead, tasks.get(replay_lead.next_task_id), actor)
                 if replay_lead.next_task_id not in tasks:
                     raise PermissionDenied("Lead task unavailable.")
@@ -417,8 +424,6 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
             if len(result_deals) != len(ids):
                 raise PermissionDenied("Qualification result unavailable.")
             for deal in result_deals:
-                if deal.manager_id != actor.pk:
-                    raise PermissionDenied("Qualification ownership changed.")
                 deal.full_clean()
                 pointer = CrmDealNextAction.objects.using(using).select_for_update().filter(deal=deal, organization=organization).first()
                 if not pointer:
@@ -439,7 +444,7 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
         if command_type == "lead.disposition":
             before_column = lead_column(lead)
         task = tasks.get(lead.next_task_id) if lead else None
-        if lead:
+        if lead and not safe_card_edit:
             _validate_task(using, lead, task, actor)
         additional = {}
         if command_type in {"lead.create", "lead.new_need"}:
@@ -559,9 +564,9 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
             _write_fields(using, lead, values)
             if "next_action" in values:
                 task = _set_next(using, actor, lead, task, values["next_action"], values.get("expected_task_version"))
-            if _terminal(task) or task.due_at is None:
+            if not safe_card_edit and (_terminal(task) or task.due_at is None):
                 raise ValidationError("An active lead requires a next action with a date.")
-            if task.client_id != lead.client_id:
+            if not safe_card_edit and task.client_id != lead.client_id:
                 task.client_id = lead.client_id
                 task.save(update_fields=["client", "updated_at"])
             lead.revision += 1
@@ -697,8 +702,13 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
                 stage = CrmStage.objects.using(using).select_for_update().filter(pipeline=pipeline, code=order[0] if order else "", is_active=True).first()
                 if not pipeline or not stage:
                     raise ValidationError("Deal pipeline unavailable.")
+                from .crm_assignments import assignment_recipient
+                responsible = assignment_recipient(using, organization, row["responsible_id"], 'deal', source_lead=lead) if "responsible_id" in row else actor
+                if row.get('reuse_next_action') and responsible.pk != task.primary_responsible_id:
+                    from .crm_assignments import _transfer_task
+                    _transfer_task(lead, task, actor, responsible, values.get('expected_task_version'))
                 deal = CrmDeal.objects.using(using).create(organization=organization, client=client, contact=contact,
-                    pipeline=pipeline, stage=stage, manager=actor, title=row["title"], revision=1)
+                    pipeline=pipeline, stage=stage, manager=responsible, title=row["title"], revision=1)
                 CrmLeadDealLink.objects.using(using).create(organization=organization, lead=lead, deal=deal, command=command,
                     kind="qualification" if command_type == "lead.qualify" else "additional")
                 if row.get("reuse_next_action"):
@@ -711,15 +721,18 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
                     next_task = task
                     ServiceTaskChange.objects.using(using).create(task=task,changed_by=actor,action=ServiceTaskChange.ACTION_UPDATED,field_name="crm_lead_step_transferred")
                 else:
-                    next_task, link = _new_next_task(using, actor, deal, row["next_action"])
+                    next_task, link = _new_next_task(using, actor, deal, row["next_action"], responsible=responsible)
                 call_id = _single_source_call_id(using, lead)
                 if call_id:
                     next_task.payload_json = {**next_task.payload_json, "source_call_id": call_id}
                     next_task.save(update_fields=["payload_json", "updated_at"])
                 CrmDealNextAction.objects.using(using).create(organization=organization, deal=deal, task_link=link)
 
-                CrmEvent.objects.using(using).create(organization=organization, deal=deal, command=command,
-                    actor=actor, event_type="deal.create", safe_diff={"revision": {"before": 0, "after": 1}})
+                deal_event = CrmEvent.objects.using(using).create(organization=organization, deal=deal, command=command,
+                    actor=actor, event_type="deal.create", safe_diff={"revision": {"before": 0, "after": 1},
+                        "manager_id": {"before": None, "after": responsible.pk}})
+                from .crm_assignment_notifications import notify_assignment
+                notify_assignment(deal_event, responsible)
                 ids.append(deal.pk)
             # A single conversion keeps the exact confirmed customer on the lead
             # as well. Multi-deal conversion retains the original lead identity.
@@ -750,7 +763,7 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
         if before_status is not None:
             diff["status"] = {"before": before_status, "after": lead.status}
         if command_type in {"lead.create", "lead.new_need", "lead.take"}:
-            diff["assignee_id"] = {"before": None, "after": actor.pk}
+            diff["assignee_id"] = {"before": None, "after": lead.assignee_id}
         if command_type == "lead.qualify":
             diff["is_archived"] = {"before": before_archived, "after": lead.is_archived}
             diff["assignee_id"] = {"before": before_owner, "after": lead.assignee_id}
@@ -772,6 +785,10 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
             diff["need_changed"] = {"before": False, "after": True}
         event = CrmEvent.objects.using(using).create(organization=organization, lead=lead, command=command,
             actor=actor, event_type=command_type, safe_diff=diff, reason=(lead.reason if command_type == "lead.complete_customer" or command_type == "lead.disposition" and values["column"] == "history" else values.get("reason", "")))
+        assigned = diff.get('assignee_id', {})
+        if assigned.get('after') is not None and assigned.get('after') != assigned.get('before'):
+            from .crm_assignment_notifications import notify_assignment
+            notify_assignment(event, lead.assignee)
         result = {"lead_id": lead.pk, "event_id": event.pk, "revision": lead.revision, **additional}
         if lead.next_task_id:
             result["task_id"] = lead.next_task_id

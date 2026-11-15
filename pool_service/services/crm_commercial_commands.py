@@ -407,24 +407,34 @@ def _replay_pilot(using, previous, actor, organization_id, digest, command_type,
     if (previous.actor_id != actor.pk or previous.command_type != command_type
             or previous.payload_hash != digest):
         raise CommercialConflict("Operation key was used with different content.")
-    deal = _owned_deal(using, actor.pk, organization_id, previous.result.get("deal_id"))
+    if command_type == "deal.create":
+        from .crm_commercial_access import deals_for_user
+        deal = deals_for_user(actor, Organization.objects.using(using).get(pk=organization_id)).using(using).select_for_update().filter(pk=previous.result.get("deal_id")).first()
+        if not deal:
+            raise PermissionDenied("Created deal unavailable.")
+        deal.full_clean()
+        from .crm_deal_objects import validate_deal_object
+        validate_deal_object(using, actor, deal)
+    else:
+        deal = _owned_deal(using, actor.pk, organization_id, previous.result.get("deal_id"))
     task = tasks.get(previous.result.get("task_id"))
     _validate_task_link(using, actor, deal, task)
     return dict(previous.result)
 
 
-def _new_next_task(using, actor, deal, values):
+def _new_next_task(using, actor, deal, values, *, responsible=None):
+    responsible = responsible or actor
     due = parse_datetime(values["due_at"])
     local = due.astimezone(ZoneInfo(getattr(settings, "COMMUNICATION_TIME_ZONE", "Asia/Barnaul")))
     task = ServiceTask.objects.using(using).create(
         organization_id=deal.organization_id, client_id=deal.client_id,
-        created_by=actor, primary_responsible=actor, title=values["title"],
+        created_by=actor, primary_responsible=responsible, title=values["title"],
         task_type=ServiceTask.TYPE_CRM_FOLLOWUP, source_type=ServiceTask.SOURCE_MANAGER,
         visibility=ServiceTask.VISIBILITY_PRIVATE,
         start_date=local.date(), end_date=local.date(), start_time=local.time(), end_time=local.time(),
         due_at=due, payload_json={"crm_commercial": {"deal_id": deal.pk}},
     )
-    task.responsibles.add(actor)
+    task.responsibles.add(responsible)
     link = CrmDealTaskLink.objects.using(using).create(
         organization_id=deal.organization_id, deal=deal, task=task, created_by=actor)
     ServiceTaskChange.objects.using(using).create(task=task, changed_by=actor,
@@ -443,12 +453,15 @@ def _record_pilot_command(using, *, actor, deal, operation_key, digest, command_
                      for name in ("pipeline_id", "stage_id", "manager_id")})
     event = CrmEvent.objects.using(using).create(organization_id=deal.organization_id,
         deal=deal, command=command, actor=actor, event_type=command_type, safe_diff=diff)
+    if command_type == "deal.create":
+        from .crm_assignment_notifications import notify_assignment
+        notify_assignment(event, deal.manager)
     command.result = dict(deal_id=deal.pk, event_id=event.pk, revision=deal.revision, task_id=task.pk)
     command.save(using=using, update_fields=["result"])
     return dict(command.result)
 
 
-def create_commercial_deal(*, actor, organization, operation_key, pipeline_id, title, next_action, client_id=None, customer=None, card_fields=None, source_context=None):
+def create_commercial_deal(*, actor, organization, operation_key, pipeline_id, title, next_action, client_id=None, customer=None, card_fields=None, source_context=None, responsible_id=None):
     """Create an own preparatory deal and its first real task, or replay it."""
     from pool_service.client_queries import active_clients
     from .crm_conversion_contacts import normalize_customer, resolve_conversion_customer
@@ -461,6 +474,8 @@ def create_commercial_deal(*, actor, organization, operation_key, pipeline_id, t
         customer = normalize_customer(customer)
         identity = {"customer": customer}
     _positive_id(pipeline_id)
+    if responsible_id is not None:
+        _positive_id(responsible_id)
     title = _normalize("deal.edit", {"title": title})["title"]
     values = _next_action_values(next_action)
     if card_fields is None:
@@ -478,7 +493,8 @@ def create_commercial_deal(*, actor, organization, operation_key, pipeline_id, t
         context_fields = {'source_context': source_context.payload}
     actor_id, organization_id, digest = _pilot_payload(actor=actor, organization=organization,
         operation_key=operation_key, command_type="deal.create", **identity,
-        pipeline_id=pipeline_id, title=title, next_action=values, **({"card_fields": card_fields} if card_fields else {}), **context_fields)
+        pipeline_id=pipeline_id, title=title, next_action=values, **({"card_fields": card_fields} if card_fields else {}),
+        **({"responsible_id": responsible_id} if responsible_id is not None else {}), **context_fields)
     using = router.db_for_write(CrmCommand)
     with transaction.atomic(using=using):
         organization = _locked_organization(using, organization_id)
@@ -512,8 +528,11 @@ def create_commercial_deal(*, actor, organization, operation_key, pipeline_id, t
         _set_card_fields(deal, card_fields, {})
         from .crm_deal_objects import validate_deal_object
         validate_deal_object(using, actor, deal)
+        if responsible_id is not None:
+            from .crm_assignments import assignment_recipient
+            deal.manager = assignment_recipient(using, organization, responsible_id, 'deal', subject=deal)
         deal.save(using=using)
-        task, link = _new_next_task(using, actor, deal, values)
+        task, link = _new_next_task(using, actor, deal, values, responsible=deal.manager)
         CrmDealNextAction.objects.using(using).create(organization=organization, deal=deal, task_link=link)
         return _record_pilot_command(using, actor=actor, deal=deal, operation_key=operation_key,
             digest=digest, command_type="deal.create", task=task, before=0)

@@ -15,7 +15,7 @@ from pool_service.call_processing_models import CallPrivateNumber
 from pool_service.communication_models import CommunicationAccess, PhoneCall, TelephonyEmployeeIdentity
 from pool_service.crm_commercial_models import CrmAccess, CrmEvent, CrmIntakeActivation, CrmLead, CrmLeadSource, CrmLeadThread
 from pool_service.crm_inbox_models import CrmInboxEvent
-from pool_service.models import Employee, Organization, OrganizationAccess, ServiceTask
+from pool_service.models import Employee, Notification, Organization, OrganizationAccess, ServiceTask
 from pool_service.services.crm_inbox import claim_one, deliver_claim
 from pool_service.services.crm_lead_access import can_read_lead, leads_for_user, source_metadata
 from pool_service.services.crm_lead_intake import consume_incoming
@@ -140,6 +140,9 @@ class LeadIntakeTests(Fixture, TestCase):
         self.assertTrue(lead.needs_review)
         self.assertIsNone(lead.next_task_id)
         self.assertIsNone(lead.follow_up_at)
+        notice = Notification.objects.get(kind='crm_assignment', user=self.user)
+        self.assertIn(f'lead={lead.pk}', notice.action_url)
+        self.assertEqual(Notification.objects.filter(kind='crm_assignment').count(), 1)
 
     def test_missed_or_unmapped_stays_free_and_late_answer_cannot_replace_owner(self):
         self.mapped_call(status="missed")
