@@ -53,11 +53,14 @@ before any environment approval. This path has not been exercised remotely.
   enable scoped reports, register the webhook using its durable attempt/readback
   guard, run the signed storage probe and refresh existing setup evidence.
   It does not purchase advertising or publish listings. Partial webhook/storage
-  or additional unconfirmed setup is a failed receipt, even if setup=applied.
-  Additional evidence is conservative: missing/unknown states, attempted reads,
-  failed/unavailable results and nested blocked attempts are not confirmation.
-  A blocked receipt can therefore require private review of already configured
-  modules rather than another setup run. No raw component evidence is published.
+  or known additional failure is a blocked receipt, even if setup=applied.
+  Missing/unknown evidence instead produces explicit `status=partial`, exit 3,
+  `reason=private_review_required`: core setup/webhook/storage were confirmed,
+  but not all supplemental observations. This intentionally does not make an
+  overall readiness claim. Already-checked/attempted envelopes are interpreted
+  using nested saved results; the attempt alone is not confirmation. A partial
+  run requires private evidence review, not an automatic setup retry.
+  No raw component evidence is published.
   No automatic retry of an ambiguous provider write.
 
 The host owns a 450-second deadline and TERM/HUP cleanup, independently of the
@@ -68,7 +71,7 @@ the bounded capture (both modules' bounded calls and the direct crontab run);
 its business guards and installed source files are unchanged. Lock files are
 checked for symlinks, ownership and replacement. Source,
 installed SHA and both remote refs are checked before each top-level operation
-and after completion. These are cooperative locks and repeated observations,
+and after successful completion. These are cooperative locks and repeated observations,
 not an atomic transaction with GitHub refs or an adversarial filesystem proof.
 An unrelated actor can change remote main during a helper; the final guard then
 fails with already completed operations reported. It cannot undo provider work.

@@ -39,7 +39,7 @@ SETUP_COMPONENTS = {'manual_photo_evidence', 'daily_statistics', 'period_statist
     'comparable_subsets', 'tariff_subscription', 'assistant_wallet', 'placement_calendar_check',
     'assistant_read_tools', 'owner_dashboard'}
 CONFIRMED_STATES = {'ready', 'available', 'configured', 'preserved', 'observed', 'prepared',
-    'already_available', 'read_confirmed', 'already_verified', 'verified', 'readers_checked'}
+    'already_available', 'read_confirmed', 'already_verified', 'verified', 'readers_checked', 'recorded'}
 OP_RESULTS = {'status': {'runtime_read'}, 'avito-services': {'applied', 'already_applied'},
     'avito-outbox': {'installed', 'present', 'disabled', 'panel_setup_required'},
     'mcp': {'configured', 'already_configured', 'already_marked', 'restart_requested',
@@ -295,29 +295,36 @@ def monitor_status(app):
     return dict(zip(('configured', 'enabled', 'baselined', 'due', 'running', 'failed'), map(int, match.groups())))
 
 
-def setup_confirmed(value):
+def setup_evidence(value):
     """Conservative evidence classification, not a new setup/business policy.
 
     An attempted read, absent state, or unknown future state is not confirmation.
     Inspect nested evidence/attempt_state too; no stored state/code is emitted.
     """
     if not isinstance(value, dict) or not value:
-        return False
-    states = []
+        return 'unconfirmed'
+    states, errors = [], []
     def walk(row):
         if isinstance(row, dict):
             for key, item in row.items():
                 if key in {'state', 'attempt_state', 'probe_state'}:
-                    states.append(item)
+                    # An envelope/attempt alone is not evidence. Its nested
+                    # saved result may be useful; absent evidence stays partial.
+                    if item not in {'already_checked', 'read_attempted', 'already_attempted', 'attempted'}:
+                        states.append(item)
                 elif key in {'code', 'error', 'error_code', 'last_error_code'} and item:
-                    states.append(None)
+                    errors.append(True)
                 else:
                     walk(item)
         elif isinstance(row, list):
             for item in row:
                 walk(item)
     walk(value)
-    return bool(states) and all(isinstance(state, str) and state in CONFIRMED_STATES for state in states)
+    if errors or any(isinstance(state, str) and state in {'blocked', 'failed', 'unavailable'} for state in states):
+        return 'failed'
+    if states and all(isinstance(state, str) and state in CONFIRMED_STATES for state in states):
+        return 'confirmed'
+    return 'unconfirmed'
 
 
 def services(app, receipt):
@@ -329,13 +336,19 @@ def services(app, receipt):
     value = json.loads(out[len(b'AVITO_SERVICES_SETUP '):])
     require(value.get('setup') in ('applied', 'already_applied'))
     receipt['completed'].append(value['setup'])
+    evidence = [setup_evidence(value.get(name)) for name in SETUP_COMPONENTS]
     receipt['checks'] = {
         'webhook_registered': value.get('webhook', {}).get('registration_confirmed') is True,
         'storage_verified': value.get('storage_probe', {}).get('checked') is True,
-        'additional_setup_unconfirmed': any(not setup_confirmed(value.get(name)) for name in SETUP_COMPONENTS),
+        'additional_setup_failed': 'failed' in evidence,
+        'additional_setup_unconfirmed': 'unconfirmed' in evidence,
     }
     require(receipt['checks']['webhook_registered'] and receipt['checks']['storage_verified']
-            and not receipt['checks']['additional_setup_unconfirmed'])
+            and not receipt['checks']['additional_setup_failed'])
+    if receipt['checks']['additional_setup_unconfirmed']:
+        # Native setup includes observations with unrelated evidence contracts.
+        # Preserve a useful partial outcome; do not invent their confirmation.
+        raise Failure('partial')
     # Setup is not successful processing. Do not expose raw nested diagnostics.
     return value['setup']
 
@@ -417,7 +430,11 @@ def remote_work(app, expected):
     except Exception as error:
         # The phase identifies the failure boundary, never its private exception.
         receipt['reason'] = error.category if isinstance(error, Failure) and error.category in {'deadline', 'output_limit'} else 'unavailable'
-        code = 2
+        if isinstance(error, Failure) and error.category == 'partial':
+            receipt.update(status='partial', reason='private_review_required')
+            code = 3
+        else:
+            code = 2
     print(PREFIX + json.dumps(receipt, sort_keys=True))
     return code
 
@@ -427,16 +444,18 @@ def normalize(code, data, expected):
     value = json.loads(data[len(PREFIX):])
     require(isinstance(value, dict) and all(value.get(k) == v for k, v in expected.items()))
     keys = set(expected) | {'phase', 'category', 'status', 'completed', 'effects_possible'}
-    if code == 2:
+    if code in (2, 3):
         keys.add('reason')
-        require(value.get('reason') in {'deadline', 'output_limit', 'unavailable'})
+        require(value.get('reason') in ({'private_review_required'} if code == 3 else {'deadline', 'output_limit', 'unavailable'}))
     require(set(value) in (keys, keys | {'counts'}, keys | {'checks'}) and value['phase'] in PHASES
             and isinstance(value['completed'], list) and len(value['completed']) <= 6
             and all(isinstance(item, str) and item in OP_RESULTS[expected['operation']] for item in value['completed']))
     require(type(value['effects_possible']) is bool
             and (expected['operation'] != 'status' or value['effects_possible'] is False))
     require((code == 0 and value['status'] == 'completed' and value['category'] == 'none' and value['phase'] == 'final')
-            or (code == 2 and value['status'] == 'blocked' and value['category'] in ('guard', 'application')))
+            or (code == 2 and value['status'] == 'blocked' and value['category'] in ('guard', 'application'))
+            or (code == 3 and expected['operation'] == 'avito-services' and value['status'] == 'partial'
+                and value['category'] == 'application' and value['phase'] == 'services' and 'checks' in value))
     if code == 0:
         done, operation = value['completed'], expected['operation']
         require((operation == 'status' and done == ['runtime_read'] and 'counts' in value)
@@ -453,8 +472,14 @@ def normalize(code, data, expected):
     if 'checks' in value:
         checks = value['checks']
         require(expected['operation'] == 'avito-services' and isinstance(checks, dict)
-                and set(checks) == {'webhook_registered', 'storage_verified', 'additional_setup_unconfirmed'}
+                and set(checks) == {'webhook_registered', 'storage_verified', 'additional_setup_failed', 'additional_setup_unconfirmed'}
                 and all(type(item) is bool for item in checks.values()))
+        if code == 3:
+            require(checks['webhook_registered'] and checks['storage_verified']
+                    and checks['additional_setup_unconfirmed'] and not checks['additional_setup_failed'])
+        if code == 0:
+            require(checks['webhook_registered'] and checks['storage_verified']
+                    and not checks['additional_setup_unconfirmed'] and not checks['additional_setup_failed'])
     return value
 
 

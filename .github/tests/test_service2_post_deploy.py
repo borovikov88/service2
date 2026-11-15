@@ -410,12 +410,30 @@ class TraceTests(unittest.TestCase):
 
     def test_services_private_output_is_not_forwarded_partial_setup_fails(self):
         data = {'setup': 'applied', 'private': 'PRIVATE TOKEN', 'webhook': {'registration_confirmed': True},
-            'storage_probe': {'checked': True}, **{name: {'state': 'ready'} for name in post.SETUP_COMPONENTS}}
+            'storage_probe': {'checked': True},
+            'manual_photo_evidence': {'state': 'recorded', 'code': '', 'manual_photo': {}, 'provider_report': {}, 'facts': {}},
+            'daily_statistics': {'state': 'preserved', 'enabled': True, 'error_code': '', 'natural_background_verified': False},
+            'period_statistics': {'state': 'already_checked', 'evidence': {'state': 'available', 'reports': []}},
+            'water_experiment_baseline': {'state': 'available'},
+            'crm_source_links': {'state': 'ready', 'schema_version': 1},
+            'improvement_projects': {'state': 'already_attempted', 'attempt_state': 'prepared', 'results': []},
+            'assistant_wallet': {'state': 'read_confirmed', 'code': '', 'request_performed': True},
+            'placement_calendar_check': {'state': 'verified', 'provider_write_performed': False},
+            'assistant_read_tools': {'state': 'readers_checked', 'oauth_delivery_confirmed': False},
+            'tariff_subscription': {'state': 'subscription_missing', 'probe_state': 'attempted', 'code': ''},
+            # Additional native observations are deliberately not replaced with state=ready.
+            # Their saved UI evidence needs a separate read; this is a partial result.
+        }
         def captured(value):
             return (0, b'AVITO_SERVICES_SETUP ' + json.dumps(value).encode() + b'\n', b'PRIVATE')
         with patch.object(post, 'capture', return_value=captured(data)) as command:
-            value, _ = self.run_operation('avito-services')
+            value = receipt('avito-services', completed=[])
+            with self.assertRaises(post.Failure) as caught:
+                post.services(self.app, value)
+            self.assertEqual(caught.exception.category, 'partial')
         self.assertEqual(value['completed'], ['applied'])
+        self.assertFalse(value['checks']['additional_setup_failed'])
+        self.assertTrue(value['checks']['additional_setup_unconfirmed'])
         self.assertNotIn('PRIVATE', json.dumps(value))
         self.assertIn('configure_avito_services_workplace', command.call_args.args[0])
         self.assertEqual(command.call_args.kwargs['env']['SERVICE2_AVITO_DEPLOY_SETUP'], '1')
@@ -433,8 +451,24 @@ class TraceTests(unittest.TestCase):
         for value in (None, {}, [], {'enabled': True}, {'state': 'ready', 'code': 'PRIVATE'},
                       {'state': 'read_attempted'}, {'state': 'already_attempted', 'attempt_state': 'blocked'},
                       {'state': 'ready', 'evidence': [{'probe_state': 'unconfirmed'}]}):
-            self.assertFalse(post.setup_confirmed(value))
-        self.assertTrue(post.setup_confirmed({'state': 'ready', 'evidence': {'state': 'verified'}}))
+            self.assertNotEqual(post.setup_evidence(value), 'confirmed')
+        self.assertEqual(post.setup_evidence({'state': 'already_checked', 'evidence': {'state': 'available'}}), 'confirmed')
+        self.assertEqual(post.setup_evidence({'state': 'recorded', 'code': ''}), 'confirmed')
+        self.assertEqual(post.setup_evidence({'state': 'already_attempted', 'attempt_state': 'prepared'}), 'confirmed')
+        self.assertEqual(post.setup_evidence({'state': 'available', 'probe_state': 'attempted'}), 'confirmed')
+        self.assertEqual(post.setup_evidence({'state': 'available', 'probe_state': 'unconfirmed'}), 'unconfirmed')
+
+    def test_services_partial_is_distinct_from_failure_and_success(self):
+        value = receipt('avito-services', completed=['applied'], effects_possible=True,
+            phase='services', status='partial', category='application', reason='private_review_required',
+            checks={'webhook_registered': True, 'storage_verified': True,
+                    'additional_setup_failed': False, 'additional_setup_unconfirmed': True})
+        expected = post.request({**env(), 'POST_OPERATION': 'avito-services'})
+        raw = (post.PREFIX + json.dumps(value) + '\n').encode()
+        self.assertEqual(post.normalize(3, raw, expected), value)
+        for code in (0, 2):
+            with self.assertRaises(post.Failure):
+                post.normalize(code, raw, expected)
 
     def test_https_metadata_and_health_are_exact_and_bounded(self):
         correct = {'resource': post.SITE + '/mcp/1c', 'authorization_servers': [post.SITE + '/onec-diagnostic'],
