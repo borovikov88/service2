@@ -15,6 +15,7 @@ from pool_service.client_crm_models import (
     ClientContact,
     ClientImportCandidate,
     ClientImportRun,
+    ClientImportProposal,
 )
 from pool_service.client_crm_sync import (
     sync_all_onec_clients,
@@ -125,7 +126,8 @@ class ClientCRMAutoSyncTests(TestCase):
 
         client.refresh_from_db()
         self.assertEqual(result["refreshed"], 1)
-        self.assertEqual(client.name, "New Name")
+        self.assertEqual(client.name, "Old Name")
+        self.assertTrue(ClientImportProposal.objects.filter(client=client, field="name", after="New Name", state="pending").exists())
 
     def test_refresh_preserves_crm_name_changed_manually(self):
         ref = "42345678-1234-1234-1234-1234567890ab"
@@ -154,7 +156,7 @@ class ClientCRMAutoSyncTests(TestCase):
         client.refresh_from_db()
         self.assertEqual(client.name, "Дыченко Александр")
         self.assertEqual(client.first_name, "Надежда")
-        self.assertEqual(client.phone, "+7 999 123 4567")
+        self.assertEqual(client.phone, "+7 999 123-45-67")
 
     def test_ip_name_only_does_not_auto_merge(self):
         Client.objects.create(
@@ -181,7 +183,7 @@ class ClientCRMAutoSyncTests(TestCase):
         self.assertFalse(ClientCompanyLink.objects.exists())
 
 
-    def test_refresh_removes_stale_onec_contact_but_keeps_manual_contact(self):
+    def test_refresh_keeps_absent_onec_and_manual_contacts(self):
         ref = "52345678-1234-1234-1234-1234567890ab"
         client = Client.objects.create(
             organization=self.organization,
@@ -235,15 +237,15 @@ class ClientCRMAutoSyncTests(TestCase):
         client.refresh_from_db()
         manual.refresh_from_db()
         self.assertEqual(result["refreshed"], 1)
-        self.assertIsNone(client.phone)
-        self.assertFalse(
+        self.assertEqual(client.phone, "10001")
+        self.assertTrue(
             ClientContact.objects.filter(
                 client=client,
                 match_value="10001",
             ).exists()
         )
-        self.assertEqual(manual.sources, ["manual"])
-        self.assertEqual(manual.source_reference, "")
+        self.assertEqual(manual.sources, ["manual", "onec"])
+        self.assertEqual(manual.source_reference, ref)
 
 
     def test_incremental_sync_skips_active_manual_run(self):
@@ -396,7 +398,7 @@ class ClientCRMAutoSyncTests(TestCase):
         self.assertIsNone(stale_candidate.applied_at)
         self.assertEqual(result["apply"]["imported"], 0)
 
-    def test_existing_ip_link_refreshes_person_scalars(self):
+    def test_existing_ip_link_proposes_nonempty_person_scalars(self):
         ref = "92345678-1234-1234-1234-1234567890ab"
         company = Client.objects.create(
             organization=self.organization,
@@ -467,15 +469,16 @@ class ClientCRMAutoSyncTests(TestCase):
 
         person.refresh_from_db()
         person_profile.refresh_from_db()
-        self.assertEqual(person.name, "Иванов Иван Иванович")
-        self.assertEqual(person.first_name, "Иван")
-        self.assertEqual(person.last_name, "Иванов")
-        self.assertEqual(person.phone, "+7 999 222 2222")
-        self.assertEqual(person.email, "new@example.test")
+        self.assertEqual(person.name, "Old Person")
+        self.assertEqual(person.first_name, "Old")
+        self.assertEqual(person.last_name, "Person")
+        self.assertEqual(person.phone, "+7 999 111-11-11")
+        self.assertEqual(person.email, "old@example.test")
+        self.assertTrue(ClientImportProposal.objects.filter(client=person, field="phone", state="pending").exists())
         self.assertEqual(person_profile.middle_name, "Иванович")
         self.assertEqual(person_profile.birth_date, candidate.birth_date)
 
-    def test_same_onec_ref_reconciles_client_type_and_removes_stale_ip_link(self):
+    def test_same_onec_ref_proposes_type_and_keeps_ip_link(self):
         ref = "a2345678-1234-1234-1234-1234567890ab"
         company = Client.objects.create(
             organization=self.organization,
@@ -518,15 +521,16 @@ class ClientCRMAutoSyncTests(TestCase):
 
         company.refresh_from_db()
         company.crm_profile.refresh_from_db()
-        self.assertEqual(company.client_type, "private")
-        self.assertIsNone(company.company_name)
-        self.assertEqual(company.first_name, "Петр")
-        self.assertEqual(company.last_name, "Петров")
+        self.assertEqual(company.client_type, "legal")
+        self.assertEqual(company.company_name, "Old IP")
+        self.assertIsNone(company.first_name)
+        self.assertIsNone(company.last_name)
         self.assertEqual(
             company.crm_profile.legal_form,
-            ClientCRMProfile.LEGAL_FORM_NONE,
+            ClientCRMProfile.LEGAL_FORM_IP,
         )
-        self.assertFalse(
+        self.assertTrue(ClientImportProposal.objects.filter(client=company, field="classification", state="pending").exists())
+        self.assertTrue(
             ClientCompanyLink.objects.filter(
                 company=company,
                 source=ClientCompanyLink.SOURCE_ONEC_IP,

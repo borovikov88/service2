@@ -583,3 +583,6 @@ urlpatterns += [
     path('crm/workspace/materials/',crm_material_views.workspace,name='crm_materials'),
     path('crm/workspace/materials/<int:issue_id>/',crm_material_views.workspace,name='crm_material_detail'),
 ]
+
+from .client_import_review_views import proposals as client_onec_proposals
+urlpatterns += [path("clients/onec/proposals/", client_onec_proposals, name="client_onec_proposals")]

@@ -18,6 +18,7 @@ from .client_crm_models import (
     ClientBusinessRoleEvent,
     ClientContact,
     ClientImportCandidate,
+    ClientImportProposal,
     ClientImportRun,
 )
 
@@ -191,6 +192,7 @@ def _generic_relations(source, target):
         ClientBusinessRole,
         ClientBusinessRoleEvent,
         ClientImportCandidate,
+        ClientImportProposal,
         ClientAccess,
         # These relations have a separate validated write contract. The source
         # preflight in merge_clients() refuses existing links before any write.
@@ -301,6 +303,8 @@ def merge_clients(source_id, target_id, *, organization_id, actor=None):
     if OrganizationPersonLink.objects.filter(person_id__in=[source.pk, target.pk]).exists():
         raise ValueError("Связь физлица с пользователем требует отдельной сверки перед объединением.")
 
+    # Decisions retain their original target. Never bulk-reparent audit records.
+    ClientImportProposal.objects.filter(client_id__in=[source.pk, target.pk], state="pending").update(state="stale")
     moved = _generic_relations(source, target)
     _merge_staff_access(source, target)
     _merge_contacts(source, target)

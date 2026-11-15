@@ -17,7 +17,7 @@
       <a class="btn btn-outline-secondary btn-sm" href="{{ return_url }}"><i class="bi bi-arrow-left me-1"></i>В карточку</a>
     </div>
     <form method="post" data-crm-editor>
-      {% csrf_token %}
+      {% csrf_token %}<input type="hidden" name="editor_revision" value="{{ editor_revision }}">
       <input type="hidden" name="return_tab" value="{{ return_tab }}">
       {% if client_form.errors or profile_form.errors %}
         <div class="alert alert-danger" role="alert">Проверьте выделенные поля. Изменения пока не сохранены.</div>
@@ -104,12 +104,7 @@
                 </div>
               {% empty %}<div class="text-muted small">Дополнительные контакты не добавлены.</div>{% endfor %}
             </div>
-            <form method="post" class="row g-2 mt-2 align-items-end">
-              {% csrf_token %}<input type="hidden" name="action" value="add_extra_phone">
-              <div class="col-12 col-md-5"><label class="form-label small text-muted">Добавить телефон</label><input class="form-control" name="phone" inputmode="tel" autocomplete="tel" required></div>
-              <div class="col-12 col-md-4"><label class="form-label small text-muted">Подпись</label><input class="form-control" name="label" maxlength="120" placeholder="Например, рабочий"></div>
-              <div class="col-auto"><button class="btn btn-outline-primary" type="submit">Добавить</button></div>
-            </form>
+
             <div class="text-muted small mt-3">Изменения сохраняются в Service2. Связь с 1С и автоматические связи ИП не меняются; данные обратно в 1С не отправляются.</div>
           </section>
         </div>
@@ -119,6 +114,12 @@
         <button class="btn btn-primary" type="submit">Сохранить изменения</button>
       </div>
     </form>
+            <form method="post" class="row g-2 mt-2 align-items-end">
+              {% csrf_token %}<input type="hidden" name="editor_revision" value="{{ editor_revision }}"><input type="hidden" name="action" value="add_extra_phone">
+              <div class="col-12 col-md-5"><label class="form-label small text-muted">Добавить телефон</label><input class="form-control" name="phone" inputmode="tel" autocomplete="tel" required></div>
+              <div class="col-12 col-md-4"><label class="form-label small text-muted">Подпись</label><input class="form-control" name="label" maxlength="120" placeholder="Например, рабочий"></div>
+              <div class="col-auto"><button class="btn btn-outline-primary" type="submit">Добавить</button></div>
+            </form>
   </div>
 </div>
 {% if client.client_type != 'legal' %}

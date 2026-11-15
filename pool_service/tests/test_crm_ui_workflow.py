@@ -1,3 +1,4 @@
+from .onec_review_helpers import post_current_form
 """CRM lookup/editor regressions; synthetic clients only."""
 import json
 from datetime import date, timedelta
@@ -103,7 +104,7 @@ class CRMUIWorkflowTests(TestCase):
             self.client.force_login(user)
             self.assertEqual(self.lookup("Строй").status_code, 403)
             self.assertEqual(self.client.get(self.edit()).status_code, 403)
-            self.assertEqual(self.client.post(self.edit(), {"name": "Forbidden"}).status_code, 403)
+            self.assertEqual(post_current_form(self.client, self.edit(), {"name": "Forbidden"}).status_code, 403)
         self.person.refresh_from_db()
         self.assertEqual(self.person.name, "Example Person")
 
@@ -121,21 +122,21 @@ class CRMUIWorkflowTests(TestCase):
         self.assertEqual(self.client.get(self.detail(), {"tab": "invalid"}).context["card_tab"], "overview")
 
     def test_relationship_create_update_delete_stay_on_contacts(self):
-        response = self.client.post(self.detail(), {
+        response = post_current_form(self.client, self.detail(), {
             "action": "add_company_link", "related_client": self.company.pk,
             "position": "Test contact",
         })
         self.assertRedirects(response, card_url(self.person.pk, "contacts"), fetch_redirect_response=False)
         link = ClientCompanyLink.objects.get(company=self.company, person=self.person)
         for action in ("update_company_link", "delete_company_link"):
-            response = self.client.post(self.detail(), {
+            response = post_current_form(self.client, self.detail(), {
                 "action": action, "link_id": link.pk, "position": "Updated",
             })
             self.assertRedirects(response, card_url(self.person.pk, "contacts"), fetch_redirect_response=False)
 
     def test_invalid_relationship_stays_contacts_and_does_not_link_foreign_client(self):
         foreign = Client.objects.create(organization=self.other_org, client_type="legal", name="Foreign")
-        response = self.client.post(self.detail(), {
+        response = post_current_form(self.client, self.detail(), {
             "action": "add_company_link", "related_client": foreign.pk,
         })
         self.assertEqual(response.url, card_url(self.person.pk, "contacts"))
@@ -145,7 +146,7 @@ class CRMUIWorkflowTests(TestCase):
         link = ClientCompanyLink.objects.create(
             company=self.company, person=self.person, automatic=True, source="onec_ip",
         )
-        response = self.client.post(self.detail(), {"action": "delete_company_link", "link_id": link.pk})
+        response = post_current_form(self.client, self.detail(), {"action": "delete_company_link", "link_id": link.pk})
         self.assertEqual(response.url, card_url(self.person.pk, "contacts"))
         self.assertTrue(ClientCompanyLink.objects.filter(pk=link.pk).exists())
 
@@ -157,7 +158,7 @@ class CRMUIWorkflowTests(TestCase):
         self.assertContains(page, 'value="1990-02-03"')
         self.assertContains(page, 'data-crm-phone="true"')
         self.assertContains(page, "Existing note")
-        response = self.client.post(self.edit(), {
+        response = post_current_form(self.client, self.edit(), {
             "name": "Chosen alias", "profile-middle_name": "Updated",
             "profile-birth_date": "1991-04-05", "profile-manager": self.manager.pk,
             "profile-notes": "New note", "return_tab": "contacts",
@@ -172,7 +173,7 @@ class CRMUIWorkflowTests(TestCase):
         self.assertEqual(self.person.phone, "+358 40 123 4567")
 
     def test_company_editor_saves_requisites_without_fake_contact_person(self):
-        response = self.client.post(self.edit(self.company), {
+        response = post_current_form(self.client, self.edit(self.company), {
             "name": "Updated company", "profile-legal_name": "Full company",
             "profile-kpp": "123456789", "profile-ogrn": "1234567890123",
         })
@@ -184,7 +185,7 @@ class CRMUIWorkflowTests(TestCase):
 
     def test_invalid_profile_does_not_partially_save_client(self):
         profile = ClientCRMProfile.objects.create(client=self.person, notes="Keep")
-        response = self.client.post(self.edit(), {
+        response = post_current_form(self.client, self.edit(), {
             "name": "Should not save", "phone": "89001234567",
             "profile-birth_date": "bad-date", "profile-manager": self.other.pk,
         })
@@ -203,7 +204,7 @@ class CRMUIWorkflowTests(TestCase):
         link = ClientCompanyLink.objects.create(
             company=self.company, person=self.person, automatic=True, source="onec_ip",
         )
-        response = self.client.post(self.edit(), {
+        response = post_current_form(self.client, self.edit(), {
             "name": "Changed", "client_type": "legal", "organization": self.other_org.pk,
             "profile-onec_ref": "forged", "profile-source": "manual", "profile-legal_form": "ip",
         })
@@ -225,7 +226,7 @@ class CRMUIWorkflowTests(TestCase):
             client=self.person, kind="phone", value="+7 900 111 2233",
             match_value="9001112233", sources=["manual"],
         )
-        self.assertEqual(self.client.post(self.edit(), {"phone": "89001234567"}).status_code, 302)
+        self.assertEqual(post_current_form(self.client, self.edit(), {"phone": "89001234567"}).status_code, 302)
         old.refresh_from_db(); extra.refresh_from_db(); self.person.refresh_from_db()
         self.assertEqual(old.sources, ["onec"])
         self.assertFalse(old.is_primary)
@@ -235,7 +236,7 @@ class CRMUIWorkflowTests(TestCase):
 
     def test_legacy_partial_post_keeps_foreign_phone_and_profile_fields(self):
         profile = ClientCRMProfile.objects.create(client=self.person, notes="Keep", birth_date=date(1980, 1, 2))
-        response = self.client.post(self.edit(), {
+        response = post_current_form(self.client, self.edit(), {
             "client_type": "private", "first_name": "Updated", "last_name": "Person",
             "phone": self.person.phone, "email": "", "company_name": "", "inn": "", "contact_position": "",
         })
@@ -247,14 +248,14 @@ class CRMUIWorkflowTests(TestCase):
         self.assertEqual(ClientContact.objects.get(client=self.person, kind="phone").value, self.person.phone)
 
     def test_changing_person_name_parts_does_not_replace_explicit_alias(self):
-        response = self.client.post(self.edit(), {"name": "Example Person", "first_name": "Updated"})
+        response = post_current_form(self.client, self.edit(), {"name": "Example Person", "first_name": "Updated"})
         self.assertEqual(response.status_code, 302)
         self.person.refresh_from_db()
         self.assertEqual(self.person.name, "Example Person")
         self.assertEqual(self.person.first_name, "Updated")
 
     def test_editor_email_is_synchronized_and_return_tab_is_allowlisted(self):
-        response = self.client.post(self.edit(), {
+        response = post_current_form(self.client, self.edit(), {
             "email": "new@example.test", "return_tab": "https://other.example.test/",
         })
         self.assertEqual(response.url, card_url(self.person.pk, "overview"))
@@ -264,7 +265,7 @@ class CRMUIWorkflowTests(TestCase):
         self.org.paid_until = timezone.now() - timedelta(days=1)
         self.org.trial_started_at = None
         self.org.save(update_fields=["paid_until", "trial_started_at"])
-        response = self.client.post(self.edit(), {"name": "Forbidden"})
+        response = post_current_form(self.client, self.edit(), {"name": "Forbidden"})
         self.person.refresh_from_db()
         self.assertNotEqual(response.status_code, 200)
         self.assertEqual(self.person.name, "Example Person")

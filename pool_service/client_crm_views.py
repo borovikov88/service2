@@ -5,6 +5,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django import forms
+from django.db import transaction
 from django.db.models import Count, Q
 from django.db.models.deletion import ProtectedError
 from django.http import HttpResponseForbidden, JsonResponse
@@ -32,7 +33,7 @@ from .phone_utils import format_phone
 from .client_merge import merge_clients, merge_suggestions
 from .communication_models import CommunicationAccess, PhoneCall
 from .call_markers import annotate_missed_call_callbacks
-from .models import Client, CrmItem, OrganizationAccess, Pool, ServiceTask
+from .models import Client, CrmItem, Organization, OrganizationAccess, Pool, ServiceTask
 from .services.task_waiting_schedule import waiting_schedule_metadata
 from .services.crm_permissions import crm_items_for_user
 from .services.call_privacy import visible_calls_page
@@ -98,7 +99,12 @@ def _user_label(user):
 
 
 @login_required
+@transaction.atomic
 def client_detail(request, client_id):
+    if request.method == "POST":
+        org_id = Client.objects.filter(pk=client_id).values_list("organization_id", flat=True).first()
+        if org_id:
+            Organization.objects.select_for_update().get(pk=org_id)
     client = get_object_or_404(
         Client.objects.select_related("organization"),
         pk=client_id,
@@ -609,6 +615,8 @@ def client_onec_import(request):
             try:
                 candidate_id = int(request.POST.get("candidate_id") or 0)
             except (TypeError, ValueError):
+                return HttpResponseForbidden()
+            if not ClientImportCandidate.objects.filter(pk=candidate_id, organization_id=organization_id).exists():
                 return HttpResponseForbidden()
             resolution = (request.POST.get("resolution") or "").strip()
             try:

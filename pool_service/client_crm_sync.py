@@ -79,19 +79,21 @@ def _recent_buyer_rows(config, metadata_raw, *, lookback_hours):
         metadata_raw=metadata_raw,
     )
     rows = list(result.get("rows", []))
-    if not result.get("complete") and len(rows) >= PAGE_SIZE:
+    if result.get("complete") is False or not result.get("complete") and len(rows) >= PAGE_SIZE:
         raise RuntimeError(
             "Recent 1C client window returned more than the safe incremental limit"
         )
     return rows
 
 
+@transaction.atomic
 def _stage_recent_candidate(organization, row, extra_contacts):
+    organization.__class__.objects.select_for_update().get(pk=organization.pk)
     ref = str(row.get("Ref_Key") or "")
     name = str(row.get("Description") or row.get("НаименованиеПолное") or "").strip()
     source_kind = _source_kind(row)
 
-    existing = ClientImportCandidate.objects.filter(
+    existing = ClientImportCandidate.objects.select_for_update().filter(
         organization=organization,
         source_ref=ref,
     ).only("resolution", "applied_at").first()
@@ -137,6 +139,9 @@ def _stage_recent_candidate(organization, row, extra_contacts):
             "Совпавший клиент уже связан с другой карточкой 1С: "
             f"{match_reason}"
         )
+    elif len(matches) == 1 and match_reason == "телефон":
+        status = ClientImportCandidate.STATUS_REVIEW
+        reason = "Телефон не подтверждает личность; нужна проверка источника и ручное сопоставление"
     elif len(matches) == 1:
         matched_client = matches[0]
     elif (
@@ -178,6 +183,7 @@ def _stage_recent_candidate(organization, row, extra_contacts):
         organization=organization,
         source_ref=ref,
         defaults={
+            "source_available": True,
             "source_code": str(row.get("Code") or ""),
             "source_kind": source_kind,
             "name": name,
@@ -194,7 +200,7 @@ def _stage_recent_candidate(organization, row, extra_contacts):
         },
     )
 
-    if candidate.applied_at:
+    if candidate.applied_at and candidate.status == ClientImportCandidate.STATUS_READY:
         candidate.status = ClientImportCandidate.STATUS_IMPORTED
         candidate.save(update_fields=["status", "updated_at"])
 
@@ -372,6 +378,7 @@ def sync_all_onec_clients():
             ClientImportCandidate.objects.filter(
                 organization=organization,
                 status=ClientImportCandidate.STATUS_IMPORTED,
+                source_ref__in=seen_refs,
                 matched_client__isnull=False,
             )
             .order_by("id")
