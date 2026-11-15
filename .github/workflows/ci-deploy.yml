@@ -257,6 +257,18 @@ jobs:
           HOST_LOOKUP="$DEPLOY_HOST"
           if [[ "$PORT" != "22" ]]; then HOST_LOOKUP="[$DEPLOY_HOST]:$PORT"; fi
           ssh-keygen -F "$HOST_LOOKUP" -f ~/.ssh/known_hosts >/dev/null
+          # Reuse the authenticated preflight transport for subsequent steps.
+          # The hosting may refuse a new TCP connection immediately after one.
+          cat > ~/.ssh/service2_deploy.conf <<'SSH_CONFIG'
+          Host *
+            ControlMaster auto
+            ControlPath ~/.ssh/service2-deploy-%C
+            ControlPersist 600
+            ConnectTimeout 20
+            ServerAliveInterval 30
+            ServerAliveCountMax 3
+          SSH_CONFIG
+          chmod 600 ~/.ssh/service2_deploy.conf
       - name: Verify hosting compatibility without modifying checkout
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
@@ -271,7 +283,7 @@ jobs:
           PORT="${DEPLOY_PORT:-22}"
           [[ "$PORT" =~ ^[0-9]+$ ]]
           printf -v REMOTE_COMMAND 'bash -s -- %q %q preflight' "$GITHUB_SHA" "$DEPLOY_APP_PATH"
-          ssh -i ~/.ssh/service2_deploy \
+          ssh -F ~/.ssh/service2_deploy.conf -i ~/.ssh/service2_deploy \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
@@ -288,7 +300,7 @@ jobs:
           set -Eeuo pipefail
           PORT="${DEPLOY_PORT:-22}"
           printf -v REMOTE_COMMAND 'bash -s -- %q %q deploy' "$GITHUB_SHA" "$DEPLOY_APP_PATH"
-          ssh -i ~/.ssh/service2_deploy \
+          ssh -F ~/.ssh/service2_deploy.conf -i ~/.ssh/service2_deploy \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
             "$REMOTE_COMMAND" < update.sh
@@ -304,7 +316,7 @@ jobs:
           printf -v REMOTE_COMMAND \
             'set -Eeuo pipefail; cd %q; test "$(git rev-parse HEAD)" = %q; exec /bin/bash scripts/run_avito_status_monitor.sh --status' \
             "$DEPLOY_APP_PATH" "$GITHUB_SHA"
-          ssh -i ~/.ssh/service2_deploy \
+          ssh -F ~/.ssh/service2_deploy.conf -i ~/.ssh/service2_deploy \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
             -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
@@ -321,7 +333,7 @@ jobs:
           printf -v REMOTE_COMMAND \
             'set -Eeuo pipefail; cd %q; test "$(git rev-parse HEAD)" = %q; test -f .env; test ! -L .env; result="$(../venv/bin/python scripts/enable_onec_diagnostic_mcp.py --env-file .env --marker-file ../tmp/onec-diagnostic-mcp-activated)"; printf "%%s\n" "$result"; if [[ "$result" != "Diagnostic MCP activation already completed earlier; no changes made." ]]; then touch ../tmp/restart.txt; fi' \
             "$DEPLOY_APP_PATH" "$GITHUB_SHA"
-          result="$(ssh -i ~/.ssh/service2_deploy \
+          result="$(ssh -F ~/.ssh/service2_deploy.conf -i ~/.ssh/service2_deploy \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND" | tail -n 1)"
           case "$result" in
@@ -370,7 +382,7 @@ jobs:
           printf -v REMOTE_COMMAND \
             'set -Eeuo pipefail; cd %q; test "$(git rev-parse HEAD)" = %q; exec env SERVICE2_AVITO_OUTBOX_SETUP=1 ../venv/bin/python scripts/avito_outbox_cron.py setup --app-dir %q --expected-sha %q' \
             "$DEPLOY_APP_PATH" "$GITHUB_SHA" "$DEPLOY_APP_PATH" "$GITHUB_SHA"
-          ssh -i ~/.ssh/service2_deploy \
+          ssh -F ~/.ssh/service2_deploy.conf -i ~/.ssh/service2_deploy \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
             -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
@@ -390,7 +402,7 @@ jobs:
           PORT="${DEPLOY_PORT:-22}"
           printf -v REMOTE_COMMAND 'bash -s -- %q %q' "$GITHUB_SHA" "$DEPLOY_APP_PATH"
           recovery_exit=0
-          ssh -i ~/.ssh/service2_deploy \
+          ssh -F ~/.ssh/service2_deploy.conf -i ~/.ssh/service2_deploy \
             -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
             -o StrictHostKeyChecking=yes -o ConnectTimeout=20 \
             -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
@@ -413,7 +425,7 @@ jobs:
           printf -v REMOTE_COMMAND \
             'set -Eeuo pipefail; cd %q; test "$(git rev-parse HEAD)" = %q; exec 9>../tmp/service2-deploy.lock; flock -s -n 9; test "$(git rev-parse HEAD)" = %q; SERVICE2_AVITO_DEPLOY_SETUP=1 timeout 120 ../venv/bin/python manage.py configure_avito_services_workplace --expected-sha %q --base-url https://service2.aqualine22.ru' \
             "$DEPLOY_APP_PATH" "$GITHUB_SHA" "$GITHUB_SHA" "$GITHUB_SHA"
-          ssh -i ~/.ssh/service2_deploy \
+          ssh -F ~/.ssh/service2_deploy.conf -i ~/.ssh/service2_deploy \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
             -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
@@ -433,7 +445,7 @@ jobs:
           PORT="${DEPLOY_PORT:-22}"
           printf -v REMOTE_COMMAND 'bash -s -- %q %q' "$GITHUB_SHA" "$DEPLOY_APP_PATH"
           operation_exit=0
-          ssh -i ~/.ssh/service2_deploy \
+          ssh -F ~/.ssh/service2_deploy.conf -i ~/.ssh/service2_deploy \
             -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
             -o StrictHostKeyChecking=yes -o ConnectTimeout=20 \
             -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
@@ -460,7 +472,7 @@ jobs:
           PORT="${DEPLOY_PORT:-22}"
           printf -v REMOTE_COMMAND 'bash -s -- %q %q' "$GITHUB_SHA" "$DEPLOY_APP_PATH"
           approved_exit=0
-          ssh -i ~/.ssh/service2_deploy \
+          ssh -F ~/.ssh/service2_deploy.conf -i ~/.ssh/service2_deploy \
             -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
             -o StrictHostKeyChecking=yes -o ConnectTimeout=20 \
             -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
@@ -511,7 +523,7 @@ jobs:
           printf -v REMOTE_COMMAND \
             'set -Eeuo pipefail; cd %q; test "$(git rev-parse HEAD)" = %q; ../venv/bin/python scripts/enable_onec_diagnostic_mcp.py --marker-file ../tmp/onec-diagnostic-mcp-activated --finalize-marker' \
             "$DEPLOY_APP_PATH" "$GITHUB_SHA"
-          ssh -i ~/.ssh/service2_deploy \
+          ssh -F ~/.ssh/service2_deploy.conf -i ~/.ssh/service2_deploy \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
 
@@ -532,7 +544,7 @@ jobs:
             'set -Eeuo pipefail; cd %q; test ! -L ../tmp/service2-deploy.lock; exec 9>../tmp/service2-deploy.lock; flock -n 9; test "$(git rev-parse HEAD)" = %q; git diff --quiet HEAD -- pool_service service_site manage.py scripts; exec timeout 360 ../venv/bin/python manage.py audit_avito_readonly --connection-id 4 --account-id 446312402 --revision 15' \
             "$DEPLOY_APP_PATH" "$GITHUB_SHA"
           audit_exit=0
-          ssh -i ~/.ssh/service2_deploy \
+          ssh -F ~/.ssh/service2_deploy.conf -i ~/.ssh/service2_deploy \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
             -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND" \
@@ -559,7 +571,7 @@ jobs:
           PORT="${DEPLOY_PORT:-22}"
           printf -v REMOTE_COMMAND 'bash -s -- %q %q' "$GITHUB_SHA" "$DEPLOY_APP_PATH"
           backup_exit=0
-          ssh -i ~/.ssh/service2_deploy \
+          ssh -F ~/.ssh/service2_deploy.conf -i ~/.ssh/service2_deploy \
             -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
             -o StrictHostKeyChecking=yes -o ConnectTimeout=20 \
             -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
@@ -591,7 +603,7 @@ jobs:
           printf -v REMOTE_COMMAND 'bash -s -- %q %q %q %q' \
             "$GITHUB_SHA" "$DEPLOY_APP_PATH" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
           access_exit=0
-          ssh -i ~/.ssh/service2_deploy \
+          ssh -F ~/.ssh/service2_deploy.conf -i ~/.ssh/service2_deploy \
             -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
             -o StrictHostKeyChecking=yes -o ConnectTimeout=20 \
             -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
@@ -622,7 +634,7 @@ jobs:
           printf -v REMOTE_COMMAND 'bash -s -- %q %q %q %q' \
             "$GITHUB_SHA" "$DEPLOY_APP_PATH" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
           access_exit=0
-          ssh -i ~/.ssh/service2_deploy \
+          ssh -F ~/.ssh/service2_deploy.conf -i ~/.ssh/service2_deploy \
             -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
             -o StrictHostKeyChecking=yes -o ConnectTimeout=20 \
             -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
@@ -634,6 +646,23 @@ jobs:
             exit 2
           fi
           python3 scripts/crm_lead_intake_receipt.py "$access_temp/stdout" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+
+      - name: Close deployment SSH connection
+        if: always()
+        timeout-minutes: 1
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ -f ~/.ssh/service2_deploy.conf ]]; then
+            PORT="${DEPLOY_PORT:-22}"
+            [[ "$PORT" =~ ^[0-9]+$ ]]
+            ssh -F ~/.ssh/service2_deploy.conf -O exit \
+              -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" || true
+          fi
 
   calculator:
     name: Publish calculator to the verified informational website
