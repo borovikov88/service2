@@ -49,6 +49,12 @@ Escape waits for the existing 250ms accidental-click protection to expire.
 Both corrected scenarios pass against the real local UI; cancellation still
 asserts zero writes. No product behavior or expected persistence was relaxed.
 
+Disposable SQLite LiveServer databases use `BEGIN IMMEDIATE` so concurrent
+background lookups and a contact-creation POST do not compete to upgrade a
+deferred transaction. The configuration contract, 320 concurrent HTTP reads,
+both customer-completion browser cases and safe diagnostic capture pass locally.
+MySQL and normal application settings retain their existing transaction behavior.
+
 Publication must use the existing PR checks and protected Passenger deployment.
 The unchanged deployment path validates exact SHA and preflight, verifies a
 fresh private database backup before migrations, collects static assets and

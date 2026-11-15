@@ -29,7 +29,7 @@ class SQLiteTestConfigurationTests(SimpleTestCase):
         script = '''import json,os,stat
 from service_site import test_settings as s
 path=s.DATABASES['default'].get('TEST',{}).get('NAME')
-print(json.dumps({'path':path,'private': bool(path and stat.S_IMODE(os.stat(os.path.dirname(path)).st_mode)==0o700)}))
+print(json.dumps({'path':path,'private': bool(path and stat.S_IMODE(os.stat(os.path.dirname(path)).st_mode)==0o700),'transaction_mode':s.DATABASES['default'].get('OPTIONS',{}).get('transaction_mode')}))
 '''
         for flag in (None, *FLAGS):
             with self.subTest(flag=flag):
@@ -38,11 +38,13 @@ print(json.dumps({'path':path,'private': bool(path and stat.S_IMODE(os.stat(os.p
                 result=subprocess.run([sys.executable,'-c',script],env=env,capture_output=True,text=True,check=True,timeout=15)
                 value=json.loads(result.stdout)
                 if flag:
+                    self.assertEqual(value['transaction_mode'], 'IMMEDIATE')
                     self.assertTrue(value['private'])
                     self.assertEqual(Path(value['path']).name,'test.sqlite3')
                     self.assertFalse(Path(value['path']).parent.exists(), 'Temporary directory must be cleaned on process exit')
                 else:
                     self.assertIsNone(value['path'])
+                    self.assertIsNone(value['transaction_mode'])
 
 
 @skipUnless(getattr(settings,'SQLITE_LIVE_SERVER_TEST',False), 'Explicit local SQLite LiveServer gate')

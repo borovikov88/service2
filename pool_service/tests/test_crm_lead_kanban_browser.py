@@ -29,8 +29,10 @@ def _bounded_browser_process(command, payload, timeout=150):
     def capture_server_exception(sender, **kwargs):
         # Test-process only, synthetic fixture requests. No request payload,
         # headers, settings, frame locals or SQL parameter logging.
-        error_type, _, tb = sys.exc_info()
-        server_errors.append((error_type.__name__ if error_type else 'UnknownError') + '\n' +
+        error_type, error, tb = sys.exc_info()
+        sqlite_code = getattr(getattr(error, '__cause__', None), 'sqlite_errorcode', None)
+        code_label = f' (SQLite code {sqlite_code})' if type(sqlite_code) is int else ''
+        server_errors.append((error_type.__name__ if error_type else 'UnknownError') + code_label + '\n' +
             '\n'.join(f'{frame.filename}:{frame.lineno} in {frame.name}' for frame in traceback.extract_tb(tb, limit=-16)))
     got_request_exception.connect(capture_server_exception, weak=False)
     try:
