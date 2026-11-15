@@ -43,6 +43,12 @@ release run. Shared-workspace scenarios and commercial CRM scenarios now run in
 separate bounded steps with per-test output. Every original test module remains
 enabled, and each step retains the five-minute limit.
 
+The broader browser run also identified two outdated test interactions: closing
+a lead now explicitly selects "Завершить без создания", and a new click after
+Escape waits for the existing 250ms accidental-click protection to expire.
+Both corrected scenarios pass against the real local UI; cancellation still
+asserts zero writes. No product behavior or expected persistence was relaxed.
+
 Publication must use the existing PR checks and protected Passenger deployment.
 The unchanged deployment path validates exact SHA and preflight, verifies a
 fresh private database backup before migrations, collects static assets and

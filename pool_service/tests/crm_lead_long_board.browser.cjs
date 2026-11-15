@@ -41,6 +41,8 @@ const {readFileSync}=require('node:fs');
  }
  // Escape cancellation must not leave a visible target or write anything.
  await cards.first().scrollIntoViewIfNeeded();let b=await cards.first().boundingBox();await page.mouse.move(b.x+80,b.y+30);await page.mouse.down();await page.mouse.move(b.x+100,b.y+45,{steps:5});await zone.waitFor({state:'visible'});await page.keyboard.press('Escape');await page.mouse.up();await zone.waitFor({state:'hidden'});
+ // Finish the 250ms accidental-click suppression before a separate intentional click.
+ await page.waitForTimeout(300);assert.equal(writes,0);
  await page.getByRole('button',{name:'Спам и удалённые',exact:true}).click();
  const deleted=page.locator(`[data-lead-id="${f.deletedId}"]`);await deleted.scrollIntoViewIfNeeded();await deleted.locator('button').first().click();
  await page.getByRole('button',{name:'Создать сделку',exact:true}).click();await page.getByText('При подтверждении лид будет восстановлен и конвертирован. История удаления сохранится.').waitFor();await page.locator('#lead-close').click();
