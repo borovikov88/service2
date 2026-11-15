@@ -329,6 +329,10 @@ def decide(*, actor, organization_id, proposal_id, decision, expected_token):
         return row
     if decision == "accepted":
         if row.field == "classification":
+            # PR #479 protects the identity used as a selected CRM contact.
+            # Import now proposes type changes; enforce the same guard at the
+            # actual write boundary, before changing any company/person links.
+            client.validate_crm_contact_identity(client_type=row.after["client_type"], lock=True)
             # The comparison explicitly includes these exact source-owned links.
             # Manual or unrelated links must be resolved in the card first.
             links = list(ClientCompanyLink.objects.select_for_update().filter(Q(company=client) | Q(person=client))

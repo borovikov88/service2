@@ -261,9 +261,20 @@ class ConversionContactsTests(LeadFixture, TestCase):
         candidate = ClientImportCandidate.objects.create(organization=self.org, source_ref=source_ref,
             source_kind='legal', name='Synthetic refreshed company', status='ready', matched_client=self.client)
         result = apply_ready_candidates(self.org, candidate_ids=[candidate.pk])
-        self.assertEqual(result, {'imported': 0, 'failed': 1})
+        self.assertEqual(result, {'imported': 1, 'failed': 0})
         candidate.refresh_from_db(); self.client.refresh_from_db(); lead.refresh_from_db()
-        self.assertEqual(candidate.status, ClientImportCandidate.STATUS_REVIEW)
+        self.assertEqual(candidate.status, ClientImportCandidate.STATUS_IMPORTED)
+        from pool_service.client_crm_models import ClientImportProposal
+        from pool_service.client_import_review import decide, token
+        from pool_service.models import OrganizationAccess
+        OrganizationAccess.objects.filter(user=self.user, organization=self.org).update(role='owner')
+        self.org.paid_until=timezone.now()+timedelta(days=30);self.org.save(update_fields=['paid_until'])
+        proposal=ClientImportProposal.objects.get(candidate=candidate,field='classification')
+        with self.assertRaises(ValidationError):
+            decide(actor=self.user,organization_id=self.org.pk,proposal_id=proposal.pk,
+                decision='accepted',expected_token=token(proposal))
+        self.client.refresh_from_db(); lead.refresh_from_db(); proposal.refresh_from_db()
+        self.assertEqual(proposal.state, 'pending')
         self.assertEqual(self.client.client_type, 'private')
         self.assertEqual(lead.contact_id, self.client.pk)
         self.assertEqual(Client.objects.count(), 1)
