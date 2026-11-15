@@ -201,7 +201,7 @@ class CrmLead(CommercialModel):
     first_occurred_at = models.DateTimeField(null=True, blank=True)
     received_at = models.DateTimeField(default=timezone.now)
     status = models.CharField(max_length=16, choices=[("new", "Новый"), ("working", "В работе"), ("qualifying", "Уточнение"), ("waiting", "Ожидание"), ("deferred", "Отложен"), ("closed", "Разбор завершён")], default="new")
-    result = models.CharField(max_length=16, choices=[("", "Не определён"), ("qualified", "Квалифицирован в сделки"), ("customer_saved", "Контакты сохранены без сделки"), ("linked", "Привязан к текущей работе"), ("non_target", "Нецелевой"), ("spam", "Спам"), ("duplicate", "Дубль"), ("no_deal", "Закрыт без сделки")], blank=True, default="")
+    result = models.CharField(max_length=16, choices=[("", "Не определён"), ("qualified", "Квалифицирован в сделки"), ("customer_saved", "Контакты сохранены без сделки"), ("linked", "Привязан к текущей работе"), ("non_target", "Нецелевой"), ("spam", "Спам"), ("duplicate", "Дубль"), ("no_deal", "Закрыт без сделки"), ("lost", "Лид провален")], blank=True, default="")
     reason = models.CharField(max_length=500, blank=True)
     follow_up_at = models.DateTimeField(null=True, blank=True)
     budget_kind = models.CharField(max_length=8, choices=[("unknown", "Неизвестен"), ("exact", "Точный"), ("range", "Диапазон")], default="unknown")
@@ -227,9 +227,10 @@ class CrmLead(CommercialModel):
         constraints = [
             models.CheckConstraint(condition=Q(kind__in=["client", "tender"]), name="crm_lead_kind"),
             models.CheckConstraint(condition=Q(status__in=["new", "working", "qualifying", "waiting", "deferred", "closed"]), name="crm_lead_status"),
-            models.CheckConstraint(condition=Q(result__in=["", "qualified", "customer_saved", "linked", "non_target", "spam", "duplicate", "no_deal"]), name="crm_lead_result"),
+            models.CheckConstraint(condition=Q(result__in=["", "qualified", "customer_saved", "linked", "non_target", "spam", "duplicate", "no_deal", "lost"]), name="crm_lead_result"),
             models.CheckConstraint(condition=(Q(status="closed") & ~Q(result="")) | (~Q(status="closed") & Q(result="")), name="crm_lead_result_shape"),
             models.CheckConstraint(condition=~Q(result="no_deal") | ~Q(reason=""), name="crm_lead_no_deal_reason"),
+            models.CheckConstraint(condition=~Q(result="lost") | ~Q(reason=""), name="crm_lead_lost_reason"),
             models.CheckConstraint(condition=(~Q(status__in=["waiting", "deferred"]) | (~Q(reason="") & Q(follow_up_at__isnull=False))), name="crm_lead_follow_up"),
             models.CheckConstraint(condition=(Q(budget_kind="unknown", budget_min__isnull=True, budget_max__isnull=True) | (Q(budget_kind="exact", budget_min__isnull=False, budget_max__isnull=False, budget_min=F("budget_max")) & ~Q(currency="")) | (Q(budget_kind="range", budget_min__isnull=False, budget_max__isnull=False, budget_max__gte=F("budget_min")) & ~Q(currency=""))), name="crm_lead_budget_shape"),
             models.CheckConstraint(condition=(Q(budget_min__isnull=True) | Q(budget_min__gte=0)) & (Q(budget_max__isnull=True) | Q(budget_max__gte=0)), name="crm_lead_budget_nonnegative"),
@@ -453,8 +454,8 @@ class CrmEvent(CommercialModel):
             if not isinstance(change, dict) or set(change) != {"before", "after"}:
                 raise ValidationError("Event change requires before and after.")
             enums = {
-                "column": {"unparsed", "working", "spam", "deleted", "history"},
-                "result": {"", "qualified", "customer_saved", "linked", "non_target", "spam", "duplicate", "no_deal"},
+                "column": {"unparsed", "working", "spam", "deleted", "history", "failed"},
+                "result": {"", "qualified", "customer_saved", "linked", "non_target", "spam", "duplicate", "no_deal", "lost"},
                 "object_kind": {"none", "pool", "client_object", "planned"},
                 "fulfillment_kind": {"unknown", "construction", "service", "retail", "mixed"},
                 "amount_basis": {"unknown", "indicative", "agreed"},

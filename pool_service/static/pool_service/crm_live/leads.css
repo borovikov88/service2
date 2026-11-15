@@ -11,7 +11,7 @@
 .lead-column .lead-empty{padding:28px 8px;font-size:12px}.lead-column-pager{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:14px;font-size:12px;color:var(--crm-muted)}
 .lead-card-move{font-size:12px;color:var(--crm-blue)}.lead-card-move summary{cursor:pointer;padding:6px 0}.lead-move-options{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.lead-row .lead-move-options button{border:1px solid var(--crm-line);padding:8px;font-size:12px;background:var(--crm-soft);border-radius:6px}
 .lead-column .lead-row:focus-within{outline:2px solid var(--crm-blue)}
-@media(max-width:700px){.lead-board{grid-template-columns:repeat(5,minmax(280px,82vw));scroll-snap-type:x proximity}.lead-column{scroll-snap-align:start}.lead-move-options button{min-height:42px}.lead-column-pager button{min-width:44px;min-height:44px}}
+@media(max-width:700px){.lead-board{grid-template-columns:repeat(6,minmax(280px,82vw));scroll-snap-type:x proximity}.lead-column{scroll-snap-align:start}.lead-move-options button{min-height:42px}.lead-column-pager button{min-width:44px;min-height:44px}}
 
 .lead-pager[hidden]{display:none}
 
@@ -32,8 +32,8 @@
 .lead-modes button{border-radius:18px;padding:6px 12px;font-size:12px}
 .lead-modes button[aria-pressed=true]{color:var(--crm-blue);background:var(--crm-blue-soft);border-color:var(--crm-blue)}
 #lead-archive-toggle{margin-left:auto}
-.lead-board{grid-template-columns:repeat(3,minmax(220px,1fr));gap:12px}
-.lead-board.lead-board-all{grid-template-columns:repeat(5,minmax(220px,1fr))}
+.lead-board{grid-template-columns:repeat(4,minmax(220px,1fr));gap:12px}
+.lead-board.lead-board-all{grid-template-columns:repeat(6,minmax(220px,1fr))}
 .lead-column{border:0;border-top:3px solid #76b8e5;border-radius:7px;min-height:320px;padding:12px}
 .lead-column[data-column=working]{border-top-color:#51b5cf}
 .lead-column[data-column=history]{border-top-color:#83bf67}
@@ -69,8 +69,8 @@
 .lead-dialog .lead-cancel{margin:16px 0 0 8px}
 .lead-field input:focus-visible,.lead-field select:focus-visible,.lead-field textarea:focus-visible{outline:2px solid var(--crm-blue);outline-offset:2px}
 @media(max-width:760px){
-  .lead-board,.lead-board.lead-board-all{grid-template-columns:repeat(3,minmax(280px,82vw))}
-  .lead-board.lead-board-all{grid-template-columns:repeat(5,minmax(280px,82vw))}
+  .lead-board,.lead-board.lead-board-all{grid-template-columns:repeat(4,minmax(280px,82vw))}
+  .lead-board.lead-board-all{grid-template-columns:repeat(6,minmax(280px,82vw))}
   .lead-dialog .lead-customer-grid{grid-template-columns:minmax(0,1fr);gap:14px}
   .lead-customer-box{padding:14px}
   .lead-primary-actions>.crm-live-button{flex:1}

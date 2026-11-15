@@ -47,7 +47,7 @@ EVENTS = {"lead.create": "Лид создан", "lead.take": "Обращение
 INTAKE_REASONS = {"unassigned": "Требуется ответственный", "missed_call": "Пропущенный звонок",
     "employee_unmapped": "Принявший сотрудник не сопоставлен", "employee_ambiguous": "Неоднозначное сопоставление сотрудника",
     "employee_unavailable": "Принявший сотрудник недоступен", "needs_qualification": "Требуется квалификация"}
-COLUMNS = {"unparsed": "Не разобраны", "working": "В работе", "history": "Завершённые", "spam": "Спам", "deleted": "Удалённые"}
+COLUMNS = {"unparsed": "Не разобраны", "working": "В работе", "history": "Завершённые", "failed": "Лид провален", "spam": "Спам", "deleted": "Удалённые"}
 
 
 ROUTING_REASONS = {"unassigned", "employee_unmapped", "employee_ambiguous", "employee_unavailable"}
@@ -230,7 +230,8 @@ def _data(request, organization, *, board=None):
         predicates = {
             "unparsed": Q(is_archived=False) & ~spam & (Q(status="new") | Q(needs_review=True)),
             "working": Q(is_archived=False, needs_review=False) & ~Q(status__in=["new", "closed"]),
-            "history": Q(is_archived=False, needs_review=False, status="closed") & ~spam,
+            "history": Q(is_archived=False, needs_review=False, status="closed") & ~spam & ~Q(result="lost"),
+            "failed": Q(is_archived=False, needs_review=False, status="closed", result="lost"),
             "spam": Q(is_archived=False) & spam,
             "deleted": Q(is_archived=True),
         }

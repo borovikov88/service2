@@ -77,7 +77,7 @@
     if (!lead.can_move) return [];
     if (lead.is_archived) return lead.status === "closed" ? (lead.result === "spam" ? ["restore", "spam"] : ["restore", "unparsed"]) : ["restore", "unparsed", "working"];
     if (lead.status === "closed" && lead.result !== "spam") return lead.needs_review ? ["deleted"] : ["unparsed", "deleted"];
-    return ["unparsed", "working", ...((lead.status !== "closed") ? ["history"] : []), "spam", "deleted"].filter((key) => key !== lead.column);
+    return ["unparsed", "working", ...((lead.status !== "closed") ? ["history", "failed"] : []), "spam", "deleted"].filter((key) => key !== lead.column);
   }
   function mount(doc) {
     const root = doc.getElementById("crm-leads"); if (!root) return;
@@ -183,13 +183,20 @@
         }
       } catch (error) { errorNode(form, error); }
     }
-    const columnLabels = {unparsed: "Не разобраны", working: "В работе", history: "Завершённые", spam: "Спам", deleted: "Удалённые", restore: "Восстановить"};
-    let dragged = null;
-    const conversionDrop=el("div","lead-conversion-drop","Создать сделку");conversionDrop.hidden=true;root.append(conversionDrop);
+    const columnLabels = {unparsed: "Не разобраны", working: "В работе", history: "Завершённые", failed: "Лид провален", spam: "Спам", deleted: "Удалённые", restore: "Восстановить"};
+    let dragged = null, suppressClickUntil = 0;
+    const dragActions=el("div","crm-drag-actions");dragActions.hidden=true;root.append(dragActions);
+    const conversionDrop=el("div","lead-conversion-drop crm-drag-target","Создать сделку");
+    const failureDrop=el("div","crm-failure-drop crm-drag-target","Лид провален");
+    dragActions.append(conversionDrop,failureDrop);
+    function endDrag(){if(dragged)suppressClickUntil=Date.now()+250;dragged=null;dragActions.hidden=true;root.querySelectorAll(".is-drop-target,.is-dragging").forEach(node=>node.classList.remove("is-drop-target","is-dragging"));}
     conversionDrop.addEventListener("dragover",e=>{if(dragged?.can_qualify){e.preventDefault();e.dataTransfer.dropEffect="move";}});
-    conversionDrop.addEventListener("drop",e=>{e.preventDefault();const lead=dragged;dragged=null;conversionDrop.hidden=true;if(lead?.can_qualify)conversionDialog(lead);});
-    win.addEventListener("keydown",e=>{if(e.key==="Escape"){dragged=null;conversionDrop.hidden=true;}});
-    win.addEventListener("blur",()=>{conversionDrop.hidden=true;});
+    conversionDrop.addEventListener("drop",e=>{e.preventDefault();const lead=dragged;endDrag();if(lead?.can_qualify)conversionDialog(lead);});
+    failureDrop.addEventListener("dragover",e=>{if(dragged&&!state.loading&&moveTargets(dragged).includes("failed")){e.preventDefault();e.dataTransfer.dropEffect="move";failureDrop.classList.add("is-drop-target");}});
+    failureDrop.addEventListener("dragleave",()=>failureDrop.classList.remove("is-drop-target"));
+    failureDrop.addEventListener("drop",e=>{e.preventDefault();const lead=dragged;endDrag();if(lead&&!state.loading&&moveTargets(lead).includes("failed"))moveLead(lead,"failed");});
+    win.addEventListener("keydown",e=>{if(e.key==="Escape")endDrag();});
+    win.addEventListener("blur",endDrag);
     function sourceLine(host, source) {
       if (!source) return;
       host.append(el("p", "lead-source", [source.label, source.phone || source.contact_name].filter(Boolean).join(" · ")));
@@ -208,7 +215,7 @@
     function card(lead) {
       const row = el("article", "lead-row"); row.dataset.leadId = lead.id;
       const title = el("div", "lead-card-main"), middle = el("div", "lead-card-owner"), next = el("footer", "lead-card-task");
-      const heading = button(displayTitle(lead), () => openLead(lead.id)); heading.className = "lead-card-heading"; title.append(heading);
+      const heading = button(displayTitle(lead), () => {if(Date.now()>=suppressClickUntil)openLead(lead.id);}); heading.className = "lead-card-heading"; title.append(heading);
       if(lead.needs_review){const mark=el("span","lead-review-marker");mark.title="Есть обращение для разбора";mark.setAttribute("aria-label","Есть обращение для разбора");title.append(mark);}
       const customer = lead.client?.name || lead.source?.contact?.name || lead.source?.contact_name || lead.source?.phone;
       if (customer) title.append(el("p", "lead-card-customer", customer));
@@ -234,9 +241,9 @@
         row.draggable = !state.loading && !operations.forSubject(lead.id);
         row.addEventListener("dragstart", (event) => {
           if (!row.draggable || operations.forSubject(lead.id)) { event.preventDefault(); return; }
-          dragged = lead; conversionDrop.hidden=!lead.can_qualify; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", String(lead.id)); row.classList.add("is-dragging");
+          dragged = lead; conversionDrop.hidden=!lead.can_qualify;failureDrop.hidden=!targets.includes("failed");dragActions.hidden=conversionDrop.hidden&&failureDrop.hidden; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", String(lead.id)); row.classList.add("is-dragging");
         });
-        row.addEventListener("dragend", () => { dragged = null; conversionDrop.hidden=true; row.classList.remove("is-dragging"); root.querySelectorAll(".is-drop-target").forEach((node) => node.classList.remove("is-drop-target")); });
+        row.addEventListener("dragend", endDrag);
 
       }
       return row;
@@ -270,7 +277,7 @@
         section.append(cards);
         section.addEventListener("dragover", (event) => { if (dragged && !state.loading && moveTargets(dragged).includes(column.key)) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; section.classList.add("is-drop-target"); } });
         section.addEventListener("dragleave", (event) => { if (!section.contains(event.relatedTarget)) section.classList.remove("is-drop-target"); });
-        section.addEventListener("drop", (event) => { event.preventDefault(); section.classList.remove("is-drop-target"); const lead = dragged; dragged = null; conversionDrop.hidden=true; if (lead && !state.loading && moveTargets(lead).includes(column.key)) moveLead(lead, column.key); });
+        section.addEventListener("drop", (event) => { event.preventDefault(); const lead = dragged; endDrag(); if (lead && !state.loading && moveTargets(lead).includes(column.key)) moveLead(lead, column.key); });
         if (column.cursor) {
           section.append(el("p", "lead-column-progress", `Загружено ${column.leads.length} из ${column.total}`));
           const more = button("Показать ещё 50", () => loadList({column:column.key}));
@@ -285,7 +292,7 @@
       if (target === "history") { conversionDialog(snapshot, false, null); return; }
       if (operations.forSubject(snapshot.id)) { notice("Сначала проверьте предыдущее сохранение этой карточки."); return; }
       const sequence = ++state.detailSequence; state.selected = snapshot.id; urlState();
-      content.replaceChildren(el("h2", "", "Перемещение лида")); content.firstChild.id = "lead-dialog-title";
+      content.replaceChildren(el("h2", "", target === "failed" ? "Лид провален" : "Перемещение лида")); content.firstChild.id = "lead-dialog-title";
       if (!dialog.open) dialog.showModal();
       try {
         const data = await read(initial.urls.detail_prefix + snapshot.id + "/?org_id=" + initial.organization_id);
@@ -294,19 +301,22 @@
         if (lead.revision !== snapshot.revision || !moveTargets(lead).includes(target)) throw new Error("Карточка уже изменена или действие недоступно. Обновите канбан.");
         const free = !lead.assignee;
         const form = makeForm(content, columnLabels[target], free ? "Первое успешное сохранение закрепит свободный лид за вами." : "Перемещение сохранится после подтверждения. История и связи останутся в карточке.");
-        const ranks={unparsed:0,working:1,history:2,spam:3,deleted:4};
-        const required=["spam","deleted","restore"].includes(target)||ranks[target]<ranks[lead.column];
-        const reason = required ? field(form, "Причина перемещения", "", "textarea") : null;
+        if(target==="failed")form.parentElement.querySelector("h3").remove();
+        const ranks={unparsed:0,working:1,history:2,failed:2,spam:3,deleted:4};
+        const required=["failed","spam","deleted","restore"].includes(target)||ranks[target]<ranks[lead.column];
+        const reason = required ? field(form, target === "failed" ? "Причина провала" : "Причина перемещения", "", "textarea") : null;
         if(reason){reason.required=true;reason.maxLength=500;}
         if(target==="history")form.append(el("p","lead-form-note","Лид будет завершён без создания сделки. Открытый следующий шаг отменится; сделки, выполнение и оплата не изменятся."));
         let next = null;
         if (target === "working" && (!lead.next_action || lead.next_action.completed)) next = nextFields(form, null);
-        if (target === "spam" || target === "deleted") form.append(el("p", "lead-form-note", "Текущий незавершённый шаг будет отменён с сохранением истории."));
-        formSubmit(form, free ? "Взять на себя и переместить" : "Подтвердить перемещение", () => {
+        if (["failed","spam","deleted"].includes(target)) form.append(el("p", "lead-form-note", "Текущий незавершённый шаг будет отменён с сохранением истории."));
+        formSubmit(form, target === "failed" ? "Подтвердить провал" : free ? "Взять на себя и переместить" : "Подтвердить перемещение", () => {
           const changes = {column: target, reason: reason ? reason.value.trim() : ""}; if (next) changes.next_action = next();
-          if (["spam", "deleted", "history"].includes(target) && lead.next_action?.version && !lead.next_action.completed) changes.expected_task_version = lead.next_action.version;
+          if (["failed", "spam", "deleted", "history"].includes(target) && lead.next_action?.version && !lead.next_action.completed) changes.expected_task_version = lead.next_action.version;
           submit(form, "lead.disposition", lead, changes);
         });
+        form.append(button("Отмена",()=>{clearSelection();dialog.close();}));
+        if(reason)reason.focus();
         renderOperations();
       } catch (error) { if (sequence === state.detailSequence) content.append(el("p", "lead-error", error.message)); }
     }

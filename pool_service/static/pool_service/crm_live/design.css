@@ -1,4 +1,11 @@
 /* Leads and deals only. Shared Service2 colours, compact Bitrix-style workflow. */
+.crm-drag-actions { position: fixed; z-index: 1100; left: 50%; bottom: max(22px, env(safe-area-inset-bottom)); transform: translateX(-50%); display: flex; gap: 12px; width: min(720px, calc(100vw - 32px)); padding: 12px; border: 1px solid var(--crm-line); border-radius: 16px; background: var(--crm-panel); box-shadow: 0 12px 48px rgb(0 0 0 / 18%); }
+.crm-drag-actions[hidden], .crm-drag-actions .crm-drag-target[hidden] { display: none; }
+.crm-drag-actions .crm-drag-target { position: static; transform: none; flex: 1; min-width: 0; display: grid; place-items: center; min-height: 76px; margin: 0; padding: 18px; border: 2px dashed var(--crm-blue); border-radius: 10px; background: var(--crm-blue-soft); color: var(--crm-text); font-size: 15px; font-weight: 650; text-align: center; box-shadow: none; }
+.crm-drag-actions .crm-failure-drop { border-color: var(--crm-red); background: var(--crm-red-soft); color: var(--crm-red); }
+.crm-drag-actions .crm-failure-drop.is-drop-target { border-style: solid; outline: 3px solid var(--crm-red); outline-offset: 3px; }
+#crm-live .crm-live-lane[data-failure=true].is-drop-target, #crm-leads .lead-column[data-column=failed].is-drop-target { outline-color: var(--crm-red); background: var(--crm-red-soft); }
+@media(max-width:700px) { .crm-drag-actions { bottom: max(12px, env(safe-area-inset-bottom)); gap: 8px; padding: 8px; } .crm-drag-actions .crm-drag-target { min-height: 64px; padding: 12px 8px; font-size: 13px; white-space: normal; } }
 :is(#crm-live, #crm-leads) {
   --crm-bg: #f4f7fb;
   --crm-panel: #fff;
@@ -75,6 +82,7 @@ html[data-theme=dark] :is(#crm-live, #crm-leads) {
 #crm-live .crm-live-lane:nth-child(4) { --stage-color: var(--crm-stage-violet); border-top-color: var(--stage-color); }
 #crm-live .crm-live-lane:nth-child(5) { --stage-color: var(--crm-stage-amber); border-top-color: var(--stage-color); }
 #crm-leads .lead-column:is([data-column=spam],[data-column=deleted]) { --stage-color: #a5afbd; border-top-color: var(--stage-color); }
+#crm-live .crm-live-lane[data-failure=true], #crm-leads .lead-column[data-column=failed] { --stage-color: var(--crm-red); border-top-color: var(--stage-color); }
 #crm-live .crm-live-lane h2, #crm-leads .lead-column h2 { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 14px; font-weight: 650; line-height: 1.4; min-height: 26px; margin: 3px 3px 8px; }
 #crm-leads .lead-column h2 { margin-bottom: 18px; }
 #crm-live .crm-live-lane-count, #crm-leads .lead-column-count { display: inline-grid; place-items: center; min-width: 25px; height: 25px; padding: 0 6px; flex: none; font-size: 12px; font-weight: 600; color: var(--crm-text); background: var(--crm-panel); border: 1px solid var(--crm-line); border-radius: 8px; }

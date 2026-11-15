@@ -43,7 +43,7 @@ PREPARATORY_STAGES = {
 }
 # Manual manager progress only; never authorizes execution, payment or closure.
 from pool_service.crm_commercial_bootstrap import PROPOSED_PIPELINES
-MANUAL_STAGES = {code: tuple(key for key, _ in stages)
+MANUAL_STAGES = {code: tuple(key for key, _ in stages if key != 'failed')
     for code, _, stages in PROPOSED_PIPELINES}
 FINAL_STAGE_REASON = "Ручное завершение CRM не подтверждает выполнение работ, договорных периодов или оплату. Эти факты и задачи остаются без изменений."
 
@@ -648,8 +648,12 @@ def close_commercial_deal_negative(*, actor, organization, operation_key, subjec
             return dict(previous.result)
         if deal.revision != expected_revision:
             raise CommercialConflict("CRM revision changed; reload the card.")
-        if deal.is_archived or deal.outcome != "open" or deal.stage.code not in PREPARATORY_STAGES.get(deal.pipeline.code, ()):
-            raise ValidationError("Отказ и отмена доступны только на подготовительных этапах открытой сделки.")
+        if deal.is_archived or deal.outcome != "open" or not deal.pipeline.is_active or not deal.stage.is_active:
+            raise ValidationError("Завершить без продажи можно только открытую сделку активной воронки.")
+        failed_stage = CrmStage.objects.using(using).select_for_update().filter(
+            pipeline=deal.pipeline, code='failed', is_active=True).first() if outcome == 'lost' else None
+        if outcome == 'lost' and failed_stage is None:
+            raise ValidationError("В этой воронке недоступна стадия «Сделка провалена».")
         if (task and version_for(task) != expected_task_version) or (not task and expected_task_version is not None):
             raise CommercialConflict("Следующее действие уже изменено. Обновите карточку.")
         terminal = task and (task.is_archived or task.completed_at or task.status in {ServiceTask.STATUS_DONE, ServiceTask.STATUS_CANCELLED})
@@ -663,7 +667,10 @@ def close_commercial_deal_negative(*, actor, organization, operation_key, subjec
             ServiceTaskChange.objects.using(using).create(task=task, changed_by=actor,
                 action=ServiceTaskChange.ACTION_UPDATED, field_name="crm_deal_negative_close")
         before = deal.revision
+        previous_stage_id = deal.stage_id
         deal.outcome, deal.close_reason, deal.closed_at = outcome, reason, timezone.now()
+        if failed_stage:
+            deal.stage = failed_stage
         deal.revision += 1
         deal.save(using=using)
         command = CrmCommand.objects.using(using).create(organization=organization, operation_key=operation_key,
@@ -671,6 +678,7 @@ def close_commercial_deal_negative(*, actor, organization, operation_key, subjec
         event = CrmEvent.objects.using(using).create(organization=organization, deal=deal, command=command,
             actor=actor, event_type="deal.close_negative", reason=reason,
             safe_diff={"revision": {"before": before, "after": deal.revision},
+                "stage_id": {"before": previous_stage_id, "after": deal.stage_id},
                 "outcome": {"before": "open", "after": outcome},
                 "closed_at": {"before": None, "after": deal.closed_at.isoformat()}})
         command.result = {"deal_id": deal.pk, "revision": deal.revision, "event_id": event.pk}

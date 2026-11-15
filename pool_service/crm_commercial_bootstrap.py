@@ -1,5 +1,6 @@
 """Proposed section 7 settings. Existing names/order/activation are never reset."""
 from django.db import transaction
+from django.db.models import Max
 from pool_service.crm_commercial_models import CrmPipeline, CrmStage
 from pool_service.models import Organization
 
@@ -9,21 +10,21 @@ PROPOSED_PIPELINES = (
         ("proposal", "Готовим решение и расчёт"), ("sent", "Предложение отправлено"),
         ("agreement", "Согласование"), ("order", "Оформление заказа и старта"),
         ("execution", "Исполнение"), ("reconciliation", "Завершение и расчёты"),
-        ("completed", "Успешно завершено"))),
+        ("completed", "Успешно завершено"), ("failed", "Сделка провалена"))),
     ("service", "Обслуживание", (
         ("request", "Запрос уточнён"), ("assessment", "Оценка объекта"),
         ("proposal", "Предложение и согласование"), ("contract", "Договор заключён"),
         ("active", "Действующее обслуживание"), ("reconciliation", "Завершение и сверка"),
-        ("completed", "Успешно завершено"))),
+        ("completed", "Успешно завершено"), ("failed", "Сделка провалена"))),
     ("retail", "Розничная продажа", (
         ("need", "Потребность"), ("selection", "Подбор и наличие"),
         ("proposal", "Предложение клиенту"), ("order", "Подтверждение заказа"),
-        ("fulfillment", "Выполнение заказа и расчёты"), ("completed", "Успешно завершено"))),
+        ("fulfillment", "Выполнение заказа и расчёты"), ("completed", "Успешно завершено"), ("failed", "Сделка провалена"))),
     ("tender", "Торги", (
         ("review", "Проверяем закупку"), ("assessment", "Оцениваем условия и экономику"),
         ("preparation", "Готовим заявку"), ("submitted", "Заявка подана"),
         ("result", "Ожидаем результат"), ("contract", "Победа и оформление контракта"),
-        ("execution", "Контракт в исполнении"), ("completed", "Завершено"))),
+        ("execution", "Контракт в исполнении"), ("completed", "Завершено"), ("failed", "Сделка провалена"))),
 )
 
 
@@ -38,6 +39,9 @@ def bootstrap_commercial_settings(organization_id):
             defaults={"name": name, "position": position})
         created_pipelines += int(created)
         for stage_position, (stage_code, stage_name) in enumerate(stages):
+            if stage_code == "failed":
+                last = pipeline.stages.aggregate(last=Max("position"))["last"]
+                stage_position = last + 1 if last is not None else 0
             _, created = CrmStage.objects.get_or_create(
                 pipeline=pipeline, code=stage_code,
                 defaults={"name": stage_name, "position": stage_position})

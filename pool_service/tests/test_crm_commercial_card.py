@@ -206,7 +206,7 @@ class CommercialCardTests(PilotFixture, TestCase):
         before_version = version_for(self.task)
         saved = self.close(expected_task_version=before_version)
         self.task.refresh_from_db(); self.deal.refresh_from_db()
-        self.assertEqual((self.deal.outcome, self.deal.close_reason, self.deal.stage.code), ('lost', 'Synthetic refusal', 'need'))
+        self.assertEqual((self.deal.outcome, self.deal.close_reason, self.deal.stage.code), ('lost', 'Synthetic refusal', 'failed'))
         self.assertIsNotNone(self.deal.closed_at)
         self.assertEqual(self.task.status, ServiceTask.STATUS_CANCELLED)
         self.assertTrue(self.task.is_archived)
@@ -221,7 +221,7 @@ class CommercialCardTests(PilotFixture, TestCase):
         with self.assertRaises(ValidationError):
             self.edit({'title': 'Closed edit'})
 
-    def test_negative_close_requires_revision_task_version_reason_current_rights_and_preparatory_stage(self):
+    def test_negative_close_requires_revision_task_version_reason_current_rights_and_active_stage(self):
         self.enable_close()
         for values, exception in (({'expected_revision': 0}, CommercialConflict), ({'expected_task_version': None}, CommercialConflict),
                 ({'outcome': 'won'}, ValidationError), ({'reason': ''}, ValidationError), ({'reason': 'x'*501}, ValidationError)):
@@ -235,7 +235,8 @@ class CommercialCardTests(PilotFixture, TestCase):
         OrganizationAccess.objects.create(organization=self.org, user=stranger, role='manager')
         CrmAccess.objects.create(organization=self.org, user=stranger, transition_own_deals=True, manage_own_next_action=True)
         with self.assertRaises(PermissionDenied): self.close(actor=stranger)
-        self.deal.stage = self.pipeline.stages.get(code='completed'); self.deal.save()
+        stage = self.pipeline.stages.get(code='completed'); stage.is_active = False; stage.save()
+        self.deal.stage = stage; self.deal.save()
         with self.assertRaises(ValidationError): self.close()
         self.assertEqual((CrmEvent.objects.count(), self.task.status), (1, ServiceTask.STATUS_NEW))
 
@@ -377,7 +378,8 @@ class CommercialCardHttpTests(PilotFixture, TestCase):
         saved = self.post('deal.close_negative', close, revision=2)
         self.assertEqual(saved.status_code, 200, saved.content)
         self.assertFalse(saved.json()['deal']['can_edit'])
-        self.assertEqual(self.rows(), [])
+        self.assertEqual(self.rows('&outcome=open'), [])
+        self.assertEqual(len(self.rows()), 1)
         self.assertEqual(len(self.rows('&outcome=cancelled')), 1)
         self.assertEqual(len(self.rows('&outcome=all')), 1)
         detail = self.client.get(self.url('crm_live_detail', self.result['deal_id'])).json()
@@ -598,7 +600,7 @@ class CommercialAttentionTests(PilotFixture, TestCase):
             response = self.client.get(workspace + invalid)
             self.assertEqual(response.status_code, 200)
             boot = response.context['crm_bootstrap']
-            self.assertEqual((boot['page'], boot['outcome'], boot['attention']), (1, 'open', 'all'))
+            self.assertEqual((boot['page'], boot['outcome'], boot['attention']), (1, 'all', 'all'))
             self.assertTrue(boot['initial_notice'])
         self.assertEqual(self.client.get(workspace + '&pipeline=999999').status_code, 404)
         self.org.crm_v2_read = False; self.org.save(update_fields=['crm_v2_read'])

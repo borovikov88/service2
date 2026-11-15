@@ -281,7 +281,7 @@ class LeadWorkspaceTests(TestCase):
         self.assertNotIn(reopened.pk, [row['id'] for row in columns['history']['leads']])
         self.assertFalse(columns['history']['leads'][0]['can_transition'])
 
-    def test_five_columns_independent_pages_scoped_counts_and_menu(self):
+    def test_six_columns_independent_pages_scoped_counts_and_menu(self):
         for index in range(51):
             CrmLead.objects.create(organization=self.org, title="Free board " + str(index))
         own = self.create(title="Active board")
@@ -291,13 +291,13 @@ class LeadWorkspaceTests(TestCase):
         foreign = Organization.objects.create(name="Foreign board scope")
         CrmLead.objects.create(organization=foreign, title="Foreign hidden board")
         response = self.client.get(self.url("crm_live_lead_data")).json()
-        self.assertEqual([column["label"] for column in response["columns"]], ["Не разобраны", "В работе", "Завершённые", "Спам", "Удалённые"])
-        self.assertEqual([column["total"] for column in response["columns"]], [51, 1, 1, 1, 1])
+        self.assertEqual([column["label"] for column in response["columns"]], ["Не разобраны", "В работе", "Завершённые", "Лид провален", "Спам", "Удалённые"])
+        self.assertEqual([column["total"] for column in response["columns"]], [51, 1, 1, 0, 1, 1])
         second = self.client.get(self.url("crm_live_lead_data") + "&page_unparsed=2").json()
-        self.assertEqual([len(column["leads"]) for column in second["columns"]], [1, 1, 1, 1, 1])
+        self.assertEqual([len(column["leads"]) for column in second["columns"]], [1, 1, 1, 0, 1, 1])
         self.assertEqual(second["columns"][2]["leads"][0]["id"], done.pk)
-        self.assertEqual(second["columns"][3]["leads"][0]["id"], spam.pk)
-        self.assertEqual(second["columns"][4]["leads"][0]["id"], trash.pk)
+        self.assertEqual(second["columns"][4]["leads"][0]["id"], spam.pk)
+        self.assertEqual(second["columns"][5]["leads"][0]["id"], trash.pk)
         self.assertEqual(self.client.get(self.url("crm_live_lead_data") + "&mode=closed").json()["leads"][0]["id"], done.pk)
         html = self.client.get(self.url("crm_live_leads")).content.decode()
         self.assertNotIn("Входящие и лиды", html)

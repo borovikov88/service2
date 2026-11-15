@@ -47,6 +47,8 @@ def lead_column(lead):
         return "spam"
     if lead.status == "new" or lead.needs_review:
         return "unparsed"
+    if lead.status == "closed" and lead.result == "lost":
+        return "failed"
     return "history" if lead.status == "closed" else "working"
 
 
@@ -469,11 +471,11 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
             before, before_status = 0, None
         elif command_type == "lead.disposition":
             column = values["column"]
-            if column not in {"unparsed", "working", "history", "spam", "deleted", "restore"}:
+            if column not in {"unparsed", "working", "history", "failed", "spam", "deleted", "restore"}:
                 raise ValidationError("Укажите допустимую колонку.")
-            ranks = {"unparsed": 0, "working": 1, "history": 2, "spam": 3, "deleted": 4}
-            if (column in {"spam", "deleted", "restore"} or ranks.get(column, -1) < ranks[lead_column(lead)]) and not values.get("reason"):
-                raise ValidationError("Для перемещения назад, в спам или удалённые укажите причину.")
+            ranks = {"unparsed": 0, "working": 1, "history": 2, "failed": 2, "spam": 3, "deleted": 4}
+            if (column in {"failed", "spam", "deleted", "restore"} or ranks.get(column, -1) < ranks[lead_column(lead)]) and not values.get("reason"):
+                raise ValidationError("Для провала лида, перемещения назад, в спам или удалённые укажите причину.")
             if lead.assignee_id is None:
                 grant = CrmAccess.objects.using(using).select_for_update().get(user=actor, organization=organization)
                 if not grant.take_leads:
@@ -488,14 +490,15 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
                 lead.is_archived = False
                 if lead.status != "closed":
                     lead.needs_review = True
-            elif column == "history":
+            elif column in {"history", "failed"}:
                 if lead.is_archived or lead.status == "closed":
                     raise ValidationError("Сначала восстановите активный лид; завершённый результат сохраняется.")
                 if not _terminal(task):
                     from pool_service.services.task_feedback import version_for
                     if values.get("expected_task_version") != version_for(task):
                         raise CommercialConflict("Следующий шаг уже изменён. Обновите карточку.")
-                lead.status, lead.result, lead.follow_up_at = "closed", "no_deal", None
+                lead.status, lead.result, lead.follow_up_at = "closed", "lost" if column == "failed" else "no_deal", None
+                lead.needs_review = False
                 lead.reason = values.get("reason") or "Ручное завершение лида без создания сделки."
                 _finish_next(using, actor, lead, task)
             elif column == "deleted":

@@ -41,7 +41,7 @@ class CommercialCardBrowserTests(PilotFixture, StaticLiveServerTestCase):
         for pipeline in CrmPipeline.objects.filter(organization=self.org):
             created=self.create(operation_key='ui-pipeline-'+pipeline.code, pipeline_id=pipeline.pk,
                 title='Synthetic '+pipeline.code, card_fields={'amount':'1234567.00','currency':'RUB','amount_basis':'agreed'})
-            stages=list(pipeline.stages.order_by('position','pk'))
+            stages=list(pipeline.stages.exclude(code='failed').order_by('position','pk'))
             rows.append(dict(id=created['deal_id'],pipeline=pipeline.pk,target=stages[-2].pk,final=stages[-1].pk))
         self.client.force_login(self.user)
         fixture=dict(base=self.live_server_url,org=self.org.pk,rows=rows,

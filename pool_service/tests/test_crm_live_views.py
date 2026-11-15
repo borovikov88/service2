@@ -138,6 +138,10 @@ class LiveWorkspaceTests(TestCase):
             stages = next(p for p in data["pipelines"] if p["id"] == pipeline.pk)["stages"]
             task_count = ServiceTask.objects.count()
             for stage in stages:
+                if stage['code'] == 'failed':
+                    self.assertFalse(stage['can_transition'])
+                    self.assertTrue(stage['is_failure'])
+                    continue
                 self.assertTrue(stage["can_transition"])
                 self.assertEqual(stage["requires_manual_confirmation"], stage["code"] == "completed")
                 if stage["id"] == row["stage_id"]: continue

@@ -197,7 +197,7 @@
     }
     const state = {
       data: bootstrap, pipelineId: bootstrap.selected_pipeline_id, page: bootstrap.page || 1,
-      filters: Object.fromEntries(["outcome", "stage", "object", "specialization", "decision_from", "decision_to"].map((key) => [key, params.get(key) || (key === "outcome" ? "open" : "")])),
+      filters: Object.fromEntries(["outcome", "stage", "object", "specialization", "decision_from", "decision_to"].map((key) => [key, params.get(key) || (key === "outcome" ? "all" : "")])),
       query: params.get("q") || "", owner: params.get("owner") === "me" ? "me" : "all",
       view: params.get("view") === "table" ? "table" : "kanban",
       attention: ["today", "overdue", "missing"].includes(params.get("attention")) ? params.get("attention") : "all",
@@ -305,7 +305,7 @@
       }
       if (state.view === "table" && state.page > 1) url.searchParams.set("page", state.page); else url.searchParams.delete("page");
       for (const [key, value] of Object.entries(state.filters)) {
-        if (value && !(key === "outcome" && value === "open")) url.searchParams.set(key, value);
+        if (value && !(key === "outcome" && value === "all")) url.searchParams.set(key, value);
         else url.searchParams.delete(key);
       }
       win.history.replaceState(win.history.state, "", url);
@@ -389,7 +389,7 @@
       const pending = queue.forSubject(deal.id);
       const card = element("article", "crm-live-card" + (pending ? " is-pending" : ""));
       card.dataset.dealId = deal.id;
-      card.draggable = !table && Boolean(deal.can_transition) && !deal.is_archived && !pending;
+      card.draggable = !table && !state.loading && Boolean(deal.can_transition || deal.can_close_negative) && !deal.is_archived && !pending;
       const main = element("div", "crm-live-card-main");
       const title = element("h3");
       const open = makeButton(deal.title, "open", "crm-live-card-open");
@@ -425,7 +425,7 @@
         root.querySelector(`[data-attention="${kind}"]`).setAttribute("aria-pressed", String(state.attention === kind));
       }
       byId("crm-live-result-status").textContent = state.loading ? "Обновляем…" : (state.view === "kanban" ? "Загружено: " : "На странице: ") + filtered.length + (state.data.attention_total == null ? "" : " · по фильтру: " + state.data.attention_total);
-      byId("crm-live-linked-filters").hidden = !Object.entries(state.filters).some(([key, value]) => value && !(key === "outcome" && value === "open"));
+      byId("crm-live-linked-filters").hidden = !Object.entries(state.filters).some(([key, value]) => value && !(key === "outcome" && value === "all"));
       byId("crm-live-limit").hidden = !state.data.has_more;
       root.querySelector(".crm-live-pagination").hidden = state.view !== "table" || (!state.data.has_more && !state.data.has_previous);
       byId("crm-live-page-prev").disabled = state.loading || !state.data.has_previous;
@@ -448,7 +448,7 @@
       }
       if (!filtered.length && !(state.data.stage_totals || []).some(row => row.count > 0)) {
         const empty = element("div", "crm-live-empty");
-        const hasFilters = state.query || state.owner === "me" || state.attention !== "all" || Object.entries(state.filters).some(([key, value]) => value && !(key === "outcome" && value === "open"));
+        const hasFilters = state.query || state.owner === "me" || state.attention !== "all" || Object.entries(state.filters).some(([key, value]) => value && !(key === "outcome" && value === "all"));
         empty.append(element("h2", "", hasFilters ? "По этим условиям сделок нет" : "Первая сделка начинается с клиента"), element("p", "", hasFilters ? "Измените поисковый запрос или сбросьте фильтры." : "Выберите существующего клиента, задайте следующий шаг и срок. Сделка появится на первом этапе."));
         if (hasFilters) empty.append(makeButton("Сбросить фильтры", "reset"));
         else if (state.data.capabilities?.create) empty.append(makeButton("Создать сделку", "create", "crm-live-button crm-live-button-primary"));
@@ -466,10 +466,12 @@
         const board = element("div", "crm-live-board");
         board.setAttribute("aria-label", "Канбан: " + pipeline.name);
         for (const stage of pipeline.stages || []) {
-          const deals = filtered.filter((deal) => sameId(deal.stage_id, stage.id));
+          const deals = filtered.filter((deal) => sameId(deal.board_stage_id || deal.stage_id, stage.id));
           const lane = element("section", "crm-live-lane");
           lane.dataset.stageId = stage.id;
           lane.dataset.canTransition = String(Boolean(stage.can_transition));
+          lane.dataset.failure = String(Boolean(stage.is_failure));
+          lane.dataset.canCloseNegative = String(Boolean(stage.can_close_negative));
           const heading = element("h2");
           const totals = (state.data.stage_totals || []).filter(row => sameId(row.stage_id, stage.id));
           const count = totals.reduce((sum, row) => sum + row.count, 0);
@@ -478,8 +480,8 @@
           const known = totals.filter(row => row.amount !== null).map(row => moneyLabel(row.amount, row.currency));
           const unknown = totals.reduce((sum, row) => sum + row.unknown_count, 0);
           lane.append(element("p", "crm-live-stage-total", (known.length ? known.join(" + ") : unknown ? "Сумма неизвестна" : "0,00 ₽") + (unknown ? " · без суммы: " + unknown : "")));
-          if (!stage.can_transition) lane.append(element("p", "crm-live-lane-unavailable", stage.transition_block_reason || "Перенос в этот этап недоступен"));
-          if (!deals.length) lane.append(element("p", "crm-live-lane-empty", count > 0 ? "На этой странице нет сделок этого этапа" : stage.can_transition ? "Нет сделок на этом этапе" : ""));
+          if (!stage.can_transition && !stage.can_close_negative) lane.append(element("p", "crm-live-lane-unavailable", stage.transition_block_reason || "Перенос в этот этап недоступен"));
+          if (!deals.length) lane.append(element("p", "crm-live-lane-empty", count > 0 ? "На этой странице нет сделок этого этапа" : "Нет сделок на этом этапе"));
           else deals.forEach((deal) => lane.append(renderCard(deal, false)));
           const window = (state.data.column_windows || []).find(item => sameId(item.stage_id, stage.id));
           if (window?.has_more) {
@@ -677,7 +679,7 @@
     }
 
     function outcomeLabel(value) {
-      return ({open: "Открыта", lost: "Отказ / проигрыш", cancelled: "Отменена", won: "Успех", unknown: "Legacy: не определён"})[value] || value;
+      return ({open: "Открыта", lost: "Сделка провалена", cancelled: "Отменена", won: "Успех", unknown: "Legacy: не определён"})[value] || value;
     }
 
     function selectField(form, label, name, selected, choices) {
@@ -1109,10 +1111,10 @@
         dialogContent.append(part);
       }
       if (deal.can_close_negative) {
-        const part = disclosure("Завершить без продажи"); part.dataset.detailSection = "edit";
+        const part = disclosure("Сделка провалена / отменена"); part.dataset.detailSection = "edit";
         const form = newForm("close_negative", deal.id);
         form.append(element("p", "crm-live-form-note", "Сделка завершится, а её активный следующий шаг будет отменён. Выполненным он не станет."));
-        selectField(form, "Исход", "outcome", "lost", [["lost", "Отказ / проигрыш"], ["cancelled", "Отмена"]]);
+        selectField(form, "Исход", "outcome", "lost", [["lost", "Сделка провалена"], ["cancelled", "Отмена"]]);
         const reason = field("Причина", "textarea", "reason", "", true); reason.input.maxLength = 500;
         form.append(reason.wrapper); formFooter(form, "Зафиксировать исход"); part.append(form); dialogContent.append(part);
       }
@@ -1162,6 +1164,24 @@
         retry.dataset.dealId = id;
         dialogContent.replaceChildren(titleNode("Карточка недоступна"), element("p", "crm-live-form-error", friendlyError(error)), retry);
       }
+    }
+
+    async function failureDialog(snapshot) {
+      if (!snapshot?.can_close_negative || state.loading || queue.forSubject(snapshot.id)) return;
+      await openDetail(snapshot.id);
+      if (!dialog.open || state.drawer?.kind !== "detail" || !sameId(state.drawer.id, snapshot.id)) return;
+      const deal = state.drawer.deal;
+      if (deal.revision !== snapshot.revision || !deal.can_close_negative) {
+        notice("Сделка изменилась или завершение недоступно. Проверьте актуальную карточку.", true); return;
+      }
+      dialogContent.replaceChildren(titleNode("Сделка провалена"), element("p", "crm-live-detail-client", deal.title));
+      const form = newForm("close_negative", deal.id);
+      const outcome = element("input"); outcome.type = "hidden"; outcome.name = "outcome"; outcome.value = "lost"; form.append(outcome);
+      form.append(element("p", "crm-live-form-note", "Сделка перейдёт в проваленные после подтверждения. Активный следующий шаг будет отменён; история, контакты и документы сохранятся."));
+      const reason = field("Причина провала", "textarea", "reason", "", true); reason.input.maxLength = 500;
+      form.append(reason.wrapper); formFooter(form, "Подтвердить провал");
+      form.querySelector(".crm-live-form-footer").append(makeButton("Отмена", "close"));
+      dialogContent.append(form); openDialog("Завершение сделки"); updateFormLocks(); reason.input.focus();
     }
 
     function createDialog() {
@@ -1313,7 +1333,7 @@
         const deal = entry.response.deal;
         if (entry.payload.command_type === "deal.create") {
           state.pipelineId = deal.pipeline_id;
-          state.page = 1; state.filters.outcome = "open"; state.filters.stage = "";
+          state.page = 1; state.filters.outcome = "all"; state.filters.stage = "";
           state.query = "";
           state.attention = "all";
           byId("crm-live-search").value = "";
@@ -1476,12 +1496,12 @@
       else if (button.dataset.action === "restore-conflict") restoreConflict(button.dataset.operationKey);
       else if (button.dataset.action === "dismiss-operation") queue.dismiss(button.dataset.operationKey);
       else if (button.dataset.action === "clear-linked-filters") {
-        for (const key of Object.keys(state.filters)) state.filters[key] = key === "outcome" ? "open" : "";
+        for (const key of Object.keys(state.filters)) state.filters[key] = key === "outcome" ? "all" : "";
         state.page = 1; loadData();
       }
       else if (button.dataset.action === "reset") {
         state.query = ""; state.owner = "all"; state.attention = "all"; state.page = 1;
-        for (const key of Object.keys(state.filters)) { state.filters[key] = key === "outcome" ? "open" : ""; }
+        for (const key of Object.keys(state.filters)) { state.filters[key] = key === "outcome" ? "all" : ""; }
         byId("crm-live-search").value = ""; byId("crm-live-owner").value = "all";
         loadData();
       }
@@ -1505,19 +1525,36 @@
     byId("crm-live-owner").addEventListener("change", (event) => { state.owner = event.target.value; state.page = 1; loadData(); });
     byId("crm-live-refresh").addEventListener("click", () => loadData());
 
+    const dragActions = element("div", "crm-drag-actions"); dragActions.hidden = true;
+    const failureDrop = element("div", "crm-failure-drop crm-drag-target", "Сделка провалена");
+    dragActions.append(failureDrop); root.append(dragActions);
+    failureDrop.addEventListener("dragover", event => {
+      if (state.loading || !state.dragging || !dealFor(state.dragging.id)?.can_close_negative) return;
+      event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = "move";
+      failureDrop.classList.add("is-drop-target");
+    });
+    failureDrop.addEventListener("dragleave", () => failureDrop.classList.remove("is-drop-target"));
+    failureDrop.addEventListener("drop", event => {
+      event.preventDefault(); event.stopPropagation(); const dragging = state.dragging; endDrag();
+      const deal = dragging && dealFor(dragging.id);
+      if (deal?.revision === dragging?.revision) failureDialog(deal);
+    });
     root.addEventListener("dragstart", (event) => {
       const card = event.target.closest(".crm-live-card[draggable=true]");
       if (!card || !event.dataTransfer) return;
       const deal = dealFor(card.dataset.dealId);
-      if (!deal || queue.forSubject(deal.id)) { event.preventDefault(); return; }
+      if (!deal || state.loading || isClosed(deal) || queue.forSubject(deal.id)) { event.preventDefault(); return; }
       state.dragging = {id: deal.id, revision: deal.revision};
+      dragActions.hidden = !deal.can_close_negative;
       event.dataTransfer.effectAllowed = "move";
       event.dataTransfer.setData("application/x-service2-crm-deal", String(deal.id));
       card.classList.add("is-dragging");
     });
     root.addEventListener("dragover", (event) => {
       const lane = event.target.closest(".crm-live-lane");
-      if (!lane || !state.dragging || lane.dataset.canTransition !== "true") return;
+      if (!lane || state.loading || !state.dragging) return;
+      const deal = dealFor(state.dragging.id);
+      if (lane.dataset.failure === "true" ? !(lane.dataset.canCloseNegative === "true" && deal?.can_close_negative) : !(lane.dataset.canTransition === "true" && deal?.can_transition)) return;
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
       root.querySelectorAll(".is-drop-target").forEach((item) => { if (item !== lane) item.classList.remove("is-drop-target"); });
@@ -1530,9 +1567,12 @@
     function endDrag() {
       root.querySelectorAll(".is-drop-target,.is-dragging").forEach((item) => item.classList.remove("is-drop-target", "is-dragging"));
       state.dragging = null;
+      dragActions.hidden = true;
       state.suppressClickUntil = Date.now() + 250;
     }
     root.addEventListener("dragend", endDrag);
+    win.addEventListener("blur", endDrag);
+    win.addEventListener("keydown", event => { if (event.key === "Escape") endDrag(); });
     root.addEventListener("drop", async (event) => {
       const lane = event.target.closest(".crm-live-lane");
       const dragging = state.dragging;
@@ -1543,6 +1583,10 @@
         const deal = dealFor(dragging.id);
         if (!deal || deal.revision !== dragging.revision) throw new Error("Сделка изменилась во время переноса. Обновите данные и повторите действие.");
         if (queue.forSubject(deal.id)) throw new Error("Сначала проверьте результат предыдущего сохранения этой сделки.");
+        if (lane.dataset.failure === "true") {
+          if (lane.dataset.canCloseNegative === "true") await failureDialog(deal);
+          return;
+        }
         const intent = transitionIntent(deal, lane.dataset.stageId, pipelineFor(deal.pipeline_id));
         if (!intent) return;
         if (intent.needsReason || intent.manualCompletion) transitionDialog(deal, intent);
@@ -1563,7 +1607,7 @@
       state.attention = ["today", "overdue", "missing"].includes(current.get("attention")) ? current.get("attention") : "all";
       state.view = current.get("view") === "table" ? "table" : "kanban";
       state.pipelineId = current.get("pipeline") || state.pipelineId;
-      for (const key of Object.keys(state.filters)) { state.filters[key] = current.get(key) || (key === "outcome" ? "open" : ""); }
+      for (const key of Object.keys(state.filters)) { state.filters[key] = current.get(key) || (key === "outcome" ? "all" : ""); }
       byId("crm-live-search").value = state.query;
       byId("crm-live-owner").value = state.owner;
       const linked = current.get("deal");

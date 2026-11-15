@@ -229,13 +229,16 @@ def finance_projection(deal, actor, organization, *, now=None):
         base.update(state='review', reason='Валюта заказа не сопоставлена. Проценты рассчитаны в валюте заказа; автозавершение приостановлено.')
     elif order.blockers or not order.realization_complete or not order.payment_complete:
         base.update(state='review', reason='Часть документов требует сверки. Неподтверждённый показатель не рассчитывается.')
+    elif deal.outcome in {'lost', 'cancelled'}:
+        base['reason'] = 'Сделка завершена без продажи. Связь с заказом и подтверждённые документы 1С сохранены.'
     elif base['recurring']:
         base['reason'] = 'Постоянное обслуживание остаётся открытым после выполнения и оплаты заказа.'
     elif link.completed_automatically:
         base['reason'] = 'Сделка автоматически завершена по подтверждённым реализации и оплате заказа.'
     else:
         base['reason'] = 'Разовая сделка завершится автоматически после полной реализации и оплаты заказа.'
-    base['auto_complete'] = bool(not base['recurring'] and order.currency and not order.blockers
+    base['auto_complete'] = bool(deal.outcome == 'open' and not deal.is_archived
+        and not base['recurring'] and order.currency and not order.blockers
         and order.realization_complete and order.payment_complete)
     return base
 
