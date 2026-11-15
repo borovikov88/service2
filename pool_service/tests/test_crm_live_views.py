@@ -128,7 +128,8 @@ class LiveWorkspaceTests(TestCase):
         Client.objects.create(organization=foreign, name="Synthetic foreign identity")
         self.assertEqual(self.client.get(self.url("crm_live_clients") + "&q=Sy").json(), {"clients": []})
         rows = self.client.get(self.url("crm_live_clients") + "&q=Synthetic").json()["clients"]
-        self.assertEqual(rows, [{"id": self.customer.pk, "name": self.customer.name}])
+        self.assertEqual(rows, [{"id": self.customer.pk, "name": self.customer.name,
+            "client_type": self.customer.client_type, "phone": "", "email": "", "categories": []}])
 
     def test_all_pipeline_manual_stages_are_exposed_and_writes_preserve_tasks(self):
         for pipeline in CrmPipeline.objects.filter(organization=self.org):

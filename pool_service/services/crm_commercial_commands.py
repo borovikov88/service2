@@ -448,10 +448,18 @@ def _record_pilot_command(using, *, actor, deal, operation_key, digest, command_
     return dict(command.result)
 
 
-def create_commercial_deal(*, actor, organization, operation_key, client_id, pipeline_id, title, next_action, card_fields=None, source_context=None):
+def create_commercial_deal(*, actor, organization, operation_key, pipeline_id, title, next_action, client_id=None, customer=None, card_fields=None, source_context=None):
     """Create an own preparatory deal and its first real task, or replay it."""
     from pool_service.client_queries import active_clients
-    _positive_id(client_id)
+    from .crm_conversion_contacts import normalize_customer, resolve_conversion_customer
+    if customer is None:
+        _positive_id(client_id)
+        identity = {"client_id": client_id}
+    else:
+        if client_id is not None or source_context is not None:
+            raise ValidationError("Выберите один способ указания клиента сделки.")
+        customer = normalize_customer(customer)
+        identity = {"customer": customer}
     _positive_id(pipeline_id)
     title = _normalize("deal.edit", {"title": title})["title"]
     values = _next_action_values(next_action)
@@ -469,7 +477,7 @@ def create_commercial_deal(*, actor, organization, operation_key, client_id, pip
             raise PermissionDenied('Source client/object mismatch.')
         context_fields = {'source_context': source_context.payload}
     actor_id, organization_id, digest = _pilot_payload(actor=actor, organization=organization,
-        operation_key=operation_key, command_type="deal.create", client_id=client_id,
+        operation_key=operation_key, command_type="deal.create", **identity,
         pipeline_id=pipeline_id, title=title, next_action=values, **({"card_fields": card_fields} if card_fields else {}), **context_fields)
     using = router.db_for_write(CrmCommand)
     with transaction.atomic(using=using):
@@ -481,18 +489,26 @@ def create_commercial_deal(*, actor, organization, operation_key, client_id, pip
         actor = _authorize(using, actor_id, organization, ("create_own_deals", "manage_own_next_action"))
         if previous:
             return _replay_pilot(using, previous, actor, organization_id, digest, "deal.create", tasks)
-        client = active_clients(Client.objects.using(using).select_for_update()).filter(
-            pk=client_id, organization_id=organization_id).first()
         pipeline = CrmPipeline.objects.using(using).select_for_update().filter(pk=pipeline_id, organization_id=organization_id).first()
-        if not client or not pipeline:
+        if not pipeline:
             raise PermissionDenied("Клиент или воронка недоступны в этой организации.")
         order = PREPARATORY_STAGES.get(pipeline.code, ())
         stage = CrmStage.objects.using(using).select_for_update().filter(
             pipeline=pipeline, code=order[0] if order else "", is_active=True).first()
         if not pipeline.is_active or not stage:
             raise ValidationError("Начальный этап этой воронки недоступен.")
+        contact = None
+        if customer is not None:
+            # The existing organization mutex and command transaction cover
+            # identities, their link, the deal and its first task together.
+            client, contact = resolve_conversion_customer(using, actor, organization, customer)
+        else:
+            client = active_clients(Client.objects.using(using).select_for_update()).filter(
+                pk=client_id, organization_id=organization_id).first()
+            if not client:
+                raise PermissionDenied("Клиент или воронка недоступны в этой организации.")
         deal = CrmDeal(organization=organization, pipeline=pipeline, stage=stage,
-            client=client, manager=actor, title=title, revision=1)
+            client=client, contact=contact, manager=actor, title=title, revision=1)
         _set_card_fields(deal, card_fields, {})
         from .crm_deal_objects import validate_deal_object
         validate_deal_object(using, actor, deal)

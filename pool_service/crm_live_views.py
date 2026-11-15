@@ -362,6 +362,8 @@ def _workspace_data(request, organization, *, board=None):
 
     return {
         "organization_id": organization.pk, "organization_name": organization.name, "actor_id": request.user.pk,
+        "can_categorize_contacts": not request.user.is_superuser and OrganizationAccess.objects.filter(
+            organization=organization, user=request.user, role__in=("owner", "admin")).exists(),
         "capabilities": {"create": _write_capability(grant, organization, "create_own_deals")
             and _write_capability(grant, organization, "manage_own_next_action") and bool(pipelines)},
         "pipelines": [{"id": pipeline.pk, "code": pipeline.code, "name": pipeline.name,
@@ -482,12 +484,22 @@ def clients(request):
     if not _write_capability(_grant(request.user, organization), organization, "create_own_deals"):
         raise PermissionDenied
     query = request.GET.get("q", "").strip()[:200]
+    kind = request.GET.get("kind", "")
+    if kind not in {"", "private", "legal"}:
+        raise ValidationError("Выберите контакт или компанию.")
     if len(query) < 3:
         return JsonResponse({"clients": []})
-    rows = active_clients(Client.objects.filter(organization=organization)).filter(
-        Q(name__icontains=query) | Q(phone__icontains=query),
-    ).order_by("name", "pk")[:20]
-    return JsonResponse({"clients": [{"id": client.pk, "name": client.name} for client in rows]})
+    from .client_queries import readable_clients
+    from .client_crm_models import ClientBusinessRole
+    from .contact_directory import search_contacts
+    queryset = readable_clients(request.user).filter(organization=organization)
+    if kind:
+        queryset = queryset.filter(client_type=kind)
+    rows = search_contacts(queryset, request.user, query).prefetch_related("business_roles").order_by("name", "pk")[:20]
+    return JsonResponse({"clients": [{"id": client.pk, "name": client.name,
+        "client_type": client.client_type, "phone": client.phone or "", "email": client.email or "",
+        "categories": [role.role for role in client.business_roles.all()
+            if role.active and role.role in dict(ClientBusinessRole.ROLE_CHOICES)]} for client in rows]})
 
 
 @_api
@@ -564,7 +576,10 @@ def command(request):
         raise ValidationError("Некорректная команда.")
     common = {"actor": request.user, "organization": organization, "operation_key": payload["operation_key"]}
     if kind == "deal.create":
-        if not {"title", "client_id", "pipeline_id", "next_action"} <= changes.keys() or not changes.keys() <= {"title", "client_id", "pipeline_id", "next_action", "card_fields"} or payload.get("subject_id") is not None or payload.get("expected_revision") is not None:
+        if (not {"title", "pipeline_id", "next_action"} <= changes.keys()
+                or len({"client_id", "customer"} & changes.keys()) != 1
+                or not changes.keys() <= {"title", "client_id", "customer", "pipeline_id", "next_action", "card_fields"}
+                or payload.get("subject_id") is not None or payload.get("expected_revision") is not None):
             raise ValidationError("Укажите клиента, название, воронку и следующее действие с датой.")
         result = create_commercial_deal(**common, **changes)
     elif kind == "deal.next_action":

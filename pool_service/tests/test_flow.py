@@ -69,24 +69,21 @@ class PoolServiceFlowTests(TestCase):
         self.http.login(username="orgadmin", password="pass")
         client_create_url = reverse("client_create")
         clients_list_url = reverse("clients_list")
-        pool_list_url = reverse("pool_list")
 
         listing = self.http.get(clients_list_url)
-        self.assertEqual(
-            listing.context["page_action_url"],
-            f"{client_create_url}?return_to=clients_list",
-        )
+        self.assertTrue(listing.context["can_create_contact"])
+        self.assertIsNone(listing.context["page_action_url"])
 
         form = self.http.get(client_create_url, {"return_to": "clients_list"})
         self.assertEqual(form.context["return_url"], clients_list_url)
-        self.assertContains(form, 'name="return_to" value="clients_list"')
+        self.assertEqual(form.context["contact_create_bootstrap"]["return_token"], "clients_list")
         self.assertContains(form, f'href="{clients_list_url}"')
 
         saved = self.http.post(
             client_create_url,
             {**self.client_create_payload(), "return_to": "clients_list"},
         )
-        self.assertRedirects(saved, pool_list_url, fetch_redirect_response=False)
+        self.assertRedirects(saved, clients_list_url, fetch_redirect_response=False)
 
     def test_pool_create_client_link_and_return_context(self):
         self.http.login(username="orgadmin", password="pass")
@@ -98,7 +95,7 @@ class PoolServiceFlowTests(TestCase):
 
         form = self.http.get(client_create_url, {"return_to": "pool_create"})
         self.assertEqual(form.context["return_url"], pool_create_url)
-        self.assertContains(form, 'name="return_to" value="pool_create"')
+        self.assertEqual(form.context["contact_create_bootstrap"]["return_token"], "pool_create")
         self.assertContains(form, f'href="{pool_create_url}"')
 
         invalid = self.http.post(
@@ -106,7 +103,7 @@ class PoolServiceFlowTests(TestCase):
             {"client_type": "private", "first_name": "", "return_to": "pool_create"},
         )
         self.assertEqual(invalid.status_code, 200)
-        self.assertContains(invalid, 'name="return_to" value="pool_create"')
+        self.assertEqual(invalid.context["contact_create_bootstrap"]["return_token"], "pool_create")
         self.assertContains(invalid, f'href="{pool_create_url}"')
 
         saved = self.http.post(
@@ -124,7 +121,6 @@ class PoolServiceFlowTests(TestCase):
         self.http.login(username="orgadmin", password="pass")
         client_create_url = reverse("client_create")
         clients_list_url = reverse("clients_list")
-        pool_list_url = reverse("pool_list")
 
         for query in (
             {"next": "/pools/create/"},
@@ -150,19 +146,19 @@ class PoolServiceFlowTests(TestCase):
             client_create_url,
             {**self.client_create_payload(first_name="Олег", last_name="Петров"), "next": "/pools/create/"},
         )
-        self.assertRedirects(legacy, pool_list_url, fetch_redirect_response=False)
+        self.assertRedirects(legacy, clients_list_url, fetch_redirect_response=False)
 
         forged = self.http.post(
             client_create_url,
-            {**self.client_create_payload(first_name="Максим", last_name="Котов"), "return_to": "https://example.invalid/"},
+            {**self.client_create_payload(first_name="Максим", last_name="Котов"), "phone": "+7 902 333 2212", "email": "second@example.invalid", "return_to": "https://example.invalid/"},
         )
-        self.assertRedirects(forged, pool_list_url, fetch_redirect_response=False)
+        self.assertRedirects(forged, clients_list_url, fetch_redirect_response=False)
 
         direct = self.http.post(
             client_create_url,
-            self.client_create_payload(first_name="Роман", last_name="Иванов"),
+            {**self.client_create_payload(first_name="Роман", last_name="Иванов"), "phone": "+7 902 333 2213", "email": "third@example.invalid"},
         )
-        self.assertRedirects(direct, pool_list_url, fetch_redirect_response=False)
+        self.assertRedirects(direct, clients_list_url, fetch_redirect_response=False)
 
     def test_client_create_keeps_existing_access_guard(self):
         self.http.login(username="clientuser", password="pass")

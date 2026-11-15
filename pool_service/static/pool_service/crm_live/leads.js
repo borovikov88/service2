@@ -447,28 +447,13 @@
       const title=field(fields,"Название сделки",lead.title,"text",true);title.required=true;title.maxLength=255;
       const pipeline=select(fields,"Воронка",initial.pipelines.map(p=>[String(p.id),p.name]),String(initial.pipelines.find(p=>p.code===lead.direction)?.id || initial.pipelines[0]?.id || ""));pipeline.required=true;
       const need=additional?null:field(fields,"Потребность",lead.need||"","textarea",true);if(need){need.required=true;need.maxLength=10000;need.readOnly=!lead.can_edit_conversion_need;if(!lead.can_edit_conversion_need&&!lead.need)form.append(el("p","lead-error","Для уточнения потребности требуется право редактирования лида."));}
-      const customerSection=el("section","lead-conversion-section lead-conversion-customer"),customer=el("div","lead-customer-grid");customerSection.append(stepHeading("2","Контакт и компания"),customer);form.append(customerSection);
-      const contactBox=el("fieldset","lead-customer-box"), companyBox=el("fieldset","lead-customer-box");
-      contactBox.append(el("legend","","Контакт"));companyBox.append(el("legend","","Компания"));customer.append(contactBox,companyBox);
+      const customerSection=el("section","lead-conversion-section lead-conversion-customer");customerSection.append(stepHeading("2","Контакт и компания"));form.append(customerSection);
       const savedContact=lead.contact || (lead.client?.client_type==="private" ? lead.client : null);
       const savedCompany=lead.company || (lead.client?.client_type==="legal" ? lead.client : null);
-      const mode=select(contactBox,"Контакт",[["existing","Выбрать существующий"],["new","Создать контакт"],["none","Без контактного лица"]],savedContact?"existing":lead.source?.phone||lead.source?.contact_name?"new":"existing");
-      const contact=picker(contactBox,"Найти контакт",initial.urls.clients,"clients",savedContact,()=>"private");
-      const fresh=el("div","lead-fields");contactBox.append(fresh);
-      const person=field(fresh,"Имя контакта",lead.source?.contact_name || "","text",true), phone=field(fresh,"Телефон",lead.source?.phone || "","tel"), email=field(fresh,"Email",savedContact?.email || "","email");
-      person.maxLength=255;person.required=true;phone.maxLength=20;email.maxLength=254;
-      const category=select(fresh,"Категория контакта",[["","Клиент"],["personal","Личный"],["internal","Внутренний"],["landlord","Арендодатель"],["supplier","Поставщик"],["partner","Партнёр"],["other","Другой"]]);
-      category.parentElement.hidden=!initial.can_categorize_contacts;
-      const categoryNote=el("p","lead-form-note wide","Категория не меняет доступ к контакту.");fresh.append(categoryNote);
-      category.addEventListener("change",()=>{categoryNote.hidden=category.value!=="personal";});categoryNote.hidden=true;
-      const companyMode=select(companyBox,"Компания",[["none","Без компании"],["existing","Выбрать существующую"],["new","Создать компанию"]],savedCompany?"existing":"none");
-      const company=picker(companyBox,"Найти компанию",initial.urls.clients,"clients",savedCompany,()=>"legal");
-      const freshCompany=el("div","lead-fields");companyBox.append(freshCompany);
-      const companyName=field(freshCompany,"Название компании","","text",true),inn=field(freshCompany,"ИНН","","text",true);companyName.maxLength=255;companyName.required=true;inn.maxLength=20;
-      const companyHint=el("p","lead-form-note","Для частного клиента достаточно контакта.");companyBox.append(companyHint);
+      const customerEditor=win.Service2CustomerEditor.mount(customerSection, {lookupUrl:initial.urls.clients,organizationId:initial.organization_id,canCategorize:initial.can_categorize_contacts,
+        contact:savedContact || {name:lead.source?.contact_name || "",phone:lead.source?.phone || ""},company:savedCompany,
+        contactMode:lead.source?.phone||lead.source?.contact_name?"new":"existing"});
       const toggleFields=(container,visible)=>{container.hidden=!visible;container.querySelectorAll("input,select,textarea").forEach(input=>{input.disabled=!visible;});};
-      const updateCustomer=()=>{toggleFields(contact.element,mode.value==="existing");toggleFields(fresh,mode.value==="new");toggleFields(company.element,companyMode.value==="existing");toggleFields(freshCompany,companyMode.value==="new");companyHint.hidden=companyMode.value!=="none";};
-      mode.addEventListener("change",updateCustomer);companyMode.addEventListener("change",updateCustomer);updateCustomer();
       const transferable=!additional&&lead.next_action&&!lead.next_action.completed&&!lead.next_action.restricted&&!lead.next_action.waiting;
       const nextSection=el("section","lead-conversion-section lead-conversion-next");nextSection.append(stepHeading("3","Следующее действие"));form.append(nextSection);
       const reuse=transferable?field(nextSection,"Сохранить открытый следующий шаг","","checkbox"):null;if(reuse){reuse.checked=true;reuse.parentElement.classList.add("lead-checkbox");}
@@ -477,10 +462,7 @@
       const toggle=()=>{toggleFields(nextHost,!reuse?.checked);if(transferred)transferred.hidden=!reuse?.checked;};if(reuse)reuse.addEventListener("change",toggle);toggle();
       formSubmit(form,"Подтвердить создание сделки",()=>{
         const row={title:title.value.trim(),pipeline_id:Number(pipeline.value),next_action:reuse?.checked?{title:lead.next_action.title,due_at:lead.next_action.due_at}:next()};
-        if(mode.value==="existing"&&!contact.value())throw new Error("Выберите контакт из результатов поиска или создайте новый.");
-        if(companyMode.value==="existing"&&!company.value())throw new Error("Выберите компанию из результатов поиска или создайте новую.");
-        if(mode.value==="none"&&companyMode.value==="none")throw new Error("Для сделки нужен контакт или компания.");
-        row.customer={contact:mode.value==="none"?null:mode.value==="existing"?{id:contact.value()}:{name:person.value.trim(),phone:phone.value.trim(),email:email.value.trim(),category:initial.can_categorize_contacts?category.value:""},company:companyMode.value==="none"?null:companyMode.value==="existing"?{id:company.value()}:{name:companyName.value.trim(),inn:inn.value.trim()}};
+        row.customer=customerEditor.value();
         const changes={deals:[row]};if(need)changes.need=need.value.trim();if(reuse?.checked){row.reuse_next_action=true;changes.expected_task_version=lead.next_action.version;}
         submit(form,additional?"lead.add_deal":"lead.qualify",lead,changes);
       });

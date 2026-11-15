@@ -88,6 +88,7 @@ from . import crm_live_views, crm_pilot_views, crm_lead_views, crm_object_need_v
 from .estimate_views import estimate_page, estimate_api, estimate_print, estimate_document
 from .client_crm_views import client_detail, client_merge_index, client_merge_search, client_onec_import
 from .client_crm_ui import client_edit
+from .contact_creation import lookup as contact_create_lookup
 from .security_views import (
     security_lock,
     security_pin_disable,
@@ -564,6 +565,7 @@ urlpatterns = [
     path("development/tasks/<int:task_id>/update/", development_task_update, name="development_task_update"),
     path("development/tasks/<int:task_id>/iterations/new/", development_iteration_create, name="development_iteration_create"),
     path("clients/create/", client_create, name="client_create"),
+    path("clients/create/lookup/", contact_create_lookup, name="contact_create_lookup"),
     path("clients/<int:client_id>/edit/", client_edit, name="client_edit"),
     path("clients/<int:client_id>/delete/", client_delete, name="client_delete"),
 ]

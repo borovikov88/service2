@@ -3,13 +3,24 @@
 
 {% block title %}Контакты{% endblock %}
 
+{% block extra_head %}
+<link rel="stylesheet" href="{% static 'pool_service/customer_editor.css' %}?v=20261115-unified">
+<script src="{% static 'pool_service/customer_editor.js' %}?v=20261115-unified" defer></script>
+<script src="{% static 'pool_service/contact_creation.js' %}?v=20261115-unified" defer></script>
+{% endblock %}
+
 {% block content %}
 {% include "pool_service/_admin_workspace_styles.html" %}
 <div class="admin-desktop">
-<div class="admin-card card card-soft p-4" id="contacts-directory" aria-busy="false">
+<div class="admin-card card card-soft p-4" id="contacts-directory" aria-busy="false" data-contact-create-url="{% url 'client_create' %}">
+<div hidden>{% csrf_token %}</div>
 <div class="alert alert-danger" id="contacts-error" hidden role="alert">Не удалось загрузить контакты. <button type="button" class="btn btn-sm btn-outline-danger" id="contacts-retry">Повторить</button></div>
   <div class="admin-page-header d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
     <h4 class="fw-bold mb-0">Контакты</h4>
+    {% if can_create_contact %}<div class="d-flex gap-2 flex-wrap">
+      <a class="btn btn-primary" data-no-loading href="{% url 'client_create' %}?return_to=clients_list&amp;initial_kind=contact">Создать контакт</a>
+      <a class="btn btn-outline-primary" data-no-loading href="{% url 'client_create' %}?return_to=clients_list&amp;initial_kind=company">Создать компанию</a>
+    </div>{% endif %}
     {% if is_org_admin or user.is_superuser %}
       <div class="d-flex gap-2 ms-auto">
         <a class="btn btn-outline-primary btn-sm" href="{% url "client_onec_import" %}"><i class="bi bi-database-down me-1"></i>Импорт из 1С</a>

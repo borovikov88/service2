@@ -1,51 +1,48 @@
 {% extends "pool_service/base.html" %}
-{% load crm_phone_fields %}
-{% block title %}Создать клиента из звонка{% endblock %}
+{% load static %}
+{% block title %}Контакт из звонка{% endblock %}
+{% block extra_head %}
+<link rel="stylesheet" href="{% static 'pool_service/customer_editor.css' %}?v=20261115-unified">
+<script src="{% static 'pool_service/customer_editor.js' %}?v=20261115-unified" defer></script>
+<script src="{% static 'pool_service/call_customer_editor.js' %}?v=20261115-unified" defer></script>
+{% endblock %}
 {% block content %}
-{% include "pool_service/_admin_workspace_styles.html" %}
-<div class="admin-desktop">
-  <div class="admin-card card card-soft p-4">
-    <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
-      <div><h4 class="fw-bold mb-1">Создать клиента из звонка</h4><div class="text-muted">{{ phone_display }} · {{ call.started_at|date:"d.m.Y H:i" }}</div></div>
-      <a class="btn btn-outline-secondary" href="{{ return_url }}">Назад к звонкам</a>
-    </div>
-    {% if existing_matches %}
-      <div class="alert alert-info">Этот номер уже есть в CRM. Выберите существующую карточку; дубликат не создан.</div>
-      <div class="list-group mb-3">
-        {% for customer in existing_matches %}<a class="list-group-item list-group-item-action" href="{% url 'client_detail' customer.pk %}">{{ customer.name }}</a>{% endfor %}
-      </div>
-    {% else %}
-      <nav class="nav nav-pills gap-2 mb-4" aria-label="Тип создаваемого клиента">
-        <a class="nav-link {% if client_type == 'private' %}active{% endif %}" href="{{ person_url }}">Физическое лицо</a>
-        <a class="nav-link {% if client_type == 'legal' %}active{% endif %}" href="{{ company_url }}">Компания</a>
-      </nav>
-      <form method="post">
-        {% csrf_token %}
-        <input type="hidden" name="client_type" value="{{ client_type }}">
-        <input type="hidden" name="back" value="{{ back }}">
-        {{ client_form.non_field_errors }}{{ profile_form.non_field_errors }}
-        <div class="row g-4">
-          <section class="col-12 col-xl-6"><div class="border rounded-3 p-3 h-100">
-            <h6 class="fw-bold mb-3">Основные сведения</h6>
-            {% for field in client_form %}
-              <div class="mb-3">
-                <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}{% if field.field.required %} *{% endif %}</label>
-                {% if field.name == 'phone' %}{% crm_phone_input field %}<div class="form-text">Номер взят из звонка и не изменяется в этой форме.</div>{% else %}{{ field }}{% endif %}
-                {% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
-                {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
-              </div>
-            {% endfor %}
-          </div></section>
-          <section class="col-12 col-xl-6"><div class="border rounded-3 p-3 h-100">
-            <h6 class="fw-bold mb-3">Дополнительные сведения</h6>
-            {% for field in profile_form %}
-              <div class="mb-3"><label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}</div>
-            {% endfor %}
-          </div></section>
+<div class="contact-create-shell">
+  <h1>{% if client_type == 'legal' %}Новая компания{% else %}Новый контакт{% endif %}</h1>
+  <p class="contact-create-intro">Из звонка {{ phone_display }} · {{ call.started_at|date:"d.m.Y H:i" }}</p>
+  {% if existing_matches %}
+    <div class="alert alert-info">Этот номер уже есть в CRM. Выберите существующую карточку; дубликат не создан.</div>
+    <div class="list-group mb-3">{% for customer in existing_matches %}<a class="list-group-item list-group-item-action" href="{% url 'client_detail' customer.pk %}">{{ customer.name }}</a>{% endfor %}</div>
+    <a class="customer-button" href="{{ return_url }}">Назад к звонкам</a>
+  {% else %}
+    <nav class="d-flex gap-2 mb-3" aria-label="Тип создаваемого клиента">
+      <a class="customer-button {% if client_type == 'private' %}customer-button-primary{% endif %}" href="{{ person_url }}">Контакт</a>
+      <a class="customer-button {% if client_type == 'legal' %}customer-button-primary{% endif %}" href="{{ company_url }}">Компания</a>
+    </nav>
+    <form method="post" id="call-contact-create">
+      {% csrf_token %}
+      <input type="hidden" name="client_type" value="{{ client_type }}">
+      <input type="hidden" name="back" value="{{ back }}">
+      <input type="hidden" name="name" value="{{ client_form.name.value|default_if_none:'' }}">
+      <input type="hidden" name="phone" data-crm-phone value="{{ client_form.phone.value|default_if_none:'' }}">
+      <input type="hidden" name="email" value="{{ client_form.email.value|default_if_none:'' }}">
+      <input type="hidden" name="inn" value="{{ client_form.inn.value|default_if_none:'' }}">
+      {% if client_form.errors or profile_form.non_field_errors %}<div class="contact-create-error" role="alert">{{ client_form.errors }}{{ profile_form.non_field_errors }}</div>{% endif %}
+      <div class="contact-create-error" id="call-customer-error" role="alert" hidden></div>
+      <div id="call-customer-editor"></div>
+      <details class="customer-extra" {% if profile_form.errors %}open{% endif %}>
+        <summary>Дополнительные сведения</summary>
+        <div class="row g-3">
+          {% for field in client_form %}{% if field.name != 'name' and field.name != 'phone' and field.name != 'email' and field.name != 'inn' %}
+            <div class="col-md-6"><label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}</div>
+          {% endif %}{% endfor %}
+          {% for field in profile_form %}<div class="col-md-6"><label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}</div>{% endfor %}
         </div>
-        <div class="d-flex gap-2 mt-4"><button class="btn btn-primary" type="submit">Создать и вернуться к звонкам</button><a class="btn btn-outline-secondary" href="{{ return_url }}">Отмена</a></div>
-      </form>
-    {% endif %}
-  </div>
+      </details>
+      <div class="contact-create-actions"><button class="customer-button customer-button-primary" type="submit">Создать и вернуться к звонкам</button><a class="customer-button" href="{{ return_url }}">Отмена</a></div>
+    </form>
+    {{ call_customer_bootstrap|json_script:'call-customer-bootstrap' }}
+    <noscript><p>Для работы с формой включите JavaScript.</p></noscript>
+  {% endif %}
 </div>
 {% endblock %}

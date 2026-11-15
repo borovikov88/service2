@@ -563,6 +563,7 @@
       if (updateURL) setDealURL(null, true);
       if (state.detailController) state.detailController.abort();
       if (state.clientController) state.clientController.abort();
+      state.drawer?.customerEditor?.destroy();
       state.detailGeneration += 1;
       state.clientGeneration += 1;
       state.drawer = null;
@@ -651,6 +652,10 @@
         const subjectId = form.dataset.subjectId || null;
         const busy = Boolean(queue.forSubject(subjectId)) || (state.drawer?.kind === "loading" && sameId(state.drawer.id, subjectId));
         for (const input of form.querySelectorAll("input, select, textarea, button")) input.disabled = busy;
+        if (!busy && form.dataset.commandForm === "create" && state.drawer?.kind === "create") {
+          form.elements.namedItem("client_search").disabled = state.drawer.useCustomer;
+          state.drawer.customerEditor?.setEnabled(state.drawer.useCustomer);
+        }
       }
       byId("crm-live-create").disabled = Boolean(queue.forSubject(null));
     }
@@ -970,7 +975,7 @@
       if (state.detailController) state.detailController.abort();
       state.detailGeneration += 1;
       setDealURL(null, false);
-      state.drawer = {kind: "create", selectedClient: null};
+      state.drawer = {kind: "create", selectedClient: null, useCustomer: false, customerEditor: null};
       dialogContent.replaceChildren(titleNode("Новая сделка"), element("p", "crm-live-form-note", "Выберите клиента и договоритесь о следующем шаге. Ответственным станете вы."));
       const form = newForm("create", null);
       const title = field("Название сделки", "text", "title", "", true);
@@ -997,12 +1002,44 @@
         pipeline.input.append(option);
       });
       form.append(title.wrapper, client.wrapper, clientResults, pipeline.wrapper);
+      const customerToggle = makeButton("Создать контакт или компанию", null, "crm-live-button");
+      const customerHost = element("div", "crm-live-customer-host"); customerHost.hidden = true;
+      form.append(customerToggle, customerHost);
       const extra = disclosure("Сумма, объект и другие сведения");
       const extraFields = element("div", "crm-live-fields"); extra.append(extraFields); form.append(extra);
       cardFields(extraFields, null); form.refreshObjects = extraFields.refreshObjects;
       nextFields(form, null);
       formFooter(form, "Создать сделку");
       dialogContent.append(form);
+      const updateCustomerSelection = item => {
+        if (state.drawer?.kind !== "create") return;
+        const previousId = state.drawer.selectedClient?.id ?? null;
+        state.drawer.selectedClient = item;
+        if (previousId === (item?.id ?? null)) return;
+        const objects = form.elements.namedItem("object_ref");
+        for (const option of Array.from(objects.options)) if (!["none", "planned"].includes(option.value)) option.remove();
+        if (!["none", "planned"].includes(objects.value)) objects.value = "none";
+        form.refreshObjects?.();
+      };
+      customerToggle.addEventListener("click", () => {
+        if (state.drawer?.kind !== "create") return;
+        state.drawer.useCustomer = !state.drawer.useCustomer;
+        const active = state.drawer.useCustomer;
+        client.wrapper.hidden = active; client.input.disabled = active; clientResults.hidden = true;
+        state.clientController?.abort(); state.clientGeneration += 1;
+        customerHost.hidden = !active; customerToggle.textContent = active ? "Выбрать существующего клиента" : "Создать контакт или компанию";
+        if (active && !state.drawer.customerEditor) state.drawer.customerEditor = win.Service2CustomerEditor.mount(customerHost, {
+          lookupUrl: bootstrap.urls.clients, organizationId: bootstrap.organization_id, canCategorize: state.data.can_categorize_contacts ?? bootstrap.can_categorize_contacts,
+          contactMode: "new", onChange: item => {
+            if (state.drawer?.kind !== "create" || !state.drawer.useCustomer) return;
+            updateCustomerSelection(item);
+          }
+        });
+        state.drawer.customerEditor?.setEnabled(active);
+        if (active) updateCustomerSelection(state.drawer.customerEditor.primarySelection());
+        else { updateCustomerSelection(null); client.input.value = ""; selected.hidden = true; }
+        form.refreshObjects?.();
+      });
       let clientTimer;
       client.input.addEventListener("input", () => {
         win.clearTimeout(clientTimer);
@@ -1152,8 +1189,10 @@
       const deal = state.drawer?.deal;
       try {
         if (kind === "create") {
-          if (!state.drawer?.selectedClient) throw new Error("Выберите клиента из результатов поиска.");
-          const changes = {title: String(values.get("title") || "").trim(), client_id: state.drawer.selectedClient.id, pipeline_id: Number(values.get("pipeline_id")), next_action: {title: String(values.get("next_title") || "").trim(), due_at: deadlineISO(values.get("due_at"), offset)}};
+          if (!state.drawer?.useCustomer && !state.drawer?.selectedClient) throw new Error("Выберите клиента из результатов поиска.");
+          const changes = {title: String(values.get("title") || "").trim(), pipeline_id: Number(values.get("pipeline_id")), next_action: {title: String(values.get("next_title") || "").trim(), due_at: deadlineISO(values.get("due_at"), offset)}};
+          if (state.drawer.useCustomer) changes.customer = state.drawer.customerEditor.value();
+          else changes.client_id = state.drawer.selectedClient.id;
           changes.card_fields = cardChanges(values);
           if (!changes.title || !changes.next_action.title) throw new Error("Заполните название сделки и следующий шаг.");
           await send("deal.create", null, null, changes, "Новая сделка «" + changes.title + "»");
