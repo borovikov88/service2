@@ -287,6 +287,20 @@ class StaffCallControlTests(LeadFixture, TestCase):
         self.assertTrue(is_private_call(call))
         self.assertTrue(CallPrivacyHold.objects.filter(call=call, owner=self.owner).exists())
 
+    def test_background_partial_save_does_not_undo_an_explicit_owner_restore(self):
+        from unittest.mock import patch
+        call = self.call()
+        hold = CallPrivacyHold.objects.create(call=call, organization=self.org, owner=self.owner)
+        self.http.force_login(self.owner)
+        # Simulate a privacy decision read immediately before the owner restores.
+        with patch('pool_service.services.call_privacy.private_call_owner_pairs', return_value={(call.pk, self.owner.pk)}):
+            response = self.http.post(reverse('communication_personal_history')+'?org_id='+str(self.org.pk), {'hold': hold.pk})
+            self.assertEqual(response.status_code, 302)
+            call.save(update_fields=['duration_seconds'])
+        hold.refresh_from_db()
+        self.assertIsNotNone(hold.released_at)
+        self.assertFalse(is_private_call(call))
+
     def test_releasing_one_owners_archive_does_not_release_another_owners_archive(self):
         from pool_service.services.crm_lead_access import _without_private_calls
         boundary = timezone.now()

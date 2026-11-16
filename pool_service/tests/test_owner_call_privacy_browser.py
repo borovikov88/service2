@@ -30,4 +30,5 @@ class OwnerPrivacyBrowserTests(StaticLiveServerTestCase):
         payload=dict(base=self.live_server_url,card=reverse('client_detail',args=[person.pk]),cookieName=settings.SESSION_COOKIE_NAME,ownerCookie=owner_cookie,staffCookie=staff_cookie)
         result=subprocess.run(['node',str(Path(__file__).with_name('owner_call_privacy.browser.cjs'))],input=json.dumps(payload),text=True,capture_output=True,timeout=90)
         self.assertEqual(result.returncode,0,(result.stdout+result.stderr)[-6000:])
-        self.assertFalse(CallPrivateNumber.objects.exists())
+        self.assertFalse(CallPrivateNumber.objects.filter(removed_at__isnull=True).exists())
+        self.assertIsNotNone(CallPrivateNumber.objects.get().removed_at)

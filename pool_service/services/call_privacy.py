@@ -166,7 +166,8 @@ def record_private_holds(call):
     """A late saved personal row must remain explicitly restorable by its owner."""
     from pool_service.staff_call_models import CallPrivacyHold
     for call_id, owner_id in private_call_owner_pairs([call]):
-        CallPrivacyHold.objects.update_or_create(call_id=call_id, owner_id=owner_id,
+        # A concurrent background save must not undo an owner's explicit release.
+        CallPrivacyHold.objects.get_or_create(call_id=call_id, owner_id=owner_id,
             defaults={'organization_id': call.organization_id, 'released_at': None})
 
 
