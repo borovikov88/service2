@@ -41,6 +41,7 @@ MAX_BODY_BYTES = 16384
 EVENT_LABELS = {
     "deal.create": "Сделка создана",
     "deal.edit": "Карточка сделки изменена",
+    "deal.comment": "Добавлен комментарий",
     "deal.close_negative": "Сделка завершена отказом или отменой",
     "deal.transition": "Этап сделки изменён",
     "deal.next_action": "Следующее действие изменено",
@@ -241,6 +242,8 @@ def _serialize_deals(deals, user, organization, grant, *, detail=False):
             "work_subject": deal.work_subject, "specialization": deal.specialization,
             "fulfillment_kind": deal.fulfillment_kind, "object": object_data,
             "amount": format(deal.amount, ".2f") if deal.amount is not None else None,
+            "can_comment": not (object_data and object_data.get("restricted")) and deal.manager_id == user.pk
+                and not deal.is_archived and _write_capability(grant, organization, "edit_own_deals"),
             "currency": deal.currency, "amount_basis": deal.amount_basis,
             "expected_decision_at": deal.expected_decision_at.isoformat() if deal.expected_decision_at else None,
             "close_reason": deal.close_reason, "closed_at": deal.closed_at.isoformat() if deal.closed_at else None,
@@ -619,7 +622,7 @@ def command(request):
             raise ValidationError("Укажите исход, причину и текущую версию следующего шага.")
         result = close_commercial_deal_negative(**common, subject_id=payload.get("subject_id"),
             expected_revision=payload.get("expected_revision"), **changes)
-    elif kind in ("deal.edit", "deal.transition"):
+    elif kind in ("deal.edit", "deal.transition", "deal.comment"):
         result = execute_commercial_command(**common, command_type=kind, subject_id=payload.get("subject_id"),
             expected_revision=payload.get("expected_revision"), changes=changes)
     elif kind in ("deal.bind_order", "deal.unbind_order"):

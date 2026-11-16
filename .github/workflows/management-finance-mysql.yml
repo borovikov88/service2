@@ -258,6 +258,7 @@ jobs:
             pool_service.tests.test_crm_materials \
             pool_service.tests.test_crm_handoff_migration \
             pool_service.tests.test_crm_commercial_card \
+            pool_service.tests.test_crm_card_activity \
             pool_service.tests.test_crm_object_needs \
             pool_service.tests.test_crm_object_need_corrections \
             pool_service.tests.test_crm_object_need_concurrency \

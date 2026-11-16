@@ -175,7 +175,8 @@ class GateTests(unittest.TestCase):
             try:
                 data=Path(f'/proc/{pid}/stat').read_text()
                 return data[data.rindex(')')+2:].split()[0] != 'Z'
-            except FileNotFoundError: return False
+            # /proc can disappear during the read after the process is reaped.
+            except (FileNotFoundError, ProcessLookupError): return False
         try:
             deadline=time.monotonic()+5
             while not pid_file.exists() and time.monotonic()<deadline: time.sleep(0.01)

@@ -619,6 +619,27 @@
       if (selected) activate(selected[0], selected[5]);
       else if (!buttons.size) host.append(el("p", "lead-error", "Завершение этого лида сейчас недоступно."));
     }
+    function budgetPanel(lead) {
+      const box = el("section", "crm-card-money"), currency = lead.currency || "RUB";
+      const money = value => win.CrmCardActivity.formatMoney(value) + " " + (currency === "RUB" ? "₽" : currency);
+      const label = lead.budget_kind === "unknown" ? "Не указан" : lead.budget_kind === "range" ? money(lead.budget_min) + " — " + money(lead.budget_max) : money(lead.budget_min);
+      box.append(el("p", "crm-card-money-label", "Бюджет лида"), el("p", "crm-card-money-value", label));
+      if (lead.can_edit) {
+        const edit = el("details"), form = el("form"); edit.append(el("summary", "", lead.budget_kind === "unknown" ? "Указать сумму" : "Изменить сумму"), form); box.append(edit);
+        const kind = select(form, "Бюджет лида", [["unknown", "Пока неизвестен"], ["exact", "Точная сумма"], ["range", "Диапазон"]], lead.budget_kind === "unknown" ? "exact" : lead.budget_kind);
+        const minimum = field(form, "Сумма / от, " + (currency === "RUB" ? "₽" : currency), win.CrmCardActivity.formatMoney(lead.budget_min));
+        const maximum = field(form, "До, " + (currency === "RUB" ? "₽" : currency), win.CrmCardActivity.formatMoney(lead.budget_max));
+        for (const input of [minimum, maximum]) { input.inputMode = "decimal"; input.maxLength = 40; }
+        const update = () => { minimum.parentElement.hidden = kind.value === "unknown"; minimum.required = kind.value !== "unknown"; maximum.parentElement.hidden = kind.value !== "range"; maximum.required = kind.value === "range"; };
+        kind.addEventListener("change", update); update();
+        formSubmit(form, "Сохранить сумму", () => {
+          if (!form.reportValidity()) return;
+          const amount = kind.value === "unknown" ? null : win.CrmCardActivity.parseMoney(minimum.value);
+          submit(form, "lead.edit", lead, {budget_kind:kind.value, budget_min:amount, budget_max:kind.value === "unknown" ? null : kind.value === "exact" ? amount : win.CrmCardActivity.parseMoney(maximum.value), currency:kind.value === "unknown" ? "" : currency});
+        });
+      }
+      return box;
+    }
     function renderDetail(data) {
       const lead=data.lead;state.detail=data;content.replaceChildren();
       content.append(el("h2","",displayTitle(lead)));content.firstChild.id="lead-dialog-title";
@@ -632,6 +653,7 @@
         content.append(result);
       }
       const layout=el("div","lead-detail-grid"), left=el("div","lead-detail-main"), right=el("section","lead-timeline");layout.append(left,right);content.append(layout);
+      left.append(budgetPanel(lead));
       const need=el("section","lead-panel lead-overview");need.append(el("h3","","Потребность"),el("p","lead-need",lead.need || "Уточните, что требуется клиенту."));left.append(need);
       if (lead.can_assign && initial.urls.responsibles) {
         const assignment = el("details", "lead-panel crm-assignment"); assignment.append(el("summary", "", "Ответственный · " + (lead.assignee?.name || "Не назначен"))); left.append(assignment); assignmentForm(assignment, lead);
@@ -664,33 +686,17 @@
       if(lead.can_new_need){const fresh=el("details");fresh.append(el("summary","","Создать новую потребность"));editForm(fresh,lead,"lead.new_need");actions.append(fresh);}if(actions.childNodes.length>1)left.append(actions);
       if(data.duplicate_of){const related=el("section","lead-panel");related.append(el("h3","","Продолжение потребности"),button(data.duplicate_of.title,()=>openLead(data.duplicate_of.id)));left.append(related);}
       if(data.deals?.length){const links=el("section","lead-panel");links.append(el("h3","","Сделки"));for(const deal of data.deals){const a=el("a","",deal.title);a.href=deal.url;links.append(a);}left.append(links);}
-      right.append(el("h3","","История общения"));const filters=el("div","lead-timeline-filters"), items=el("div");right.append(filters,items);
-      let filter="all",sources=[...(data.sources||[])],cursor=data.source_cursor;
-      const paint=()=>{
-        items.replaceChildren();
-        for(const source of sources.filter(x=>filter==="all"||x.type===filter)){
-          const row=el("article","lead-communication");row.append(el("h4","",source.type==="call"?[(source.caller||"Неизвестно"),(source.callee||"Неизвестно")].join(" → "):source.message?.sender || source.contact_name || source.label));
-          row.append(el("p","lead-date",[source.label,dateText(source.occurred_at||source.received_at),!source.occurred_at?"время получения":""].filter(Boolean).join(" · ")));
-          const media=source.media;
-          if(source.type==="call"){
-            row.append(el("p","lead-call-status",(source.call_result==="missed"?"Пропущен":source.call_result==="answered"?"Отвечен":"Статус неизвестен")+(source.duration_seconds!=null?" · "+source.duration_seconds+" сек":"")));
-            if(media?.recording_url){const audio=el("audio");audio.controls=true;audio.preload="none";audio.src=media.recording_url;audio.setAttribute("aria-label","Запись разговора");row.append(audio);}
-            else row.append(el("p","lead-form-note",source.call_result==="missed"?"Разговор не состоялся; записи нет.":"Запись недоступна."));
-            if(media?.summary||media?.transcript){const text=el("details");text.append(el("summary","","Резюме и расшифровка"));if(media.summary)text.append(el("p","lead-transcript",media.summary));if(media.transcript)text.append(el("p","lead-transcript",media.transcript));row.append(text);}
-            if(media?.facts?.request && lead.can_edit)row.append(button("Предложить текст потребности",()=>{const input=content.querySelector('[data-lead-need="true"]');if(input&&(!input.value||input.value===lead.need)){editor.open=true;input.value=media.facts.request;input.focus();}}));
-            if(media?.analysis_url){const ai=button(media.analysis_status==="ready"?"Повторить анализ":"Расшифровать",async()=>{
-              if(ai.disabled)return;ai.disabled=true;
-              try{const response=await win.fetch(media.analysis_url,{method:"POST",credentials:"same-origin",headers:{"X-CSRFToken":csrf(),Accept:"application/json"}});if(!response.ok)throw new Error("Запуск недоступен. Проверьте права и состояние записи.");ai.textContent="Запрос передан в очередь";}catch(error){if(row.isConnected){errorNode(row,error);ai.disabled=false;}}
-            });ai.title="Явный запуск существующей очереди анализа";row.append(ai);}
-          } else if(source.message){row.append(el("p","lead-message-body",source.message.body));if(source.message.truncated)row.append(el("small","","Показано начало сообщения."));}
-          const link=el("a","lead-original-link","Открыть источник");link.href=source.url;row.append(link);items.append(row);
-        }
-        if(!items.childNodes.length)items.append(el("p","lead-form-note","Нет доступных обращений этого типа."));
-      };
-      for(const [key,label] of [["all","Все"],["call","Звонки"],["message","Сообщения"]])filters.append(button(label,()=>{filter=key;paint();}));paint();
-      const more=button("Ещё обращения",async()=>{if(more.disabled||!cursor)return;more.disabled=true;const sequence=state.detailSequence;try{const page=await read(initial.urls.detail_prefix+lead.id+"/?org_id="+initial.organization_id+"&source_cursor="+encodeURIComponent(cursor));if(sequence!==state.detailSequence||!right.isConnected)return;const ids=new Set(sources.map(x=>x.id));sources.push(...page.sources.filter(x=>!ids.has(x.id)));cursor=page.source_cursor;paint();more.hidden=!cursor;}catch(error){if(right.isConnected)errorNode(right,error);}finally{more.disabled=false;}});more.hidden=!cursor;right.append(more);
-      const audit=el("details","lead-audit");audit.append(el("summary","","Служебная история"));
-      for(const event of data.events||[])audit.append(el("p","",[event.label,dateText(event.at),event.actor,event.movement,event.reason].filter(Boolean).join(" · ")));content.append(audit);renderOperations();
+      win.CrmCardActivity.mount(right, {url:initial.urls.detail_prefix + lead.id + "/activity/?org_id=" + initial.organization_id, timezone:initial.timezone,
+        commentForm: lead.can_comment ? () => {
+          const form = el("form", "crm-activity-comment");
+          const body = field(form, "Комментарий", "", "textarea", true); body.required = true; body.maxLength = 4000; body.rows = 3;
+          body.placeholder = "Договорённости, результат разговора или заметка для коллег…";
+          formSubmit(form, "Добавить комментарий", () => { if (form.reportValidity()) submit(form, "lead.comment", lead, {body:body.value.trim()}); }); return form;
+        } : null,
+        suggestNeed: lead.can_edit ? value => { const input = content.querySelector('[data-lead-need="true"]'); if (input && (!input.value || input.value === lead.need)) { editor.open = true; input.value = value; input.focus(); } } : null,
+        analyze: async url => { const response = await win.fetch(url, {method:"POST", credentials:"same-origin", headers:{"X-CSRFToken":csrf(), Accept:"application/json"}}); if (!response.ok) throw new Error("Запуск недоступен. Проверьте права и состояние записи."); }
+      });
+      renderOperations();
     }
     async function conversionDialog(snapshot, additional = false, selectedMode = "deal") {
       if(operations.forSubject(snapshot.id))return;

@@ -8,7 +8,7 @@ from django.utils import timezone
 
 
 class CrmReleaseMigrationTests(TransactionTestCase):
-    release = [('pool_service', '0187_enable_aqualine_crm_close')]
+    release = [('pool_service', '0188_crm_card_comments')]
     production = [('pool_service', '0182_merge_onec_review_crm_contact')]
     prepared = [('pool_service', '0185_crm_failure_stage')]
 
@@ -58,10 +58,10 @@ class CrmReleaseMigrationTests(TransactionTestCase):
         plan = [migration.name for migration, backwards in executor.migration_plan(self.release) if not backwards]
         if source == self.production:
             self.assertEqual(plan, ['0182_lead_customer_completion', '0183_crm_order_finance',
-                '0184_crm_assignment_delivery', '0185_crm_failure_stage', '0186_merge_crm_release', '0187_enable_aqualine_crm_close'])
+                '0184_crm_assignment_delivery', '0185_crm_failure_stage', '0186_merge_crm_release', '0187_enable_aqualine_crm_close', '0188_crm_card_comments'])
         else:
             self.assertEqual(plan, ['0172_clientimportcandidate_review_state_and_more',
-                '0182_merge_onec_review_crm_contact', '0186_merge_crm_release', '0187_enable_aqualine_crm_close'])
+                '0182_merge_onec_review_crm_contact', '0186_merge_crm_release', '0187_enable_aqualine_crm_close', '0188_crm_card_comments'])
         executor.migrate(self.release)
         new = executor.loader.project_state(self.release).apps
         for name, pk, snapshot in snapshots:
@@ -82,6 +82,7 @@ class CrmReleaseMigrationTests(TransactionTestCase):
         # Both branches' newly introduced tables are available without fake migrations.
         self.assertEqual(new.get_model('pool_service', 'CrmAssignmentDelivery').objects.count(), 0)
         self.assertEqual(new.get_model('pool_service', 'CrmOneCOrder').objects.count(), 0)
+        self.assertEqual(new.get_model('pool_service', 'CrmCardComment').objects.count(), 0)
 
     def restore_release(self):
         executor = MigrationExecutor(connection)

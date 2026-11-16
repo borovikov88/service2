@@ -29,6 +29,7 @@ CAPABILITIES = {
     "lead.disposition": ("transition_own_leads",),
     "lead.acknowledge": ("edit_own_leads",),
     "lead.edit": ("edit_own_leads",),
+    "lead.comment": ("edit_own_leads",),
     "lead.transition": ("transition_own_leads",),
     "lead.complete_customer": ("transition_own_leads",),
     "lead.qualify": ("qualify_own_leads", "create_own_deals", "manage_own_next_action"),
@@ -109,6 +110,7 @@ def _normalize(kind, changes):
         "lead.disposition": {"column", "reason", "next_action", "expected_task_version"},
         "lead.acknowledge": set(),
         "lead.edit": EDIT_FIELDS | {"next_action", "expected_task_version"},
+        "lead.comment": {"body"},
         "lead.transition": {"status", "result", "reason", "follow_up_at", "target_deal_id", "target_lead_id", "next_action", "expected_task_version"},
         "lead.complete_customer": {"customer", "reason", "expected_task_version"},
         "lead.qualify": {"deals", "need", "reason", "expected_task_version"},
@@ -126,12 +128,12 @@ def _normalize(kind, changes):
     if not required <= set(changes):
         raise ValidationError("Required lead fields are missing.")
     result = {}
-    limits = {"title": 255, "need": 10000, "specialization": 40, "location": 255,
+    limits = {"title": 255, "body": 4000, "need": 10000, "specialization": 40, "location": 255,
               "acquisition_source": 80, "first_contact_channel": 40, "currency": 3, "reason": 500,
               "column": 16, "direction": 24, "status": 16, "budget_kind": 8, "result": 16, "expected_task_version": 64}
     for name, value in changes.items():
         if name in limits:
-            result[name] = _text(value, limits[name], required=name in {"title", "status", "result", "expected_task_version"})
+            result[name] = _text(value, limits[name], required=name in {"title", "body", "status", "result", "expected_task_version"})
         elif name in {"desired_at", "follow_up_at"}:
             result[name] = _date(value)
         elif name.endswith("_id"):
@@ -358,7 +360,8 @@ def _existing_target(using, actor, organization, lead, values, *, replay=False):
 def execute_lead_command(*, actor, organization, operation_key, command_type,
                          subject_id=None, expected_revision=None, changes):
     values = _normalize(command_type, changes)
-    safe_card_edit = command_type == 'lead.edit' and bool(values) and set(values) <= {'title', 'need'}
+    safe_card_edit = command_type == 'lead.comment' or (command_type == 'lead.edit' and bool(values)
+        and set(values) <= {'title', 'need', 'budget_kind', 'budget_min', 'budget_max', 'currency'})
     actor_id = _positive_id(getattr(actor, "pk", None))
     org_id = _positive_id(getattr(organization, "pk", None))
     if type(operation_key) is not str or len(operation_key) > 100:
@@ -443,6 +446,9 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
         before_review = lead.needs_review if lead else False
         before_result = lead.result if lead else ""
         before_need = lead.need if lead else ""
+        before_title = lead.title if lead else ""
+        budget_fields = ("budget_kind", "budget_min", "budget_max", "currency")
+        before_budget = {key: getattr(lead, key) for key in budget_fields} if lead else {}
         if command_type == "lead.disposition":
             before_column = lead_column(lead)
         task = tasks.get(lead.next_task_id) if lead else None
@@ -558,6 +564,8 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
         elif command_type == "lead.acknowledge":
             if lead.status != "closed" or not lead.needs_review:
                 raise ValidationError("Only new activity on a resolved lead can be acknowledged.")
+            lead.revision += 1
+        elif command_type == "lead.comment":
             lead.revision += 1
         elif command_type == "lead.edit":
             if lead.status == "closed":
@@ -676,7 +684,7 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
             else:
                 _finish_next(using, actor, lead, task)
             lead.revision += 1
-        if command_type != "lead.disposition" or values["column"] in {"working", "history"}:
+        if command_type != "lead.comment" and (command_type != "lead.disposition" or values["column"] in {"working", "history"}):
             lead.needs_review = False
         lead.save(using=using)
         command = CrmCommand.objects.using(using).create(organization=organization, actor=actor,
@@ -785,9 +793,19 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
         if "next_action" in values:
             diff["next_action_changed"] = {"before": False, "after": True}
         if command_type == "lead.edit":
-            diff["need_changed"] = {"before": False, "after": True}
+            for field, old in (("need", before_need), ("title", before_title)):
+                if getattr(lead, field) != old:
+                    diff[field + "_changed"] = {"before": False, "after": True}
+            for field in budget_fields:
+                old, new = before_budget[field], getattr(lead, field)
+                if old != new:
+                    canonical = lambda value: format(Decimal(value), ".2f") if field in {"budget_min", "budget_max"} and value is not None else value
+                    diff[field] = {"before": canonical(old), "after": canonical(new)}
         event = CrmEvent.objects.using(using).create(organization=organization, lead=lead, command=command,
             actor=actor, event_type=command_type, safe_diff=diff, reason=(lead.reason if command_type == "lead.complete_customer" or command_type == "lead.disposition" and values["column"] == "history" else values.get("reason", "")))
+        if command_type == "lead.comment":
+            from pool_service.crm_commercial_models import CrmCardComment
+            CrmCardComment.objects.using(using).create(event=event, body=values["body"])
         assigned = diff.get('assignee_id', {})
         if assigned.get('after') is not None and assigned.get('after') != assigned.get('before'):
             from .crm_assignment_notifications import notify_assignment

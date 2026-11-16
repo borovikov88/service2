@@ -20,6 +20,47 @@ from pool_service.tests.test_crm_lead_kanban_browser import _bounded_browser_pro
 
 @skipUnless(os.environ.get("CRM_CARD_BROWSER_TEST") == "1", "Dedicated Chromium acceptance enables this test")
 class CrmAssignmentBrowserTests(LeadFixture, StaticLiveServerTestCase):
+    def test_card_amount_comments_communications_and_mobile(self):
+        from pool_service.services.crm_commercial_commands import create_commercial_deal
+        from pool_service.crm_commercial_models import CrmCardComment
+        from pool_service.communication_models import CommunicationAccess, CommunicationChannel, ChannelConnection, Conversation, ConversationMessage, TelephonyConnection, PhoneCall
+        self.org.plan_type = Organization.PLAN_COMPANY_PAID
+        self.org.paid_until = timezone.now() + timedelta(days=30)
+        self.org.save()
+        self.grant.view_team_deals = self.grant.edit_own_deals = True
+        self.grant.save()
+        lead = self.create(title="Обсудить обслуживание бассейна", client_id=self.client.pk)
+        result = create_commercial_deal(actor=self.user, organization=self.org, operation_key="activity-browser-deal",
+            client_id=self.client.pk, pipeline_id=self.pipeline.pk, title="Обслуживание бассейна · тест", next_action=self.action())
+        deal = CrmDeal.objects.get(pk=result["deal_id"])
+        CommunicationAccess.objects.update_or_create(organization=self.org, user=self.user, defaults={"can_view_conversations": True, "can_view_all_calls": True})
+        channel = CommunicationChannel.objects.create(organization=self.org, kind="avito", name="Synthetic channel")
+        connection = ChannelConnection.objects.create(channel=channel, name="Synthetic connection", external_id="synthetic-browser-account")
+        conversation = Conversation.objects.create(organization=self.org, connection=connection, external_id="synthetic-browser-chat", client=self.client)
+        ConversationMessage.objects.create(conversation=conversation, direction="in", body="Synthetic incoming: обсудим график обслуживания.", sender_name="Тестовый клиент")
+        ConversationMessage.objects.create(conversation=conversation, direction="out", body="Synthetic outgoing: подготовим предложение.", sent_by=self.user, delivery_status="delivered")
+        telephone = TelephonyConnection.objects.create(organization=self.org, external_id="synthetic-browser-phone")
+        PhoneCall.objects.create(organization=self.org, connection=telephone, client=self.client, employee=self.user,
+            external_id="synthetic-browser-call", phone_number="+79005550001", direction="in", started_at=timezone.now(), result="missed")
+        http = HttpClient(); http.force_login(self.user)
+        fixture = dict(base=self.live_server_url,
+            dealUrl=reverse("crm_live_workspace") + "?org_id=" + str(self.org.pk) + "&pipeline=" + str(self.pipeline.pk) + "&deal=" + str(deal.pk),
+            leadUrl=reverse("crm_live_leads") + "?org_id=" + str(self.org.pk) + "&lead=" + str(lead.pk),
+            dealCommand=reverse("crm_live_command"), leadCommand=reverse("crm_live_lead_command"),
+            screenshotDir=os.environ.get("CRM_ACTIVITY_SCREENSHOT_DIR"),
+            sessionCookie=http.cookies[settings.SESSION_COOKIE_NAME].value, sessionCookieName=settings.SESSION_COOKIE_NAME)
+        with patch("pool_service.services.crm_assignment_notifications.send_push_to_users"), patch("pool_service.services.notifications.send_push_to_users"), patch("pool_service.services.push_notifications.send_push_to_users"):
+            code, output = _bounded_browser_process(["node", str(Path(__file__).with_name("crm_card_activity.browser.cjs"))], fixture)
+        self.assertEqual(code, 0, output)
+        lead.refresh_from_db(); deal.refresh_from_db()
+        self.assertEqual(str(deal.amount), "125000.50")
+        self.assertEqual(deal.amount_basis, "agreed")
+        self.assertEqual(str(lead.budget_min), "35000.75")
+        self.assertEqual(lead.budget_kind, "exact")
+        self.assertEqual(CrmCardComment.objects.count(), 4)
+        self.assertEqual(CrmEvent.objects.filter(event_type="deal.comment").count(), 3)
+        self.assertEqual(CrmEvent.objects.filter(event_type="lead.comment").count(), 1)
+
     def test_bulk_selection_stages_responsibles_partial_errors_and_retry(self):
         from pool_service.services.crm_commercial_commands import create_commercial_deal
         self.org.plan_type = Organization.PLAN_COMPANY_PAID

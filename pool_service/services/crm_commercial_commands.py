@@ -31,6 +31,7 @@ COMMANDS = {
     "lead.edit": (CrmLead, "assignee_id", "edit_own_leads", {"title", "need"}),
     "lead.transition": (CrmLead, "assignee_id", "transition_own_leads", {"status", "reason", "follow_up_at"}),
     "deal.edit": (CrmDeal, "manager_id", "edit_own_deals", {"title"} | CARD_FIELDS),
+    "deal.comment": (CrmDeal, "manager_id", "edit_own_deals", {"body"}),
     "deal.transition": (CrmDeal, "manager_id", "transition_own_deals", {"stage_id", "reason", "confirm_manual_completion"}),
 }
 # Explicit technical bounds, independent of editable labels/positions. No tender
@@ -100,8 +101,8 @@ def _normalize(command_type, changes):
             raise ValidationError("CRM text must be a string.")
         else:
             normalized[key] = value.strip()
-            limit = {"title": 255, "need": 10000, "reason": 500, "work_subject": 2000, "specialization": 40, "fulfillment_kind": 24, "planned_object_name": 255, "planned_object_address": 500, "amount_basis": 24, "currency": 3}.get(key, 16)
-            if len(normalized[key]) > limit or (key == "title" and not normalized[key]):
+            limit = {"title": 255, "body": 4000, "need": 10000, "reason": 500, "work_subject": 2000, "specialization": 40, "fulfillment_kind": 24, "planned_object_name": 255, "planned_object_address": 500, "amount_basis": 24, "currency": 3}.get(key, 16)
+            if len(normalized[key]) > limit or (key in {"title", "body"} and not normalized[key]):
                 raise ValidationError("CRM text is empty or too long.")
     if "currency" in normalized and normalized["currency"] and not re.fullmatch(r"[A-Z]{3}", normalized["currency"]):
         raise ValidationError("Валюта — три заглавные латинские буквы.")
@@ -195,7 +196,7 @@ def _apply(subject, command_type, changes, using, actor=None):
             subject.status, subject.reason = status, reason
             subject.follow_up_at = parse_datetime(follow_up) if follow_up else None
     else:
-        if subject.outcome != "open":
+        if subject.outcome != "open" and command_type != "deal.comment":
             raise ValidationError("Only open deals are supported.")
         # Always validate the full current graph, including on an edit.
         pipeline = CrmPipeline.objects.using(using).select_for_update().get(pk=subject.pipeline_id)
@@ -310,6 +311,9 @@ def execute_commercial_command(*, actor, organization, operation_key, command_ty
         event = CrmEvent.objects.using(using).create(
             organization=organization, **{"lead" if model is CrmLead else "deal": subject},
             command=command, actor_id=actor_id, event_type=command_type, safe_diff=diff, reason=reason)
+        if command_type == "deal.comment":
+            from pool_service.crm_commercial_models import CrmCardComment
+            CrmCardComment.objects.using(using).create(event=event, body=changes["body"])
         command.result = {"lead_id" if model is CrmLead else "deal_id": subject.pk,
                           "event_id": event.pk, "revision": subject.revision}
         command.save(using=using, update_fields=["result"])

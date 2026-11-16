@@ -38,6 +38,7 @@ STATES = dict(CrmLead._meta.get_field("status").choices)
 RESULTS = dict(CrmLead._meta.get_field("result").choices)
 EVENTS = {"lead.create": "Лид создан", "lead.take": "Обращение взято в работу",
     "lead.assign": "Ответственный за лид изменён",
+    "lead.comment": "Добавлен комментарий",
     "lead.edit": "Карточка изменена", "lead.disposition": "Лид перемещён", "lead.transition": "Состояние изменено",
     "lead.qualify": "Квалификация завершена", "lead.add_deal": "Добавлена сделка",
     "lead.complete_customer": "Контакт или компания сохранены без сделки",
@@ -120,6 +121,7 @@ def _serialize(lead, user, capabilities, *, detail=False, visible_tasks=None):
         "follow_up_at": lead.follow_up_at.isoformat() if lead.follow_up_at else None,
         "can_take": opened and lead.status == "new" and lead.assignee_id is None and capabilities["take_leads"],
         "can_edit": own and opened and capabilities["edit_own_leads"],
+        "can_comment": own and not lead.is_archived and lead.result != "spam" and capabilities["edit_own_leads"],
         "can_transition": own and opened and capabilities["transition_own_leads"],
         "can_complete_customer": opened and not lead.result and capabilities["transition_own_leads"] and capabilities["can_save_customer"] and (own or lead.assignee_id is None and lead.status == "new" and capabilities["take_leads"]),
         "can_qualify": (own or lead.assignee_id is None and lead.status == "new" and capabilities["take_leads"]) and lead.status != "closed" and not lead.result and (not lead.is_archived or capabilities["transition_own_leads"]) and all(capabilities[name] for name in ("qualify_own_leads", "create_own_deals", "manage_own_next_action")),
@@ -481,7 +483,7 @@ def command(request):
     allowed = {"operation_key", "command_type", "subject_id", "expected_revision", "changes"}
     if type(payload) is not dict or not payload.keys() <= allowed or not {"operation_key", "command_type", "changes"} <= payload.keys():
         raise ValidationError("Некорректный состав запроса.")
-    if type(payload["command_type"]) is not str or type(payload["changes"]) is not dict or payload["command_type"] not in {"lead.create", "lead.take", "lead.edit", "lead.transition", "lead.qualify", "lead.add_deal", "lead.new_need", "lead.acknowledge", "lead.disposition", "lead.complete_customer", "lead.assign"}:
+    if type(payload["command_type"]) is not str or type(payload["changes"]) is not dict or payload["command_type"] not in {"lead.create", "lead.take", "lead.edit", "lead.comment", "lead.transition", "lead.qualify", "lead.add_deal", "lead.new_need", "lead.acknowledge", "lead.disposition", "lead.complete_customer", "lead.assign"}:
         raise ValidationError("Эта команда недоступна.")
     from .services.crm_lead_commands import execute_lead_command
     if payload['command_type'] == 'lead.assign':
