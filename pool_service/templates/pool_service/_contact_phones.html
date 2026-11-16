@@ -8,7 +8,7 @@
       <form method="post" action="{% url 'client_phone_manage' client.id %}" data-phone-form hidden>{% csrf_token %}
         <input type="hidden" name="operation" value="edit"><input type="hidden" name="entry_key" value="{{ phone.entry_key }}"><input type="hidden" name="contacts_revision" value="{{ phone_revision }}">
 
-          <label class="contact-number-field">Номер телефона<input type="tel" name="phone" data-crm-phone="true" value="{{ phone.value }}" maxlength="40" required></label>
+          <label class="contact-number-field">Номер телефона<input class="form-control" type="tel" name="phone" data-crm-phone="true" value="{{ phone.value }}" maxlength="40" required></label>
           <label class="contact-type-field">Тип<select name="phone_type"><option value="work" {% if phone.phone_type == 'work' %}selected{% endif %}>Рабочий</option><option value="personal" {% if phone.phone_type == 'personal' %}selected{% endif %}>Личный</option><option value="other" {% if phone.phone_type == 'other' %}selected{% endif %}>Другой</option></select></label>
           <label>Подпись<input name="label" value="{{ phone.label }}" maxlength="120" placeholder="Например, приёмная"></label>
 
@@ -24,7 +24,7 @@
     <form method="post" action="{% url 'client_phone_manage' client.id %}" data-phone-form data-person-phone-form hidden>{% csrf_token %}
       <input type="hidden" name="operation" value="add"><input type="hidden" name="contacts_revision" value="{{ phone_revision }}">
 
-        <label class="contact-number-field">Номер телефона<input type="tel" name="phone" data-crm-phone="true" maxlength="40" aria-label="Номер телефона" required></label>
+        <label class="contact-number-field">Номер телефона<input class="form-control" type="tel" name="phone" data-crm-phone="true" maxlength="40" aria-label="Номер телефона" required></label>
         <label class="contact-type-field">Тип<select name="phone_type" aria-label="Тип телефона"><option value="work">Рабочий</option><option value="personal">Личный</option><option value="other" selected>Другой</option></select></label>
         <label>Подпись<input name="label" maxlength="120" placeholder="Например, офис"></label>
 
