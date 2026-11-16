@@ -32,7 +32,8 @@ class ContactCreationBrowserTests(LeadFixture, StaticLiveServerTestCase):
         bootstrap = http.get(reverse("client_create"), HTTP_ACCEPT="application/json").json()["bootstrap"]
         self.assertTrue(bootstrap["can_categorize_contacts"])
         scope = "?org_id=" + str(self.org.pk)
-        fixture = {"base": self.live_server_url, "orgId": self.org.pk, "leadId": lead.pk,
+        fixture = {"base": self.live_server_url, "orgId": self.org.pk, "leadId": lead.pk, "actorId": self.user.pk,
+            "responsiblesPath": reverse("crm_assignment_candidates"),
             "directory": reverse("clients_list"), "createPath": reverse("client_create"),
             "lookup": reverse("contact_create_lookup") + scope,
             "deals": reverse("crm_live_workspace") + scope,

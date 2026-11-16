@@ -10,6 +10,8 @@ const {chromium} = require('playwright');
   assert.match(f.base, /^http:\/\/(localhost|127\.0\.0\.1):[0-9]+$/);
   const browser = await chromium.launch({headless: true});
   let phase = 'directory';
+  let releaseLeadCandidates;
+  const leadCandidatesReady = new Promise(resolve => { releaseLeadCandidates = resolve; });
   try {
     const context = await browser.newContext({viewport: {width: 1440, height: 1080}, serviceWorkers: 'block'});
     await context.addCookies([{name: f.sessionCookieName, value: f.sessionCookie, url: f.base}]);
@@ -17,6 +19,12 @@ const {chromium} = require('playwright');
     const directoryResponses = [];
     await context.route('**/*', async route => {
       if (route.request().url() === 'https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js') return route.fulfill({contentType: 'application/javascript', body: bootstrap});
+      const url = new URL(route.request().url());
+      if (url.origin === f.base && url.pathname === f.responsiblesPath && url.searchParams.get('lead_id') === String(f.leadId)) {
+        // Reproduce a slow candidate response without timing-dependent sleeps.
+        await leadCandidatesReady;
+        return route.continue();
+      }
       if (route.request().method() === 'POST' && new URL(route.request().url()).pathname === f.createPath) {
         // Read the local result before the application follows its success URL.
         // Navigation can release Chromium's response body immediately afterward.
@@ -50,6 +58,11 @@ const {chromium} = require('playwright');
     };
     const labels = scope => scope.locator('.crm-customer-editor .customer-field-label').allTextContents();
     const responseFor = path => page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === path);
+    const waitForResponsible = async form => {
+      const responsible = form.locator('[name="responsible_id"]');
+      await responsible.locator('option[value="' + f.actorId + '"]').waitFor({state: 'attached'});
+      assert.equal(await responsible.inputValue(), String(f.actorId), 'The current manager must be selected after candidates load');
+    };
     const saveDirectory = async dialog => {
       const responseIndex = directoryResponses.length;
       // Saving reloads the current directory URL. Waiting for that URL alone
@@ -129,6 +142,7 @@ const {chromium} = require('playwright');
     await dealForm.getByLabel('Имя контакта', {exact: true}).fill('Synthetic Directory person');
     await dealForm.locator('[name="next_title"]').fill('Synthetic unified next action');
     await dealForm.locator('[name="due_at"]').fill('2026-12-01T11:00');
+    await waitForResponsible(dealForm);
     const duplicateResponse = responseFor(f.dealCommandPath);
     await dealForm.getByRole('button', {name: 'Создать сделку', exact: true}).click();
     const rejected = await duplicateResponse;
@@ -167,6 +181,13 @@ const {chromium} = require('playwright');
     await noOverflow(leadDialog);
     assert.equal(writes.length, 4);
     if (process.env.CRM_SYNTHETIC_SCREENSHOTS) await page.screenshot({path: process.env.CRM_SYNTHETIC_SCREENSHOTS + '/contact-lead-mobile-unified.png'});
+    const responsible = leadForm.locator('[name="responsible_id"]');
+    assert.equal(await responsible.inputValue(), '');
+    assert.equal(await responsible.evaluate(node => node.validity.valueMissing), true);
+    await leadForm.getByRole('button', {name: 'Подтвердить создание сделки', exact: true}).click();
+    assert.equal(writes.length, 4, 'A pending required responsible must not submit a partial conversion');
+    releaseLeadCandidates();
+    await waitForResponsible(leadForm);
     const leadResponse = responseFor(f.leadCommandPath);
     await leadForm.getByRole('button', {name: 'Подтвердить создание сделки', exact: true}).click();
     const converted = await leadResponse;
@@ -180,5 +201,5 @@ const {chromium} = require('playwright');
   } catch (error) {
     console.error('Unified editor browser phase: ' + phase);
     throw error;
-  } finally { await browser.close(); }
+  } finally { releaseLeadCandidates(); await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });
