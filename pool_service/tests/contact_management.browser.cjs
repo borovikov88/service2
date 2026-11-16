@@ -6,7 +6,7 @@ const {chromium}=require('playwright');
  const f=JSON.parse(input);assert.match(f.base,/^http:\/\/(localhost|127\.0\.0\.1):[0-9]+$/);
  const browser=await chromium.launch({headless:true});
  try {
-  const context=await browser.newContext({viewport:{width:1440,height:1000},serviceWorkers:'block'});
+  const context=await browser.newContext({viewport:{width:1440,height:1000},serviceWorkers:'block',colorScheme:process.env.CONTACTS_BROWSER_THEME||'light'});
   await context.addCookies([{name:f.sessionCookieName,value:f.sessionCookie,url:f.base}]);
   await context.route('**/*',route=>{
    const url=route.request().url();
