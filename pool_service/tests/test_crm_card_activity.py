@@ -193,6 +193,8 @@ class CardActivityTests(LeadFixture, TestCase):
         ids = {item["id"] for item in items}
         self.assertTrue({"message:" + str(incoming.pk), "message:" + str(outgoing.pk), "call:" + str(call.pk)} <= ids)
         self.assertEqual(next(item for item in items if item["kind"] == "call")["title"], "Пропущенный звонок")
+        self.assertEqual(next(item for item in items if item["kind"] == "call")["details"],
+            [self.client.name + " · " + call.phone_number + " → " + self.user.username])
         self.assertEqual(before, (CrmEvent.objects.count(), ConversationReadState.objects.count()))
         call.client = None
         call.save()

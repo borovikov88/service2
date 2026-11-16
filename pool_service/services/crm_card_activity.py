@@ -202,8 +202,12 @@ def activity_page(request, organization, subject):
             Q(employee_profile__isnull=True) | Q(employee_profile__organization=organization))
         if not caps["can_view_all_calls"]:
             calls = calls.filter(Q(employee=request.user) | Q(peer_employee=request.user))
-        calls = _without_private_calls(calls).select_related("analysis")
+        calls = _without_private_calls(calls).select_related("analysis", "employee", "employee_profile")
         candidates = _portion(calls, "started_at", RANK["call"], before)
+        contacts = {contact.pk: contact for contact in readable_clients(request.user).filter(
+            organization=organization, pk__in={call.client_id for call in candidates})}
+        employee_ids = set(OrganizationAccess.objects.filter(organization=organization,
+            user_id__in={call.employee_id for call in candidates}).values_list("user_id", flat=True))
         linked_calls = set(sources.filter(inbox__source_type="call", inbox__source_id__in=[call.pk for call in candidates])
             .values_list("inbox__source_id", flat=True))
         private = private_call_ids(candidates)
@@ -211,6 +215,11 @@ def activity_page(request, organization, subject):
             if call.pk in private:
                 continue
             title = ("Пропущенный звонок" if call.result == PhoneCall.RESULT_MISSED else "Входящий звонок") if call.direction == "in" else "Исходящий звонок"
+            contact = contacts.get(call.client_id)
+            peer = " · ".join(value for value in (contact.name if contact else "Контакт не определён", call.phone_number) if value)
+            staff = (call.employee_profile.display_name if call.employee_profile_id and call.employee_profile.organization_id == organization.pk else
+                _name(call.employee) if call.employee_id in employee_ids else "") or "Сотрудник не определён"
+            participants = (peer, staff) if call.direction == "in" else (staff, peer)
             media = {}
             from pool_service.communication_views import _authorize_call_access
             try:
@@ -233,6 +242,7 @@ def activity_page(request, organization, subject):
                     media["analysis_status"] = analysis.status if analysis else "none"
             returned_calls.append(call)
             rows.append(_entry("call", call, call.started_at, "call", title, body=call.phone_number,
+                details=[" → ".join(participants)],
                 status=call.get_result_display() + " · " + str(call.duration_seconds) + " сек", media=media,
                 origin="Связанный звонок клиента", url=reverse("communications_calls") + "?" + urlencode({"org_id": organization.pk, "call_id": call.pk})))
     if kind in {"all", "task"}:
