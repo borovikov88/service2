@@ -110,6 +110,55 @@ class CardActivityTests(LeadFixture, TestCase):
         self.assertTrue(any("12\u00a0500,50" in " ".join(item.get("details", [])) for item in page["items"]))
         self.assertFalse(any(item["kind"] == "task" for item in page["items"]))
 
+    def test_inline_business_fields_do_not_require_or_mutate_next_task(self):
+        other = get_user_model().objects.create_user("synthetic-inline-task-owner")
+        OrganizationAccess.objects.create(organization=self.org, user=other, role="manager")
+        for state in ("missing", "completed", "private"):
+            lead = self.create()
+            task = lead.next_task
+            if state == "missing":
+                lead.next_task = None
+                lead.save()
+            elif state == "completed":
+                task.status = ServiceTask.STATUS_DONE
+                task.completed_at = timezone.now()
+                task.save()
+            else:
+                task.created_by = task.primary_responsible = other
+                task.save()
+                task.responsibles.set([other])
+            before = list(ServiceTask.objects.values())
+            for field, value in (("location", "Synthetic site"), ("specialization", "maintenance"), ("desired_at", self.due.isoformat())):
+                with self.subTest(state=state, field=field):
+                    key, original = uuid4().hex, lead.revision
+                    result = self.command("lead.edit", {field:value}, lead, key=key)
+                    self.assertEqual(result, self.command("lead.edit", {field:value}, lead, key=key))
+                    lead.refresh_from_db()
+                    self.assertEqual(lead.revision, original + 1)
+                    self.assertEqual(getattr(lead,field), self.due if field == "desired_at" else value)
+                    with self.assertRaises(CommercialConflict):
+                        self.command("lead.edit", {field:value}, lead, expected_revision=original)
+                    self.command("lead.edit", {field:None if field == "desired_at" else ""}, lead)
+                    lead.refresh_from_db()
+                    self.assertFalse(getattr(lead,field))
+            self.assertEqual(list(ServiceTask.objects.values()), before)
+
+    def test_inline_business_fields_still_require_current_lead_rights_on_replay(self):
+        key, original = uuid4().hex, self.lead.revision
+        self.command("lead.edit", {"location":"Synthetic site"}, self.lead, key=key)
+        self.grant.edit_own_leads = False
+        self.grant.save()
+        with self.assertRaises(PermissionDenied):
+            self.command("lead.edit", {"location":"Synthetic site"}, self.lead, key=key, expected_revision=original)
+        self.grant.edit_own_leads = True
+        self.grant.save()
+        other = get_user_model().objects.create_user("synthetic-inline-other-assignee")
+        OrganizationAccess.objects.create(organization=self.org, user=other, role="manager")
+        self.lead.assignee = other
+        self.lead.save()
+        with self.assertRaises(PermissionDenied):
+            self.command("lead.edit", {"location":"Synthetic site"}, self.lead, key=key, expected_revision=original)
+
     def test_comment_on_completed_card_does_not_reopen_or_acknowledge(self):
         self.lead.status, self.lead.result, self.lead.needs_review = "closed", "no_deal", True
         self.lead.reason = "Synthetic completed review"

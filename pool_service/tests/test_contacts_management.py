@@ -106,6 +106,21 @@ class ContactManagementTests(TestCase):
         self.a.refresh_from_db()
         self.assertEqual((self.a.name,self.a.phone), ("Synthetic renamed","доб. 123"))
 
+    def test_inline_person_name_parts_preserve_manual_crm_name(self):
+        from pool_service.client_import_review import editor_revision
+        self.person.name, self.person.first_name, self.person.last_name = "Synthetic director", "Ivan", "Ivanov"
+        self.person.save()
+        profile = ClientCRMProfile.objects.create(client=self.person)
+        for field, value in (("first_name", "Petr"), ("last_name", "Petrov"), ("first_name", ""), ("last_name", "")):
+            with self.subTest(field=field, value=value):
+                response = self.client.post(reverse("client_edit",args=[self.person.pk]), {
+                    field:value, "inline_edit":"1", "editor_revision":editor_revision(self.person,profile),
+                }, HTTP_ACCEPT="application/json")
+                self.assertEqual(response.status_code, 200, response.content)
+                self.person.refresh_from_db(); profile.refresh_from_db()
+                self.assertEqual(self.person.name, "Synthetic director")
+                self.assertEqual(getattr(self.person,field) or "", value)
+
     def test_company_and_person_phone_edit_primary_and_last_delete(self):
         for record in (self.a, self.person):
             self.phone(record, value="+12025550103", phone_type="work", label="Office", primary="1")

@@ -641,7 +641,7 @@
       const input = options ? selectField(form, label, name, value, options).input : field(label, type, name, current, name === "title").input;
       if (!options) form.append(input.parentElement);
       if(type === "textarea") input.rows=2;
-      if(type === "text" || type === "textarea") input.maxLength=({title:255,work_subject:10000,specialization:40})[name] || 255;
+      if(type === "text" || type === "textarea") input.maxLength=({title:255,work_subject:2000,specialization:40})[name] || 255;
       win.CrmInline.mount(row, {display, form, editLabel:"Редактировать: " + label, saveLabel:"Сохранить: " + label,
         clearLabel:"Удалить: " + label, clearMessage:"Удалить значение поля «" + label + "»? Изменение сохранится в истории.",
         onClear:name === "title" || !value || value === "unknown" ? null : () => { input.value=options ? "unknown" : ""; form.requestSubmit(); }, busy:() => Boolean(queue.forSubject(deal.id))});

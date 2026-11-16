@@ -127,6 +127,7 @@ class LeadSourceBrowserTests(InboxFixture, StaticLiveServerTestCase):
                 transcript='Synthetic transcript <script>neverExecute()</script>', facts={'client_name':'Synthetic person',
                     'phone':call.phone_number, 'request':'Synthetic suggested requirement'}))
             before_analysis = (analysis.attempts, analysis.requested_at)
+            before_next_task_id = lead.next_task_id
             self.incoming(participant_name='Synthetic message contact'); self.deliver()
             message_lead = CrmLead.objects.exclude(pk=lead.pk).get()
             self.client.force_login(self.user)
@@ -140,6 +141,7 @@ class LeadSourceBrowserTests(InboxFixture, StaticLiveServerTestCase):
             lead.refresh_from_db(); analysis.refresh_from_db()
             self.assertEqual(lead.need, 'Synthetic suggested requirement')
             self.assertIsNone(lead.client_id)
+            self.assertEqual(lead.next_task_id, before_next_task_id)
             self.assertEqual((analysis.attempts, analysis.requested_at), before_analysis)
 
 

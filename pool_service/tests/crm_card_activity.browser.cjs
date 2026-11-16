@@ -101,6 +101,7 @@ const {chromium} = require('playwright');
     phase='inline deal fields and clear';
     await dialog.getByRole('button',{name:'Редактировать: Предмет',exact:true}).click();
     let inline=dialog.locator('[data-command-form=field][data-field-name=work_subject]');
+    assert.equal(await inline.getByLabel('Предмет',{exact:true}).getAttribute('maxlength'),'2000');
     await inline.getByLabel('Предмет',{exact:true}).fill('Synthetic inline scope');
     await inline.getByRole('button',{name:'Отменить редактирование'}).click();
     await dialog.getByRole('button',{name:'Редактировать: Предмет',exact:true}).click();

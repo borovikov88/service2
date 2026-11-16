@@ -341,6 +341,7 @@ def client_edit(request, client_id):
                     updated.company_name = updated.name
                 elif (
                     "name" not in request.POST
+                    and request.POST.get("inline_edit") != "1"
                     and ({"first_name", "last_name"} & set(client_form.changed_data))
                 ):
                     name = " ".join(filter(None, (

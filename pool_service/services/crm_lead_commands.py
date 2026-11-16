@@ -361,7 +361,8 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
                          subject_id=None, expected_revision=None, changes):
     values = _normalize(command_type, changes)
     safe_card_edit = command_type == 'lead.comment' or (command_type == 'lead.edit' and bool(values)
-        and set(values) <= {'title', 'need', 'budget_kind', 'budget_min', 'budget_max', 'currency'})
+        and set(values) <= {'title', 'need', 'location', 'specialization', 'desired_at',
+                            'budget_kind', 'budget_min', 'budget_max', 'currency'})
     actor_id = _positive_id(getattr(actor, "pk", None))
     org_id = _positive_id(getattr(organization, "pk", None))
     if type(operation_key) is not str or len(operation_key) > 100:
