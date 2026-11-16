@@ -611,11 +611,26 @@
         tab.setAttribute("aria-selected", String(active)); tab.tabIndex = active ? 0 : -1;
       }
     }
+    function amountPanel(deal) {
+      const box = element("section", "crm-card-money");
+      box.append(element("p", "crm-card-money-label", "Сумма сделки"), element("p", "crm-card-money-value", deal.amount === null ? "Не указана" : moneyLabel(deal.amount, deal.currency)));
+      if (deal.can_edit && !deal.is_archived && ["", "RUB"].includes(deal.currency)) {
+        const edit = element("details"), form = newForm("amount", deal.id);
+        edit.append(element("summary", "", deal.amount === null ? "Указать сумму" : "Изменить сумму"), form); box.append(edit);
+        const amount = field("Сумма сделки, ₽", "text", "amount", deal.amount == null ? "" : formatMoney(deal.amount), false);
+        amount.input.inputMode = "decimal"; amount.input.maxLength = 40; amount.input.placeholder = "Например, 125 000,00"; form.append(amount.wrapper);
+        selectField(form, "Сумма", "amount_basis", deal.amount_basis === "agreed" ? "agreed" : "indicative", [["indicative", "Предварительная оценка"], ["agreed", "Согласовано с клиентом"]]);
+        form.append(element("p", "crm-activity-note", "Пустое поле означает, что сумма ещё неизвестна. Изменение суммы сохраняется в истории."));
+        formFooter(form, "Сохранить сумму");
+      }
+      return box;
+    }
     function detailTabs() {
       const nav = element("div", "crm-detail-tabs"); nav.setAttribute("role", "tablist"); nav.setAttribute("aria-label", "Карточка сделки");
-      const children = Array.from(dialogContent.children);
+      const activity = dialogContent.querySelector(".crm-card-activity");
+      const children = Array.from(dialogContent.children).filter(node => node !== activity);
       const panels = [];
-      for (const [key, label] of [["overview", "Обзор"], ["tasks", "Дела"], ["edit", "Изменить"], ["history", "История"]]) {
+      for (const [key, label] of [["overview", "Обзор"], ["tasks", "Дела"], ["edit", "Изменить"]]) {
         const nodes = children.filter(node => (node.dataset.detailSection || "overview") === key && !node.matches("h2,.crm-live-detail-meta,.crm-live-completion-warning"));
         if (!nodes.length) continue;
         const panel = element("section", "crm-detail-panel"); panel.dataset.detailPanel = key; panel.id = "crm-detail-panel-" + key;
@@ -631,7 +646,9 @@
         const index = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
         event.preventDefault(); tabs[index].click(); tabs[index].focus();
       });
-      dialogContent.append(nav, ...panels); selectDetailPanel("overview");
+      const layout = element("div", "crm-card-layout"), main = element("div", "crm-card-main");
+      main.append(nav, ...panels); layout.append(main); if (activity) layout.append(activity);
+      dialogContent.append(layout); selectDetailPanel("overview");
     }
     function field(label, type, name, value, required) {
       const wrapper = element("label", "crm-live-field");
@@ -972,7 +989,7 @@
       state.drawer = {kind: "detail", id: deal.id, deal};
       dialogContent.dataset.revision = String(deal.revision);
       dialogContent.append(titleNode(deal.title));
-      dialogContent.append(element("p", "crm-live-detail-amount" + (deal.amount === null ? " is-unknown" : ""), deal.amount === null ? "Сумма не указана" : moneyLabel(deal.amount, deal.currency)));
+      dialogContent.append(amountPanel(deal));
       if(deal.unverified_completion_stage)dialogContent.append(element("p","crm-live-completion-warning",(deal.manual_completion ? "CRM завершена вручную. " : "Финальный этап без подтверждённого итога. ")+deal.completion_warning));
       const identity = disclosure("Ссылка на сделку");
       identity.append(element("p", "crm-live-deal-id", "ID сделки: " + deal.id));
@@ -1134,21 +1151,14 @@
         const reason = field("Причина", "textarea", "reason", "", true); reason.input.maxLength = 500;
         form.append(reason.wrapper); formFooter(form, "Зафиксировать исход"); part.append(form); dialogContent.append(part);
       }
-      const history = section("История изменений");
-      history.dataset.detailSection = "history";
-      if (!events?.length) history.append(element("p", "crm-live-muted", "Изменения сделки будут отображаться здесь."));
-      else {
-        const list = element("ol", "crm-live-history");
-        events.forEach((event) => {
-          const item = element("li", "", event.label || "Изменение сделки");
-          const actorName = typeof event.actor === "string" ? event.actor : event.actor?.name;
-          item.append(element("small", "", dateText(event.at) + (actorName ? " · " + actorName : "")));
-          if ((event.reason || "") + (event.manual_completion_exception ? " · Ручное завершение без подтверждения исполнения и оплаты" : "")) item.append(element("p", "", (event.reason || "") + (event.manual_completion_exception ? " · Ручное завершение без подтверждения исполнения и оплаты" : "")));
-          list.append(item);
-        });
-        history.append(list);
-      }
-      dialogContent.append(history);
+      const activity = element("section"); dialogContent.append(activity);
+      win.CrmCardActivity.mount(activity, {url: bootstrap.urls.detail_prefix + deal.id + "/activity/?org_id=" + bootstrap.organization_id, timezone:bootstrap.timezone,
+        commentForm: deal.can_comment ? () => {
+          const form = newForm("comment", deal.id); form.classList.add("crm-activity-comment");
+          const body = field("Комментарий", "textarea", "body", "", true); body.input.maxLength = 4000; body.input.rows = 3;
+          body.input.placeholder = "Договорённости, результат разговора или заметка для коллег…";
+          form.append(body.wrapper); formFooter(form, "Добавить комментарий"); return form;
+        } : null});
       // Keep the first screen focused on the customer and next action.
       dialogContent.append(identity);
       detailTabs();
@@ -1443,6 +1453,12 @@
           const changes = {responsible_id:Number(values.get("responsible_id")), transfer_next_action:Boolean(form.elements.namedItem("transfer_next_action")?.checked)};
           if (changes.transfer_next_action) changes.expected_task_version = deal.assignment_task.version;
           await send("deal.assign", deal.id, deal.revision, changes, "Ответственный за «" + deal.title + "»");
+        } else if (kind === "comment") {
+          const body = String(values.get("body") || "").trim(); if (!body) throw new Error("Напишите комментарий.");
+          await send("deal.comment", deal.id, deal.revision, {body}, "Комментарий к «" + deal.title + "»");
+        } else if (kind === "amount") {
+          const amount = parseMoney(values.get("amount"));
+          await send("deal.edit", deal.id, deal.revision, {amount:amount || null, currency:amount ? "RUB" : "", amount_basis:amount ? String(values.get("amount_basis")) : "unknown"}, "Сумма сделки «" + deal.title + "»");
         } else if (kind === "edit") {
           const title = String(values.get("title") || "").trim();
           if (!title) throw new Error("Укажите название сделки.");

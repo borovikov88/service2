@@ -448,6 +448,7 @@ class CrmEvent(CommercialModel):
     def clean(self):
         super().clean()
         allowed = {"work_subject_changed", "planned_object_changed", "object_kind", "pool_id", "client_object_id", "specialization_changed", "fulfillment_kind", "amount", "currency", "amount_basis", "expected_decision_at", "outcome", "closed_at", "stage_id", "pipeline_id", "manager_id", "assignee_id", "revision", "is_archived", "status", "result", "needs_review", "column", "title_changed", "need_changed", "next_action_changed", "manual_completion_exception"}
+        allowed |= {"budget_kind", "budget_min", "budget_max"}
         if not isinstance(self.safe_diff, dict) or not self.safe_diff.keys() <= allowed:
             raise ValidationError("Event diff accepts only structural CRM fields.")
         for field, change in self.safe_diff.items():
@@ -459,6 +460,7 @@ class CrmEvent(CommercialModel):
                 "object_kind": {"none", "pool", "client_object", "planned"},
                 "fulfillment_kind": {"unknown", "construction", "service", "retail", "mixed"},
                 "amount_basis": {"unknown", "indicative", "agreed"},
+                "budget_kind": {"unknown", "exact", "range"},
                 "outcome": {"open", "won", "lost", "cancelled", "unknown"},
             }
             if field in {"pool_id", "client_object_id"}:
@@ -469,7 +471,7 @@ class CrmEvent(CommercialModel):
                 if any(type(value) is not str or value not in enums[field] for value in change.values()):
                     raise ValidationError("Event value must be a known CRM enum.")
                 continue
-            if field in {"amount", "currency", "expected_decision_at", "closed_at"}:
+            if field in {"amount", "budget_min", "budget_max", "currency", "expected_decision_at", "closed_at"}:
                 import re
                 from django.utils.dateparse import parse_datetime
                 for value in change.values():
@@ -477,7 +479,7 @@ class CrmEvent(CommercialModel):
                         valid = type(value) is str and (value == "" or re.fullmatch(r"[A-Z]{3}", value))
                     elif value is None:
                         valid = True
-                    elif field == "amount":
+                    elif field in {"amount", "budget_min", "budget_max"}:
                         valid = type(value) is str and re.fullmatch(r"(?:0|[1-9][0-9]{0,15})\.[0-9]{2}", value)
                     else:
                         try:
@@ -503,6 +505,34 @@ class CrmEvent(CommercialModel):
         if not self._state.adding or (self.pk and type(self).objects.filter(pk=self.pk).exists()):
             raise ValidationError("CRM events are immutable.")
         return super().save(*args, **kwargs)
+
+
+class CrmCardComment(models.Model):
+    """Append-only comment content, scoped exclusively by its immutable event."""
+    event = models.OneToOneField(CrmEvent, on_delete=models.PROTECT, related_name="card_comment")
+    body = models.TextField(max_length=4000)
+    objects = EventQuerySet.as_manager()
+
+    def clean(self):
+        super().clean()
+        if not self.event_id or self.event.event_type not in {"lead.comment", "deal.comment"}:
+            raise ValidationError("A comment requires a CRM comment event.")
+        if not self.event.command_id or not self.event.actor_id:
+            raise ValidationError("A comment requires an authorized command and author.")
+        command = self.event.command
+        if command.command_type != self.event.event_type or command.actor_id != self.event.actor_id or command.organization_id != self.event.organization_id:
+            raise ValidationError("A comment must match its author and scoped command.")
+        if not isinstance(self.body, str) or not self.body.strip() or len(self.body) > 4000:
+            raise ValidationError("Комментарий должен содержать от 1 до 4000 символов.")
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding or (self.pk and type(self).objects.filter(pk=self.pk).exists()):
+            raise ValidationError("CRM comments are immutable.")
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("CRM comments are immutable.")
 
 
 class CrmAccess(CommercialModel):
