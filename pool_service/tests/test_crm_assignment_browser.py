@@ -57,8 +57,8 @@ class CrmAssignmentBrowserTests(LeadFixture, StaticLiveServerTestCase):
         self.assertEqual(deal.amount_basis, "agreed")
         self.assertEqual(str(lead.budget_min), "35000.75")
         self.assertEqual(lead.budget_kind, "exact")
-        self.assertEqual(CrmCardComment.objects.count(), 2)
-        self.assertEqual(CrmEvent.objects.filter(event_type="deal.comment").count(), 1)
+        self.assertEqual(CrmCardComment.objects.count(), 4)
+        self.assertEqual(CrmEvent.objects.filter(event_type="deal.comment").count(), 3)
         self.assertEqual(CrmEvent.objects.filter(event_type="lead.comment").count(), 1)
 
     def test_bulk_selection_stages_responsibles_partial_errors_and_retry(self):

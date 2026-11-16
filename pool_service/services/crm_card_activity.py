@@ -165,6 +165,7 @@ def activity_page(request, organization, subject):
     family = _family(request.user, organization, subject)
     caps = _communication_caps(request.user, organization)
     rows = []
+    returned_calls = []
     if kind in {"all", "change", "comment"}:
         rows += _event_entries(request, organization, subject, family, kind, before)
     sources = CrmLeadSource.objects.filter(organization=organization, lead_id__in=family,
@@ -214,7 +215,9 @@ def activity_page(request, organization, subject):
             from pool_service.communication_views import _authorize_call_access
             try:
                 _authorize_call_access(request, call)
-            except (PermissionDenied, Http404):
+            except Http404:
+                continue
+            except PermissionDenied:
                 pass
             else:
                 if call.recording_file:
@@ -228,6 +231,7 @@ def activity_page(request, organization, subject):
                 if isinstance(subject, CrmLead) and call.pk in linked_calls and call.recording_file:
                     media["analysis_url"] = reverse("crm_live_lead_analysis", args=[subject.pk, call.pk]) + "?" + urlencode({"org_id": organization.pk})
                     media["analysis_status"] = analysis.status if analysis else "none"
+            returned_calls.append(call)
             rows.append(_entry("call", call, call.started_at, "call", title, body=call.phone_number,
                 status=call.get_result_display() + " · " + str(call.duration_seconds) + " сек", media=media,
                 origin="Связанный звонок клиента", url=reverse("communications_calls") + "?" + urlencode({"org_id": organization.pk, "call_id": call.pk})))
@@ -249,6 +253,10 @@ def activity_page(request, organization, subject):
     # Permission revocation between split reads must not reveal derived history.
     if family != _family(request.user, organization, subject) or caps != _communication_caps(request.user, organization):
         raise Http404
+    # Client-linked calls need their own final check: they may have no lead
+    # source whose authorization would detect a newly private phone number.
+    hidden_calls = {"call:" + str(pk) for pk in private_call_ids(returned_calls)}
+    rows = [row for row in rows if row["id"] not in hidden_calls]
     rows.sort(key=lambda row: row["_key"], reverse=True)
     selected = rows[:PAGE_SIZE]
     cursor = None

@@ -142,10 +142,13 @@
     const changes = payload.changes || {};
     const draft = {revision: canonical.revision, taskVersion: canonical.next_action?.version, fields: {}};
     if (payload.command_type === "deal.edit") {
-      draft.formKind = "edit";
+      draft.formKind = Object.keys(changes).length && Object.keys(changes).every(key => ["amount", "currency", "amount_basis"].includes(key)) ? "amount" : "edit";
       draft.fields = {...changes};
       if (Object.prototype.hasOwnProperty.call(changes, "expected_decision_at")) draft.fields.expected_decision_at = localDateTime(changes.expected_decision_at, timezone);
       if (changes.object_kind) draft.fields.object_ref = changes.object_kind === "pool" ? "pool:" + changes.pool_id : changes.object_kind === "client_object" ? "client_object:" + changes.client_object_id : changes.object_kind;
+    } else if (payload.command_type === "deal.comment") {
+      draft.formKind = "comment";
+      draft.fields.body = changes.body;
     } else if (payload.command_type === "deal.next_action") {
       draft.formKind = "next_action";
       draft.fields.next_title = changes.title;

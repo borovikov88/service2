@@ -1,6 +1,7 @@
 """Real card commands, source permissions and chronological pagination."""
 from datetime import timedelta
 from uuid import uuid4
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
@@ -206,6 +207,35 @@ class CardActivityTests(LeadFixture, TestCase):
         self.assertEqual(self.http.get(self.url(self.deal_card, type="call")).json()["items"], [])
         CommunicationAccess.objects.filter(organization=self.org, user=self.user).update(can_view_conversations=False)
         self.assertEqual(self.http.get(self.url(self.deal_card, type="message")).json()["items"], [])
+
+    def test_client_linked_call_becoming_private_during_read_is_fully_hidden(self):
+        from pool_service.call_processing_models import CallPrivateNumber
+        from pool_service.communication_views import _authorize_call_access
+        from pool_service.phone_utils import normalize_phone
+        _, _, call = self.communications()
+
+        def make_private():
+            CallPrivateNumber.objects.get_or_create(organization=self.org, owner=self.user,
+                phone_key=normalize_phone(call.phone_number))
+
+        for phase in ("before_authorization", "after_authorization"):
+            with self.subTest(phase=phase):
+                CallPrivateNumber.objects.all().delete()
+
+                def authorize(request, current_call):
+                    if phase == "before_authorization":
+                        make_private()
+                    try:
+                        return _authorize_call_access(request, current_call)
+                    finally:
+                        if phase == "after_authorization":
+                            make_private()
+
+                with patch("pool_service.communication_views._authorize_call_access", side_effect=authorize) as checked:
+                    response = self.http.get(self.url(self.deal_card, type="call"))
+                checked.assert_called_once()
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["items"], [])
 
     def test_mixed_stream_cursor_does_not_skip_equal_timestamps(self):
         from pool_service.communication_models import ConversationMessage
