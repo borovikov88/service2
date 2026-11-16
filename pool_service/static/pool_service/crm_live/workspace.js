@@ -691,6 +691,10 @@
       error.hidden = !message;
     }
     function updateFormLocks() {
+      // The retained detail header must wait for the same refresh as its forms.
+      // Otherwise a late response can replace a just-reopened editor.
+      const detailBusy = state.drawer?.kind === "loading" || Boolean(state.drawer?.id && queue.forSubject(state.drawer.id));
+      for (const button of dialogContent.querySelectorAll(".crm-live-detail-meta .crm-live-inline-action")) button.disabled = detailBusy;
       for (const form of dialogContent.querySelectorAll("[data-command-form]")) {
         const subjectId = form.dataset.subjectId || null;
         const busy = Boolean(queue.forSubject(subjectId)) || form.dataset.orderRefreshing === "true" || (state.drawer?.kind === "loading" && sameId(state.drawer.id, subjectId));
