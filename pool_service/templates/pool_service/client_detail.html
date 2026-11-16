@@ -3,8 +3,10 @@
 {% block title %}{{ client.name }}{% endblock %}
 
 {% block extra_head %}
-<link rel="stylesheet" href="{% static 'pool_service/contact_management.css' %}?v=20261116-contacts-theme2">
-<script src="{% static 'pool_service/contact_management.js' %}?v=20261116-contacts" defer></script>
+<link rel="stylesheet" href="{% static 'pool_service/crm_inline.css' %}?v=20261116-inline1">
+<script src="{% static 'pool_service/crm_inline.js' %}?v=20261116-inline1" defer></script>
+<link rel="stylesheet" href="{% static 'pool_service/contact_management.css' %}?v=20261116-inline1">
+<script src="{% static 'pool_service/contact_management.js' %}?v=20261116-inline1" defer></script>
 {% endblock %}
 {% block content %}
 {% include "pool_service/_admin_workspace_styles.html" %}
@@ -123,6 +125,10 @@
           <div class="col-12 col-xl-7">
             <div class="border rounded-3 p-4 h-100">
               <h6 class="fw-bold mb-3">Основные данные</h6>
+              {% if inline_client_fields %}
+                <div class="contact-inline-fields">{% for item in inline_client_fields %}{% include "pool_service/_client_inline_field.html" %}{% endfor %}</div>
+                <div class="mt-3">{% include "pool_service/_contact_phones.html" %}</div>
+              {% else %}
               <dl class="row mb-0">
                 <dt class="col-sm-4 text-muted fw-normal">Тип</dt>
                 <dd class="col-sm-8">{{ client_kind_label }}</dd>
@@ -149,44 +155,15 @@
                   </dd>
                 {% endif %}
               </dl>
+              {% endif %}
             </div>
           </div>
 
           <div class="col-12 col-xl-5">
             <div class="border rounded-3 p-4 h-100">
               <h6 class="fw-bold mb-3">Работа с клиентом</h6>
-              {% if can_manage %}
-                <form method="post">
-                  {% csrf_token %}
-                  <input type="hidden" name="action" value="save_profile">
-                  <div class="mb-3">
-                    <label class="form-label small text-muted">Менеджер клиента</label>
-                    <select class="form-select" name="manager">
-                      <option value="">Не назначен</option>
-                      {% for employee in staff_options %}
-                        <option value="{{ employee.id }}" {% if profile and profile.manager_id == employee.id %}selected{% endif %}>
-                          {{ employee.get_full_name|default:employee.username }}
-                        </option>
-                      {% endfor %}
-                    </select>
-                  </div>
-                  <div class="mb-3">
-                    <label class="form-label small text-muted">Ответственный сейчас</label>
-                    <select class="form-select" name="responsible">
-                      <option value="">Не назначен</option>
-                      {% for employee in staff_options %}
-                        <option value="{{ employee.id }}" {% if profile and profile.responsible_id == employee.id %}selected{% endif %}>
-                          {{ employee.get_full_name|default:employee.username }}
-                        </option>
-                      {% endfor %}
-                    </select>
-                  </div>
-                  <div class="mb-3">
-                    <label class="form-label small text-muted">Заметки</label>
-                    <textarea class="form-control" rows="5" name="notes" placeholder="Договорённости, важные особенности клиента...">{% if profile %}{{ profile.notes }}{% endif %}</textarea>
-                  </div>
-                  <button class="btn btn-primary" type="submit">Сохранить</button>
-                </form>
+              {% if inline_work_fields %}
+                {% for item in inline_work_fields %}{% include "pool_service/_client_inline_field.html" %}{% endfor %}
               {% else %}
                 <div class="mb-3">
                   <div class="text-muted small">Менеджер клиента</div>
@@ -244,7 +221,9 @@
             <div class="border rounded-3 p-4 h-100">
               <h6 class="fw-bold mb-3">Email</h6>
               <div class="d-grid gap-2">
-                {% if client.email %}
+                {% if inline_email_field %}
+                  {% include "pool_service/_client_inline_field.html" with item=inline_email_field %}
+                {% elif client.email %}
                   <div class="d-flex justify-content-between gap-2 border rounded-2 px-3 py-2">
                     <a href="mailto:{{ client.email }}" class="text-decoration-none">{{ client.email }}</a>
                     <span class="badge text-bg-secondary">Основной</span>
@@ -258,7 +237,7 @@
                     </div>
                   {% endif %}
                 {% empty %}
-                  {% if not client.email %}<div class="text-muted">Email не указан.</div>{% endif %}
+                  {% if not client.email and not inline_email_field %}<div class="text-muted">Email не указан.</div>{% endif %}
                 {% endfor %}
               </div>
             </div>

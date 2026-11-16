@@ -496,6 +496,7 @@ def client_detail(request, client_id):
             connection__channel__organization_id=client.organization_id).select_related("connection__channel").order_by("-last_message_at")[:30])
 
     from .services.contact_people import phone_revision, phone_rows
+    from .client_crm_ui import inline_editor_context
     from .client_crm_models import OrganizationPersonLink
     from .services.call_processing_settings import settings_allowed
     from .services.owner_call_privacy import contact_state
@@ -512,6 +513,7 @@ def client_detail(request, client_id):
         "pool_service/client_detail.html",
         {
             "client": client,
+            **(inline_editor_context(client, profile) if can_manage and not request.user.is_superuser else {}),
             "client_conversations": client_conversations,
             "profile": profile,
             "client_kind_label": client_kind_label,

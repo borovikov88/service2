@@ -125,10 +125,10 @@ class ClientEditorForm(forms.ModelForm):
 
     def clean_phone(self):
         value = (self.cleaned_data.get("phone") or "").strip()
-        if value and not normalize_phone(value):
-            raise forms.ValidationError("Укажите корректный номер телефона.")
         if value == (self.initial.get("phone") or ""):
             return value
+        if value and not normalize_phone(value):
+            raise forms.ValidationError("Укажите корректный номер телефона.")
         return canonical_phone_value(value) if value else ""
 
 
@@ -171,6 +171,35 @@ class CRMProfileEditorForm(forms.ModelForm):
             self.fields[name].empty_label = "Не назначен"
         for field in self.fields.values():
             field.widget.attrs["class"] = "form-select" if isinstance(field.widget, forms.Select) else "form-control"
+
+
+def inline_editor_context(client, profile):
+    """Reuse the full editor's validation, field set and revision for small edits."""
+    from .client_import_review import editor_revision
+    profile = profile or ClientCRMProfile(client=client)
+    basics, work = [], []
+    for form in (ClientEditorForm(instance=client), CRMProfileEditorForm(instance=profile, client=client, prefix="profile")):
+        for field in form:
+            if field.name == "phone":
+                continue
+            value = field.value()
+            if isinstance(field.field, forms.ModelChoiceField):
+                person = getattr(profile, field.name, None)
+                display = (person.get_full_name() or person.username) if person else "Не назначен"
+            elif field.name == "birth_date":
+                display = value.strftime("%d.%m.%Y") if value else "Не указано"
+            else:
+                display = value or "Не указано"
+            field.field.widget.attrs.pop("data-crm-name", None)
+            field.field.widget.attrs.pop("data-crm-name-part", None)
+            if isinstance(field.field.widget, forms.Textarea):
+                field.field.widget.attrs["rows"] = 2
+            (work if field.name in ("manager", "responsible", "notes") else basics).append({
+                "field": field, "display": display, "clearable": not field.field.required and bool(value),
+            })
+    email = next(item for item in basics if item["field"].name == "email")
+    return {"inline_client_fields": basics, "inline_work_fields": work, "editor_revision": editor_revision(client, profile),
+        "inline_email_field": {**email, "widget": email["field"].as_widget(attrs={"id": "contacts-inline-email"})}}
 
 
 def complete_form_data(data, form):
@@ -265,6 +294,8 @@ def client_edit(request, client_id):
         from .client_import_review import editor_revision
         revision = editor_revision(client, profile)
         if request.method == "POST" and request.POST.get("editor_revision") != revision:
+            if request.headers.get("Accept") == "application/json":
+                return JsonResponse({"error": "Карточка изменилась. Обновите страницу перед сохранением."}, status=409)
             from django.http import HttpResponse
             return HttpResponse("Карточка изменилась или форма устарела. Обновите страницу перед сохранением.", status=409)
         tab = card_tab(request.POST.get("return_tab") if request.method == "POST" else request.GET.get("tab"))
@@ -326,7 +357,12 @@ def client_edit(request, client_id):
                     sync_primary_contact(updated, ClientContact.KIND_PHONE, previous_phone, updated.phone)
                     sync_primary_contact(updated, ClientContact.KIND_EMAIL, previous_email, updated.email)
                     messages.success(request, "Карточка клиента обновлена.")
+                    if request.headers.get("Accept") == "application/json":
+                        return JsonResponse({"url": card_url(updated.pk, tab)})
                     return redirect(card_url(updated.pk, tab))
+            if request.headers.get("Accept") == "application/json":
+                errors = [str(error) for form in (client_form, profile_form) for messages in form.errors.values() for error in messages]
+                return JsonResponse({"error": " ".join(errors) or "Проверьте значение поля."}, status=400)
         contacts = list(ClientContact.objects.filter(client=client).order_by("kind", "-is_primary", "id"))
     from .services.contact_people import phone_revision, phone_rows
     return render(request, "pool_service/client_edit.html", {

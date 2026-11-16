@@ -2,8 +2,10 @@
 {% load crm_phone_fields static %}
 {% block title %}Редактирование — {{ client.name }}{% endblock %}
 {% block extra_head %}
-<link rel="stylesheet" href="{% static 'pool_service/contact_management.css' %}?v=20261116-contacts-theme2">
-<script src="{% static 'pool_service/contact_management.js' %}?v=20261116-contacts" defer></script>
+<link rel="stylesheet" href="{% static 'pool_service/crm_inline.css' %}?v=20261116-inline1">
+<script src="{% static 'pool_service/crm_inline.js' %}?v=20261116-inline1" defer></script>
+<link rel="stylesheet" href="{% static 'pool_service/contact_management.css' %}?v=20261116-inline1">
+<script src="{% static 'pool_service/contact_management.js' %}?v=20261116-inline1" defer></script>
 {% endblock %}
 {% block content %}
 {% include "pool_service/_admin_workspace_styles.html" %}

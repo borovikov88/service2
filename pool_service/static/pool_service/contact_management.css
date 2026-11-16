@@ -8,19 +8,19 @@
 .contact-metrics>div{width:auto!important;flex:1;min-width:135px;padding:0!important}
 .contact-metrics .border{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 16px!important;background:#f7faff;border-color:#e7edf6!important}
 .contact-metrics .fs-4{font-size:1.1rem!important}
-.contact-phone-row{border:1px solid #e2eaf4;border-radius:12px;padding:13px 15px;margin-bottom:10px;background:#fff}
-.contact-phone-summary{display:flex;align-items:center;flex-wrap:wrap;gap:8px 14px}
+.contact-phone-row{border-bottom:1px solid #e2eaf4;padding:7px 0;background:transparent}
+.contact-phone-summary{display:flex;align-items:center;flex-wrap:wrap;gap:5px 10px;font-size:.92rem}
 .contact-phone-summary>a{text-decoration:none;font-weight:600;color:#1e3a5c}
-.contact-primary{font-size:.72rem;font-weight:600;color:#1261c9;background:#edf4ff;padding:4px 8px;border-radius:6px}
-.contact-phone-edit summary,.contact-phone-add summary{color:#1768d2;font-size:.85rem;cursor:pointer;padding-top:8px}
-.contact-phone-edit[open] summary{margin-bottom:12px}
-.contact-phone-fields{display:grid;grid-template-columns:minmax(140px,1.3fr) minmax(105px,.7fr);gap:10px;margin-top:12px}
-.contact-phone-fields label{font-size:.8rem;color:#6b7d96}
-.contact-phone-fields label:last-child{grid-column:1/-1}
-.contact-phone-fields .form-control,.contact-phone-fields .form-select{margin-top:5px;border-radius:8px}
-.contact-phone-actions{display:flex;flex-wrap:wrap;gap:8px}
-.contact-phone-add{border:1px dashed #bcd0eb;border-radius:12px;padding:4px 15px 12px}
-.contact-empty{color:#7a8aa1;padding:20px 0}
+.contact-primary{font-size:.68rem;font-weight:600;color:#1261c9;background:#edf4ff;padding:3px 6px;border-radius:5px}
+.contact-phone-add{padding:7px 0;color:#1768d2;font-size:.85rem}
+.contact-phones .contact-number-field{flex:1 1 180px}
+.contact-phones .contact-type-field{flex:0 1 110px}
+.contact-phones .contact-primary-field{flex:0 0 auto;align-self:center;white-space:nowrap;padding-top:18px}
+.contact-phones .crm-inline-view{min-height:32px}
+.contact-empty{color:#7a8aa1;padding:12px 0;font-size:.85rem}
+.contact-inline-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:16px}
+.contact-inline-fields>.crm-inline-field:first-child{grid-column:1/-1}
+@media(max-width:600px){.contact-inline-fields{grid-template-columns:1fr}}
 .contact-bulk-bar{position:fixed;bottom:20px;left:50%;transform:translateX(-35%);z-index:1090;max-width:calc(100vw - 36px);background:#203852;color:#fff;box-shadow:0 10px 32px #182f5840;border-radius:15px;padding:12px 18px;display:flex;align-items:center;flex-wrap:wrap;gap:12px}
 .contact-bulk-bar[hidden]{display:none}
 .contact-bulk-bar .btn-outline-light{border-color:#ffffff40}
@@ -44,8 +44,7 @@ html[data-theme="dark"] .contact-merge-card,
 html[data-theme="dark"] .contact-merge-result,
 html[data-theme="dark"] .contact-merge-dialog{background:#182638;color:#e7edf5;border-color:#304158!important}
 html[data-theme="dark"] .contact-phone-summary>a,
-html[data-theme="dark"] .contact-phone-edit summary,
-html[data-theme="dark"] .contact-phone-add summary{color:#9ac3ff}
+html[data-theme="dark"] .contact-phone-add{color:#9ac3ff}
 html[data-theme="dark"] .contact-primary{color:#b3d2ff;background:#203c61}
 html[data-theme="dark"] .contact-phone-fields label,
 html[data-theme="dark"] .contact-merge-card small,
@@ -58,7 +57,6 @@ html[data-theme="dark"] .contact-merge-head,
 html[data-theme="dark"] .contact-merge-foot{border-color:#304158}
 @media(max-width:767px){.contact-card>.admin-card{padding:16px!important}
 .contact-bulk-bar{left:12px;right:12px;bottom:max(80px,env(safe-area-inset-bottom));transform:none;max-width:none}
-.contact-phone-fields{grid-template-columns:1fr}
 .contact-metrics>div{min-width:40%}
 .contact-merge-head,.contact-merge-foot,.contact-merge-body{padding:16px}
 .contact-merge-foot{flex-wrap:wrap}

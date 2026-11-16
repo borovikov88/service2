@@ -161,7 +161,7 @@
         row.append(actions); host.append(row);
       }
       const pending = operations.forSubject(state.selected);
-      content.querySelectorAll("button[type=submit]").forEach((node) => { node.disabled = Boolean(pending); });
+      content.querySelectorAll("button[type=submit],.crm-inline button,.crm-inline input,.crm-inline select,.crm-inline textarea").forEach((node) => { node.disabled = Boolean(pending); });
       content.querySelectorAll("[data-assignment-form] input,[data-assignment-form] select,[data-assignment-form] button").forEach(node => { node.disabled = Boolean(pending); });
       byId("lead-create").disabled = Boolean(operations.forSubject(null));
     }
@@ -625,8 +625,9 @@
       const label = lead.budget_kind === "unknown" ? "Не указан" : lead.budget_kind === "range" ? money(lead.budget_min) + " — " + money(lead.budget_max) : money(lead.budget_min);
       box.append(el("p", "crm-card-money-label", "Бюджет лида"), el("p", "crm-card-money-value", label));
       if (lead.can_edit) {
-        const edit = el("details"), form = el("form"); edit.append(el("summary", "", lead.budget_kind === "unknown" ? "Указать сумму" : "Изменить сумму"), form); box.append(edit);
+        const form = el("form");
         const kind = select(form, "Бюджет лида", [["unknown", "Пока неизвестен"], ["exact", "Точная сумма"], ["range", "Диапазон"]], lead.budget_kind === "unknown" ? "exact" : lead.budget_kind);
+        kind.setAttribute("aria-label", "Бюджет лида");
         const minimum = field(form, "Сумма / от, " + (currency === "RUB" ? "₽" : currency), win.CrmCardActivity.formatMoney(lead.budget_min));
         const maximum = field(form, "До, " + (currency === "RUB" ? "₽" : currency), win.CrmCardActivity.formatMoney(lead.budget_max));
         for (const input of [minimum, maximum]) { input.inputMode = "decimal"; input.maxLength = 40; }
@@ -637,8 +638,29 @@
           const amount = kind.value === "unknown" ? null : win.CrmCardActivity.parseMoney(minimum.value);
           submit(form, "lead.edit", lead, {budget_kind:kind.value, budget_min:amount, budget_max:kind.value === "unknown" ? null : kind.value === "exact" ? amount : win.CrmCardActivity.parseMoney(maximum.value), currency:kind.value === "unknown" ? "" : currency});
         });
+        form.querySelector('button[type=submit]').remove();
+        win.CrmInline.mount(box, {display:box.querySelector('.crm-card-money-value'), form,
+          editLabel:"Редактировать сумму", saveLabel:"Сохранить сумму", clearLabel:"Удалить сумму",
+          clearMessage:"Убрать бюджет лида? В карточке будет «Не указан». Изменение сохранится в истории.",
+          onClear:lead.budget_kind === "unknown" ? null : () => {kind.value="unknown"; update(); form.requestSubmit();},
+          onReset:update, busy:() => Boolean(operations.forSubject(lead.id))});
       }
       return box;
+    }
+    function inlineLeadField(lead, name, label, type = "text", required = false) {
+      const row=el("div","crm-inline-field"), value=lead[name]; row.append(el("p","crm-inline-label",label));
+      const display=el("p",name === "need" ? "lead-need" : "",type === "datetime-local" ? (value ? dateText(value) : "Не указано") : value || "Не указано");
+      if(!lead.can_edit) {row.append(display); return row;}
+      const form=el("form"), input=field(form,label,type === "datetime-local" ? localDateTime(value,initial.timezone) : value || "",type,true);
+      input.required=required; if(type === "textarea") input.rows=2;
+      if(type === "text" || type === "textarea") input.maxLength=({title:255,need:10000,specialization:40,location:255})[name];
+      if(name === "need") input.dataset.inlineLeadNeed="true";
+      formSubmit(form,"Сохранить",()=>{if(!form.reportValidity())return; const raw=input.value.trim(); submit(form,"lead.edit",lead,{[name]:type === "datetime-local" ? (raw ? deadlineISO(raw,initial.utc_offset) : null) : raw});});
+      form.querySelector('button[type=submit]').remove();
+      win.CrmInline.mount(row,{display,form,editLabel:"Редактировать: "+label,saveLabel:"Сохранить: "+label,
+        clearLabel:"Удалить: "+label,clearMessage:"Удалить значение поля «"+label+"»? Изменение сохранится в истории.",
+        onClear:required || !value ? null : ()=>{input.value="";form.requestSubmit();},busy:()=>Boolean(operations.forSubject(lead.id))});
+      return row;
     }
     function renderDetail(data) {
       const lead=data.lead;state.detail=data;content.replaceChildren();
@@ -654,7 +676,9 @@
       }
       const layout=el("div","lead-detail-grid"), left=el("div","lead-detail-main"), right=el("section","lead-timeline");layout.append(left,right);content.append(layout);
       left.append(budgetPanel(lead));
-      const need=el("section","lead-panel lead-overview");need.append(el("h3","","Потребность"),el("p","lead-need",lead.need || "Уточните, что требуется клиенту."));left.append(need);
+      const need=el("section","lead-panel lead-overview");need.append(el("h3","","О лиде"),
+        inlineLeadField(lead,"title","Название","text",true),inlineLeadField(lead,"need","Потребность","textarea",true),
+        inlineLeadField(lead,"location","Место / объект"),inlineLeadField(lead,"specialization","Специализация"),inlineLeadField(lead,"desired_at","Желаемый срок","datetime-local"));left.append(need);
       if (lead.can_assign && initial.urls.responsibles) {
         const assignment = el("details", "lead-panel crm-assignment"); assignment.append(el("summary", "", "Ответственный · " + (lead.assignee?.name || "Не назначен"))); left.append(assignment); assignmentForm(assignment, lead);
         primaryActions.append(button(lead.assignee ? "Сменить ответственного" : "Назначить ответственного", () => { assignment.open = true; assignment.scrollIntoView({block:"nearest"}); assignment.querySelector("select")?.focus(); }));
@@ -693,7 +717,7 @@
           body.placeholder = "Договорённости, результат разговора или заметка для коллег…";
           formSubmit(form, "Добавить комментарий", () => { if (form.reportValidity()) submit(form, "lead.comment", lead, {body:body.value.trim()}); }); return form;
         } : null,
-        suggestNeed: lead.can_edit ? value => { const input = content.querySelector('[data-lead-need="true"]'); if (input && (!input.value || input.value === lead.need)) { editor.open = true; input.value = value; input.focus(); } } : null,
+        suggestNeed: lead.can_edit ? value => { const input = content.querySelector('[data-inline-lead-need="true"]'); if (input && (!input.value || input.value === lead.need)) { input.form.crmInlineEditor.open(); input.value = value; input.focus(); } } : null,
         analyze: async url => { const response = await win.fetch(url, {method:"POST", credentials:"same-origin", headers:{"X-CSRFToken":csrf(), Accept:"application/json"}}); if (!response.ok) throw new Error("Запуск недоступен. Проверьте права и состояние записи."); }
       });
       renderOperations();

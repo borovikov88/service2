@@ -38,6 +38,74 @@ class ContactManagementTests(TestCase):
     def preview(self, ids=None, target=None):
         return preview_merge(self.actor, ids or [self.a.pk, self.b.pk], target or self.a.pk)
 
+    def test_russian_phone_mask_cannot_change_row_identity(self):
+        from pool_service.services.contact_people import phone_rows
+        self.a.phone = "+7 383 555 0101"
+        self.a.save()
+        url = reverse("client_phone_manage", args=[self.a.pk])
+        page = self.client.get(reverse("client_detail", args=[self.a.pk]))
+        self.assertContains(page, 'name="entry_key" value="primary"')
+        self.assertNotContains(page, 'name="phone_key"')
+        response = self.client.post(url, {"operation":"edit", "entry_key":"primary",
+            "contacts_revision":phone_revision(self.a), "phone":"+7 383 555 0103"})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.a.refresh_from_db()
+        entry = phone_rows(self.a)[0]["entry_key"]
+        self.assertTrue(entry.startswith("row:"))
+        # A stale key is not rescued by an otherwise valid current revision.
+        with self.assertRaises(ValidationError):
+            self.phone(action="delete", entry_key="row:999999")
+        foreign = ClientContact.objects.create(client=self.b, kind="phone", value=self.a.phone)
+        with self.assertRaises(ValidationError):
+            self.phone(action="delete", entry_key=f"row:{foreign.pk}")
+        self.phone(action="delete", entry_key=entry)
+        self.a.refresh_from_db()
+        self.assertEqual(self.a.phone, "")
+        self.assertTrue(ClientContact.objects.filter(pk=foreign.pk).exists())
+
+    def test_old_open_form_formatted_russian_key_remains_compatible(self):
+        self.a.phone = "+7 383 555 0101"
+        self.a.save()
+        self.phone(action="edit", key="+7 383 555 0101", value="+7 383 555 0102")
+        self.a.refresh_from_db()
+        self.assertEqual(normalize_phone(self.a.phone), "3835550102")
+        self.phone(action="delete", key="8 (383) 555-01-02")
+        self.a.refresh_from_db()
+        self.assertFalse(self.a.phone)
+
+    def test_inline_fields_preserve_other_values_and_enforce_revision_and_scope(self):
+        from pool_service.client_import_review import editor_revision
+        profile = ClientCRMProfile.objects.create(client=self.a, notes="Keep these notes")
+        url = reverse("client_edit", args=[self.a.pk])
+        revision = editor_revision(self.a, profile)
+        response = self.client.post(url, {"email":"hello@example.invalid", "editor_revision":revision}, HTTP_ACCEPT="application/json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.a.refresh_from_db(); profile.refresh_from_db()
+        self.assertEqual((self.a.name,self.a.phone,profile.notes), ("Synthetic Main","+12025550101","Keep these notes"))
+        stale = self.client.post(url, {"email":"", "editor_revision":revision}, HTTP_ACCEPT="application/json")
+        self.assertEqual(stale.status_code, 409)
+        revision = editor_revision(self.a,profile)
+        invalid = self.client.post(url, {"name":"", "editor_revision":revision}, HTTP_ACCEPT="application/json")
+        self.assertEqual(invalid.status_code, 400)
+        cleared = self.client.post(url, {"email":"", "editor_revision":revision}, HTTP_ACCEPT="application/json")
+        self.assertEqual(cleared.status_code, 200)
+        self.a.refresh_from_db(); self.assertFalse(self.a.email)
+        self.access.role="manager"; self.access.save()
+        denied = self.client.post(url, {"name":"Denied", "editor_revision":editor_revision(self.a,profile)}, HTTP_ACCEPT="application/json")
+        self.assertEqual(denied.status_code, 403)
+
+    def test_inline_edit_preserves_unchanged_legacy_short_phone(self):
+        from pool_service.client_import_review import editor_revision
+        self.a.phone = "доб. 123"
+        self.a.save()
+        profile = ClientCRMProfile.objects.create(client=self.a)
+        response = self.client.post(reverse("client_edit", args=[self.a.pk]), {
+            "name":"Synthetic renamed", "editor_revision":editor_revision(self.a,profile),
+        }, HTTP_ACCEPT="application/json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.a.refresh_from_db()
+        self.assertEqual((self.a.name,self.a.phone), ("Synthetic renamed","доб. 123"))
+
     def test_company_and_person_phone_edit_primary_and_last_delete(self):
         for record in (self.a, self.person):
             self.phone(record, value="+12025550103", phone_type="work", label="Office", primary="1")

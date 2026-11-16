@@ -82,17 +82,17 @@ def phone_rows(client):
         if key in seen:
             continue
         seen.add(key)
-        rows.append(dict(key=key, value=item.value, display=format_phone(item.value),
+        rows.append(dict(key=key, entry_key=f"row:{item.pk}", value=item.value, display=format_phone(item.value),
             phone_type=item.phone_type, type_label=item.get_phone_type_display(),
             label="" if item.label == "Основной" else item.label, primary=bool(key and key == primary_key)))
     if client.phone and primary_key not in seen:
-        rows.insert(0, dict(key=primary_key, value=client.phone, display=format_phone(client.phone),
+        rows.insert(0, dict(key=primary_key, entry_key="primary", value=client.phone, display=format_phone(client.phone),
             phone_type="other", type_label="Другой", label="", primary=True))
     return sorted(rows, key=lambda row: not row["primary"])
 
 
 @transaction.atomic
-def manage_phone(actor, client_id, *, action, key, value="", phone_type="other", label="", primary="0", revision):
+def manage_phone(actor, client_id, *, action, key="", entry_key="", value="", phone_type="other", label="", primary="0", revision):
     """Edit/delete an identity-shaped phone, including imported and legacy rows."""
     import re
     from pool_service.client_crm_models import ClientContactExclusion
@@ -104,7 +104,19 @@ def manage_phone(actor, client_id, *, action, key, value="", phone_type="other",
     if action not in {"add", "edit", "delete"}:
         raise ValidationError("Выберите действие с номером.")
     rows = list(ClientContact.objects.select_for_update().filter(client=client, kind="phone"))
-    old_key = normalize_phone(client.phone)
+    # UI masks must never rewrite identity. Resolve the opaque row locator only
+    # inside this locked, authorized card and after checking its revision.
+    if entry_key:
+        entry = next((row for row in rows if entry_key == f"row:{row.pk}"), None)
+        if entry_key == "primary" and client.phone:
+            key = _phone_key(client.phone)
+        elif entry:
+            key = _phone_key(entry.value)
+        else:
+            raise ValidationError("Этот номер уже изменён или удалён. Обновите карточку.")
+    elif not key.startswith("raw:"):
+        # Forms already open with the old shared mask can submit a formatted key.
+        key = normalize_phone(key) or key
     matches = [row for row in rows if _phone_key(row.value) == key]
     scalar_match = bool(client.phone and _phone_key(client.phone) == key)
     if action != "add" and not (matches or scalar_match):

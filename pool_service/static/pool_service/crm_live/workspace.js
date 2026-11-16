@@ -602,8 +602,10 @@
       node.append(element("summary", "", title)); return node;
     }
     function revealField(input) {
+      input.crmInlineEditor?.open();
       for (let parent = input.parentElement; parent && parent !== dialogContent; parent = parent.parentElement) {
         if (parent.tagName === "DETAILS") parent.open = true;
+        parent.crmInlineEditor?.open();
         if (parent.dataset.detailPanel) selectDetailPanel(parent.dataset.detailPanel);
       }
     }
@@ -616,17 +618,34 @@
     }
     function amountPanel(deal) {
       const box = element("section", "crm-card-money");
-      box.append(element("p", "crm-card-money-label", "Сумма сделки"), element("p", "crm-card-money-value", deal.amount === null ? "Не указана" : moneyLabel(deal.amount, deal.currency)));
+      box.append(element("p", "crm-card-money-label", "Сумма сделки"));
+      const display = element("p", "crm-card-money-value", deal.amount === null ? "Не указана" : moneyLabel(deal.amount, deal.currency));
       if (deal.can_edit && !deal.is_archived && ["", "RUB"].includes(deal.currency)) {
-        const edit = element("details"), form = newForm("amount", deal.id);
-        edit.append(element("summary", "", deal.amount === null ? "Указать сумму" : "Изменить сумму"), form); box.append(edit);
+        const form = newForm("amount", deal.id);
         const amount = field("Сумма сделки, ₽", "text", "amount", deal.amount == null ? "" : formatMoney(deal.amount), false);
         amount.input.inputMode = "decimal"; amount.input.maxLength = 40; amount.input.placeholder = "Например, 125 000,00"; form.append(amount.wrapper);
         selectField(form, "Сумма", "amount_basis", deal.amount_basis === "agreed" ? "agreed" : "indicative", [["indicative", "Предварительная оценка"], ["agreed", "Согласовано с клиентом"]]);
-        form.append(element("p", "crm-activity-note", "Пустое поле означает, что сумма ещё неизвестна. Изменение суммы сохраняется в истории."));
-        formFooter(form, "Сохранить сумму");
-      }
+        win.CrmInline.mount(box, {display, form, editLabel:"Редактировать сумму", saveLabel:"Сохранить сумму",
+          clearLabel:"Удалить сумму", clearMessage:"Убрать сумму сделки? В карточке будет «Не указана». Изменение сохранится в истории.",
+          onClear:deal.amount === null ? null : () => { amount.input.value=""; form.requestSubmit(); }, busy:() => Boolean(queue.forSubject(deal.id))});
+      } else box.append(display);
       return box;
+    }
+    function inlineDealField(deal, name, label, type = "text", options = null) {
+      const row = element("div", "crm-inline-field"), value = deal[name];
+      row.append(element("p", "crm-inline-label", label));
+      const display = element("p", "", options ? (options.find(([key]) => key === value)?.[1] || "Не указано") : type === "datetime-local" ? (value ? dateText(value) : "Не указано") : value || "Не указано");
+      if (!deal.can_edit || deal.is_archived) { row.append(display); return row; }
+      const form = newForm("field", deal.id); form.dataset.fieldName=name;
+      const current = type === "datetime-local" ? localDateTime(value, timezone) : value || "";
+      const input = options ? selectField(form, label, name, value, options).input : field(label, type, name, current, name === "title").input;
+      if (!options) form.append(input.parentElement);
+      if(type === "textarea") input.rows=2;
+      if(type === "text" || type === "textarea") input.maxLength=({title:255,work_subject:10000,specialization:40})[name] || 255;
+      win.CrmInline.mount(row, {display, form, editLabel:"Редактировать: " + label, saveLabel:"Сохранить: " + label,
+        clearLabel:"Удалить: " + label, clearMessage:"Удалить значение поля «" + label + "»? Изменение сохранится в истории.",
+        onClear:name === "title" || !value || value === "unknown" ? null : () => { input.value=options ? "unknown" : ""; form.requestSubmit(); }, busy:() => Boolean(queue.forSubject(deal.id))});
+      return row;
     }
     function detailTabs() {
       const nav = element("div", "crm-detail-tabs"); nav.setAttribute("role", "tablist"); nav.setAttribute("aria-label", "Карточка сделки");
@@ -694,7 +713,7 @@
       // The retained detail header must wait for the same refresh as its forms.
       // Otherwise a late response can replace a just-reopened editor.
       const detailBusy = state.drawer?.kind === "loading" || Boolean(state.drawer?.id && queue.forSubject(state.drawer.id));
-      for (const button of dialogContent.querySelectorAll(".crm-live-detail-meta .crm-live-inline-action")) button.disabled = detailBusy;
+      for (const button of dialogContent.querySelectorAll(".crm-live-detail-meta .crm-live-inline-action,.crm-inline-view button")) button.disabled = detailBusy;
       for (const form of dialogContent.querySelectorAll("[data-command-form]")) {
         const subjectId = form.dataset.subjectId || null;
         const busy = Boolean(queue.forSubject(subjectId)) || form.dataset.orderRefreshing === "true" || (state.drawer?.kind === "loading" && sameId(state.drawer.id, subjectId));
@@ -1053,14 +1072,14 @@
       const finance = financeSection(deal); if (finance) dialogContent.append(finance);
       const overview = section("О сделке");
       const object = deal.object;
-      const facts = [["Предмет", deal.work_subject || "Не уточнён"], ["Специализация", deal.specialization || "Не уточнена"],
-        ["Исполнение", ({unknown: "Не уточнено", construction: "Строительство / монтаж", service: "Обслуживание", retail: "Поставка", mixed: "Смешанное"})[deal.fulfillment_kind]],
-        ["Объект", !object ? "Не выбран" : object.restricted ? "Недоступен" : (object.kind === "planned" ? "Планируемый: " : "") + [object.name, object.address].filter(Boolean).join(" · ")],
-        ["Сумма", deal.amount === null ? "Неизвестна" : moneyLabel(deal.amount, deal.currency) + " · " + (deal.amount_basis === "agreed" ? "Согласовано" : "Предварительная оценка")],
-        ["Ожидаемое решение", deal.expected_decision_at ? dateText(deal.expected_decision_at) : "Не задано"], ["Исход", deal.unverified_completion_stage ? (deal.manual_completion ? "CRM завершена вручную; подтверждённый итог ещё открыт" : "Итог не подтверждён") : outcomeLabel(deal.outcome)]];
-      for (const [label, value] of facts) {
-        if (["Предмет", "Специализация", "Исполнение", "Объект", "Ожидаемое решение"].includes(label) && [null, undefined, "Не уточнён", "Не уточнена", "Не уточнено", "Не выбран", "Не задано"].includes(value)) continue;
-        const row = element("div", "crm-live-fact"); row.append(element("span", "crm-live-fact-label", label), element("span", "", value || "Не уточнено")); overview.append(row);
+      overview.append(inlineDealField(deal,"title","Название"), inlineDealField(deal,"work_subject","Предмет","textarea"),
+        inlineDealField(deal,"specialization","Специализация"),
+        inlineDealField(deal,"fulfillment_kind","Исполнение","select",[["unknown","Не уточнено"],["construction","Строительство / монтаж"],["service","Обслуживание"],["retail","Поставка"],["mixed","Смешанное"]]),
+        inlineDealField(deal,"expected_decision_at","Ожидаемое решение","datetime-local"));
+      const facts = [["Объект", !object ? "Не выбран" : object.restricted ? "Недоступен" : (object.kind === "planned" ? "Планируемый: " : "") + [object.name, object.address].filter(Boolean).join(" · ")],
+        ["Исход", deal.unverified_completion_stage ? (deal.manual_completion ? "CRM завершена вручную; подтверждённый итог ещё открыт" : "Итог не подтверждён") : outcomeLabel(deal.outcome)]];
+      for (const [label,value] of facts) {
+        const row = element("div", "crm-live-fact"); row.append(element("span", "crm-live-fact-label", label), element("span", "", value)); overview.append(row);
       }
       if (deal.closed_at) overview.append(element("p", "crm-live-fact", "Завершена: " + dateText(deal.closed_at)));
       if (deal.close_reason) overview.append(element("p", "crm-live-fact", "Причина: " + deal.close_reason));
@@ -1466,6 +1485,12 @@
         } else if (kind === "amount") {
           const amount = parseMoney(values.get("amount"));
           await send("deal.edit", deal.id, deal.revision, {amount:amount || null, currency:amount ? "RUB" : "", amount_basis:amount ? String(values.get("amount_basis")) : "unknown"}, "Сумма сделки «" + deal.title + "»");
+        } else if (kind === "field") {
+          const name = form.dataset.fieldName;
+          if (!["title","work_subject","specialization","fulfillment_kind","expected_decision_at"].includes(name)) throw new Error("Обновите карточку.");
+          const raw = String(values.get(name) || "").trim();
+          const value = name === "expected_decision_at" ? (raw ? deadlineISO(raw, offset) : null) : raw;
+          await send("deal.edit", deal.id, deal.revision, {[name]:value}, "Карточка сделки «" + deal.title + "»");
         } else if (kind === "edit") {
           const title = String(values.get("title") || "").trim();
           if (!title) throw new Error("Укажите название сделки.");

@@ -1,0 +1,10 @@
+<div class="crm-inline-field" data-client-field data-field-label="{{ item.field.label }}" {% if item.clearable %}data-clearable{% endif %}>
+  <p class="crm-inline-label">{{ item.field.label }}</p>
+  <p data-field-display>{{ item.display }}</p>
+  <form method="post" action="{% url 'client_edit' client.id %}" hidden>{% csrf_token %}
+    <input type="hidden" name="editor_revision" value="{{ editor_revision }}">
+    <input type="hidden" name="return_tab" value="{{ card_tab }}">
+    <label>{{ item.field.label }}{% if item.widget %}{{ item.widget }}{% else %}{{ item.field }}{% endif %}</label>
+    <p class="text-danger small" role="alert" data-field-error hidden></p>
+  </form>
+</div>

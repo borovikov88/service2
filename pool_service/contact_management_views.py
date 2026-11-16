@@ -25,7 +25,8 @@ def client_phone_manage(request, client_id):
     from .services.contact_people import manage_phone
     try:
         manage_phone(request.user, client_id, action=request.POST.get("operation", ""),
-            key=request.POST.get("phone_key", ""), value=request.POST.get("phone", "").strip(),
+            key=request.POST.get("phone_key", ""), entry_key=request.POST.get("entry_key", ""),
+            value=request.POST.get("phone", "").strip(),
             phone_type=request.POST.get("phone_type", "other"), label=request.POST.get("label", ""),
             primary=request.POST.get("primary", "0"), revision=request.POST.get("contacts_revision", ""))
     except (PermissionDenied, ValidationError, IntegrityError) as exc:
