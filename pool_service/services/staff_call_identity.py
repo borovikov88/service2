@@ -37,6 +37,8 @@ def initialize_call_identity(call):
     first, second = assignment_at(call), assignment_at(call, peer=True)
     if first:
         call.employee_profile_id, call.employee_id = first.employee_id, first.employee.user_id
+        if call.direction != 'internal':
+            call.classification_evidence = {'kind': 'external', 'primary_assignment': first.pk}
     if first and second:
         call.employee_profile_id, call.employee_id = first.employee_id, first.employee.user_id
         call.peer_employee_profile_id, call.peer_employee_id = second.employee_id, second.employee.user_id

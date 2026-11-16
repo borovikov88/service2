@@ -562,7 +562,10 @@ def apply_telephony_identity_to_calls(
     base = PhoneCall.objects.filter(
         organization=identity.organization,
         connection=identity.connection,
-    )
+    ).filter(Q(classification_evidence={}) | (
+        Q(classification_evidence__kind='review')
+        & ~Q(classification_evidence__has_key='assignments')
+        & ~Q(classification_evidence__has_key='primary_assignment')))
     external_user_is_unique = bool(identity.external_user) and not (
         TelephonyEmployeeIdentity.objects.filter(
             connection=identity.connection,

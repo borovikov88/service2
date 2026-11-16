@@ -619,9 +619,16 @@ class PhoneCall(models.Model):
             initialize_call_identity(self)
         elif self.pk and self.source_kind == self.SOURCE_TELEPHONY:
             old = type(self).objects.filter(pk=self.pk).only('owner_user_snapshot', 'classification_evidence',
-                'direction', 'phone_number', 'provider_user', 'provider_extension', 'peer_provider_user', 'peer_provider_extension').first()
+                'direction', 'phone_number', 'provider_user', 'provider_extension', 'peer_provider_user', 'peer_provider_extension',
+                'employee_id', 'employee_profile_id', 'peer_employee_id', 'peer_employee_profile_id').first()
             if old:
                 self.owner_user_snapshot = old.owner_user_snapshot or self.owner_user_snapshot
+                evidence = old.classification_evidence if isinstance(old.classification_evidence, dict) else {}
+                if evidence.get('primary_assignment') or evidence.get('assignments'):
+                    self.employee_id, self.employee_profile_id = old.employee_id, old.employee_profile_id
+                    self.classification_evidence = evidence
+                if evidence.get('assignments'):
+                    self.peer_employee_id, self.peer_employee_profile_id = old.peer_employee_id, old.peer_employee_profile_id
                 if isinstance(old.classification_evidence, dict) and old.classification_evidence.get('kind') in {'internal', 'review'}:
                     self.direction = self.DIRECTION_INTERNAL
                     self.client_id = None

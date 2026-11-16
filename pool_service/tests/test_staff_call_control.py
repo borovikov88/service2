@@ -212,6 +212,40 @@ class StaffCallControlTests(LeadFixture, TestCase):
         self.assertEqual(new.direction, 'in')
         self.assertTrue(can_read_call(self.owner, old, media=True))
 
+    def test_reused_pbx_identity_cannot_transfer_confirmed_old_participants(self):
+        from pool_service.communication_models import TelephonyEmployeeIdentity
+        from pool_service.services.employee_identity_sync import apply_telephony_identity_to_calls
+        now = timezone.now()
+        peer = Employee.objects.create(organization=self.org, user=self.other, display_name='Synthetic old peer')
+        assign_phone(actor=self.owner, employee=self.employee, connection=self.telephony,
+            extension='101', provider_user='synthetic-reused-provider', valid_from=now-timedelta(days=5))
+        assign_phone(actor=self.owner, employee=peer, connection=self.telephony,
+            phone_key='9990001122', valid_from=now-timedelta(days=5))
+        old = self.call(employee=self.user, provider_extension='101', provider_user='synthetic-reused-provider',
+            started_at=now-timedelta(days=3))
+        proof = old.classification_evidence.copy()
+        newcomer = get_user_model().objects.create_user('synthetic-next-number-holder')
+        OrganizationAccess.objects.create(organization=self.org, user=newcomer, role='manager')
+        CommunicationAccess.objects.filter(organization=self.org, user=newcomer).update(
+            can_view_all_calls=True, can_view_own_calls=True, can_listen_calls=True)
+        fresh = Employee.objects.create(organization=self.org, user=newcomer, display_name='Synthetic next holder')
+        identity = TelephonyEmployeeIdentity.objects.create(organization=self.org, connection=self.telephony,
+            extension='101', external_user='synthetic-reused-provider', employee=fresh,
+            status='manually_matched', confirmed_by=self.owner, confirmed_at=now)
+        apply_telephony_identity_to_calls(identity, previous_employee_id=self.employee.pk, reassignment_boundary=now)
+        old.refresh_from_db()
+        self.assertEqual((old.employee_id, old.peer_employee_id), (self.user.pk, self.other.pk))
+        self.assertEqual(old.classification_evidence, proof)
+        self.assertFalse(can_read_call(newcomer, old))
+        self.assertTrue(can_read_call(self.user, old))
+        old.employee, old.employee_profile = newcomer, fresh
+        old.peer_employee, old.peer_employee_profile = newcomer, fresh
+        old.save(update_fields=['employee', 'employee_profile', 'peer_employee', 'peer_employee_profile'])
+        old.refresh_from_db()
+        self.assertEqual((old.employee_id, old.peer_employee_id), (self.user.pk, self.other.pk))
+        self.assertFalse(can_read_call(newcomer, old, media=True))
+        self.assertTrue(can_read_call(self.user, old, media=True))
+
     def test_overlap_shared_and_cross_connection_do_not_guess_internal(self):
         now = timezone.now()
         assign_phone(actor=self.owner, employee=self.employee, connection=self.telephony, extension='101', valid_from=now)
