@@ -38,6 +38,9 @@ class CallPrivateNumber(models.Model):
     phone_key = models.CharField(max_length=16)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # Keep the conversation-time boundary after an owner removes the number.
+    removed_at = models.DateTimeField(null=True, blank=True, editable=False)
+
     class Meta:
         constraints = [models.UniqueConstraint(fields=["organization", "owner", "phone_key"], name="call_private_owner_phone_uniq")]
 

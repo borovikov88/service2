@@ -657,7 +657,7 @@ class CommunicationsTests(TestCase):
             self.assertIsInstance(recording, io.IOBase)
             self.assertEqual(recording.read(), b"ID3test")
 
-    def test_admin_can_open_uploaded_audio_status_recording_and_transcript(self):
+    def test_technical_admin_cannot_open_uploaded_content_but_owner_can(self):
         admin = User.objects.create_user("audio-admin", password="test")
         OrganizationAccess.objects.create(
             user=admin,
@@ -685,11 +685,15 @@ class CommunicationsTests(TestCase):
         CallAnalysis.objects.create(
             call=call,
             status=CallAnalysis.STATUS_READY,
-            transcript="Полная расшифровка доступна администратору.",
+            transcript="Синтетическая расшифровка владельца.",
             summary="Итог",
         )
 
         self.client.login(username="audio-admin", password="test")
+        for route in ['communication_call_analysis_status', 'communication_call_analysis_transcript', 'communication_call_recording']:
+            self.assertEqual(self.client.get(reverse(route, args=[call.pk])).status_code, 403)
+        self.client.logout()
+        self.client.login(username='owner', password='test')
         status_response = self.client.get(
             reverse("communication_call_analysis_status", args=[call.pk])
         )
@@ -702,7 +706,7 @@ class CommunicationsTests(TestCase):
         self.assertEqual(transcript_response.status_code, 200)
         self.assertEqual(
             transcript_response.json()["transcript"],
-            "Полная расшифровка доступна администратору.",
+            "Синтетическая расшифровка владельца.",
         )
 
         recording_response = self.client.get(
@@ -971,7 +975,7 @@ class CommunicationsTests(TestCase):
         command = popen.call_args.args[0]
         kwargs = popen.call_args.kwargs
         self.assertEqual(command[0], "/bin/bash")
-        self.assertTrue(command[1].endswith("scripts/run_call_ai_worker.sh"))
+        self.assertTrue(command[1].replace('\\', '/').endswith("scripts/run_call_ai_worker.sh"))
         self.assertEqual(command[2:], ["10", "1", "0", "3"])
         self.assertTrue(kwargs["start_new_session"])
         self.assertTrue(kwargs["close_fds"])
@@ -3597,7 +3601,7 @@ class CommunicationsTests(TestCase):
 
         command = popen.call_args.args[0]
         self.assertEqual(command[0], "/bin/bash")
-        self.assertTrue(command[1].endswith("scripts/run_call_recording_sync.sh"))
+        self.assertTrue(command[1].replace('\\', '/').endswith("scripts/run_call_recording_sync.sh"))
         self.assertEqual(command[2], "123")
         self.assertTrue(popen.call_args.kwargs["start_new_session"])
         thread.assert_called_once()

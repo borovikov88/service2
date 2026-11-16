@@ -244,6 +244,64 @@ class StaffCallControlTests(LeadFixture, TestCase):
         set_work_context(actor=self.owner, call_id=call.pk, lead_id=lead.pk)
         self.assertTrue(exclude_private_only_cards(CrmLead.objects.filter(pk=lead.pk), self.org, kind='lead').exists())
 
+    def test_removal_boundary_protects_late_history_and_owner_can_restore_one_saved_call(self):
+        from pool_service.services.crm_lead_access import _without_private_calls
+        add_private_numbers(user=self.owner, organization=self.org, label='Synthetic archived personal number',
+            numbers_text='+79990001122')
+        rule = CallPrivateNumber.objects.get(owner=self.owner)
+        remove_private_number(user=self.owner, organization=self.org, number_id=rule.pk)
+        rule.refresh_from_db()
+        old = self.call(started_at=rule.removed_at-timedelta(days=1))
+        new = self.call(started_at=rule.removed_at+timedelta(seconds=2))
+        employee_work = self.call(employee=self.user, started_at=old.started_at)
+        self.assertTrue(is_private_call(old))
+        self.assertFalse(is_private_call(new))
+        self.assertFalse(is_private_call(employee_work))
+        self.assertTrue(CallPrivacyHold.objects.filter(call=old, owner=self.owner).exists())
+        # Trusted legacy fixture: the SQL archive must protect a row even if
+        # it predates automatic per-call hold creation.
+        CallPrivacyHold.objects.filter(call=old).delete()
+        self.assertFalse(_without_private_calls(PhoneCall.objects.filter(pk=old.pk)).exists())
+        self.assertTrue(_without_private_calls(PhoneCall.objects.filter(pk=new.pk)).exists())
+        old.save(update_fields=['duration_seconds'])
+        hold = CallPrivacyHold.objects.get(call=old, owner=self.owner)
+        self.http.force_login(self.owner)
+        response = self.http.post(reverse('communication_personal_history')+'?org_id='+str(self.org.pk), {'hold': hold.pk})
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(is_private_call(old))
+        self.assertTrue(_without_private_calls(PhoneCall.objects.filter(pk=old.pk)).exists())
+        old.save(update_fields=['duration_seconds'])
+        self.assertFalse(is_private_call(old))
+        lead = self.create()
+        set_work_context(actor=self.owner, call_id=old.pk, lead_id=lead.pk)
+        self.assertTrue(can_read_call(self.user, old, media=True))
+
+    def test_removed_rule_fails_closed_for_unknown_provider_time(self):
+        add_private_numbers(user=self.owner, organization=self.org, label='Synthetic unknown-time archive',
+            numbers_text='+79990001122')
+        rule = CallPrivateNumber.objects.get(owner=self.owner)
+        remove_private_number(user=self.owner, organization=self.org, number_id=rule.pk)
+        rule.refresh_from_db()
+        call = self.call(started_at=rule.removed_at+timedelta(seconds=2), intake_scope={'organization': self.org.pk},
+            intake_occurred_at=None)
+        self.assertTrue(is_private_call(call))
+        self.assertTrue(CallPrivacyHold.objects.filter(call=call, owner=self.owner).exists())
+
+    def test_releasing_one_owners_archive_does_not_release_another_owners_archive(self):
+        from pool_service.services.crm_lead_access import _without_private_calls
+        boundary = timezone.now()
+        for owner in [self.owner, self.other]:
+            CallPrivateNumber.objects.create(organization=self.org, owner=owner, phone_key='9990001122',
+                label='Synthetic independent owner archive', removed_at=boundary)
+        call = self.call(peer_employee=self.other, started_at=boundary-timedelta(days=1))
+        CallPrivacyHold.objects.filter(call=call, owner=self.owner).update(released_at=timezone.now())
+        CallPrivacyHold.objects.filter(call=call, owner=self.other).delete()
+        self.assertTrue(is_private_call(call))
+        self.assertFalse(_without_private_calls(PhoneCall.objects.filter(pk=call.pk)).exists())
+        CallPrivacyHold.objects.create(call=call, owner=self.other, organization=self.org, released_at=timezone.now())
+        self.assertFalse(is_private_call(call))
+        self.assertTrue(_without_private_calls(PhoneCall.objects.filter(pk=call.pk)).exists())
+
     def test_private_duplicate_does_not_hide_deal_from_independent_target(self):
         from pool_service.crm_commercial_models import CrmLeadDealLink, CrmStage, CrmCommand
         from pool_service.services.crm_lead_access import can_read_lead

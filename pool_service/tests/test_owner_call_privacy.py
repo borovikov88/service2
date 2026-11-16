@@ -65,6 +65,37 @@ class OwnerCallPrivacyTests(Fixture, TestCase):
         self.assertIsNone(verified_owner(self.telephony,'synthetic-owner-provider','999',self.now))
         self.assertIsNone(verified_owner(self.telephony,'synthetic-owner-provider','101',None))
 
+    def test_removed_personal_number_still_excludes_a_late_old_webhook(self):
+        from pool_service.crm_commercial_models import CrmLead
+        set_personal_peer(self.owner, self.person.pk, '0', contact_state(self.owner, self.person)['revision'])
+        rule = CallPrivateNumber.objects.get(owner=self.owner)
+        self.assertIsNotNone(rule.removed_at)
+        self.assertFalse(contact_state(self.owner, self.person)['marked'])
+        response = self.call(callid='synthetic-late-old-private')
+        self.assertEqual(response.json(), {'accepted': True, 'ignored': True, 'reason': 'private_call'})
+        self.assertFalse(PhoneCall.objects.exists())
+        self.assertFalse(CrmInboxEvent.objects.exists())
+        self.assertFalse(CrmLead.objects.exists())
+        new_time = rule.removed_at + timedelta(seconds=2)
+        response = self.call(callid='synthetic-new-after-removal', start=new_time.strftime('%Y%m%dT%H%M%SZ'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(PhoneCall.objects.count(), 1)
+        self.assertEqual(CrmInboxEvent.objects.count(), 1)
+
+    def test_removal_retry_keeps_boundary_and_readding_reuses_the_rule(self):
+        from pool_service.services.call_processing_settings import remove_private_number
+        rule = CallPrivateNumber.objects.get(owner=self.owner)
+        remove_private_number(user=self.owner, organization=self.org, number_id=rule.pk)
+        rule.refresh_from_db(); boundary = rule.removed_at
+        remove_private_number(user=self.owner, organization=self.org, number_id=rule.pk)
+        rule.refresh_from_db()
+        self.assertEqual(rule.removed_at, boundary)
+        self.mark()
+        rule.refresh_from_db()
+        self.assertIsNone(rule.removed_at)
+        self.assertEqual(CallPrivateNumber.objects.count(), 1)
+        self.assertTrue(contact_state(self.owner, self.person)['marked'])
+
     def test_existing_history_is_preserved_on_private_replay(self):
         CallPrivateNumber.objects.all().delete()
         self.call(); call=PhoneCall.objects.get(); before=PhoneCall.objects.values().get(pk=call.pk)

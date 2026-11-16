@@ -9,10 +9,12 @@ from __future__ import annotations
 from collections import defaultdict
 from contextlib import contextmanager
 from itertools import islice
+from datetime import datetime, timezone as datetime_timezone
 
 from django.contrib.auth.models import User
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Q, Case, When, Value, DateTimeField
+from django.db.models.functions import Coalesce
 
 from pool_service.call_processing_models import CallPrivateNumber
 from pool_service.communication_models import PhoneCall
@@ -84,14 +86,22 @@ def _counterpart_keys(call, usernames):
     }
 
 
-def private_call_ids(calls, *, for_update=False):
-    """Return explicit private matches without exposing labels or phone values."""
+def privacy_time_expression():
+    """Unknown provider time stays before every removal boundary, fail closed."""
+    unknown = Value(datetime(1970, 1, 1, tzinfo=datetime_timezone.utc), output_field=DateTimeField())
+    return Case(When(intake_scope__isnull=False, intake_occurred_at__isnull=True, then=unknown),
+        default=Coalesce('intake_occurred_at', 'started_at', unknown), output_field=DateTimeField())
+
+
+def private_call_owner_pairs(calls, *, for_update=False):
+    """Return matching (call, owner) evidence without labels or phone values."""
     calls = list(calls)
     if not calls:
         return set()
     from pool_service.staff_call_models import CallPrivacyHold
-    held = set(CallPrivacyHold.objects.filter(call_id__in=[c.pk for c in calls],
-        released_at__isnull=True).values_list('call_id', flat=True))
+    call_ids = [c.pk for c in calls]
+    held = set(CallPrivacyHold.objects.filter(call_id__in=call_ids,
+        released_at__isnull=True).values_list('call_id', 'owner_id'))
 
     participant_ids = {
         uid for call in calls for uid in _participant_ids(call)
@@ -100,46 +110,64 @@ def private_call_ids(calls, *, for_update=False):
         return held
 
     organization_ids = {call.organization_id for call in calls if call.organization_id}
-    privacy_query = CallPrivateNumber.objects.filter(
-            organization_id__in=organization_ids,
-            owner_id__in=participant_ids,
-        )
-    if for_update:
-        privacy_query = privacy_query.select_for_update()
-    rows = list(privacy_query.values_list("organization_id", "owner_id", "phone_key"))
-    if not rows:
-        return held
-
-    private = defaultdict(lambda: defaultdict(set))
-    relevant_users = set()
-    for organization_id, owner_id, key in rows:
-        private[organization_id][owner_id].add(key)
-        relevant_users.add(owner_id)
-
-    # Usernames are a useful phone identity for internal calls in Service2.
-    # Fetch them in one query; never return them from this privacy service.
+    # Bound archive lookup to counterpart keys in this batch. Removed numbers
+    # are retained indefinitely; they do not count against the active-list cap.
     users_query = User.objects.filter(pk__in=participant_ids)
     if for_update:
         users_query = users_query.select_for_update()
-    usernames = dict(users_query.values_list("id", "username"))
+    usernames = dict(users_query.values_list('id', 'username')) if any(
+        call.direction == PhoneCall.DIRECTION_INTERNAL for call in calls) else {}
+    counterparts = {call.pk: _counterpart_keys(call, usernames) for call in calls}
+    keys = {key for values in counterparts.values() for numbers in values.values() for key in numbers}
+    privacy_query = CallPrivateNumber.objects.filter(
+            organization_id__in=organization_ids,
+            owner_id__in=participant_ids,
+            phone_key__in=keys,
+        )
+    if for_update:
+        privacy_query = privacy_query.select_for_update()
+    rows = list(privacy_query.values_list("organization_id", "owner_id", "phone_key", "removed_at"))
+    if not rows:
+        return held
+
+    private = defaultdict(lambda: defaultdict(list))
+    for organization_id, owner_id, key, removed_at in rows:
+        private[organization_id][owner_id].append((key, removed_at))
+    archived = any(row[3] is not None for row in rows)
+    released = set(CallPrivacyHold.objects.filter(call_id__in=call_ids,
+        released_at__isnull=False).values_list('call_id', 'owner_id')) if archived else set()
+    times = dict(PhoneCall.objects.filter(pk__in=call_ids).annotate(
+        _privacy_at=privacy_time_expression()).values_list('pk', '_privacy_at')) if archived else {}
 
     hidden = set(held)
     for call in calls:
         owner_lists = private.get(call.organization_id)
         if not owner_lists:
             continue
-        counterparts = _counterpart_keys(call, usernames)
         for owner_id, numbers in owner_lists.items():
-            if owner_id not in counterparts:
-                continue
-            if numbers & counterparts[owner_id]:
-                hidden.add(call.pk)
-                break
+            for key, removed_at in numbers:
+                if key not in counterparts[call.pk].get(owner_id, ()):
+                    continue
+                if removed_at is None or ((call.pk, owner_id) not in released and (
+                        times.get(call.pk) is None or times[call.pk] < removed_at)):
+                    hidden.add((call.pk, owner_id))
     return hidden
+
+
+def private_call_ids(calls, *, for_update=False):
+    return {pk for pk, _ in private_call_owner_pairs(calls, for_update=for_update)}
 
 
 def is_private_call(call):
     return bool(call and call.pk and call.pk in private_call_ids([call]))
+
+
+def record_private_holds(call):
+    """A late saved personal row must remain explicitly restorable by its owner."""
+    from pool_service.staff_call_models import CallPrivacyHold
+    for call_id, owner_id in private_call_owner_pairs([call]):
+        CallPrivacyHold.objects.update_or_create(call_id=call_id, owner_id=owner_id,
+            defaults={'organization_id': call.organization_id, 'released_at': None})
 
 
 def preserve_private_history(organization, owner, key):

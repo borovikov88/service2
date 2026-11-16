@@ -55,7 +55,8 @@ def _private_call_annotations(queryset):
     """Actor-independent, confirmed privacy evidence for external calls."""
     from pool_service.staff_call_models import CallPrivacyHold
     held = CallPrivacyHold.objects.filter(call_id=OuterRef('pk'), released_at__isnull=True)
-    queryset = queryset.alias(_crm_held=Exists(held))
+    from .call_privacy import privacy_time_expression
+    queryset = queryset.alias(_crm_held=Exists(held), _crm_privacy_at=privacy_time_expression())
     queryset = queryset.alias(_crm_key_current=Case(
         When(privacy_phone_source=F('phone_number'), then=Value(True)),
         default=Value(False), output_field=BooleanField()))
@@ -63,6 +64,10 @@ def _private_call_annotations(queryset):
         organization_id=OuterRef("organization_id"), phone_key=OuterRef('privacy_phone_key'),
     ).filter(Q(owner_id=OuterRef("employee_id")) | Q(owner_id=OuterRef("peer_employee_id"))
              | Q(owner_id=OuterRef('owner_user_snapshot')))
+    released = CallPrivacyHold.objects.filter(call_id=OuterRef(OuterRef('pk')),
+        owner_id=OuterRef('owner_id'), released_at__isnull=False)
+    hidden = hidden.alias(_released=Exists(released)).filter(Q(removed_at__isnull=True)
+        | Q(removed_at__gt=OuterRef('_crm_privacy_at'), _released=False))
     return queryset.alias(_crm_private=Case(
         When(_crm_key_current=True, then=Exists(hidden)), default=Value(False), output_field=BooleanField()))
 

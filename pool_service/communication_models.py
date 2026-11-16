@@ -649,7 +649,10 @@ class PhoneCall(models.Model):
         self.privacy_phone_key = phone_key(self.privacy_phone_source)
         if kwargs.get('update_fields'):
             kwargs['update_fields'] = set(kwargs['update_fields']) | {'privacy_phone_key', 'privacy_phone_source'}
-        return super().save(*args, **kwargs)
+        result = super().save(*args, **kwargs)
+        from .services.call_privacy import record_private_holds
+        record_private_holds(self)
+        return result
 
     def clean(self):
         if self.source_kind == self.SOURCE_TELEPHONY and not self.connection_id:
