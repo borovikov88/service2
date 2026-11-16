@@ -427,7 +427,7 @@ class PrivateCallEnforcementTests(TransactionTestCase):
             ServiceTask.objects.create(organization=self.org, title=f"Private batch {index}",
                 start_date=timezone.localdate(), created_by=self.owner,
                 payload_json={"source_call_id": call.pk})
-        with self.assertNumQueries(5):
+        with self.assertNumQueries(6):
             self.assertEqual(readable_tasks(ServiceTask.objects.all(), self.owner), [])
 
 

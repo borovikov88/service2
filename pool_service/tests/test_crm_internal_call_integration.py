@@ -35,7 +35,12 @@ class CRMInternalCallIntegrationTests(TestCase):
             provider_extension="101", peer_provider_extension="102", started_at=timezone.now(),
         )
         defaults.update(values)
-        return PhoneCall.objects.create(**defaults)
+        call = PhoneCall.objects.create(**defaults)
+        # These regressions exercise history already classified by the earlier
+        # release. New unconfirmed provider events use the review queue instead.
+        if call.direction == 'internal':
+            PhoneCall.objects.filter(pk=call.pk).update(classification_evidence={})
+        return call
 
     def test_both_participants_keep_list_filter_and_export_access(self):
         own = self.call()

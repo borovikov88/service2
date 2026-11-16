@@ -8,7 +8,7 @@ from .communication_models import PhoneCall
 from .phone_utils import normalize_phone
 
 
-def annotate_missed_call_callbacks(calls, organization_id):
+def annotate_missed_call_callbacks(calls, organization_id, *, user=None):
     """Add display-only missed/callback markers to a bounded set of calls."""
     missed_by_phone = defaultdict(list)
     for call in calls:
@@ -36,9 +36,15 @@ def annotate_missed_call_callbacks(calls, organization_id):
             started_at__lte=latest,
         ).annotate(_phone_digits=phone_digits).filter(
             _phone_digits__contains=digits[-7:],
-        ).order_by("started_at", "pk").values_list("phone_number", "started_at")
+        ).order_by("started_at", "pk")
+        if user is not None:
+            from .services.call_access import scope_calls
+            from .models import Organization
+            candidates = scope_calls(user, Organization.objects.get(pk=organization_id), candidates)
+        from .services.call_privacy import iter_visible_calls
 
-        for callback_phone, callback_at in candidates.iterator(chunk_size=200):
+        for callback in iter_visible_calls(candidates):
+            callback_phone, callback_at = callback.phone_number, callback.started_at
             if normalize_phone(callback_phone) != phone_key:
                 continue
             for missed_call in missed_calls:

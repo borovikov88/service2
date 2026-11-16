@@ -61,7 +61,7 @@ def task_feedback(request, task_id):
     if blocked:
         return blocked
     task = get_object_or_404(ServiceTask.objects.select_related("organization"), pk=task_id)
-    if task_source_is_private(task):
+    if task_source_is_private(task, user=request.user):
         raise PermissionDenied
     if task.task_type != ServiceTask.TYPE_CRM_FOLLOWUP or not has_access(task, request.user):
         raise PermissionDenied

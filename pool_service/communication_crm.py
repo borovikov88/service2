@@ -35,6 +35,7 @@ from .services.megafon_internal_calls import (
     start_call_recording_sync_worker,
 )
 from .services.permissions import company_has_access
+from .services.call_processing_settings import settings_allowed
 from .services.call_privacy import is_private_call, private_call_ids, visible_calls
 
 
@@ -134,8 +135,8 @@ def _filtered_calls(request, source_kind, organization, view_all):
         if not selected_call.isascii() or not selected_call.isdigit() or len(selected_call) > 18 or int(selected_call) < 1:
             raise ValueError("Некорректный звонок.")
         queryset = queryset.filter(pk=int(selected_call))
-    if source_kind == PhoneCall.SOURCE_TELEPHONY and not view_all:
-        queryset = queryset.filter(Q(employee=request.user) | Q(peer_employee=request.user))
+    from .services.call_access import scope_calls
+    queryset = scope_calls(request.user, organization, queryset)
     selected = _selected_client(request, organization)
     # Keep existing date, employee, direction, missed and text semantics, but
     # replace the former client suffix filter with the exact resolver above.
@@ -183,6 +184,8 @@ def _return_url(request, call, token):
 
 
 def _decorate_calls(rows, request, organization, source_kind):
+    from .services.call_processing_settings import settings_allowed
+    owner_controls = settings_allowed(request.user, organization)
     phone_matches = clients_by_phones(organization, [
         call.phone_number for call in rows
         if not call.client_id and call.direction != PhoneCall.DIRECTION_INTERNAL
@@ -190,6 +193,7 @@ def _decorate_calls(rows, request, organization, source_kind):
     create_allowed = _can_create(request.user, organization)
     token = _return_token(request, organization, source_kind) if create_allowed else ""
     for call in rows:
+        call.primary_context_url = reverse('communication_call_context', args=[call.pk]) if owner_controls and call.direction != 'internal' else ''
         call.phone_display = format_phone(call.phone_number)
         call.create_client_url = ""
         if call.direction == PhoneCall.DIRECTION_INTERNAL:
@@ -225,7 +229,7 @@ def _call_screen(request, source_kind):
         "employee", "employee_profile", "peer_employee", "peer_employee_profile", "client", "analysis",
     ).defer("analysis__transcript")[:1000]))[:500]
     if source_kind == PhoneCall.SOURCE_TELEPHONY:
-        annotate_missed_call_callbacks(rows, organization.pk)
+        annotate_missed_call_callbacks(rows, organization.pk, user=request.user)
     _decorate_calls(rows, request, organization, source_kind)
     manual = source_kind == PhoneCall.SOURCE_UPLOADED
     return render(request, "pool_service/communications/calls.html", {
@@ -235,6 +239,7 @@ def _call_screen(request, source_kind):
         "client_lookup_url": reverse("communication_client_lookup", args=[source_kind]),
         "can_listen": manual or conversation_capability(request.user, "can_listen_calls", organization),
         "can_view_all": view_all,
+        "can_manage_personal": settings_allowed(request.user, organization),
         "can_access_manual_recordings": legacy._can_access_manual_recordings(request.user, organization),
         "manual_archive": manual,
     })
@@ -311,13 +316,11 @@ def _visible_call(request, call_id, *, lock=False):
     call = get_object_or_404(queryset, pk=call_id)
     if is_private_call(call):
         raise Http404
+    from .services.call_access import can_read_call
+    if not can_read_call(request.user, call):
+        raise PermissionDenied
     organization, view_all = _scope(request.user, call.source_kind, call.organization)
     if call.direction == PhoneCall.DIRECTION_INTERNAL:
-        raise PermissionDenied
-    if (
-        call.source_kind == PhoneCall.SOURCE_TELEPHONY and not view_all
-        and request.user.pk not in (call.employee_id, call.peer_employee_id)
-    ):
         raise PermissionDenied
     if not _can_create(request.user, organization):
         raise PermissionDenied

@@ -7256,6 +7256,8 @@ def _is_org_admin_or_owner(user, organization):
 def _task_can_edit(task, user):
     if not user or not user.is_authenticated:
         return False
+    if task_source_is_private(task, user=user):
+        return False
     if user.is_superuser:
         return True
     if task.created_by_id == user.id:
@@ -7266,6 +7268,8 @@ def _task_can_edit(task, user):
 
 
 def _task_can_view(task, user):
+    if task_source_is_private(task, user=user):
+        return False
     return readable_task_queryset(ServiceTask.objects.filter(pk=task.pk), user).exists()
 
 
@@ -7467,7 +7471,7 @@ def task_edit(request, task_id):
 
     task_queryset = ServiceTask.objects.select_for_update() if request.method == "POST" else ServiceTask.objects
     task = get_object_or_404(task_queryset, pk=task_id)
-    if task_source_is_private(task):
+    if task_source_is_private(task, user=request.user):
         raise Http404
     if not _task_can_view(task, request.user):
         return HttpResponseForbidden()

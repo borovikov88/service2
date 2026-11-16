@@ -23,6 +23,7 @@ from django.views.decorators.http import require_http_methods
 from pool_service import onec_diagnostic_mcp_views as transport
 from pool_service.communication_models import CallAnalysis, PhoneCall
 from pool_service.services.call_privacy import is_private_call, private_source_task_ids, task_source_is_private
+from pool_service.services.call_access import can_read_call
 from pool_service.models import (
     Client,
     Employee,
@@ -316,6 +317,8 @@ def _locked_task_recipient(task, user_id):
     """Lock and re-read a task recipient before any private notification."""
     user = _locked_staff_user(task.organization, user_id)
     if not user:
+        return None
+    if task_source_is_private(task, user=user):
         return None
     # Keep delivery authority current after HR deactivation too. Existing
     # order remains organization/task -> user -> org access, then employee;
@@ -759,7 +762,7 @@ def _task_data(task):
     }
 
 
-def _list_control_tasks(organization, arguments):
+def _list_control_tasks(organization, arguments, actor=None):
     _reject_unknown(arguments, {"responsible_user_id", "status", "limit"})
     limit = _as_int(arguments.get("limit", 50), "limit", maximum=100)
     queryset = (
@@ -785,8 +788,10 @@ def _list_control_tasks(organization, arguments):
     tasks = []
     # Fetch a bounded cushion so hidden private-source tasks do not disclose
     # themselves through the returned list or crowd out visible work.
-    for task in queryset[: min(limit * 5, 500)]:
-        if task_source_is_private(task):
+    candidates = list(queryset[: min(limit * 5, 500)])
+    hidden = private_source_task_ids(candidates, user=actor)
+    for task in candidates:
+        if task.pk in hidden:
             continue
         tasks.append(_task_data(task))
         if len(tasks) >= limit:
@@ -813,7 +818,7 @@ def _task_event_cursor(organization_id, after_sequence, through_sequence):
 
 
 @transaction.atomic
-def _list_task_events(organization, arguments, counter):
+def _list_task_events(organization, arguments, counter, actor=None):
     """Assign and return committed CRM task changes in a serialized feed order."""
     _reject_unknown(arguments, {"cursor", "limit"})
     limit = _as_int(arguments.get("limit", 50), "limit", maximum=100)
@@ -888,7 +893,7 @@ def _list_task_events(organization, arguments, counter):
     scanned_to = after_sequence
     scan_limit = min(max(limit * 5, limit), 500)
     batch = list(queryset[:scan_limit])
-    private_task_ids = private_source_task_ids([change.task for change in batch])
+    private_task_ids = private_source_task_ids([change.task for change in batch], user=actor)
     for change in batch:
         scanned_to = change.operations_feed_sequence
         if change.task_id in private_task_ids:
@@ -923,7 +928,7 @@ def _list_task_events(organization, arguments, counter):
 
 
 @transaction.atomic
-def _get_call_analysis(organization, arguments):
+def _get_call_analysis(organization, arguments, actor=None):
     _reject_unknown(arguments, {"call_id"})
     call_id = _as_int(arguments.get("call_id"), "call_id")
     Organization.objects.select_for_update().get(pk=organization.pk)
@@ -937,7 +942,7 @@ def _get_call_analysis(organization, arguments):
     if not analysis:
         raise ValueError("call_id")
     call = analysis.call
-    if is_private_call(call):
+    if not can_read_call(actor, call, media=True):
         # Deliberately indistinguishable from an unknown/non-ready call.
         raise ValueError("call_id")
     return {
@@ -1050,7 +1055,7 @@ def _task_as_legacy_create_command(task):
     return command
 
 
-def _validated_call_commitment(organization, command):
+def _validated_call_commitment(organization, command, actor=None):
     call_id = command.get("source_call_id")
     if call_id is None:
         return None
@@ -1064,7 +1069,7 @@ def _validated_call_commitment(organization, command):
         )
         .first()
     )
-    if not analysis or is_private_call(analysis.call):
+    if not analysis or not can_read_call(actor, analysis.call, media=True):
         raise ValueError("commitment_proposal_id")
     facts = analysis.facts if isinstance(analysis.facts, dict) else {}
     commitments = facts.get("commitments")
@@ -1113,6 +1118,7 @@ def _validated_call_commitment(organization, command):
 
 @transaction.atomic
 def _create_task(authenticated, organization, arguments):
+    actor = _authorized_actor(authenticated, organization)
     _reject_unknown(
         arguments,
         {
@@ -1147,7 +1153,7 @@ def _create_task(authenticated, organization, arguments):
             pk=command["source_call_id"],
             organization=organization,
         ).first()
-        if not source_call_gate or is_private_call(source_call_gate):
+        if not source_call_gate or not can_read_call(actor, source_call_gate, media=True):
             raise ValueError("commitment_proposal_id")
     if (
         command.get("source_call_id") is not None
@@ -1206,7 +1212,7 @@ def _create_task(authenticated, organization, arguments):
         )
         if already_created:
             return {"created": False, "task": _task_data(already_created)}
-        linked_commitment = _validated_call_commitment(organization, command)
+        linked_commitment = _validated_call_commitment(organization, command, actor=actor)
 
     responsible = _locked_staff_user(
         organization,
@@ -1314,6 +1320,7 @@ def _create_task(authenticated, organization, arguments):
 
 @transaction.atomic
 def _reschedule_task(authenticated, organization, arguments):
+    actor = _authorized_actor(authenticated, organization)
     _reject_unknown(arguments, {"task_id", "due_date", "due_time", "reason"})
     task_id = _as_int(arguments.get("task_id"), "task_id")
     due_date = _as_date(arguments.get("due_date"), "due_date")
@@ -1322,7 +1329,7 @@ def _reschedule_task(authenticated, organization, arguments):
     task = _task_for_org(organization, task_id, for_update=True)
     if (
         not task
-        or task_source_is_private(task)
+        or task_source_is_private(task, user=actor)
         or task.task_type != ServiceTask.TYPE_CRM_FOLLOWUP
         or task.is_archived
         or task.completed_at
@@ -1361,13 +1368,14 @@ def _reschedule_task(authenticated, organization, arguments):
 
 @transaction.atomic
 def _complete_task(authenticated, organization, arguments):
+    actor = _authorized_actor(authenticated, organization)
     _reject_unknown(arguments, {"task_id", "comment"})
     task_id = _as_int(arguments.get("task_id"), "task_id")
     comment = _as_text(arguments.get("comment"), "comment", maximum=1000)
     task = locked_task_for_completion(organization=organization, task_id=task_id)
     if (
         not task
-        or task_source_is_private(task)
+        or task_source_is_private(task, user=actor)
         or task.task_type != ServiceTask.TYPE_CRM_FOLLOWUP
     ):
         raise ValueError("task_id")
@@ -1392,6 +1400,7 @@ def _complete_task(authenticated, organization, arguments):
 
 @transaction.atomic
 def _send_employee_notification(authenticated, organization, arguments):
+    actor = _authorized_actor(authenticated, organization)
     _reject_unknown(arguments, {"employee_user_id", "title", "message", "dedupe_key", "task_id"})
     employee_id = _as_int(arguments.get("employee_user_id"), "employee_user_id")
     title = _as_text(arguments.get("title"), "title", required=True, maximum=200)
@@ -1408,13 +1417,13 @@ def _send_employee_notification(authenticated, organization, arguments):
     )
     if (
         not task
-        or task_source_is_private(task)
+        or task_source_is_private(task, user=actor)
         or task.is_archived
         or task.completed_at
         or task.status in {ServiceTask.STATUS_DONE, ServiceTask.STATUS_CANCELLED}
     ):
         raise ValueError("task_id")
-    _authorized_actor(authenticated, organization)
+    actor = _authorized_actor(authenticated, organization)
 
     participant_ids = {user.id for user in task.responsibles.all()}
     if task.primary_responsible_id:
@@ -1490,13 +1499,13 @@ def _tool_dispatch(authenticated, name, arguments):
     authenticated = revalidate_authenticated_request(authenticated)
     # Hold current actor/access rows for the entire tool transaction. This also
     # closes the revoke-after-auth race for read-only tools.
-    _authorized_actor(authenticated, organization)
+    actor = _authorized_actor(authenticated, organization)
     if name == "list_task_events":
-        return _list_task_events(organization, arguments, counter)
+        return _list_task_events(organization, arguments, counter, actor=actor)
     if name == "list_control_tasks":
-        return _list_control_tasks(organization, arguments)
+        return _list_control_tasks(organization, arguments, actor=actor)
     if name == "get_call_analysis":
-        return _get_call_analysis(organization, arguments)
+        return _get_call_analysis(organization, arguments, actor=actor)
     if name == "create_task":
         return _create_task(authenticated, organization, arguments)
     if name == "reschedule_task":

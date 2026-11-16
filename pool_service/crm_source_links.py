@@ -73,7 +73,8 @@ def source_for(actor, connection, kind, identifier, *, edit=False, lock=False):
         source_kind=PhoneCall.SOURCE_TELEPHONY).exclude(direction=PhoneCall.DIRECTION_INTERNAL).first()
     all_calls = conversation_capability(actor, "can_view_all_calls", organization)
     own_calls = conversation_capability(actor, "can_view_own_calls", organization)
-    if (source is None or is_private_call(source)
+    from .services.call_access import can_read_call
+    if (source is None or not can_read_call(actor, source)
             or source.connection is None or source.connection.organization_id != organization.pk
             or not (all_calls or own_calls and actor.pk in (source.employee_id, source.peer_employee_id))):
         raise PermissionDenied
@@ -116,7 +117,7 @@ def task_allowed(actor, task, item, organization_id):
     while current is not None:
         if (current.pk in seen or len(seen) >= 20 or current.organization_id != organization_id
                 or current.is_archived or not _task_can_view(current, actor)
-                or task_source_is_private(current)
+                or task_source_is_private(current, user=actor)
                 or current.client_id and current.client.organization_id != organization_id
                 or current.pool_id and (current.pool.organization_id not in (None, organization_id)
                     or current.pool.client.organization_id != organization_id)):

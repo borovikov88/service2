@@ -491,6 +491,10 @@ class TelephonyEmployeeIdentity(models.Model):
 
 
 class PhoneCall(models.Model):
+    privacy_phone_key = models.CharField(max_length=16, blank=True, editable=False, db_index=True)
+    privacy_phone_source = models.CharField(max_length=40, blank=True, editable=False)
+    owner_user_snapshot = models.PositiveBigIntegerField(null=True, blank=True, editable=False)
+    classification_evidence = models.JSONField(default=dict, blank=True, editable=False)
     intake_revision_historical = models.BooleanField(default=True, editable=False)
     # Intake provenance is content-free; null scope/receipt denotes legacy unknown.
     intake_scope = models.JSONField(null=True, blank=True, editable=False)
@@ -608,6 +612,35 @@ class PhoneCall(models.Model):
     @property
     def recording_filename(self):
         return os.path.basename(self.recording_file.name or "")
+
+    def save(self, *args, **kwargs):
+        if self._state.adding and self.source_kind == self.SOURCE_TELEPHONY:
+            from .services.staff_call_identity import initialize_call_identity
+            initialize_call_identity(self)
+        elif self.pk and self.source_kind == self.SOURCE_TELEPHONY:
+            old = type(self).objects.filter(pk=self.pk).only('owner_user_snapshot', 'classification_evidence',
+                'direction', 'phone_number', 'provider_user', 'provider_extension', 'peer_provider_user', 'peer_provider_extension').first()
+            if old:
+                self.owner_user_snapshot = old.owner_user_snapshot or self.owner_user_snapshot
+                if isinstance(old.classification_evidence, dict) and old.classification_evidence.get('kind') in {'internal', 'review'}:
+                    self.direction = self.DIRECTION_INTERNAL
+                    self.client_id = None
+                    self.classification_evidence = old.classification_evidence
+                    if any(getattr(old, f) and getattr(self, f) != getattr(old, f) for f in
+                           ('phone_number', 'provider_user', 'provider_extension', 'peer_provider_user', 'peer_provider_extension')):
+                        self.classification_evidence = {**old.classification_evidence, 'kind': 'review', 'reason': 'participant_changed'}
+                if self.owner_user_snapshot is None:
+                    from .models import OrganizationAccess
+                    self.owner_user_snapshot = OrganizationAccess.objects.filter(organization_id=self.organization_id,
+                        role='owner', user_id__in=[self.employee_id, self.peer_employee_id]).values_list('user_id', flat=True).first()
+                if kwargs.get('update_fields'):
+                    kwargs['update_fields'] = set(kwargs['update_fields']) | {'owner_user_snapshot', 'classification_evidence', 'direction', 'client'}
+        from .services.call_processing_policy import phone_key
+        self.privacy_phone_source = self.phone_number or ''
+        self.privacy_phone_key = phone_key(self.privacy_phone_source)
+        if kwargs.get('update_fields'):
+            kwargs['update_fields'] = set(kwargs['update_fields']) | {'privacy_phone_key', 'privacy_phone_source'}
+        return super().save(*args, **kwargs)
 
     def clean(self):
         if self.source_kind == self.SOURCE_TELEPHONY and not self.connection_id:

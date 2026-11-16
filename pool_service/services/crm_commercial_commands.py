@@ -377,7 +377,10 @@ def _locked_pilot_tasks(using, *, pointer=None, previous=None):
 
 
 def _owned_deal(using, actor_id, organization_id, subject_id):
-    deal = CrmDeal.objects.using(using).select_for_update().filter(
+    from .crm_card_privacy import exclude_private_only_cards
+    organization = Organization.objects.using(using).get(pk=organization_id)
+    candidates = exclude_private_only_cards(CrmDeal.objects.using(using), organization, kind='deal')
+    deal = candidates.select_for_update().filter(
         pk=subject_id, organization_id=organization_id, manager_id=actor_id).first()
     if not deal:
         raise PermissionDenied("Only the actor's own CRM cards may be changed.")
@@ -401,7 +404,7 @@ def _validate_task_link(using, actor, deal, task):
     if not task or not link:
         raise PermissionDenied("Следующее действие недоступно.")
     link.full_clean()
-    if task.source_type != ServiceTask.SOURCE_MANAGER or private_source_task_ids([task]):
+    if task.source_type != ServiceTask.SOURCE_MANAGER or private_source_task_ids([task], user=actor):
         raise PermissionDenied("Следующее действие недоступно.")
     lock_feedback_actor(task, actor)
     return link

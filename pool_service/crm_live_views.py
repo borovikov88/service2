@@ -93,7 +93,8 @@ def _write_capability(grant, organization, name):
 def _deal_queryset(user, organization):
     # Scope every joined relation too: inconsistent historical links must not
     # reveal another organization's client, pipeline, stage, task or events.
-    return CrmDeal.objects.filter(
+    from .services.crm_commercial_access import deals_for_user
+    return deals_for_user(user, organization).filter(
         organization=organization,
         pipeline__organization_id=organization.pk,
         stage__pipeline_id=F("pipeline_id"),

@@ -6,10 +6,10 @@ from decimal import Decimal, InvalidOperation
 from django.contrib.auth.models import User
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
-from django.db.models import BooleanField, Case, Value, When
+from django.db.models import BooleanField, Case, Value, When, Q
 from django.utils import timezone
 
-from pool_service.models import Organization, OrganizationAccess
+from pool_service.models import Employee, Organization, OrganizationAccess
 from pool_service.communication_models import PhoneCall, TelephonyEmployeeIdentity
 from pool_service.call_processing_models import (
     CallProcessingBudget,
@@ -46,10 +46,13 @@ REASONS = {
 
 def settings_allowed(user, organization):
     return bool(
-        user and user.is_authenticated and user.is_active and not user.is_superuser
+        user and user.is_authenticated
+        and User.objects.filter(pk=user.pk, is_active=True, is_superuser=False).exists()
         and organization and OrganizationAccess.objects.filter(
             organization=organization, user=user, role="owner",
         ).exists()
+        and not Employee.objects.filter(organization=organization, user_id=user.pk).filter(
+            Q(is_active=False) | Q(employment_status='dismissed')).exists()
     )
 
 
@@ -63,6 +66,9 @@ def _lock_owner(user, organization):
         organization=organization, user_id=user.pk,
     ).order_by("pk").values_list("role", flat=True))
     if not actor or not actor.is_active or actor.is_superuser or "owner" not in roles:
+        raise PermissionDenied
+    if Employee.objects.select_for_update().filter(organization=organization, user_id=actor.pk).filter(
+            Q(is_active=False) | Q(employment_status='dismissed')).exists():
         raise PermissionDenied
     return actor
 
@@ -382,6 +388,8 @@ def add_private_numbers(*, user, organization, label, numbers_text):
             changed += 1
         elif created:
             changed += 1
+        from .call_privacy import preserve_private_history
+        preserve_private_history(organization, actor, key)
     if changed:
         _audit(organization, actor, actor.pk, "private_numbers_saved", {"changed_count": changed})
     return changed
@@ -395,6 +403,9 @@ def remove_private_number(*, user, organization, number_id):
     ).first()
     if row is None:
         raise PermissionDenied
+    # Removing a rule must not reopen the owner's previously protected history.
+    from .call_privacy import preserve_private_history
+    preserve_private_history(organization, actor, row.phone_key)
     row.delete()
     _audit(organization, actor, actor.pk, "private_number_removed", {"changed_count": 1})
 

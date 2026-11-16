@@ -152,6 +152,9 @@ def notify_users(
 
     created = []
     for user in active_users:
+        from .call_access import can_receive_task_notice
+        if not can_receive_task_notice(user, action_url):
+            continue
         profile = profiles.get(user.id)
         user_send_in_app = send_in_app and (
             profile is None or profile.in_app_notifications_enabled

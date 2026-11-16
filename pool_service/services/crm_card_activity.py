@@ -200,15 +200,16 @@ def activity_page(request, organization, subject):
                 status=message.get_delivery_status_display(), origin="Связанный диалог клиента",
                 url=reverse("communications_conversations") + "?" + urlencode({"org_id": organization.pk, "conversation": str(message.conversation.uuid)})))
     if kind in {"all", "call"} and (caps["can_view_all_calls"] or caps["can_view_own_calls"]):
+        from .call_access import scope_calls
         calls = PhoneCall.objects.filter(
-            Q(pk__in=sources.filter(inbox__source_type="call").values("inbox__source_id")) | Q(client_id__in=client_ids),
+            Q(pk__in=sources.filter(inbox__source_type="call").values("inbox__source_id")) | Q(client_id__in=client_ids)
+            | (Q(work_context__lead_id__in=family) if isinstance(subject, CrmLead) else Q(work_context__deal_id=subject.pk)),
             organization=organization, source_kind=PhoneCall.SOURCE_TELEPHONY,
             direction__in=[PhoneCall.DIRECTION_IN, PhoneCall.DIRECTION_OUT],
             connection__organization=organization, connection__is_active=True,
         ).filter(Q(client__isnull=True) | Q(client__organization=organization)).filter(
             Q(employee_profile__isnull=True) | Q(employee_profile__organization=organization))
-        if not caps["can_view_all_calls"]:
-            calls = calls.filter(Q(employee=request.user) | Q(peer_employee=request.user))
+        calls = scope_calls(request.user, organization, calls)
         calls = _without_private_calls(calls).select_related("analysis", "employee", "employee_profile")
         candidates = _portion(calls, "started_at", RANK["call"], before)
         contacts = {contact.pk: contact for contact in readable_clients(request.user).filter(

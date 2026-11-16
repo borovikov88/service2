@@ -7,6 +7,8 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import Q
+from django.db.models.functions import Coalesce
+from django.db.models import Value
 from django.utils import timezone
 
 from pool_service.communication_models import (
@@ -600,6 +602,8 @@ def apply_telephony_identity_to_calls(
     updated = primary_matches.update(
         employee_profile_id=employee.pk,
         employee_id=employee.user_id,
+        **({'owner_user_snapshot': Coalesce('owner_user_snapshot', Value(employee.user_id))} if employee.user_id and OrganizationAccess.objects.filter(
+            organization=identity.organization, user_id=employee.user_id, role='owner').exists() else {}),
     )
 
     peer_selector = Q(peer_provider_extension=identity.extension)
@@ -632,6 +636,8 @@ def apply_telephony_identity_to_calls(
     updated += peer_matches.update(
         peer_employee_profile_id=employee.pk,
         peer_employee_id=employee.user_id,
+        **({'owner_user_snapshot': Coalesce('owner_user_snapshot', Value(employee.user_id))} if employee.user_id and OrganizationAccess.objects.filter(
+            organization=identity.organization, user_id=employee.user_id, role='owner').exists() else {}),
     )
     return updated
 

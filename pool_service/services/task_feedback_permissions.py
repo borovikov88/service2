@@ -36,6 +36,9 @@ def lock_feedback_actor(task, user):
     )
     if not roles:
         raise PermissionDenied
+    from .call_privacy import task_source_is_private
+    if task_source_is_private(task, user=actor):
+        raise PermissionDenied
 
     # These are precisely the existing edit-policy alternatives. The user row
     # and role rows above are current locking reads, including on MySQL. A

@@ -504,6 +504,10 @@ class OrganizationAccess(models.Model):
                 owners = owners.exclude(pk=self.pk)
             if owners.exists():
                 raise ValidationError("У организации уже есть владелец")
+        if self.user_id and self.organization_id and Employee.objects.filter(
+            user_id=self.user_id, organization_id=self.organization_id).filter(
+                models.Q(is_active=False) | models.Q(employment_status='dismissed')).exists():
+            raise ValidationError('Сначала подтвердите повторный приём сотрудника на работу.')
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -3391,4 +3395,5 @@ from . import crm_board_models  # noqa: E402,F401
 
 from . import crm_material_models  # noqa: F401,E402
 from . import crm_order_models  # noqa: F401,E402
+from . import staff_call_models  # noqa: F401,E402
 from . import crm_assignment_models  # noqa: F401,E402
