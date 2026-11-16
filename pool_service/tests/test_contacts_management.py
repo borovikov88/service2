@@ -95,6 +95,17 @@ class ContactManagementTests(TestCase):
         self.phone(action="edit",key=keys["доб. 123"],value="+12025550109")
         self.assertFalse(ClientContact.objects.filter(client=self.a,value="доб. 123").exists())
 
+    def test_deleted_legacy_short_primary_does_not_return_from_onec(self):
+        from pool_service.services.contact_people import phone_rows
+        from pool_service.client_import_review import reconcile
+        self.a.phone="55-55-55";self.a.save()
+        profile=ClientCRMProfile.objects.create(client=self.a,onec_ref="11111111-2222-3333-4444-555555555555")
+        candidate=ClientImportCandidate.objects.create(organization=self.org,source_ref=profile.onec_ref,
+            source_kind="legal",name=self.a.name,phone="55-55-55",matched_client=self.a)
+        self.phone(action="delete",key=phone_rows(self.a)[0]["key"])
+        self.a.refresh_from_db();reconcile(candidate,self.a,profile)
+        self.a.refresh_from_db();self.assertEqual(self.a.phone,"")
+
     def test_company_without_phone_creation_edit_and_get_are_read_only(self):
         response=self.client.post(reverse("client_create"),{"org_id":self.org.pk,
             "customer":json.dumps({"company":{"name":"Synthetic no phone"}})},HTTP_ACCEPT="application/json")

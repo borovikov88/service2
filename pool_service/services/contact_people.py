@@ -122,7 +122,8 @@ def manage_phone(actor, client_id, *, action, key, value="", phone_type="other",
         data = [dict(value=row.value, label=row.label, sources=row.sources, source_reference=row.source_reference) for row in matches]
         if scalar_match and not matches:
             data.append(dict(value=client.phone, sources=["legacy_primary"]))
-        ClientContactExclusion.objects.update_or_create(client=client, kind="phone", match_value=key,
+        exclusion_key = key[4:].strip() if key.startswith("raw:") else key
+        ClientContactExclusion.objects.update_or_create(client=client, kind="phone", match_value=exclusion_key,
             defaults={"removed_data": data, "actor": actor})
         ClientContact.objects.filter(pk__in=[row.pk for row in matches]).delete()
     if action == "delete":
