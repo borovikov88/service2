@@ -49,6 +49,10 @@ def card_origins(queryset, organization, *, kind):
         # target card. Its protected events stay hidden in the timeline.
         private_sources = private_sources.filter(
             Q(lead_id=OuterRef('pk')) | Q(lead_id=OuterRef('origin_lead_id')))
+    else:
+        origin_links = links.exclude(kind='existing')
+        private_sources = private_sources.filter(Q(lead_id__in=origin_links.values('lead_id'))
+            | Q(lead_id__in=origin_links.values('lead__origin_lead_id')))
     work_sources = sources.filter(Q(inbox__source_type='call', _work=True)
         | Q(inbox__source_type='message', _message=True))
     context_scope = Q(**{kind + '_id': OuterRef('pk')})
@@ -74,8 +78,12 @@ def card_origins(queryset, organization, *, kind):
             organization=organization, call__organization=organization).alias(
             _private=Exists(private.filter(pk=OuterRef('call_id'))),
             _work=Exists(work.filter(pk=OuterRef('call_id'))))
+        private_linked_contexts = linked_contexts.filter(_private=True).filter(
+            Q(lead_id__in=origin_links.values('lead_id'))
+            | Q(lead_id__in=origin_links.values('lead__origin_lead_id')))
     else:
         linked_contexts = CallWorkContext.objects.none()
+        private_linked_contexts = linked_contexts
     client_scope = Q(client_id=OuterRef('client_id')) | Q(client_id=OuterRef('contact_id'))
     history = work.filter(client__isnull=False).filter(client_scope)
     message_history = messages.filter(conversation__client__isnull=False).filter(
@@ -83,7 +91,7 @@ def card_origins(queryset, organization, *, kind):
     return queryset.alias(
         _origin_private_source=Exists(private_sources),
         _origin_private_context=Exists(private_contexts),
-        _origin_private_link=Exists(linked_contexts.filter(_private=True)) if kind == 'deal' else Exists(linked_contexts),
+        _origin_private_link=Exists(private_linked_contexts),
         _origin_work_source=Exists(work_sources),
         _origin_work_context=Exists(contexts.filter(_work=True)),
         _origin_work_link=Exists(linked_contexts.filter(_work=True)) if kind == 'deal' else Exists(linked_contexts),

@@ -98,6 +98,8 @@ def dismiss_employee(*, actor, employee_id, expected_updated_at, dismissed_at=No
             count += 1
         counts[key] = count
     roles = list(OrganizationAccess.objects.filter(organization=org, user_id=employee.user_id).values_list('role', flat=True)) if employee.user_id else []
+    before_status = {'employment_status': employee.employment_status, 'is_active': employee.is_active,
+        'dismissed_at': employee.dismissed_at.isoformat() if employee.dismissed_at else None}
     employee.employment_status = 'dismissed'
     employee.is_active = False
     employee.dismissed_at = dismissed_at
@@ -108,14 +110,15 @@ def dismiss_employee(*, actor, employee_id, expected_updated_at, dismissed_at=No
     EmployeeTelephoneAssignment.objects.filter(employee=employee, revoked_at__isnull=True).update(revoked_at=ended_at)
     EmployeeTelephoneAssignment.objects.filter(employee=employee, valid_from__lt=ended_at).filter(
         Q(valid_to__isnull=True) | Q(valid_to__gt=ended_at)).update(valid_to=ended_at)
+    pool_roles = list(PoolAccess.objects.filter(user_id=employee.user_id, pool__organization=org).values('pool_id', 'role')) if employee.user_id else []
+    client_roles = list(ClientAccess.objects.filter(user_id=employee.user_id, client__organization=org).values('client_id', 'role')) if employee.user_id else []
+    DataAuditLog.objects.create(entity_type='Employee', entity_id=str(employee.pk), organization=org,
+        actor=actor, action='update', before={**before_status, 'roles': roles, 'pool_access': pool_roles, 'client_access': client_roles},
+        after={'employment_status': 'dismissed', 'is_active': False,
+            'dismissed_at': dismissed_at.isoformat() if dismissed_at else None, 'recipient_id': recipient_id, **counts},
+        changed_fields=['employment_status', 'organization_access', 'open_crm_assignment'])
     if employee.user_id:
         # Remove grants, never the identity they refer to. Save the grants in audit.
-        pool_roles = list(PoolAccess.objects.filter(user_id=employee.user_id, pool__organization=org).values('pool_id', 'role'))
-        client_roles = list(ClientAccess.objects.filter(user_id=employee.user_id, client__organization=org).values('client_id', 'role'))
-        DataAuditLog.objects.create(entity_type='Employee', entity_id=str(employee.pk), organization=org,
-            actor=actor, action='update', before={'roles': roles, 'pool_access': pool_roles, 'client_access': client_roles},
-            after={'employment_status': 'dismissed', 'recipient_id': recipient_id, **counts},
-            changed_fields=['employment_status', 'organization_access', 'open_crm_assignment'])
         OrganizationAccess.objects.filter(organization=org, user_id=employee.user_id).delete()
         PoolAccess.objects.filter(user_id=employee.user_id, pool__organization=org).delete()
         ClientAccess.objects.filter(user_id=employee.user_id, client__organization=org).delete()

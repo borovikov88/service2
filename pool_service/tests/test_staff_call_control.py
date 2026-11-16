@@ -244,6 +244,106 @@ class StaffCallControlTests(LeadFixture, TestCase):
         set_work_context(actor=self.owner, call_id=call.pk, lead_id=lead.pk)
         self.assertTrue(exclude_private_only_cards(CrmLead.objects.filter(pk=lead.pk), self.org, kind='lead').exists())
 
+    def test_private_duplicate_does_not_hide_deal_from_independent_target(self):
+        from pool_service.crm_commercial_models import CrmLeadDealLink, CrmStage, CrmCommand
+        from pool_service.services.crm_lead_access import can_read_lead
+        from pool_service.services.crm_commercial_access import deals_for_user
+        target, contributor = self.create(), self.create()
+        call = self.call()
+        set_work_context(actor=self.owner, call_id=call.pk, lead_id=contributor.pk)
+        contributor.status, contributor.result, contributor.duplicate_of = 'closed', 'duplicate', target
+        contributor.save()
+        deal = CrmDeal.objects.create(organization=self.org, pipeline=self.pipeline,
+            stage=CrmStage.objects.filter(pipeline=self.pipeline).first(), manager=self.user,
+            title='Synthetic independently qualified deal')
+        command = CrmCommand.objects.create(organization=self.org, actor=self.user,
+            operation_key='synthetic-independent-conversion', command_type='lead.qualify', payload_hash='a'*64)
+        CrmLeadDealLink.objects.create(organization=self.org, lead=target, deal=deal,
+            command=command, kind='qualification')
+        add_private_numbers(user=self.owner, organization=self.org, label='Synthetic private contributor', numbers_text=call.phone_number)
+        self.assertTrue(can_read_lead(self.user, self.org, target))
+        self.assertTrue(deals_for_user(self.user, self.org).filter(pk=deal.pk).exists())
+        self.assertFalse(can_read_lead(self.user, self.org, contributor))
+        self.assertFalse(can_read_call(self.user, call))
+
+    def test_private_lead_link_does_not_hide_preexisting_business_deal(self):
+        from pool_service.crm_commercial_models import CrmLeadDealLink, CrmStage, CrmCommand
+        from pool_service.services.crm_commercial_access import deals_for_user
+        lead, call = self.create(), self.call()
+        set_work_context(actor=self.owner, call_id=call.pk, lead_id=lead.pk)
+        deal = CrmDeal.objects.create(organization=self.org, pipeline=self.pipeline,
+            stage=CrmStage.objects.filter(pipeline=self.pipeline).first(), manager=self.user,
+            title='Synthetic preexisting deal')
+        command = CrmCommand.objects.create(organization=self.org, actor=self.user,
+            operation_key='synthetic-private-existing-link', command_type='lead.transition', payload_hash='b'*64)
+        CrmLeadDealLink.objects.create(organization=self.org, lead=lead, deal=deal,
+            command=command, kind='existing')
+        add_private_numbers(user=self.owner, organization=self.org, label='Synthetic private linked lead', numbers_text=call.phone_number)
+        self.assertTrue(deals_for_user(self.user, self.org).filter(pk=deal.pk).exists())
+        self.assertFalse(can_read_call(self.user, call))
+
+    def test_inactive_account_links_existing_hr_record_without_duplicate_or_call_rewrite(self):
+        self.other.is_active = False
+        self.other.save(update_fields=['is_active'])
+        employee = Employee.objects.create(organization=self.org, display_name='Synthetic existing HR person')
+        self.call(employee=self.other, employee_profile=employee)
+        before = list(PhoneCall.objects.values())
+        count = Employee.objects.count()
+        self.http.force_login(self.owner)
+        response = self.http.post(reverse('staff_account_kind', args=[self.org.pk, self.other.pk]),
+            {'kind': 'person', 'employee': employee.pk, 'revision': 0})
+        self.assertEqual(response.status_code, 302)
+        employee.refresh_from_db(); self.other.refresh_from_db()
+        self.assertEqual(employee.user_id, self.other.pk)
+        self.assertFalse(self.other.is_active)
+        self.assertEqual(Employee.objects.count(), count)
+        self.assertEqual(list(PhoneCall.objects.values()), before)
+        self.assertTrue(DataAuditLog.objects.filter(entity_type='Employee', entity_id=str(employee.pk),
+            changed_fields=['user_id']).exists())
+
+    def test_person_account_requires_explicit_profile_choice_and_rejects_foreign_or_occupied(self):
+        self.http.force_login(self.owner)
+        url = reverse('staff_account_kind', args=[self.org.pk, self.other.pk])
+        foreign = Employee.objects.create(organization=Organization.objects.create(name='Synthetic foreign HR'),
+            display_name='Synthetic foreign person')
+        count = Employee.objects.count()
+        for selected in ['', self.employee.pk, foreign.pk]:
+            with self.subTest(selected=selected):
+                response = self.http.post(url, {'kind': 'person', 'employee': selected, 'revision': 0})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.context['account'].revision, 0)
+                self.assertFalse(StaffAccount.objects.filter(organization=self.org, user=self.other).exists())
+                self.assertEqual(Employee.objects.count(), count)
+        self.assertEqual(self.http.post(url, {'kind': 'person', 'employee': 'new', 'revision': 0}).status_code, 302)
+        employee = Employee.objects.get(organization=self.org, user=self.other)
+        self.assertEqual(Employee.objects.count(), count + 1)
+        self.assertEqual(self.http.post(url, {'kind': 'person', 'employee': self.employee.pk, 'revision': 1}).status_code, 200)
+        employee.refresh_from_db()
+        self.assertEqual(employee.user_id, self.other.pk)
+
+    def test_active_account_cannot_be_attached_to_dismissed_profile(self):
+        employee = Employee.objects.create(organization=self.org, display_name='Synthetic former person',
+            is_active=False, employment_status='dismissed')
+        self.http.force_login(self.owner)
+        response = self.http.post(reverse('staff_account_kind', args=[self.org.pk, self.other.pk]),
+            {'kind': 'person', 'employee': employee.pk, 'revision': 0})
+        self.assertEqual(response.status_code, 200)
+        employee.refresh_from_db()
+        self.assertIsNone(employee.user_id)
+        self.assertFalse(StaffAccount.objects.filter(organization=self.org, user=self.other).exists())
+
+    def test_unlinked_employee_dismissal_is_audited_without_touching_unassigned_cards(self):
+        employee = Employee.objects.create(organization=self.org, display_name='Synthetic unlinked former person')
+        lead = self.create(); lead.assignee = None; lead.save()
+        dismiss_employee(actor=self.owner, employee_id=employee.pk, expected_updated_at=employee.updated_at.isoformat())
+        employee.refresh_from_db(); lead.refresh_from_db()
+        self.assertFalse(employee.is_active)
+        self.assertEqual(employee.employment_status, 'dismissed')
+        self.assertIsNone(lead.assignee_id)
+        event = DataAuditLog.objects.get(entity_type='Employee', entity_id=str(employee.pk))
+        self.assertTrue(event.before['is_active'])
+        self.assertFalse(event.after['is_active'])
+
     def test_lazy_card_fast_path_closes_when_a_personal_rule_appears(self):
         from pool_service.crm_commercial_models import CrmLead
         from pool_service.services.crm_card_privacy import exclude_private_only_cards

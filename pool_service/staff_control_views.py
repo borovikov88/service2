@@ -88,6 +88,8 @@ def account_kind(request, org_id, user_id):
                 Organization.objects.select_for_update().get(pk=org.pk)
                 if not manages_staff(request.user, org):
                     raise PermissionDenied
+                user = get_object_or_404(User.objects.select_for_update().filter(
+                    organizationaccess__organization=org).distinct(), pk=user_id)
                 kind = request.POST.get('kind')
                 if kind not in dict(StaffAccount.KINDS):
                     raise ValidationError('Выберите тип учётной записи.')
@@ -98,17 +100,44 @@ def account_kind(request, org_id, user_id):
                 account, _ = StaffAccount.objects.select_for_update().get_or_create(organization=org, user=user)
                 if str(account.revision) != request.POST.get('revision', '0'):
                     raise ValidationError('Запись изменилась. Обновите страницу.')
+                before_kind = account.kind
+                if kind == 'person':
+                    employee = Employee.objects.select_for_update().filter(organization=org, user=user).first()
+                    selected = request.POST.get('employee', '').strip()
+                    if employee:
+                        if selected and selected != str(employee.pk):
+                            raise ValidationError('Аккаунт уже связан с другой карточкой сотрудника.')
+                    elif selected == 'new':
+                        employee = Employee.objects.create(organization=org, user=user,
+                            display_name=user.get_full_name() or user.username)
+                    else:
+                        if not selected.isascii() or not selected.isdigit() or len(selected) > 18:
+                            raise ValidationError('Выберите существующую карточку сотрудника или создание новой.')
+                        employee = Employee.objects.select_for_update().filter(
+                            pk=int(selected), organization=org, user__isnull=True).first()
+                        if employee is None:
+                            raise ValidationError('Карточка уже связана или недоступна в этой организации.')
+                        if user.is_active and (not employee.is_active or employee.employment_status == 'dismissed'):
+                            raise ValidationError('Нельзя связать действующий вход с уже уволенным сотрудником.')
+                        employee.user = user
+                        employee.save(update_fields=['user', 'updated_at'])
+                        DataAuditLog.objects.create(organization=org, actor=request.user,
+                            entity_type='Employee', entity_id=str(employee.pk), action='update',
+                            before={'user_id': None}, after={'user_id': user.pk}, changed_fields=['user_id'])
                 account.kind, account.revision = kind, account.revision + 1
                 account.save()
-                if kind == 'person':
-                    Employee.objects.get_or_create(organization=org, user=user,
-                        defaults={'display_name': user.get_full_name() or user.username})
                 DataAuditLog.objects.create(organization=org, actor=request.user, entity_type='StaffAccount',
-                    entity_id=str(account.pk), action='update', after={'kind': kind}, changed_fields=['kind'])
+                    entity_id=str(account.pk), action='update', before={'kind': before_kind},
+                    after={'kind': kind, 'employee_id': employee.pk if kind == 'person' else None}, changed_fields=['kind'])
             return redirect('users')
         except ValidationError as exc:
             messages.error(request, ' '.join(exc.messages))
-    return _response(request, 'pool_service/staff_account_kind.html', {'account': account, 'target': user, 'organization': org, 'kinds': StaffAccount.KINDS})
+    linked_employee = Employee.objects.filter(organization=org, user=user).first()
+    employee_options = Employee.objects.filter(organization=org).filter(
+        Q(user__isnull=True) | Q(user=user)).order_by('display_name', 'pk')
+    return _response(request, 'pool_service/staff_account_kind.html', {
+        'account': account, 'target': user, 'organization': org, 'kinds': StaffAccount.KINDS,
+        'linked_employee': linked_employee, 'employee_options': employee_options})
 
 
 @login_required
