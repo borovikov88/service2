@@ -550,6 +550,13 @@ def _read_megafon_accounts(telephony):
     return provider, accounts
 
 
+def _call_owner_snapshot(employee):
+    if employee.user_id and OrganizationAccess.objects.filter(
+            organization=employee.organization, user_id=employee.user_id, role='owner').exists():
+        return {'owner_user_snapshot': Coalesce('owner_user_snapshot', Value(employee.user_id))}
+    return {}
+
+
 def apply_telephony_identity_to_calls(
     identity,
     *,
@@ -559,6 +566,7 @@ def apply_telephony_identity_to_calls(
     if not identity.employee_id or identity.requires_manual_confirmation:
         return 0
     employee = identity.employee
+    owner_snapshot = _call_owner_snapshot(employee)
     base = PhoneCall.objects.filter(
         organization=identity.organization,
         connection=identity.connection,
@@ -605,8 +613,7 @@ def apply_telephony_identity_to_calls(
     updated = primary_matches.update(
         employee_profile_id=employee.pk,
         employee_id=employee.user_id,
-        **({'owner_user_snapshot': Coalesce('owner_user_snapshot', Value(employee.user_id))} if employee.user_id and OrganizationAccess.objects.filter(
-            organization=identity.organization, user_id=employee.user_id, role='owner').exists() else {}),
+        **owner_snapshot,
     )
 
     peer_selector = Q(peer_provider_extension=identity.extension)
@@ -639,8 +646,7 @@ def apply_telephony_identity_to_calls(
     updated += peer_matches.update(
         peer_employee_profile_id=employee.pk,
         peer_employee_id=employee.user_id,
-        **({'owner_user_snapshot': Coalesce('owner_user_snapshot', Value(employee.user_id))} if employee.user_id and OrganizationAccess.objects.filter(
-            organization=identity.organization, user_id=employee.user_id, role='owner').exists() else {}),
+        **owner_snapshot,
     )
     return updated
 
@@ -652,6 +658,7 @@ def backfill_employee_calls(
     exclude_telephony_identity_id=None,
 ):
     total = 0
+    owner_snapshot = _call_owner_snapshot(employee)
     if previous_user_id and previous_user_id != employee.user_id:
         total += PhoneCall.objects.filter(
             organization=employee.organization,
@@ -662,18 +669,21 @@ def backfill_employee_calls(
         ).update(
             employee_profile_id=employee.pk,
             employee_id=employee.user_id,
+            **owner_snapshot,
         )
     total += PhoneCall.objects.filter(
         organization=employee.organization,
         employee_profile=employee,
     ).exclude(employee_id=employee.user_id).update(
         employee_id=employee.user_id,
+        **owner_snapshot,
     )
     total += PhoneCall.objects.filter(
         organization=employee.organization,
         peer_employee_profile=employee,
     ).exclude(peer_employee_id=employee.user_id).update(
         peer_employee_id=employee.user_id,
+        **owner_snapshot,
     )
     identities = employee.telephony_identities.filter(
         is_active=True,

@@ -303,6 +303,29 @@ class StaffCallControlTests(LeadFixture, TestCase):
         self.assertEqual(call.owner_user_snapshot, self.owner.pk)
         self.assertFalse(can_read_call(self.user, call))
 
+    def test_all_employee_login_backfills_retain_owner_snapshot_after_role_change(self):
+        from pool_service.services.employee_identity_sync import backfill_employee_calls
+        now = timezone.now()
+        employee = Employee.objects.create(organization=self.org, display_name='Synthetic late owner login')
+        assign_phone(actor=self.owner, employee=employee, connection=self.telephony,
+            extension='901', valid_from=now-timedelta(days=1))
+        primary = PhoneCall.objects.create(organization=self.org, connection=self.telephony,
+            provider_extension='901', external_id='late-login-primary', direction='in',
+            phone_number='+79998880011', started_at=now)
+        peer = self.call(employee=self.user, peer_employee_profile=employee,
+            phone_number='+79998880022')
+        legacy = self.call(employee=self.other, phone_number='+79998880033')
+        employee.user = self.owner
+        employee.save(update_fields=['user'])
+        backfill_employee_calls(employee, previous_user_id=self.other.pk)
+        for call in [primary, peer, legacy]:
+            call.refresh_from_db()
+            self.assertEqual(call.owner_user_snapshot, self.owner.pk)
+        OrganizationAccess.objects.filter(user=self.owner, organization=self.org, role='owner').delete()
+        OrganizationAccess.objects.create(user=self.other, organization=self.org, role='owner')
+        for call in [primary, peer, legacy]:
+            self.assertFalse(can_read_call(self.user, call))
+
     def test_directory_does_not_convert_every_account_to_employee(self):
         self.http.force_login(self.owner)
         response = self.http.get(reverse('users'))
