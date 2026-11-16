@@ -2,6 +2,8 @@
 {% load static %}
 {% block title %}Лиды · {{ brand_name }}{% endblock %}
 {% block extra_head %}
+<link rel="stylesheet" href="{% static 'pool_service/crm_inline.css' %}?v=20261116-inline1">
+<script src="{% static 'pool_service/crm_inline.js' %}?v=20261116-inline1" defer></script>
 <link rel="stylesheet" href="{% static 'pool_service/crm_live/workspace.css' %}?v=20261115-simple">
 <link rel="stylesheet" href="{% static 'pool_service/crm_live/leads.css' %}?v=20261115-failure">
 <link rel="stylesheet" href="{% static 'pool_service/crm_live/design.css' %}?v=20261116-compact">
@@ -11,7 +13,7 @@
 <link rel="stylesheet" href="{% static 'pool_service/crm_live/activity.css' %}?v=20261116-card-timeline">
 <script src="{% static 'pool_service/crm_live/activity.js' %}?v=20261116-card-timeline" defer></script>
 <script src="{% static 'pool_service/crm_live/bulk.js' %}?v=20261116-bulk" defer></script>
-<script src="{% static 'pool_service/crm_live/leads.js' %}?v=20261116-card-timeline" defer></script>
+<script src="{% static 'pool_service/crm_live/leads.js' %}?v=20261116-inline1" defer></script>
 {% endblock %}
 {% block content %}
 <section class="crm-live crm-leads" id="crm-leads" aria-label="Лиды">
