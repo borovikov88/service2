@@ -3743,6 +3743,7 @@ class CommunicationsTests(TestCase):
         )
 
     def test_internal_call_is_visible_to_both_participants_and_filters(self):
+        from pool_service.staff_call_models import EmployeeTelephoneAssignment
         telephony = TelephonyConnection.objects.create(
             organization=self.organization,
             name="МегаФон внутренние UI",
@@ -3760,6 +3761,10 @@ class CommunicationsTests(TestCase):
             is_active=True,
             user=self.other,
         )
+        for employee, extension, provider_user in [(caller_profile, '601', 'worker'), (peer_profile, '602', 'other')]:
+            EmployeeTelephoneAssignment.objects.create(organization=self.organization, connection=telephony,
+                employee=employee, extension=extension, provider_user=provider_user,
+                valid_from=timezone.now()-timedelta(days=1), confirmed_by=self.owner)
         internal = PhoneCall.objects.create(
             organization=self.organization,
             connection=telephony,
