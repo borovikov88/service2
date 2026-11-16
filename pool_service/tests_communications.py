@@ -3873,7 +3873,7 @@ class CommunicationsTests(TestCase):
 
         sync_internal.assert_called_once_with(telephony)
 
-    def test_telephony_identity_backfills_internal_peer_participant(self):
+    def test_telephony_identity_does_not_guess_internal_peer_without_asof_evidence(self):
         telephony = TelephonyConnection.objects.create(
             organization=self.organization,
             name="МегаФон peer backfill",
@@ -3913,10 +3913,11 @@ class CommunicationsTests(TestCase):
 
         updated = apply_telephony_identity_to_calls(identity)
 
-        self.assertEqual(updated, 1)
+        self.assertEqual(updated, 0)
         call.refresh_from_db()
-        self.assertEqual(call.peer_employee_profile, employee)
-        self.assertEqual(call.peer_employee, self.other)
+        self.assertIsNone(call.peer_employee_profile)
+        self.assertIsNone(call.peer_employee)
+        self.assertEqual(call.classification_evidence['kind'], 'review')
 
     def test_megafon_history_replay_preserves_assigned_client(self):
         telephony = TelephonyConnection.objects.create(
@@ -5437,10 +5438,12 @@ class CommunicationsTests(TestCase):
         self.assertEqual(old_call.employee, self.worker)
         self.assertEqual(recent_call.employee_profile, new_employee)
         self.assertEqual(recent_call.employee, self.other)
-        self.assertEqual(late_received_call.employee_profile, new_employee)
-        self.assertEqual(late_received_call.employee, self.other)
-        self.assertEqual(known_new_holder_call.employee_profile, new_employee)
-        self.assertEqual(known_new_holder_call.employee, self.other)
+        # Receipt time and the current provider login do not establish who
+        # owned this number before the detected boundary.
+        self.assertEqual(late_received_call.employee_profile, old_employee)
+        self.assertEqual(late_received_call.employee, self.worker)
+        self.assertEqual(known_new_holder_call.employee_profile, old_employee)
+        self.assertEqual(known_new_holder_call.employee, self.worker)
 
     def test_service2_account_mapping_is_unique_and_backfills_calls(self):
         employee = Employee.objects.create(

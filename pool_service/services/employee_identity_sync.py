@@ -567,10 +567,12 @@ def apply_telephony_identity_to_calls(
         return 0
     employee = identity.employee
     owner_snapshot = _call_owner_snapshot(employee)
+    # Current ATS identity is not historical proof for an internal party.
+    # New internal ingestion uses dated assignments; legacy parties stay fixed.
     base = PhoneCall.objects.filter(
         organization=identity.organization,
         connection=identity.connection,
-    ).filter(Q(classification_evidence={}) | (
+    ).exclude(direction=PhoneCall.DIRECTION_INTERNAL).filter(Q(classification_evidence={}) | (
         Q(classification_evidence__kind='review')
         & ~Q(classification_evidence__has_key='assignments')
         & ~Q(classification_evidence__has_key='primary_assignment')))
@@ -597,14 +599,7 @@ def apply_telephony_identity_to_calls(
             | Q(employee_profile_id=previous_employee_id)
         )
         if reassignment_boundary is not None:
-            primary_reassignment = Q(
-                started_at__gte=reassignment_boundary
-            ) | Q(created_at__gte=reassignment_boundary)
-            if identity.external_user:
-                primary_reassignment |= Q(
-                    provider_user=identity.external_user
-                )
-            primary_matches = primary_matches.filter(primary_reassignment)
+            primary_matches = primary_matches.filter(started_at__gte=reassignment_boundary)
     else:
         primary_matches = primary_matches.filter(
             employee_profile__isnull=True
@@ -630,14 +625,7 @@ def apply_telephony_identity_to_calls(
             | Q(peer_employee_profile_id=previous_employee_id)
         )
         if reassignment_boundary is not None:
-            peer_reassignment = Q(
-                started_at__gte=reassignment_boundary
-            ) | Q(created_at__gte=reassignment_boundary)
-            if identity.external_user:
-                peer_reassignment |= Q(
-                    peer_provider_user=identity.external_user
-                )
-            peer_matches = peer_matches.filter(peer_reassignment)
+            peer_matches = peer_matches.filter(started_at__gte=reassignment_boundary)
     else:
         peer_matches = peer_matches.filter(
             peer_employee_profile__isnull=True

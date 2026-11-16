@@ -463,6 +463,68 @@ class StaffCallControlTests(LeadFixture, TestCase):
         call = self.call(employee=self.user, provider_extension='101', started_at=now)
         self.assertEqual(call.direction, 'in')
 
+    def test_current_identity_cannot_transfer_legacy_internal_participants_or_unknown_side(self):
+        from pool_service.communication_models import TelephonyEmployeeIdentity
+        from pool_service.services.employee_identity_sync import apply_telephony_identity_to_calls
+        now = timezone.now()
+        peer = Employee.objects.create(organization=self.org, user=self.other, display_name='Synthetic legacy peer')
+        newcomer = get_user_model().objects.create_user('synthetic-recycled-legacy-number')
+        OrganizationAccess.objects.create(organization=self.org, user=newcomer, role='manager')
+        fresh = Employee.objects.create(organization=self.org, user=newcomer, display_name='Synthetic new legacy holder')
+        identity = TelephonyEmployeeIdentity.objects.create(organization=self.org, connection=self.telephony,
+            extension='101', external_user='synthetic-recycled-provider', employee=fresh,
+            status='manually_matched', confirmed_by=self.owner, confirmed_at=now)
+        first = self.call(employee=self.user, employee_profile=self.employee, peer_employee=self.other,
+            peer_employee_profile=peer, direction='internal', provider_extension='101',
+            provider_user=identity.external_user, started_at=now-timedelta(days=10))
+        second = self.call(employee=self.other, employee_profile=peer, peer_employee=self.user,
+            peer_employee_profile=self.employee, direction='internal', peer_provider_extension='101',
+            peer_provider_user=identity.external_user, started_at=now-timedelta(days=10))
+        unknown = self.call(employee=self.other, employee_profile=peer, direction='internal',
+            peer_provider_extension='101', started_at=now-timedelta(days=10))
+        # Reconstruct stored pre-feature rows; current ingestion would mark
+        # unsupported internal identity evidence for owner review.
+        PhoneCall.objects.filter(pk__in=[first.pk, second.pk, unknown.pk]).update(classification_evidence={})
+        for call in [first, second]:
+            call.refresh_from_db()
+            self.assertTrue(can_read_call(self.user, call, media=True))
+            self.assertFalse(can_read_call(newcomer, call, media=True))
+        self.assertEqual(apply_telephony_identity_to_calls(identity,
+            previous_employee_id=self.employee.pk, reassignment_boundary=now-timedelta(days=1)), 0)
+        for call in [first, second]:
+            call.employee, call.employee_profile = newcomer, fresh
+            call.peer_employee, call.peer_employee_profile = newcomer, fresh
+            call.direction = 'out'
+            call.save(update_fields=['employee', 'employee_profile', 'peer_employee', 'peer_employee_profile', 'direction'])
+            call.refresh_from_db()
+            self.assertEqual(call.direction, 'internal')
+            self.assertEqual(call.classification_evidence, {})
+            self.assertTrue(can_read_call(self.user, call, media=True))
+            self.assertFalse(can_read_call(newcomer, call, media=True))
+        unknown.refresh_from_db()
+        self.assertIsNone(unknown.peer_employee_id)
+        self.assertFalse(can_read_call(newcomer, unknown))
+        first.provider_user = 'synthetic-different-party'
+        first.save(update_fields=['provider_user'])
+        first.refresh_from_db()
+        self.assertEqual(first.classification_evidence['kind'], 'review')
+        self.assertFalse(can_read_call(self.user, first))
+
+    def test_late_import_and_recycled_provider_do_not_override_the_call_date(self):
+        from pool_service.communication_models import TelephonyEmployeeIdentity
+        from pool_service.services.employee_identity_sync import apply_telephony_identity_to_calls
+        now = timezone.now()
+        fresh = Employee.objects.create(organization=self.org, user=self.other, display_name='Synthetic next external holder')
+        identity = TelephonyEmployeeIdentity.objects.create(organization=self.org, connection=self.telephony,
+            extension='101', external_user='synthetic-late-provider', employee=fresh,
+            status='manually_matched', confirmed_by=self.owner, confirmed_at=now)
+        call = self.call(employee=self.user, employee_profile=self.employee, provider_extension='101',
+            provider_user=identity.external_user, started_at=now-timedelta(days=10))
+        self.assertEqual(apply_telephony_identity_to_calls(identity,
+            previous_employee_id=self.employee.pk, reassignment_boundary=now-timedelta(days=1)), 0)
+        call.refresh_from_db()
+        self.assertEqual(call.employee_id, self.user.pk)
+
     def test_dismissal_revokes_grants_and_preserves_history_and_other_organization(self):
         org = Organization.objects.create(name='Synthetic second employer')
         OrganizationAccess.objects.create(user=self.user, organization=org, role='manager')

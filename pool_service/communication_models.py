@@ -629,13 +629,15 @@ class PhoneCall(models.Model):
                     self.classification_evidence = evidence
                 if evidence.get('assignments'):
                     self.peer_employee_id, self.peer_employee_profile_id = old.peer_employee_id, old.peer_employee_profile_id
-                if isinstance(old.classification_evidence, dict) and old.classification_evidence.get('kind') in {'internal', 'review'}:
+                if old.direction == self.DIRECTION_INTERNAL or evidence.get('kind') in {'internal', 'review'}:
                     self.direction = self.DIRECTION_INTERNAL
                     self.client_id = None
+                    self.employee_id, self.employee_profile_id = old.employee_id, old.employee_profile_id
+                    self.peer_employee_id, self.peer_employee_profile_id = old.peer_employee_id, old.peer_employee_profile_id
                     self.classification_evidence = old.classification_evidence
                     if any(getattr(old, f) and getattr(self, f) != getattr(old, f) for f in
                            ('phone_number', 'provider_user', 'provider_extension', 'peer_provider_user', 'peer_provider_extension')):
-                        self.classification_evidence = {**old.classification_evidence, 'kind': 'review', 'reason': 'participant_changed'}
+                        self.classification_evidence = {**evidence, 'kind': 'review', 'reason': 'participant_changed'}
                 if self.owner_user_snapshot is None:
                     from .models import OrganizationAccess
                     self.owner_user_snapshot = OrganizationAccess.objects.filter(organization_id=self.organization_id,
