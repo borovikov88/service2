@@ -264,7 +264,7 @@ def source_metadata_many(*, user, organization, leads, limit=1, before=None):
     calls = {row.pk: row for row in PhoneCall.objects.filter(organization=organization,
         pk__in=[row.inbox.source_id for row in rows if row.inbox.source_type == "call"])
         .select_related("employee", "employee_profile").only("pk", "organization_id", "client_id", "employee_id", "peer_employee_id",
-            "provider_user", "provider_extension", "peer_provider_user", "peer_provider_extension", "phone_number", "direction",
+            "provider_user", "provider_extension", "peer_provider_user", "peer_provider_extension", "phone_number", "direction", "result",
             "employee_profile_id", "employee_profile__display_name", "employee_profile__organization_id",
             "employee__username", "employee__first_name", "employee__last_name")}
     employee_ids = set(OrganizationAccess.objects.filter(organization=organization,
@@ -293,7 +293,8 @@ def source_metadata_many(*, user, organization, leads, limit=1, before=None):
                 continue
             contact = contacts.get(call.client_id)
             metadata.update(contact_name=contact.name if contact else "", url=reverse("communications_calls") + "?" + urlencode({"call_id": call.pk, "org_id": organization.pk}),
-                label="Входящий звонок" if call.direction == "in" else "Исходящий звонок" if call.direction == "out" else "Звонок",
+                label=("Пропущенный звонок" if call.result == PhoneCall.RESULT_MISSED else "Входящий звонок") if call.direction == "in" else "Исходящий звонок" if call.direction == "out" else "Звонок",
+                result=call.result,
                 phone=call.phone_number or "", direction=call.direction, call_id=call.pk,
                 employee=(call.employee_profile.display_name if call.employee_profile_id and call.employee_profile.organization_id == organization.pk else
                     (call.employee.get_full_name() or call.employee.username) if call.employee_id in employee_ids else ""))

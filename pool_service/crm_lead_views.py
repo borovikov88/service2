@@ -182,6 +182,9 @@ def _serialize_many(leads, user, capabilities, *, detail=False):
     for lead in leads:
         row = _serialize(lead, user, capabilities, detail=detail, visible_tasks=visible)
         row["source"] = next(iter(sources.get(lead.pk, [])), None)
+        if row["source"] and row["source"]["type"] == "call" and row["source"]["direction"] == "in":
+            from .services.crm_lead_titles import automatic_call_title
+            row["title"] = automatic_call_title(row["title"], row["source"]["phone"], row["source"].get("result") == "missed")
         output.append(row)
     return output
 

@@ -19,6 +19,7 @@ from pool_service.crm_commercial_models import (
 from pool_service.models import Client, Employee, Organization, OrganizationAccess
 from pool_service.services.call_privacy import is_private_call
 from pool_service.services.crm_lead_access import can_read_lead
+from pool_service.services.crm_lead_titles import automatic_call_title, call_title
 
 
 INTAKE_OUTCOMES = frozenset({"lead_created", "lead_linked", "historical_ignored", "private_ignored"})
@@ -97,7 +98,7 @@ def consume_incoming(event, source, operation_identity):
             client_id = None
         lead = CrmLead.objects.create(
             organization=organization, client_id=client_id,
-            title="Входящий звонок — требуется уточнение" if event.source_type == "call" else "Входящее обращение — требуется уточнение",
+            title=call_title(source.phone_number, source.result == PhoneCall.RESULT_MISSED) if event.source_type == "call" else "Входящее обращение — требуется уточнение",
             acquisition_source=event.provider_kind if event.source_type == "message" else "",
             first_contact_channel=event.provider_kind, first_occurred_at=event.occurred_at,
             received_at=event.received_at, last_activity_at=event.occurred_at or event.received_at,
@@ -110,6 +111,8 @@ def consume_incoming(event, source, operation_identity):
     before = lead.revision
     old_assignee = lead.assignee_id
     old_status = lead.status
+    if event.source_type == "call":
+        lead.title = automatic_call_title(lead.title, source.phone_number, source.result == PhoneCall.RESULT_MISSED)
     # First confirmed answer can fill an unassigned card. Explicit take, later
     # calls, completed qualification and manual ownership are never overwritten.
     if event.source_type == "call" and lead.assignee_id is None and not lead.result and not lead.is_archived:

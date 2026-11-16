@@ -4,16 +4,17 @@
 {% block extra_head %}
 <link rel="stylesheet" href="{% static 'pool_service/crm_live/workspace.css' %}?v=20261115-simple">
 <link rel="stylesheet" href="{% static 'pool_service/crm_live/leads.css' %}?v=20261115-failure">
-<link rel="stylesheet" href="{% static 'pool_service/crm_live/design.css' %}?v=20261115-failure">
+<link rel="stylesheet" href="{% static 'pool_service/crm_live/design.css' %}?v=20261116-compact">
+<link rel="stylesheet" href="{% static 'pool_service/crm_live/bulk.css' %}?v=20261116-bulk">
 <link rel="stylesheet" href="{% static 'pool_service/customer_editor.css' %}?v=20261115-unified">
 <script src="{% static 'pool_service/customer_editor.js' %}?v=20261115-unified" defer></script>
-<script src="{% static 'pool_service/crm_live/leads.js' %}?v=20261115-failure" defer></script>
+<script src="{% static 'pool_service/crm_live/bulk.js' %}?v=20261116-bulk" defer></script>
+<script src="{% static 'pool_service/crm_live/leads.js' %}?v=20261116-bulk" defer></script>
 {% endblock %}
 {% block content %}
 <section class="crm-live crm-leads" id="crm-leads" aria-label="Лиды">
-  <nav class="crm-section-nav" aria-label="Разделы CRM"><span aria-current="page">Лиды</span><a href="{{ lead_bootstrap.urls.deals }}">Сделки</a><a href="{% url 'clients_list' %}">Контакты</a></nav>
   <header class="crm-live-heading">
-    <div><div class="crm-live-eyebrow">{{ lead_bootstrap.organization_name }}</div><h1>Лиды</h1></div>
+    <h1>Лиды</h1>
     <button class="crm-live-button crm-live-button-primary" id="lead-create" type="button" hidden><svg class="crm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg>Новый лид</button>
   </header>
   <div id="lead-operations" class="crm-live-operations" aria-live="polite"></div>

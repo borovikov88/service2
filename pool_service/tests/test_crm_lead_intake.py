@@ -145,11 +145,12 @@ class LeadIntakeTests(Fixture, TestCase):
         self.assertEqual(Notification.objects.filter(kind='crm_assignment').count(), 1)
 
     def test_missed_or_unmapped_stays_free_and_late_answer_cannot_replace_owner(self):
-        self.mapped_call(status="missed")
+        call = self.mapped_call(status="missed")
         self.deliver("call")
         lead = CrmLead.objects.get()
         self.assertIsNone(lead.assignee_id)
         self.assertEqual(lead.intake_reason, "missed_call")
+        self.assertEqual(lead.title, "Пропущенный звонок · " + call.phone_number)
         other = get_user_model().objects.create_user("synthetic-explicit-taker")
         OrganizationAccess.objects.create(organization=self.org, user=other, role="manager")
         lead.assignee, lead.status = other, "working"
@@ -159,6 +160,27 @@ class LeadIntakeTests(Fixture, TestCase):
         lead.refresh_from_db()
         self.assertEqual(lead.assignee_id, other.pk)
         self.assertEqual(CrmLead.objects.count(), 1)
+        self.assertEqual(lead.title, "Входящий звонок · " + call.phone_number)
+
+    def test_missed_title_in_existing_cards_and_manual_names_are_preserved(self):
+        call = self.mapped_call(status="missed")
+        self.deliver("call")
+        lead = CrmLead.objects.get()
+        lead.title = "Входящий звонок — требуется уточнение"
+        lead.save(update_fields=["title"])
+        self.client.force_login(self.user)
+        response = self.client.get(reverse("crm_live_lead_detail", args=[lead.pk]), {"org_id": self.org.pk})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["lead"]["title"], "Пропущенный звонок · " + call.phone_number)
+        self.assertEqual(response.json()["lead"]["source"]["label"], "Пропущенный звонок")
+        lead.refresh_from_db()
+        self.assertEqual(lead.title, "Входящий звонок — требуется уточнение", "Viewing does not mutate existing data")
+        lead.title = "Synthetic custom call request"
+        lead.save(update_fields=["title"])
+        self.history(user="synthetic-provider", ext="101", status="success")
+        self.deliver("call")
+        lead.refresh_from_db()
+        self.assertEqual(lead.title, "Synthetic custom call request")
 
     def test_current_communication_revocation_or_rebinding_hides_card(self):
         message = self.incoming()

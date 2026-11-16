@@ -40,8 +40,8 @@ html[data-theme=dark] :is(#crm-live, #crm-leads) {
 :is(#crm-live, #crm-leads) .crm-section-nav > a:hover { color: var(--crm-blue); }
 :is(#crm-live, #crm-leads) .crm-section-nav > [aria-current=page] { border-bottom-color: transparent; }
 :is(#crm-live, #crm-leads) .crm-section-nav > [aria-current=page]::after { content: ""; position: absolute; height: 3px; background: var(--crm-blue); border-radius: 3px 3px 0 0; bottom: -1px; left: 0; right: 0; }
-:is(#crm-live, #crm-leads) .crm-live-heading { margin: 0 0 22px; gap: 20px; }
-:is(#crm-live, #crm-leads) .crm-live-heading h1 { font-size: 29px; letter-spacing: -.7px; line-height: 1.2; margin: 0; font-weight: 700; }
+:is(#crm-live, #crm-leads) .crm-live-heading { margin: 0 0 12px; gap: 16px; }
+:is(#crm-live, #crm-leads) .crm-live-heading h1 { font-size: 26px; letter-spacing: -.7px; line-height: 1.2; margin: 0; font-weight: 700; }
 :is(#crm-live, #crm-leads) .crm-live-eyebrow { font-size: 12px; letter-spacing: 0; text-transform: none; margin-bottom: 4px; }
 #crm-live .crm-live-heading .crm-live-pipelines { gap: 4px; padding: 4px; margin-right: auto; border: 1px solid var(--crm-line); background: var(--crm-panel); border-radius: 12px; }
 #crm-live .crm-live-heading .crm-live-pipelines button { font-size: 13px; padding: 8px 14px; border-radius: 8px; }
@@ -61,13 +61,13 @@ html[data-theme=dark] :is(#crm-live, #crm-leads) {
 #crm-live .crm-live-views button { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; padding: 9px 12px; border-radius: 7px; }
 :is(#crm-live, #crm-leads) .crm-live-refresh { display: grid; place-items: center; color: var(--crm-muted); }
 :is(#crm-live, #crm-leads) .crm-live-refresh:hover { color: var(--crm-blue); background: var(--crm-blue-soft); }
-#crm-live .crm-live-results { margin: 16px 0; }
+#crm-live .crm-live-results { margin: 10px 0; }
 #crm-live .crm-live-attention { gap: 5px; }
 #crm-live .crm-live-attention button, #crm-leads .lead-modes button { border: 1px solid transparent; background: transparent; border-radius: 8px; padding: 7px 12px; font-size: 13px; }
 #crm-live .crm-live-attention button:hover, #crm-leads .lead-modes button:hover { background: var(--crm-soft); color: var(--crm-text); }
 #crm-live .crm-live-attention button[aria-pressed=true], #crm-leads .lead-modes button:is([aria-current=page],[aria-pressed=true]) { background: var(--crm-blue-soft); color: var(--crm-blue); border-color: transparent; font-weight: 600; }
-#crm-leads .lead-modes { margin: 16px 0 0; align-items: center; gap: 4px; }
-#crm-leads .lead-count { margin: 10px 2px 14px; }
+#crm-leads .lead-modes { margin: 10px 0 0; align-items: center; gap: 4px; }
+#crm-leads .lead-count { margin: 6px 2px 10px; }
 #crm-leads #lead-archive-toggle { font-size: 12px; }
 #crm-live .crm-live-board { gap: 16px; padding: 2px 1px 18px; }
 #crm-live .crm-live-lane, #crm-leads .lead-column {

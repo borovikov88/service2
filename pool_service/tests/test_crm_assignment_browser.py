@@ -20,6 +20,54 @@ from pool_service.tests.test_crm_lead_kanban_browser import _bounded_browser_pro
 
 @skipUnless(os.environ.get("CRM_CARD_BROWSER_TEST") == "1", "Dedicated Chromium acceptance enables this test")
 class CrmAssignmentBrowserTests(LeadFixture, StaticLiveServerTestCase):
+    def test_bulk_selection_stages_responsibles_partial_errors_and_retry(self):
+        from pool_service.services.crm_commercial_commands import create_commercial_deal
+        self.org.plan_type = Organization.PLAN_COMPANY_PAID
+        self.org.paid_until = timezone.now() + timedelta(days=30)
+        self.org.crm_close = True
+        self.org.save()
+        OrganizationAccess.objects.filter(organization=self.org, user=self.user).update(role="owner")
+        self.grant.view_team_deals = self.grant.edit_own_deals = self.grant.transition_own_deals = True
+        self.grant.save()
+        recipient = get_user_model().objects.create_user("synthetic-bulk-recipient", first_name="Сотрудник", last_name="Массовое назначение")
+        OrganizationAccess.objects.create(organization=self.org, user=recipient, role="manager")
+        Employee.objects.create(organization=self.org, user=recipient, display_name="Synthetic bulk recipient")
+        CrmAccess.objects.create(organization=self.org, user=recipient, view_leads=True, edit_own_leads=True,
+            take_leads=True, transition_own_leads=True, view_team_deals=True, edit_own_deals=True,
+            transition_own_deals=True, manage_own_next_action=True)
+        leads = [self.create(title="Synthetic bulk lead " + str(index)) for index in range(3)]
+        deals = []
+        for index in range(3):
+            result = create_commercial_deal(actor=self.user, organization=self.org, operation_key="bulk-deal-" + str(index),
+                client_id=self.client.pk, pipeline_id=self.pipeline.pk, title="Synthetic bulk deal " + str(index),
+                next_action={"title": "Synthetic bulk next step", "due_at": self.due})
+            deals.append(CrmDeal.objects.get(pk=result["deal_id"]))
+        http = HttpClient(); http.force_login(self.user)
+        receiver_http = HttpClient(); receiver_http.force_login(recipient)
+        fixture = dict(base=self.live_server_url, org=self.org.pk,
+            leads=reverse("crm_live_leads") + "?org_id=" + str(self.org.pk),
+            deals=reverse("crm_live_workspace") + "?org_id=" + str(self.org.pk) + "&pipeline=" + str(self.pipeline.pk),
+            leadIds=[row.pk for row in leads], dealIds=[row.pk for row in deals], recipient=recipient.pk,
+            technicalStage=self.pipeline.stages.get(code="technical").pk, recipientCookie=receiver_http.cookies[settings.SESSION_COOKIE_NAME].value,
+            screenshotDir=os.environ.get("CRM_BULK_SCREENSHOT_DIR"),
+            sessionCookie=http.cookies[settings.SESSION_COOKIE_NAME].value, sessionCookieName=settings.SESSION_COOKIE_NAME)
+        with patch("pool_service.services.crm_assignment_notifications.send_push_to_users"), patch("pool_service.services.notifications.send_push_to_users"), patch("pool_service.services.push_notifications.send_push_to_users"):
+            code, output = _bounded_browser_process(["node", str(Path(__file__).with_name("crm_bulk.browser.cjs"))], fixture)
+        self.assertEqual(code, 0, output)
+        for lead in leads[:2]:
+            lead.refresh_from_db()
+            self.assertEqual((lead.assignee_id, lead.result), (recipient.pk, "lost"))
+        for deal in deals[:2]:
+            deal.refresh_from_db()
+            self.assertEqual((deal.manager_id, deal.outcome), (recipient.pk, "lost"))
+        leads[2].refresh_from_db(); deals[2].refresh_from_db()
+        self.assertEqual(leads[2].assignee_id, self.user.pk)
+        self.assertEqual(deals[2].manager_id, self.user.pk)
+        self.assertEqual(deals[2].outcome, "open")
+        self.assertEqual(CrmEvent.objects.filter(event_type="deal.assign").count(), 2)
+        self.assertEqual(CrmEvent.objects.filter(event_type="lead.assign").count(), 2)
+        self.assertEqual(Notification.objects.filter(user=recipient, kind="crm_assignment").count(), 4)
+
     def test_create_change_cancel_notifications_and_mobile(self):
         self.org.plan_type = Organization.PLAN_COMPANY_PAID
         self.org.paid_until = timezone.now() + timedelta(days=30)
