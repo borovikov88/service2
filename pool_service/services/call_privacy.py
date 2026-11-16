@@ -152,8 +152,8 @@ def preserve_private_history(organization, owner, key):
         names = dict(User.objects.filter(pk__in=ids).values_list('pk', 'username'))
         for call in batch:
             if key in _counterpart_keys(call, names).get(owner.pk, ()):
-                CallPrivacyHold.objects.update_or_create(call=call,
-                    defaults={'organization': organization, 'owner': owner, 'released_at': None})
+                CallPrivacyHold.objects.update_or_create(call=call, owner=owner,
+                    defaults={'organization': organization, 'released_at': None})
     batch = []
     for call in calls.iterator(chunk_size=200):
         batch.append(call)
@@ -198,24 +198,31 @@ def iter_visible_calls(queryset, *, chunk_size=200):
 
 def task_source_is_private(task, user=_UNSPECIFIED):
     """Return True when a task derives from an explicitly private call."""
-    if user is not _UNSPECIFIED:
-        return task.pk in private_source_task_ids([task], user=user)
-    payload = task.payload_json if isinstance(task.payload_json, dict) else {}
-    raw_call_id = payload.get("source_call_id")
-    try:
-        call_id = int(raw_call_id)
-    except (TypeError, ValueError):
-        return False
-    if call_id <= 0:
-        return False
-    call = PhoneCall.objects.filter(
-        pk=call_id,
-        organization_id=task.organization_id,
-    ).first()
-    if user is not _UNSPECIFIED:
-        from .call_access import can_read_call
-        return not call or not can_read_call(user, call, media=True)
-    return is_private_call(call) if call else False
+    return task.pk in private_source_task_ids([task], user=user)
+
+
+def _task_card_restrictions(task_cards, *, validate_scope):
+    """Private card origins restrict linked tasks, independently of CRM grants."""
+    from pool_service.crm_commercial_models import CrmLead, CrmDeal
+    from .crm_card_privacy import exclude_private_only_cards
+    by_org = defaultdict(lambda: {'lead': set(), 'deal': set()})
+    for org_id, refs in task_cards.values():
+        for kind, ids in refs.items():
+            by_org[org_id][kind].update(ids)
+    hidden, valid = {}, {}
+    for org in Organization.objects.filter(pk__in=by_org):
+        for kind, model in [('lead', CrmLead), ('deal', CrmDeal)]:
+            ids = by_org[org.pk][kind]
+            if not ids:
+                continue
+            cards = model.objects.filter(organization=org, pk__in=ids)
+            existing = set(cards.values_list('pk', flat=True))
+            public = set(exclude_private_only_cards(cards, org, kind=kind).values_list('pk', flat=True))
+            valid[(org.pk, kind)], hidden[(org.pk, kind)] = existing, existing - public
+    return {pk for pk, (org_id, refs) in task_cards.items() if any(
+        ids & hidden.get((org_id, kind), set())
+        or validate_scope and ids - valid.get((org_id, kind), set())
+        for kind, ids in refs.items())}
 
 
 def private_source_task_ids(tasks, *, for_update=False, user=_UNSPECIFIED):
@@ -232,10 +239,12 @@ def private_source_task_ids(tasks, *, for_update=False, user=_UNSPECIFIED):
         ancestors.update({task.pk: task for task in batch})
         frontier = {task.parent_task_id for task in batch if task.parent_task_id} - ancestors.keys()
     task_calls = {}
+    task_cards = {}
     call_ids = set()
     invalid = set()
     for task in tasks:
         current, seen, references = task, set(), set()
+        card_refs = {'lead': set(), 'deal': set()}
         while current is not None:
             if current.pk in seen or len(seen) >= 20 or current.organization_id != task.organization_id:
                 invalid.add(task.pk)
@@ -244,17 +253,30 @@ def private_source_task_ids(tasks, *, for_update=False, user=_UNSPECIFIED):
             payload = current.payload_json if isinstance(current.payload_json, dict) else {}
             if payload.get('source_call_id') is not None:
                 value = payload['source_call_id']
-                if type(value) not in (str, int) or not str(value).isascii() or not str(value).isdigit() or int(value) <= 0:
+                if type(value) not in (str, int) or len(str(value)) > 19 or not str(value).isascii() or not str(value).isdigit() or not 0 < int(value) <= 2**63-1:
                     invalid.add(task.pk)
                 else:
                     references.add(int(value))
+            for marker, kind, key in [('crm_lead', 'lead', 'lead_id'), ('crm_deal', 'deal', 'deal_id'),
+                    ('crm_commercial', 'deal', 'deal_id')]:
+                ref = payload.get(marker)
+                if not isinstance(ref, dict) or key not in ref:
+                    continue
+                value = ref[key]
+                if type(value) not in (str, int) or len(str(value)) > 19 or not str(value).isascii() or not str(value).isdigit() or not 0 < int(value) <= 2**63-1:
+                    invalid.add(task.pk)
+                else:
+                    card_refs[kind].add(int(value))
             if current.parent_task_id and current.parent_task_id not in ancestors:
                 invalid.add(task.pk)
             current = ancestors.get(current.parent_task_id)
         task_calls[task.pk] = (task.organization_id, references)
+        task_cards[task.pk] = (task.organization_id, card_refs)
         call_ids.update(references)
+    card_restricted = _task_card_restrictions(task_cards, validate_scope=user is not _UNSPECIFIED) if any(
+        ids for _, refs in task_cards.values() for ids in refs.values()) else set()
     if not call_ids:
-        return invalid if user is not _UNSPECIFIED else set()
+        return card_restricted | (invalid if user is not _UNSPECIFIED else set())
 
     calls_query = PhoneCall.objects.filter(pk__in=call_ids)
     if for_update:
@@ -274,7 +296,7 @@ def private_source_task_ids(tasks, *, for_update=False, user=_UNSPECIFIED):
     else:
         invalid |= {task_id for task_id, (org_id, references) in task_calls.items()
                     if any(call_orgs.get(pk) != org_id for pk in references)}
-    return invalid | {
+    return invalid | card_restricted | {
         task_id
         for task_id, (organization_id, references) in task_calls.items()
         if any(pk in hidden_calls and call_orgs.get(pk) == organization_id for pk in references)

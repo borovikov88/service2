@@ -171,11 +171,12 @@ def employee_control(request, employee_id):
 @require_http_methods(['GET', 'POST'])
 def call_context(request, call_id):
     from .services.call_processing_settings import settings_allowed
-    from .services.call_privacy import is_private_call
     from .services.call_access import set_work_context
-    from .crm_commercial_models import CrmLead, CrmDeal
+    from .services.call_access import can_read_call
+    from .services.crm_lead_access import leads_for_user
+    from .services.crm_commercial_access import deals_for_user
     call = get_object_or_404(PhoneCall.objects.select_related('organization'), pk=call_id)
-    if not settings_allowed(request.user, call.organization) or is_private_call(call) or call.direction == 'internal':
+    if not settings_allowed(request.user, call.organization) or not can_read_call(request.user, call) or call.direction == 'internal':
         raise PermissionDenied
     context = CallWorkContext.objects.filter(call=call).first()
     if request.method == 'POST':
@@ -190,8 +191,8 @@ def call_context(request, call_id):
         except (ValueError, ValidationError) as exc:
             messages.error(request, ' '.join(exc.messages) if isinstance(exc, ValidationError) else 'Выберите одну карточку.')
     return _response(request, 'pool_service/call_work_context.html', {'call': call, 'context': context,
-        'leads': CrmLead.objects.filter(organization=call.organization, is_archived=False).order_by('-pk'),
-        'deals': CrmDeal.objects.filter(organization=call.organization, is_archived=False).order_by('-pk')})
+        'leads': leads_for_user(request.user, call.organization).filter(is_archived=False).order_by('-pk'),
+        'deals': deals_for_user(request.user, call.organization).filter(is_archived=False).order_by('-pk')})
 
 
 @login_required

@@ -25,6 +25,8 @@ class StaffCallControlTests(LeadFixture, TestCase):
         self.org.save()
         self.owner = get_user_model().objects.create_user('synthetic-call-owner')
         OrganizationAccess.objects.create(organization=self.org, user=self.owner, role='owner')
+        CrmAccess.objects.create(organization=self.org, user=self.owner, view_leads=True,
+            view_team_deals=True, edit_own_leads=True, edit_own_deals=True)
         self.other = get_user_model().objects.create_user('synthetic-call-colleague')
         OrganizationAccess.objects.create(organization=self.org, user=self.other, role='manager')
         CrmAccess.objects.create(user=self.other, organization=self.org, view_leads=True)
@@ -100,7 +102,7 @@ class StaffCallControlTests(LeadFixture, TestCase):
         org = Organization.objects.create(name='Synthetic foreign')
         from pool_service.crm_commercial_models import CrmLead
         lead = CrmLead.objects.create(organization=org, title='Synthetic foreign card')
-        with self.assertRaises(ValidationError):
+        with self.assertRaises(PermissionDenied):
             set_work_context(actor=self.owner, call_id=call.pk, lead_id=lead.pk)
         self.assertFalse(CallWorkContext.objects.exists())
 
@@ -108,6 +110,63 @@ class StaffCallControlTests(LeadFixture, TestCase):
         call, lead = self.call(), self.create()
         with self.assertRaises(PermissionDenied):
             set_work_context(actor=self.user, call_id=call.pk, lead_id=lead.pk)
+
+    def test_explicit_lead_keeps_its_assignee_after_conversion_to_another_manager(self):
+        from pool_service.crm_commercial_models import CrmLeadDealLink, CrmCommand, CrmStage
+        call, lead = self.call(), self.create()
+        deal = CrmDeal.objects.create(organization=self.org, pipeline=self.pipeline,
+            stage=CrmStage.objects.filter(pipeline=self.pipeline).first(),
+            title='Synthetic separate manager', manager=self.other)
+        command = CrmCommand.objects.create(organization=self.org, actor=self.user,
+            operation_key='synthetic-main-context-conversion', command_type='lead.qualify', payload_hash='c'*64)
+        CrmLeadDealLink.objects.create(organization=self.org, lead=lead, deal=deal,
+            command=command, kind='qualification')
+        set_work_context(actor=self.owner, call_id=call.pk, lead_id=lead.pk)
+        self.assertTrue(can_read_call(self.user, call, media=True))
+        self.assertFalse(can_read_call(self.other, call, media=True))
+        set_work_context(actor=self.owner, call_id=call.pk, deal_id=deal.pk, revision=1)
+        self.assertFalse(can_read_call(self.user, call, media=True))
+        self.assertTrue(can_read_call(self.other, call, media=True))
+
+    def test_owner_cannot_select_another_owners_private_card_or_unhide_it_by_post(self):
+        from pool_service.services.crm_lead_access import can_read_lead
+        lead = self.create(title='Synthetic other-owner private card sentinel')
+        private = self.call()
+        set_work_context(actor=self.owner, call_id=private.pk, lead_id=lead.pk)
+        add_private_numbers(user=self.owner, organization=self.org, label='Synthetic former owner private', numbers_text=private.phone_number)
+        OrganizationAccess.objects.filter(organization=self.org, user=self.owner, role='owner').delete()
+        OrganizationAccess.objects.create(organization=self.org, user=self.other, role='owner')
+        work = self.call(employee=self.other, phone_number='+79991110099')
+        self.http.force_login(self.other)
+        url = reverse('communication_call_context', args=[work.pk])
+        response = self.http.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, 'Synthetic other-owner private card sentinel')
+        self.assertEqual(self.http.post(url, {'subject': f'lead:{lead.pk}', 'revision': 0}).status_code, 403)
+        self.assertFalse(CallWorkContext.objects.filter(call=work).exists())
+        self.assertFalse(can_read_lead(self.other, self.org, lead))
+
+    def test_private_card_tasks_without_call_id_and_children_are_protected(self):
+        from pool_service.services.task_read_permissions import readable_tasks
+        from pool_service.services.call_privacy import task_source_is_private
+        from pool_service.services.call_access import can_receive_task_notice
+        call = self.call()
+        private = self.create(next_action=self.action('Synthetic private next action sentinel'))
+        set_work_context(actor=self.owner, call_id=call.pk, lead_id=private.pk)
+        add_private_numbers(user=self.owner, organization=self.org, label='Synthetic private task', numbers_text=call.phone_number)
+        child = ServiceTask.objects.create(organization=self.org, created_by=self.user,
+            parent_task=private.next_task, title='Synthetic private child', start_date=timezone.localdate())
+        working = self.create(next_action=self.action('Synthetic independent working task'))
+        self.grant.view_leads = False
+        self.grant.save(update_fields=['view_leads'])
+        tasks = readable_tasks(ServiceTask.objects.filter(pk__in=[private.next_task_id, child.pk, working.next_task_id]), self.user)
+        self.assertEqual([task.pk for task in tasks], [working.next_task_id])
+        self.assertTrue(task_source_is_private(private.next_task))
+        self.assertFalse(can_receive_task_notice(self.user, reverse('task_edit', args=[private.next_task_id])))
+        self.assertFalse(self.http.get(reverse('task_edit', args=[private.next_task_id])).status_code == 200)
+        mark = CallPrivateNumber.objects.get(owner=self.owner)
+        remove_private_number(user=self.owner, organization=self.org, number_id=mark.pk)
+        self.assertTrue(task_source_is_private(child, user=self.user))
 
     def test_new_requests_to_audio_and_transcript_refuse_unassigned_owner_call(self):
         call = self.call()
@@ -192,6 +251,30 @@ class StaffCallControlTests(LeadFixture, TestCase):
         self.assertEqual(response.status_code, 403)
         hold.refresh_from_db()
         self.assertIsNone(hold.released_at)
+
+    def test_successive_owners_keep_independent_protection_for_shared_history(self):
+        shared = self.call(peer_employee=self.other)
+        add_private_numbers(user=self.owner, organization=self.org, label='Synthetic first owner', numbers_text=shared.phone_number)
+        first_mark = CallPrivateNumber.objects.get(owner=self.owner)
+        remove_private_number(user=self.owner, organization=self.org, number_id=first_mark.pk)
+        first_hold = CallPrivacyHold.objects.get(call=shared, owner=self.owner)
+        OrganizationAccess.objects.filter(organization=self.org, user=self.owner, role='owner').delete()
+        OrganizationAccess.objects.create(organization=self.org, user=self.other, role='owner')
+        add_private_numbers(user=self.other, organization=self.org, label='Synthetic next owner', numbers_text=shared.phone_number)
+        second_mark = CallPrivateNumber.objects.get(owner=self.other)
+        remove_private_number(user=self.other, organization=self.org, number_id=second_mark.pk)
+        second_hold = CallPrivacyHold.objects.get(call=shared, owner=self.other)
+        self.assertEqual(CallPrivacyHold.objects.filter(call=shared).count(), 2)
+        self.http.force_login(self.other)
+        url = reverse('communication_personal_history')
+        self.assertEqual(self.http.post(url, {'hold': first_hold.pk}).status_code, 404)
+        self.assertEqual(self.http.post(url, {'hold': second_hold.pk}).status_code, 302)
+        self.assertTrue(is_private_call(shared))
+        OrganizationAccess.objects.filter(organization=self.org, user=self.other, role='owner').delete()
+        OrganizationAccess.objects.create(organization=self.org, user=self.owner, role='owner')
+        self.http.force_login(self.owner)
+        self.assertEqual(self.http.post(url, {'hold': first_hold.pk}).status_code, 302)
+        self.assertFalse(is_private_call(shared))
 
     def test_as_of_number_classification_preserves_past_after_dismissal(self):
         now = timezone.now()

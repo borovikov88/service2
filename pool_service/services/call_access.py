@@ -90,8 +90,9 @@ def scope_calls(user, organization, queryset=None, *, media=False, assignment_su
         authority |= Q(_policy_deals=1, _policy_assigned_conversion=True)
     explicit_ok = Q(_policy_has_context=True, _policy_context_org=organization.pk) & (
         Q(_policy_context_deal__isnull=False, _policy_assigned_deal=True) if deal_allowed else Q(pk__in=[]))
-    explicit_ok |= Q(_policy_has_context=True, _policy_context_org=organization.pk,
-                     _policy_context_deal__isnull=True) & authority
+    if lead_allowed:
+        explicit_ok |= Q(_policy_has_context=True, _policy_context_org=organization.pk,
+                         _policy_context_deal__isnull=True, _policy_assigned_lead=True)
     derived_ok = Q(_policy_has_context=False, _policy_source_count=1) & authority
     delegated = explicit_ok | derived_ok
     owners = OrganizationAccess.objects.filter(organization=organization, role='owner').values('user_id')
@@ -117,11 +118,22 @@ def set_work_context(*, actor, call_id, lead_id=None, deal_id=None, revision=0):
     peek = PhoneCall.objects.get(pk=call_id)
     org = Organization.objects.select_for_update().get(pk=peek.organization_id)
     from .call_processing_settings import _lock_owner
-    _lock_owner(actor, org)
+    actor = _lock_owner(actor, org)
     from .call_privacy import is_private_call
     call = PhoneCall.objects.select_for_update().get(pk=call_id)
+    if not can_read_call(actor, call):
+        raise PermissionDenied
     if is_private_call(call) or call.direction == 'internal' or bool(lead_id) == bool(deal_id):
         raise ValidationError('Выберите одну рабочую карточку для внешнего рабочего звонка.')
+    from .crm_lead_access import can_read_lead
+    from .crm_commercial_access import deals_for_user
+    if lead_id:
+        subject = CrmLead.objects.filter(organization=org, pk=lead_id).first()
+        allowed = can_read_lead(actor, org, subject)
+    else:
+        allowed = deals_for_user(actor, org).filter(pk=deal_id).exists()
+    if not allowed:
+        raise PermissionDenied('Выбранная карточка недоступна.')
     row = CallWorkContext.objects.select_for_update().filter(call=call).first()
     if revision != (row.revision if row else 0):
         raise ValidationError('Связь изменилась. Обновите страницу.')

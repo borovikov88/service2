@@ -49,11 +49,14 @@ class EmployeeTelephoneAssignment(models.Model):
 
 class CallPrivacyHold(models.Model):
     """A removed number must not reopen previously protected history."""
-    call = models.OneToOneField('pool_service.PhoneCall', on_delete=models.PROTECT, related_name='privacy_hold')
+    call = models.ForeignKey('pool_service.PhoneCall', on_delete=models.PROTECT, related_name='privacy_holds')
     organization = models.ForeignKey('pool_service.Organization', on_delete=models.PROTECT)
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     created_at = models.DateTimeField(default=timezone.now)
     released_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['call', 'owner'], name='call_privacy_owner_once')]
 
     def clean(self):
         if self.call_id and self.call.organization_id != self.organization_id:
