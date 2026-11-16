@@ -276,6 +276,24 @@ class StaffCallControlTests(LeadFixture, TestCase):
         set_work_context(actor=self.owner, call_id=old.pk, lead_id=lead.pk)
         self.assertTrue(can_read_call(self.user, old, media=True))
 
+    def test_personal_archive_preserves_microsecond_boundary_in_python_and_sql(self):
+        from pool_service.services.crm_lead_access import _without_private_calls
+        boundary = timezone.now().replace(microsecond=123456)
+        CallPrivateNumber.objects.create(organization=self.org, owner=self.owner, phone_key='9990001122',
+            label='Synthetic precise removal boundary', removed_at=boundary)
+        for has_provider_time in [False, True]:
+            for offset in [-1, 0, 1]:
+                with self.subTest(provider_time=has_provider_time, microseconds=offset):
+                    occurred_at = boundary + timedelta(microseconds=offset)
+                    values = {'started_at': occurred_at}
+                    if has_provider_time:
+                        values.update(started_at=boundary+timedelta(days=1),
+                            intake_scope={'organization': self.org.pk}, intake_occurred_at=occurred_at)
+                    call = self.call(**values)
+                    CallPrivacyHold.objects.filter(call=call).delete()
+                    self.assertEqual(is_private_call(call), offset < 0)
+                    self.assertEqual(_without_private_calls(PhoneCall.objects.filter(pk=call.pk)).exists(), offset >= 0)
+
     def test_removed_rule_fails_closed_for_unknown_provider_time(self):
         add_private_numbers(user=self.owner, organization=self.org, label='Synthetic unknown-time archive',
             numbers_text='+79990001122')

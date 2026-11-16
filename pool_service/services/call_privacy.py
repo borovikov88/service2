@@ -14,7 +14,7 @@ from datetime import datetime, timezone as datetime_timezone
 from django.contrib.auth.models import User
 from django.db import transaction
 from django.db.models import Q, Case, When, Value, DateTimeField
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Cast, Coalesce
 
 from pool_service.call_processing_models import CallPrivateNumber
 from pool_service.communication_models import PhoneCall
@@ -88,7 +88,9 @@ def _counterpart_keys(call, usernames):
 
 def privacy_time_expression():
     """Unknown provider time stays before every removal boundary, fail closed."""
-    unknown = Value(datetime(1970, 1, 1, tzinfo=datetime_timezone.utc), output_field=DateTimeField())
+    # MySQL needs an SQL cast for the Python literal. Keep stored timestamps
+    # outside Cast so SQLite retains their full microsecond precision.
+    unknown = Cast(Value(datetime(1970, 1, 1, tzinfo=datetime_timezone.utc)), output_field=DateTimeField())
     return Case(When(intake_scope__isnull=False, intake_occurred_at__isnull=True, then=unknown),
         default=Coalesce('intake_occurred_at', 'started_at', unknown), output_field=DateTimeField())
 

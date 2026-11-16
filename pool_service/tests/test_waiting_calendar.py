@@ -12,6 +12,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from pool_service.models import Client, Organization, OrganizationAccess, ServiceTask, ServiceTaskChange
+from pool_service.communication_models import PhoneCall, TelephonyConnection
 from pool_service.operations_mcp_views import _task_data, _reschedule_task, _complete_task
 from pool_service.services.call_commitment_control import _effective_deadline, process_call_commitment_controls
 from pool_service.services.task_feedback import apply_feedback, state_for, version_for, waiting_control
@@ -24,6 +25,10 @@ class WaitingCalendarTests(TestCase):
         self.org = Organization.objects.create(name="Waiting calendar test organization")
         self.owner = User.objects.create_user("waiting-calendar-owner")
         OrganizationAccess.objects.create(user=self.owner, organization=self.org, role="owner")
+        line = TelephonyConnection.objects.create(organization=self.org, external_id='synthetic-waiting-line')
+        PhoneCall.objects.create(pk=901, organization=self.org, connection=line,
+            employee=self.owner, external_id='synthetic-waiting-call', direction='in',
+            phone_number='+79990000002', started_at=timezone.now())
         self.old_date = timezone.localdate() - timedelta(days=45)
         self.check = timezone.now() + timedelta(days=45)
         self.check_date = self.check.astimezone(ZoneInfo("Asia/Barnaul")).date()
