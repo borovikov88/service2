@@ -7,6 +7,8 @@ from django.db.models import Exists, OuterRef, Q
 from pool_service.communication_models import ConversationMessage, PhoneCall
 from pool_service.crm_commercial_models import CrmLeadSource, CrmLeadDealLink
 from pool_service.staff_call_models import CallWorkContext
+from pool_service.staff_call_models import CallPrivacyHold
+from pool_service.call_processing_models import CallPrivateNumber
 
 
 def card_origins(queryset, organization, *, kind):
@@ -80,7 +82,15 @@ def card_origins(queryset, organization, *, kind):
 
 
 def exclude_private_only_cards(queryset, organization, *, kind):
-    return card_origins(queryset, organization, kind=kind).exclude(
+    restricted_origin = (
         (Q(_origin_private_source=True) | Q(_origin_private_context=True) | Q(_origin_private_link=True))
         & Q(_origin_work_source=False, _origin_work_context=False, _origin_work_link=False,
             _origin_work_history=False, _origin_message_history=False))
+    # Keep this shortcut in the SAME database statement. A cached Python test
+    # for "no private numbers" could become stale while a query is still lazy.
+    # With no protection in this organization, provenance cannot be private.
+    return card_origins(queryset, organization, kind=kind).alias(
+        _org_private_numbers=Exists(CallPrivateNumber.objects.filter(organization=organization)),
+        _org_private_holds=Exists(CallPrivacyHold.objects.filter(
+            organization=organization, released_at__isnull=True))).filter(
+        Q(_org_private_numbers=False, _org_private_holds=False) | ~restricted_origin)
