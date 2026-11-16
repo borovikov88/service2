@@ -342,6 +342,29 @@ class StaffCallControlTests(LeadFixture, TestCase):
         self.assertTrue(self.user.is_active)
         self.assertRedirects(response, reverse('staff_employee_control', args=[self.employee.pk]))
 
+    def test_service_account_cannot_receive_cards_or_offboarding_assignments(self):
+        from pool_service.services.crm_assignments import execute_assignment, responsible_candidates
+        from pool_service.services.staff_lifecycle import dismissal_recipients
+        service = get_user_model().objects.create_user('synthetic-service-recipient')
+        OrganizationAccess.objects.create(organization=self.org, user=service, role='manager')
+        StaffAccount.objects.create(organization=self.org, user=service, kind='service')
+        CrmAccess.objects.create(organization=self.org, user=service, view_leads=True, edit_own_leads=True)
+        lead = self.create()
+        candidates = responsible_candidates(actor=self.user, organization=self.org, kind='lead', subject_id=lead.pk)
+        self.assertNotIn(service.pk, [row['id'] for row in candidates['users']])
+        self.assertFalse(dismissal_recipients(self.org).filter(pk__in=[service.pk, self.other.pk]).exists())
+        with self.assertRaises(PermissionDenied):
+            execute_assignment(actor=self.user, organization=self.org, operation_key='reject-service-recipient',
+                command_type='lead.assign', subject_id=lead.pk, expected_revision=lead.revision,
+                changes={'responsible_id': service.pk})
+        with self.assertRaises(ValidationError):
+            dismiss_employee(actor=self.owner, employee_id=self.employee.pk,
+                expected_updated_at=self.employee.updated_at.isoformat(), recipient_id=service.pk)
+        self.employee.refresh_from_db()
+        self.assertTrue(self.employee.is_active)
+        lead.refresh_from_db()
+        self.assertEqual(lead.assignee_id, self.user.pk)
+
     def test_dismissal_keeps_a_separate_client_cabinet_and_rejects_stale_phone_assignment(self):
         foreign = Organization.objects.create(name='Synthetic client organization')
         client = Client.objects.create(organization=foreign, name='Synthetic customer')

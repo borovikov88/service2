@@ -150,7 +150,11 @@ def assignment_recipient(using, organization, responsible_id, kind, *, subject=N
     grant = CrmAccess.objects.using(using).select_for_update().filter(organization=organization, user_id=responsible_id).first()
     capabilities = ('edit_own_leads', 'transition_own_leads', 'create_own_leads', 'take_leads') if kind == 'lead' else (
         'edit_own_deals', 'transition_own_deals', 'create_own_deals', 'manage_own_next_action')
-    if (not user or not memberships or not grant or not any(getattr(grant, key) for key in capabilities)
+    from pool_service.staff_call_models import StaffAccount
+    account = StaffAccount.objects.using(using).select_for_update().filter(
+        organization=organization, user_id=responsible_id).first()
+    nonhuman = bool(account and account.kind in {'service', 'system'})
+    if (not user or user.is_superuser or nonhuman or not memberships or not grant or not any(getattr(grant, key) for key in capabilities)
             or any(not employee.is_active or employee.employment_status == Employee.STATUS_DISMISSED for employee in employees)
             or not _readable(user, organization, kind, subject, lock=True, assignment=True)
             or source_lead is not None and not can_read_lead(user, organization, source_lead)):

@@ -32,6 +32,21 @@ def dismissal_preview(actor, employee):
     }
 
 
+def dismissal_recipients(organization):
+    from .crm_permissions import crm_staff_users
+    from pool_service.crm_commercial_models import CrmAccess
+    people = StaffAccount.objects.filter(organization=organization, kind='person').values('user_id')
+    employees = Employee.objects.filter(organization=organization, is_active=True).exclude(
+        employment_status='dismissed').values('user_id')
+    owners = OrganizationAccess.objects.filter(organization=organization, role='owner').values('user_id')
+    grants = CrmAccess.objects.filter(organization=organization).filter(
+        Q(edit_own_leads=True) | Q(transition_own_leads=True) | Q(create_own_leads=True) | Q(take_leads=True)
+        | Q(edit_own_deals=True) | Q(transition_own_deals=True) | Q(create_own_deals=True)
+        | Q(manage_own_next_action=True)).values('user_id')
+    return crm_staff_users(organization).filter(pk__in=grants).filter(
+        Q(pk__in=people) | Q(pk__in=employees) | Q(pk__in=owners))
+
+
 @transaction.atomic
 def dismiss_employee(*, actor, employee_id, expected_updated_at, dismissed_at=None, recipient_id=None):
     peek = Employee.objects.get(pk=employee_id)
@@ -54,8 +69,7 @@ def dismiss_employee(*, actor, employee_id, expected_updated_at, dismissed_at=No
         raise ValidationError('Техническую административную запись нельзя увольнять как сотрудника.')
     recipient = None
     if recipient_id:
-        from .crm_permissions import crm_staff_users
-        recipient = crm_staff_users(org).filter(pk=recipient_id).first()
+        recipient = dismissal_recipients(org).filter(pk=recipient_id).first()
         if recipient is None or recipient.pk == employee.user_id:
             raise ValidationError('Получатель недоступен в этой организации.')
     preview = dismissal_preview(actor, employee)

@@ -12,7 +12,7 @@ from django.db.models import Q
 from .models import Employee, Organization, OrganizationAccess, OrganizationInvite, PoolAccess, User, DataAuditLog
 from .communication_models import TelephonyConnection, TelephonyEmployeeIdentity, PhoneCall
 from .staff_call_models import StaffAccount, EmployeeTelephoneAssignment, CallWorkContext, CallPrivacyHold
-from .services.staff_lifecycle import manages_staff, dismissal_preview, dismiss_employee, assign_phone, close_phone
+from .services.staff_lifecycle import manages_staff, dismissal_preview, dismissal_recipients, dismiss_employee, assign_phone, close_phone
 from .services.call_processing_policy import phone_key
 
 
@@ -154,13 +154,12 @@ def employee_control(request, employee_id):
         except (ValueError, ValidationError) as exc:
             messages.error(request, ' '.join(exc.messages) if isinstance(exc, ValidationError) else 'Проверьте значения полей.')
     preview = dismissal_preview(request.user, employee)
-    from .services.crm_permissions import crm_staff_users
     return _response(request, 'pool_service/staff_employee_control.html', {
         'employee': employee, 'preview': preview,
         'can_dismiss': employee.user_id != request.user.pk and not (employee.user_id and (
             employee.user.is_superuser or OrganizationAccess.objects.filter(
                 organization=employee.organization, user_id=employee.user_id, role='owner').exists())),
-        'recipient_users': crm_staff_users(employee.organization).exclude(pk=employee.user_id),
+        'recipient_users': dismissal_recipients(employee.organization).exclude(pk=employee.user_id),
         'phones': EmployeeTelephoneAssignment.objects.filter(employee=employee).select_related('connection').order_by('-valid_from'),
         'identities': TelephonyEmployeeIdentity.objects.filter(employee=employee).select_related('connection'),
         'connections': TelephonyConnection.objects.filter(organization=employee.organization, is_active=True),

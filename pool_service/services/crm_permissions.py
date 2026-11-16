@@ -64,8 +64,10 @@ def crm_staff_users(organization):
     unavailable = Employee.objects.filter(organization=organization, user__isnull=False).filter(
         Q(is_active=False) | Q(employment_status=Employee.STATUS_DISMISSED),
     ).values("user_id")
+    from pool_service.staff_call_models import StaffAccount
+    nonhuman = StaffAccount.objects.filter(organization=organization, kind__in=['service', 'system']).values('user_id')
     return User.objects.filter(
         is_active=True,
         organizationaccess__organization=organization,
         organizationaccess__role__in=CRM_STAFF_ROLES,
-    ).exclude(pk__in=unavailable).distinct()
+    ).exclude(pk__in=unavailable).exclude(pk__in=nonhuman).exclude(is_superuser=True).distinct()
