@@ -15,7 +15,7 @@ from .communication_models import ChannelConnection, Conversation, PhoneCall
 from .communication_services import organization_access, conversation_capability
 from .crm_source_models import CrmSourceLink
 from .models import CrmItem, DataAuditLog, Organization, ServiceTask
-from .services.call_privacy import is_private_call, task_source_is_private
+from .services.call_privacy import task_source_is_private
 from .services.crm_permissions import crm_items_for_user, crm_directions
 from .services.crm_locking import lock_crm_graph
 from .services.permissions import company_has_access

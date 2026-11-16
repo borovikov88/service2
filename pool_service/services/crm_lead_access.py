@@ -253,8 +253,8 @@ def source_metadata_many(*, user, organization, leads, limit=1, before=None):
                 top[row._family] = {item.pk:item for item in sorted(items.values(),
                     key=lambda item:(item.inbox.received_at,item.pk), reverse=True)[:limit]}
     rows = [row for items in top.values() for row in items.values()]
-    # Recheck whole contributor cards after the split reads too. Revoking access
-    # to another source on that card must not expose its remaining public source.
+    # Recheck contributor authority after split reads. A private call alone
+    # does not revoke an independent working message on a mixed card.
     current = set()
     for ids in _identity_batches(CrmLead.objects.filter(pk__in={row.lead_id for row in rows})):
         current.update(leads_for_user(user, organization).filter(pk__in=ids).values_list('pk',flat=True))

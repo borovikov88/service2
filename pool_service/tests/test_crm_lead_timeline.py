@@ -69,7 +69,7 @@ class TimelineTests(LeadIntakeTests):
         self.assertGreater(first['id'],second[0]['id'])
         self.assertEqual({first['type'],second[0]['type']},{'message'})
 
-    def test_contributor_revoked_between_split_reads_hides_other_public_source(self):
+    def test_private_call_between_split_reads_preserves_independent_work_message(self):
         from pool_service.services import crm_lead_access as access
         from pool_service.crm_commercial_models import CrmLeadSource
         from pool_service.crm_inbox_models import CrmInboxEvent
@@ -91,7 +91,8 @@ class TimelineTests(LeadIntakeTests):
         with patch.object(access,'_identity_batches',batches):
             rows=access.source_metadata_many(user=self.user,organization=self.org,leads=[target])
         self.assertTrue(revoked)
-        self.assertEqual(rows[target.pk],[],'A newly private call hides the whole contributor including its message')
+        self.assertEqual([row['type'] for row in rows[target.pk]], ['message'])
+        self.assertEqual(rows[target.pk][0]['message_id'], event.source_id)
 
     def test_message_body_only_in_authorized_detail(self):
         self.incoming(participant_name='Synthetic sender');self.deliver();lead=CrmLead.objects.get()

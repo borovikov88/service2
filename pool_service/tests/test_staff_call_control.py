@@ -244,6 +244,30 @@ class StaffCallControlTests(LeadFixture, TestCase):
         set_work_context(actor=self.owner, call_id=call.pk, lead_id=lead.pk)
         self.assertTrue(exclude_private_only_cards(CrmLead.objects.filter(pk=lead.pk), self.org, kind='lead').exists())
 
+    def test_lazy_card_fast_path_closes_when_a_personal_rule_appears(self):
+        from pool_service.crm_commercial_models import CrmLead
+        from pool_service.services.crm_card_privacy import exclude_private_only_cards
+        private, public = self.create(), self.create()
+        call = self.call()
+        set_work_context(actor=self.owner, call_id=call.pk, lead_id=private.pk)
+        cards = CrmLead.objects.filter(pk__in=[private.pk, public.pk])
+        pending = exclude_private_only_cards(cards, self.org, kind='lead')
+        CallPrivateNumber.objects.create(organization=self.org, owner=self.owner, phone_key=call.privacy_phone_key)
+        self.assertEqual(list(pending), [])
+        self.assertEqual(set(exclude_private_only_cards(cards, self.org, kind='lead').values_list('pk', flat=True)), {public.pk})
+
+    def test_lazy_card_fast_path_closes_when_a_privacy_hold_appears(self):
+        from pool_service.crm_commercial_models import CrmLead
+        from pool_service.services.crm_card_privacy import exclude_private_only_cards
+        private, public = self.create(), self.create()
+        call = self.call()
+        set_work_context(actor=self.owner, call_id=call.pk, lead_id=private.pk)
+        cards = CrmLead.objects.filter(pk__in=[private.pk, public.pk])
+        pending = exclude_private_only_cards(cards, self.org, kind='lead')
+        CallPrivacyHold.objects.create(call=call, organization=self.org, owner=self.owner)
+        self.assertEqual(list(pending), [])
+        self.assertEqual(set(exclude_private_only_cards(cards, self.org, kind='lead').values_list('pk', flat=True)), {public.pk})
+
     def test_only_owner_can_return_held_history(self):
         call = self.call()
         hold = CallPrivacyHold.objects.create(call=call, organization=self.org, owner=self.owner)

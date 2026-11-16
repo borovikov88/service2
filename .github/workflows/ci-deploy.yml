@@ -147,7 +147,8 @@ jobs:
           CONTACTS_BROWSER_TEST=1 CRM_CARD_BROWSER_TEST=1 CRM_COLUMN_BROWSER_TEST=1 CRM_NEEDS_BROWSER_TEST=1 CRM_LEADS_BROWSER_TEST=1 python manage.py test pool_service.tests.test_crm_commercial_card_browser pool_service.tests.test_crm_failure_browser pool_service.tests.test_crm_object_need_browser pool_service.tests.test_crm_lead_kanban_browser pool_service.tests.test_crm_service_binding_browser pool_service.tests.test_crm_quote_browser pool_service.tests.test_crm_handoff_browser pool_service.tests.test_crm_construction_browser pool_service.tests.test_crm_recurring_browser --settings=service_site.test_settings --verbosity 2
       - name: Chromium CRM release acceptance
         if: steps.reuse.outputs.verified != 'true'
-        timeout-minutes: 5
+        # Includes a fresh migrated DB and bounded contact/assignment flows.
+        timeout-minutes: 8
         shell: bash
         run: |
           set -euo pipefail

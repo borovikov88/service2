@@ -120,11 +120,13 @@ class ConstructionTests(ConstructionFixture,TestCase):
         with self.assertRaises(PermissionDenied): self.basis()
 
     def test_post_launch_private_source_hides_packet_and_denies_replay(self):
-        from pool_service.communication_models import PhoneCall,TelephonyConnection
+        from pool_service.communication_models import CommunicationAccess,PhoneCall,TelephonyConnection
         from pool_service.call_processing_models import CallPrivateNumber
         conn=TelephonyConnection.objects.create(organization=self.org,external_id='synthetic-later-private')
         call=PhoneCall.objects.create(organization=self.org,connection=conn,source_kind='telephony',external_id='synthetic-later-private',employee=self.user,phone_number='+79990000099',started_at=timezone.now())
         self.task.payload_json={'source_call_id':call.pk};self.task.save()
+        with self.assertRaises(PermissionDenied): self.basis()
+        CommunicationAccess.objects.filter(organization=self.org,user=self.recipient).update(can_view_all_calls=True)
         basis=self.basis();self.launch(basis=basis,operation_key='later-private')
         CallPrivateNumber.objects.create(organization=self.org,owner=self.user,phone_key='9990000099',label='Synthetic private')
         response=self.http.get(self.launch_url)
