@@ -37,9 +37,11 @@ def object_querysets(user, organization_id, *, using="default", lock=False):
     return pools, owned
 
 
-def validate_deal_object(using, actor, deal):
-    pools, owned = object_querysets(actor, deal.organization_id, using=using, lock=True)
-    if deal.pool_id and not pools.select_for_update().filter(pk=deal.pool_id, client_id=deal.client_id).exists():
+def validate_deal_object(using, actor, deal, *, lock=True):
+    pools, owned = object_querysets(actor, deal.organization_id, using=using, lock=lock)
+    if lock:
+        pools, owned = pools.select_for_update(), owned.select_for_update()
+    if deal.pool_id and not pools.filter(pk=deal.pool_id, client_id=deal.client_id).exists():
         raise PermissionDenied("Объект сделки сейчас недоступен. Обновите карточку объекта.")
-    if deal.client_object_id and not owned.select_for_update().filter(pk=deal.client_object_id, client_id=deal.client_id).exists():
+    if deal.client_object_id and not owned.filter(pk=deal.client_object_id, client_id=deal.client_id).exists():
         raise PermissionDenied("Объект сделки сейчас недоступен. Обновите карточку объекта.")

@@ -99,7 +99,7 @@ def _transfer_task(subject, task, actor, recipient, expected_version):
         field_name='crm_responsible', old_value=str(old_id), new_value=str(recipient.pk))
 
 
-def _readable(user, organization, kind, subject=None):
+def _readable(user, organization, kind, subject=None, *, lock=False):
     if kind == 'lead':
         return can_read_lead(user, organization, subject) if subject else can_view_leads(user, organization)
     if not can_view_team_deals(user, organization):
@@ -107,17 +107,17 @@ def _readable(user, organization, kind, subject=None):
     if subject:
         from .crm_deal_objects import validate_deal_object
         try:
-            validate_deal_object('default', user, subject)
+            validate_deal_object('default', user, subject, lock=lock)
         except (PermissionDenied, ValidationError):
             return False
     return True
 
 
-def assignment_available(user, organization, subject):
+def assignment_available(user, organization, subject, *, lock=False):
     kind = 'lead' if isinstance(subject, CrmLead) else 'deal'
     if subject.is_archived or (subject.status == 'closed' if kind == 'lead' else subject.outcome != 'open'):
         return False
-    if not _readable(user, organization, kind, subject):
+    if not _readable(user, organization, kind, subject, lock=lock):
         return False
     grant = CrmAccess.objects.filter(organization=organization, user_id=user.pk).first()
     if not organization.crm_v2_write or not grant or not getattr(grant, 'edit_own_' + ('leads' if kind == 'lead' else 'deals')):
@@ -139,7 +139,7 @@ def assignment_recipient(using, organization, responsible_id, kind, *, subject=N
         'edit_own_deals', 'transition_own_deals', 'create_own_deals', 'manage_own_next_action')
     if (not user or not memberships or not grant or not any(getattr(grant, key) for key in capabilities)
             or any(not employee.is_active or employee.employment_status == Employee.STATUS_DISMISSED for employee in employees)
-            or not _readable(user, organization, kind, subject)
+            or not _readable(user, organization, kind, subject, lock=True)
             or source_lead is not None and not can_read_lead(user, organization, source_lead)):
         raise PermissionDenied('Сотрудник недоступен или не имеет доступа к этой карточке CRM и её источникам.')
     return user
@@ -167,7 +167,7 @@ def responsible_candidates(*, actor, organization, kind, subject_id=None, lead_i
         if subject_id is not None:
             model = CrmLead if kind == 'lead' else CrmDeal
             subject = model.objects.select_for_update().filter(pk=subject_id, organization=organization).first()
-            if not subject or not _readable(actor, organization, kind, subject) or not assignment_available(actor, organization, subject):
+            if not subject or not _readable(actor, organization, kind, subject, lock=True) or not assignment_available(actor, organization, subject, lock=True):
                 raise PermissionDenied
         source_lead = None
         if lead_id is not None:
@@ -206,14 +206,14 @@ def execute_assignment(*, actor, organization, operation_key, command_type, subj
         subject = model.objects.select_for_update().filter(pk=subject_id, organization=organization).first()
         task = _current_task(subject, lock=True) if subject and transfer else None
         actor = _actor('default', actor, organization, kind)
-        if not subject or not _readable(actor, organization, kind, subject):
+        if not subject or not _readable(actor, organization, kind, subject, lock=True):
             raise PermissionDenied
         previous = CrmCommand.objects.select_for_update().filter(organization=organization, operation_key=operation_key).first()
         if previous:
             if previous.actor_id != actor.pk or previous.command_type != command_type or previous.payload_hash != digest:
                 raise CommercialConflict('Ключ операции уже использован с другими данными.')
             return {**previous.result, 'assignment_saved': True}
-        if not assignment_available(actor, organization, subject):
+        if not assignment_available(actor, organization, subject, lock=True):
             raise PermissionDenied('Назначение доступно текущему ответственному или руководителю с правами CRM.')
         if subject.revision != expected_revision:
             raise CommercialConflict('Карточка изменилась. Откройте её заново.')
