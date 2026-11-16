@@ -5,7 +5,8 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.test import TestCase, Client as HttpClient
+from django.db import connection
+from django.test import TestCase, TransactionTestCase, Client as HttpClient
 from django.urls import reverse
 from django.utils import timezone
 
@@ -318,3 +319,48 @@ class CrmAssignmentSourceTests(InboxFixture, TestCase):
         execute_assignment(**values)
         lead.refresh_from_db(); self.assertEqual(lead.assignee_id, recipient.pk)
         self.assertEqual(Notification.objects.filter(user=recipient, kind='crm_assignment').count(), 1)
+
+
+class CrmAssignmentAutocommitTests(PilotFixture, TransactionTestCase):
+    def test_deal_details_are_read_only_in_autocommit_and_preserve_object_scope(self):
+        from pool_service.client_crm_models import ClientOwnedObject
+        from pool_service.models import Client, Pool
+
+        self.org.plan_type = Organization.PLAN_COMPANY_PAID
+        self.org.paid_until = timezone.now() + timedelta(days=10)
+        self.org.save(update_fields=['plan_type', 'paid_until'])
+        self.grant.view_team_deals = True
+        self.grant.save(update_fields=['view_team_deals'])
+        http = HttpClient()
+        http.force_login(self.user)
+        pool = Pool.objects.create(organization=self.org, client=self.client_record,
+            address='Synthetic autocommit pool address')
+        owned = ClientOwnedObject.objects.create(client=self.client_record, object_type='hammam',
+            name='Synthetic autocommit object', address='Synthetic owned address')
+        deals = []
+        for index, fields in enumerate(({}, {'object_kind': 'pool', 'pool_id': pool.pk},
+                {'object_kind': 'client_object', 'client_object_id': owned.pk})):
+            deal = CrmDeal.objects.get(pk=self.create(operation_key=f'autocommit-{index}', card_fields=fields)['deal_id'])
+            deals.append(deal)
+        before = (CrmCommand.objects.count(), CrmEvent.objects.count(), Notification.objects.count())
+        self.assertFalse(connection.in_atomic_block)
+        self.assertTrue(connection.get_autocommit())
+        # SQLite ignores SELECT FOR UPDATE. Exercise Django's real autocommit
+        # guard locally as well as running this TransactionTestCase on MySQL.
+        with patch.object(connection.features, 'has_select_for_update', True):
+            for deal in deals:
+                response = http.get(reverse('crm_live_detail', args=[deal.pk]), {'org_id': self.org.pk})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()['deal']['id'], deal.pk)
+                self.assertTrue(response.json()['deal']['can_assign'])
+        other = Client.objects.create(organization=self.org, name='Synthetic reparent target')
+        pool.client = other
+        pool.save(update_fields=['client'])
+        with patch.object(connection.features, 'has_select_for_update', True):
+            response = http.get(reverse('crm_live_detail', args=[deals[1].pk]), {'org_id': self.org.pk})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()['deal']['object'], {'restricted': True})
+            self.assertFalse(response.json()['deal']['can_assign'])
+            self.assertFalse(response.json()['deal']['can_edit'])
+            self.assertNotContains(response, 'Synthetic autocommit pool address')
+        self.assertEqual(before, (CrmCommand.objects.count(), CrmEvent.objects.count(), Notification.objects.count()))
