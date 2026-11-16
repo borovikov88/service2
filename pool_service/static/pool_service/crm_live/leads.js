@@ -139,6 +139,17 @@
         return body;
       } finally { win.clearTimeout(timer); }
     }, renderOperations);
+    const bulk = win.CrmBulk?.mount({root, kind: "lead", offset: initial.utc_offset, deadlineISO, moveTargets,
+      items: () => state.mode === "closed" ? state.data.leads : (state.data.columns || []).filter(column => state.showArchiveQueues || !["spam", "deleted"].includes(column.key)).flatMap(column => column.leads),
+      loading: () => state.loading, pending: id => operations.forSubject(id), notice,
+      detail: async (id, signal) => (await read(initial.urls.detail_prefix + id + "/?org_id=" + initial.organization_id, signal)).lead,
+      candidates: async (id, signal) => {
+        const url = new URL(initial.urls.responsibles, win.location.origin); url.searchParams.set("kind", "lead"); url.searchParams.set("subject_id", id); url.searchParams.set("org_id", initial.organization_id);
+        return (await read(url, signal)).users;
+      },
+      run: async (payload, label) => { const item = operations.add(payload, label); const result = await operations.run(item.payload.operation_key); if (result.status === "succeeded") operations.dismiss(item.payload.operation_key); return result; },
+      reload: () => loadList({keepNotice: true, keepSelection: true}),
+    });
     function renderOperations() {
       const host = byId("lead-operations"); host.replaceChildren();
       for (const item of operations.list()) {
@@ -156,6 +167,7 @@
     }
     function applyResult(item) {
       if (item.status === "succeeded") {
+        bulk?.remove(item.payload.subject_id);
         if (item.response.result?.assignment_saved && item.response.result.can_open === false) {
           clearSelection(); dialog.close(); operations.dismiss(item.payload.operation_key);
           notice("Ответственный назначен. Карточка передана сотруднику и больше недоступна в вашем списке."); loadList({keepNotice:true}); return item;
@@ -214,6 +226,7 @@
     }
     function card(lead) {
       const row = el("article", "lead-row"); row.dataset.leadId = lead.id;
+      if (bulk) row.append(bulk.checkbox({...lead, title: displayTitle(lead)}));
       const title = el("div", "lead-card-main"), middle = el("div", "lead-card-owner"), next = el("footer", "lead-card-task");
       const heading = button(displayTitle(lead), () => {if(Date.now()>=suppressClickUntil)openLead(lead.id);}); heading.className = "lead-card-heading"; title.append(heading);
       if(lead.needs_review){const mark=el("span","lead-review-marker");mark.title="Есть обращение для разбора";mark.setAttribute("aria-label","Есть обращение для разбора");title.append(mark);}
@@ -240,7 +253,7 @@
       if (targets.length || lead.can_qualify) {
         row.draggable = !state.loading && !operations.forSubject(lead.id);
         row.addEventListener("dragstart", (event) => {
-          if (!row.draggable || operations.forSubject(lead.id)) { event.preventDefault(); return; }
+          if (!row.draggable || bulk?.hasSelection() || operations.forSubject(lead.id)) { event.preventDefault(); return; }
           dragged = lead; conversionDrop.hidden=!lead.can_qualify;failureDrop.hidden=!targets.includes("failed");dragActions.hidden=conversionDrop.hidden&&failureDrop.hidden; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", String(lead.id)); row.classList.add("is-dragging");
         });
         row.addEventListener("dragend", endDrag);
@@ -286,6 +299,7 @@
         list.append(section);
       }
       list.scrollLeft=scrollLeft;
+      bulk?.refresh();
       renderOperations();
     }
     async function moveLead(snapshot, target) {
@@ -323,6 +337,7 @@
     async function loadList(options) {
       const more=options?.column ? (state.data.columns || []).find(c=>c.key===options.column) : null;
       if (options?.column && (!more?.cursor || state.loading)) return;
+      if (!more && !options?.keepSelection) bulk?.reset();
       const previous=state.data;
       if (state.listController) state.listController.abort();
       const controller = new AbortController(), sequence = ++state.sequence; state.listController = controller; state.loading = true; renderList(); urlState();

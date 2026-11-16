@@ -294,6 +294,18 @@
       return response;
     }, () => { renderOperations(); renderContent(); updateFormLocks(); });
 
+    const bulk = win.CrmBulk?.mount({root, kind: "deal", offset, deadlineISO, transitionIntent, pipelineFor,
+      items: () => (state.data.deals || []).filter(deal => sameId(deal.pipeline_id, state.pipelineId)),
+      loading: () => state.loading, pending: id => queue.forSubject(id), notice,
+      detail: async (id, signal) => (await requestJSON(detailURL(id), {headers: {Accept: "application/json"}}, signal)).deal,
+      candidates: async (id, signal) => {
+        const url = scopedURL(bootstrap.urls.responsibles); url.searchParams.set("kind", "deal"); url.searchParams.set("subject_id", id);
+        return (await requestJSON(url, {headers: {Accept: "application/json"}}, signal)).users;
+      },
+      run: async (payload, label) => { const item = queue.add(payload, label); const result = await queue.run(item.payload.operation_key); if (result.status === "succeeded") queue.dismiss(item.payload.operation_key); return result; },
+      reload: () => loadData({keepNotice: true, keepSelection: true}),
+    });
+
     function syncURL() {
       const url = new URL(win.location.href);
       url.searchParams.set("org_id", String(bootstrap.organization_id));
@@ -389,6 +401,7 @@
       const pending = queue.forSubject(deal.id);
       const card = element("article", "crm-live-card" + (pending ? " is-pending" : ""));
       card.dataset.dealId = deal.id;
+      if (bulk) card.append(bulk.checkbox(deal));
       card.draggable = !table && !state.loading && Boolean(deal.can_transition || deal.can_close_negative) && !deal.is_archived && !pending;
       const main = element("div", "crm-live-card-main");
       const title = element("h3");
@@ -421,6 +434,7 @@
       const pipeline = pipelineFor(state.pipelineId);
       const all = (state.data.deals || []).filter((deal) => sameId(deal.pipeline_id, state.pipelineId));
       const filtered = all;
+      bulk?.refresh();
       for (const kind of ["all", "today", "overdue", "missing"]) {
         root.querySelector(`[data-attention="${kind}"]`).setAttribute("aria-pressed", String(state.attention === kind));
       }
@@ -498,11 +512,13 @@
         container.append(board);
         board.scrollLeft = scrollLeft;
       }
+      bulk?.refresh();
     }
 
     async function loadData(options) {
       const more = options?.moreStage == null ? null : (state.data.column_windows || []).find(item => sameId(item.stage_id, options.moreStage));
       if (options?.moreStage != null && (!more?.cursor || state.loading)) return;
+      if (!more && !options?.keepSelection) bulk?.reset();
       const previous = state.data;
       const generation = ++state.dataGeneration;
       if (state.dataController) state.dataController.abort();
@@ -1327,6 +1343,7 @@
     async function performExisting(key) {
       const entry = await queue.run(key);
       if (entry.status === "succeeded") {
+        bulk?.remove(entry.payload.subject_id);
         if (entry.response.result?.assignment_saved && entry.response.result.can_open === false) {
           queue.dismiss(key); closeDialog(); notice("Ответственный назначен. Карточка передана сотруднику и больше недоступна в вашем списке."); await loadData({keepNotice:true}); return entry;
         }
@@ -1543,7 +1560,7 @@
       const card = event.target.closest(".crm-live-card[draggable=true]");
       if (!card || !event.dataTransfer) return;
       const deal = dealFor(card.dataset.dealId);
-      if (!deal || state.loading || isClosed(deal) || queue.forSubject(deal.id)) { event.preventDefault(); return; }
+      if (!deal || state.loading || bulk?.hasSelection() || isClosed(deal) || queue.forSubject(deal.id)) { event.preventDefault(); return; }
       state.dragging = {id: deal.id, revision: deal.revision};
       dragActions.hidden = !deal.can_close_negative;
       event.dataTransfer.effectAllowed = "move";
