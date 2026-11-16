@@ -38,6 +38,24 @@
 .contact-merge-foot{border-bottom:0;border-top:1px solid #e6edf6}
 .contact-merge-body{padding:20px 22px;max-height:65vh;overflow:auto}
 .contact-merge-foot button{white-space:normal}
+html[data-theme="dark"] .contact-metrics .border,
+html[data-theme="dark"] .contact-phone-row,
+html[data-theme="dark"] .contact-merge-card,
+html[data-theme="dark"] .contact-merge-result,
+html[data-theme="dark"] .contact-merge-dialog{background:#182638;color:#e7edf5;border-color:#304158!important}
+html[data-theme="dark"] .contact-phone-summary>a,
+html[data-theme="dark"] .contact-phone-edit summary,
+html[data-theme="dark"] .contact-phone-add summary{color:#9ac3ff}
+html[data-theme="dark"] .contact-primary{color:#b3d2ff;background:#203c61}
+html[data-theme="dark"] .contact-phone-fields label,
+html[data-theme="dark"] .contact-merge-card small,
+html[data-theme="dark"] .contact-merge-summary,
+html[data-theme="dark"] .contact-empty{color:#a8b8cc}
+html[data-theme="dark"] .contact-phone-add{border-color:#45668c}
+html[data-theme="dark"] .contact-merge-card:has(input:checked),
+html[data-theme="dark"] .contact-selected-row{background:#213c5c!important;--bs-table-bg:#213c5c;--bs-table-accent-bg:#213c5c}
+html[data-theme="dark"] .contact-merge-head,
+html[data-theme="dark"] .contact-merge-foot{border-color:#304158}
 @media(max-width:767px){.contact-card>.admin-card{padding:16px!important}
 .contact-bulk-bar{left:12px;right:12px;bottom:max(80px,env(safe-area-inset-bottom));transform:none;max-width:none}
 .contact-phone-fields{grid-template-columns:1fr}
