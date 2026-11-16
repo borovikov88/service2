@@ -495,7 +495,7 @@ def client_detail(request, client_id):
         client_conversations = list(Conversation.objects.filter(client=client, organization_id=client.organization_id,
             connection__channel__organization_id=client.organization_id).select_related("connection__channel").order_by("-last_message_at")[:30])
 
-    from .services.contact_people import phone_revision
+    from .services.contact_people import phone_revision, phone_rows
     from .client_crm_models import OrganizationPersonLink
     from .services.call_processing_settings import settings_allowed
     from .services.owner_call_privacy import contact_state
@@ -517,6 +517,9 @@ def client_detail(request, client_id):
             "client_kind_label": client_kind_label,
             "phones": phones,
             "phone_revision": phone_revision(client) if can_manage else "",
+            "phone_rows": phone_rows(client),
+            "can_manage_phones": can_manage and not request.user.is_superuser,
+            "merge_history": client.merge_records.select_related("actor").order_by("-created_at")[:10] if can_manage else [],
             "person_user_link": OrganizationPersonLink.objects.filter(person=client, organization_id=client.organization_id).select_related("user", "employee").first() if can_manage else None,
             "personal_call_state": personal_call_state,
             "emails": emails,
@@ -543,8 +546,8 @@ def client_detail(request, client_id):
             "active_tasks_count": active_tasks_count,
             "open_crm_count": open_crm_count,
             "new_task_url": new_task_url,
-            "page_title": client.name,
-            "page_subtitle": client_kind_label,
+            "page_title": None,
+            "page_subtitle": None,
             "active_tab": "clients",
             "show_search": False,
             "show_add_button": False,

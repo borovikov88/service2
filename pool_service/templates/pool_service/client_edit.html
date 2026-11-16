@@ -1,13 +1,17 @@
 {% extends "pool_service/base.html" %}
-{% load crm_phone_fields %}
+{% load crm_phone_fields static %}
 {% block title %}Редактирование — {{ client.name }}{% endblock %}
+{% block extra_head %}
+<link rel="stylesheet" href="{% static 'pool_service/contact_management.css' %}?v=20261116-contacts">
+<script src="{% static 'pool_service/contact_management.js' %}?v=20261116-contacts" defer></script>
+{% endblock %}
 {% block content %}
 {% include "pool_service/_admin_workspace_styles.html" %}
-<div class="admin-desktop">
+<div class="admin-desktop contact-card">
   <div class="admin-card card card-soft p-4">
     <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
       <div>
-        <h4 class="fw-bold mb-1">Редактирование клиента</h4>
+        <h4 class="fw-bold mb-1">{% if client.client_type == "legal" %}Редактирование компании{% else %}Редактирование контакта{% endif %}</h4>
         <div class="text-muted">{{ client.name }}</div>
         <div class="small text-muted mt-1">
           {% if client.client_type == "legal" %}{% if profile.legal_form == "ip" %}ИП{% else %}Компания{% endif %}{% else %}Физическое лицо{% endif %}
@@ -29,7 +33,7 @@
             <h6 class="fw-bold mb-3">Основные сведения и контакты</h6>
             <div class="row g-3">
               {% for field in client_form %}
-                {% if field.name != 'name' and field.name != 'last_name' and field.name != 'first_name' %}
+                {% if field.name != 'name' and field.name != 'last_name' and field.name != 'first_name' and field.name != 'phone' %}
                 <div class="{% if field.name == 'phone' or field.name == 'email' %}col-12 col-md-6{% else %}col-12{% endif %}">
                   <label class="form-label small text-muted" for="{{ field.id_for_label }}">{{ field.label }}{% if field.field.required %} *{% endif %}</label>
                   {% if field.name == "phone" %}{% crm_phone_input field %}{% else %}{{ field }}{% endif %}
@@ -71,7 +75,7 @@
                 {% endif %}
               {% endif %}
             </div>
-            <p class="text-muted small mt-3 mb-0">Иностранный телефон указывайте с кодом страны. Остальные номера и адреса не удаляются при изменении основного контакта.</p>
+            <p class="text-muted small mt-3 mb-0">Название обязательно. Телефоны редактируются отдельно в разделе ниже; карточку можно сохранить без номера.</p>
           </section>
         </div>
         <div class="col-12 col-xl-6">
@@ -114,12 +118,7 @@
         <button class="btn btn-primary" type="submit">Сохранить изменения</button>
       </div>
     </form>
-            <form method="post" class="row g-2 mt-2 align-items-end">
-              {% csrf_token %}<input type="hidden" name="editor_revision" value="{{ editor_revision }}"><input type="hidden" name="action" value="add_extra_phone">
-              <div class="col-12 col-md-5"><label class="form-label small text-muted">Добавить телефон</label><input class="form-control" name="phone" inputmode="tel" autocomplete="tel" required></div>
-              <div class="col-12 col-md-4"><label class="form-label small text-muted">Подпись</label><input class="form-control" name="label" maxlength="120" placeholder="Например, рабочий"></div>
-              <div class="col-auto"><button class="btn btn-outline-primary" type="submit">Добавить</button></div>
-            </form>
+    <div class="border rounded-3 p-3 p-md-4 mt-4">{% include "pool_service/_contact_phones.html" %}</div>
   </div>
 </div>
 {% if client.client_type != 'legal' %}

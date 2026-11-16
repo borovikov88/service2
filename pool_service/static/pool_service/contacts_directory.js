@@ -31,6 +31,7 @@
       root().replaceWith(replacement);
       syncUrl(push);
       bind();
+      document.dispatchEvent(new CustomEvent('contacts:loaded'));
       if (group) {
         const input = root().querySelector(`[data-client-search="${group}"]`);
         input?.focus({preventScroll: true});

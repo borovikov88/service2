@@ -225,6 +225,13 @@ def reconcile(candidate, client, profile, *, created=False, person=False):
     for field, value in values.items():
         if field == "ip_person" or not value:
             continue
+        # Explicit phone removals survive source refreshes. Only a manual add
+        # or an explicitly accepted proposal can restore the number.
+        from .client_crm_models import ClientContactExclusion
+        excluded_key = (value.get("match_value") if field.startswith("contact:") and value.get("kind") == "phone"
+            else equivalent("phone", value) if field == "phone" else None)
+        if excluded_key and ClientContactExclusion.objects.filter(client=client, kind="phone", match_value=excluded_key).exists():
+            continue
         version = candidate.review_state[str(client.pk) + ":" + field]["version"]
         if ClientImportProposal.objects.filter(candidate=candidate, client=client, field=field,
                 source_version=version, state__in=("accepted", "rejected")).exists():

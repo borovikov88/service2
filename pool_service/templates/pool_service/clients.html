@@ -4,6 +4,8 @@
 {% block title %}Контакты{% endblock %}
 
 {% block extra_head %}
+<link rel="stylesheet" href="{% static 'pool_service/contact_management.css' %}?v=20261116-contacts">
+<script src="{% static 'pool_service/contact_merge.js' %}?v=20261116-contacts" defer></script>
 <link rel="stylesheet" href="{% static 'pool_service/customer_editor.css' %}?v=20261115-unified">
 <script src="{% static 'pool_service/customer_editor.js' %}?v=20261115-unified" defer></script>
 <script src="{% static 'pool_service/contact_creation.js' %}?v=20261115-unified" defer></script>
@@ -12,7 +14,7 @@
 {% block content %}
 {% include "pool_service/_admin_workspace_styles.html" %}
 <div class="admin-desktop">
-<div class="admin-card card card-soft p-4" id="contacts-directory" aria-busy="false" data-contact-create-url="{% url 'client_create' %}">
+<div class="admin-card card card-soft p-4" id="contacts-directory" aria-busy="false" data-contact-merge-url="{% url 'client_bulk_merge' %}" data-contact-create-url="{% url 'client_create' %}">
 <div hidden>{% csrf_token %}</div>
 <div class="alert alert-danger" id="contacts-error" hidden role="alert">Не удалось загрузить контакты. <button type="button" class="btn btn-sm btn-outline-danger" id="contacts-retry">Повторить</button></div>
   <div class="admin-page-header d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
@@ -24,7 +26,6 @@
     {% if is_org_admin or user.is_superuser %}
       <div class="d-flex gap-2 ms-auto">
         <a class="btn btn-outline-primary btn-sm" href="{% url "client_onec_import" %}"><i class="bi bi-database-down me-1"></i>Импорт из 1С</a>
-        <a class="btn btn-outline-secondary btn-sm" href="{% url "client_merge_index" %}"><i class="bi bi-diagram-3 me-1"></i>Объединить</a>
       </div>
     {% endif %}
     <ul class="nav nav-pills gap-2" id="clients-tab" role="tablist">
@@ -65,7 +66,7 @@
           <tbody>
             {% for company in companies %}
               <tr data-client-row="companies">
-                <td class="fw-semibold"><a class="text-decoration-none" href="{% url 'client_detail' company.id %}">{{ company.name }}</a>{% include "pool_service/_contact_categories.html" with contact=company %}</td>
+                <td class="fw-semibold">{% if company.can_merge %}<input class="form-check-input contact-select me-2" type="checkbox" data-merge-select="{{ company.id }}" data-merge-kind="{{ company.client_type }}" aria-label="Выбрать {{ company.name }}">{% endif %}<a class="text-decoration-none" href="{% url 'client_detail' company.id %}">{{ company.name }}</a>{% include "pool_service/_contact_categories.html" with contact=company %}</td>
                 <td>{{ company.phone_display|default:"-" }}</td>
                 <td>{{ company.email|default:"-" }}</td>
                 <td>{{ company.pool_count|default:0 }}</td>
@@ -151,7 +152,7 @@
       {% include "pool_service/_contacts_pager.html" with page=suppliers_page group="suppliers" %}
       <div class="table-responsive"><table class="table align-middle"><thead><tr><th>Контакт</th><th>Телефон</th><th>Email</th></tr></thead><tbody>
       {% for supplier in suppliers %}
-        <tr data-client-row="suppliers"><td><a href="{% url 'client_detail' supplier.id %}">{{ supplier.name }}</a>{% include "pool_service/_contact_categories.html" with contact=supplier %}</td><td>{{ supplier.phone_display|default:"—" }}</td><td>{{ supplier.email|default:"—" }}</td></tr>
+        <tr data-client-row="suppliers"><td>{% if supplier.can_merge %}<input class="form-check-input contact-select me-2" type="checkbox" data-merge-select="{{ supplier.id }}" data-merge-kind="{{ supplier.client_type }}" aria-label="Выбрать {{ supplier.name }}">{% endif %}<a href="{% url 'client_detail' supplier.id %}">{{ supplier.name }}</a>{% include "pool_service/_contact_categories.html" with contact=supplier %}</td><td>{{ supplier.phone_display|default:"—" }}</td><td>{{ supplier.email|default:"—" }}</td></tr>
       {% empty %}<tr><td colspan="3">{% if suppliers_q or contact_category %}По запросу ничего не найдено.{% else %}Поставщики ещё не отмечены. Роль можно указать в карточке контакта.{% endif %}</td></tr>{% endfor %}
       </tbody></table></div>
     </div>
@@ -178,7 +179,7 @@
             <tbody>
               {% for client in private_contacts %}
                 <tr data-client-row="people">
-                  <td class="fw-semibold"><a class="text-decoration-none" href="{% url 'client_detail' client.id %}">{{ client.name }}</a>{% include "pool_service/_contact_categories.html" with contact=client %}</td>
+                  <td class="fw-semibold">{% if client.can_merge %}<input class="form-check-input contact-select me-2" type="checkbox" data-merge-select="{{ client.id }}" data-merge-kind="{{ client.client_type }}" aria-label="Выбрать {{ client.name }}">{% endif %}<a class="text-decoration-none" href="{% url 'client_detail' client.id %}">{{ client.name }}</a>{% include "pool_service/_contact_categories.html" with contact=client %}</td>
                   <td>{{ client.phone_display|default:"-" }}</td>
                   <td>{{ client.email|default:"-" }}</td>
                   <td>
@@ -293,6 +294,15 @@
     </div>
   </div>
 </div>
+
+{% if can_merge_contacts %}
+<div class="contact-bulk-bar" data-contact-bulk hidden role="region" aria-label="Действия с выбранными контактами">
+  <strong data-contact-selected-count aria-live="polite">Выбрано: 0</strong>
+  <button class="btn btn-sm btn-outline-light" type="button" data-contact-select-page>Выбрать до 20 на странице</button>
+  <button class="btn btn-sm btn-primary" type="button" data-contact-merge>Объединить</button>
+  <button class="btn btn-sm btn-outline-light" type="button" data-contact-clear>Снять выбор</button>
+</div>
+{% endif %}
 <div class="modal fade" id="clientDeleteBlockedModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog">
     <div class="modal-content">
@@ -309,7 +319,7 @@
     </div>
   </div>
 </div>
-<script src="{% static 'pool_service/contacts_directory.js' %}?v=20261115-categories" defer></script>
+<script src="{% static 'pool_service/contacts_directory.js' %}?v=20261116-management" defer></script>
 
 </div><!-- /admin-desktop -->
 {% endblock %}

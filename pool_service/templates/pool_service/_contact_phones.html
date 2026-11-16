@@ -1,0 +1,38 @@
+<section class="contact-phones" aria-label="Телефоны" data-phone-manager>
+  <div class="d-flex align-items-center justify-content-between gap-2 mb-3"><h6 class="fw-bold mb-0">Телефоны</h6><span class="text-muted small">{{ phone_rows|length }}</span></div>
+  {% for phone in phone_rows %}
+  <div class="contact-phone-row">
+    <div class="contact-phone-summary"><a href="tel:{{ phone.value }}">{{ phone.display }}</a><span class="text-muted small">{{ phone.type_label }}{% if phone.label %} · {{ phone.label }}{% endif %}</span>{% if phone.primary %}<span class="contact-primary">Основной</span>{% endif %}</div>
+    {% if can_manage_phones %}
+    <details class="contact-phone-edit"><summary>Изменить</summary>
+      <form method="post" action="{% url 'client_phone_manage' client.id %}" data-phone-form>{% csrf_token %}
+        <input type="hidden" name="operation" value="edit"><input type="hidden" name="phone_key" data-crm-phone value="{{ phone.key }}"><input type="hidden" name="contacts_revision" value="{{ phone_revision }}">
+        <div class="contact-phone-fields">
+          <label>Номер телефона<input class="form-control" type="tel" name="phone" data-crm-phone="true" value="{{ phone.value }}" maxlength="40" required></label>
+          <label>Тип<select class="form-select" name="phone_type"><option value="work" {% if phone.phone_type == 'work' %}selected{% endif %}>Рабочий</option><option value="personal" {% if phone.phone_type == 'personal' %}selected{% endif %}>Личный</option><option value="other" {% if phone.phone_type == 'other' %}selected{% endif %}>Другой</option></select></label>
+          <label>Подпись<input class="form-control" name="label" value="{{ phone.label }}" maxlength="120" placeholder="Например, приёмная"></label>
+        </div>
+        <label class="small my-2"><input class="form-check-input me-1" type="checkbox" name="primary" value="1" {% if phone.primary %}checked{% endif %}> Основной номер</label>
+        <div class="contact-phone-actions"><button class="btn btn-primary btn-sm" type="submit" data-no-loading>Сохранить номер</button><button class="btn btn-outline-danger btn-sm" type="submit" name="delete_phone" value="1" data-no-loading formnovalidate>Удалить номер</button></div>
+        <p class="text-danger small mt-2 mb-0" role="alert" data-phone-error hidden></p>
+      </form>
+    </details>
+    {% endif %}
+  </div>
+  {% empty %}<div class="contact-empty">Телефон не указан. Карточка сохранена, номер можно добавить позже.</div>{% endfor %}
+  {% if can_manage_phones %}
+  <details class="contact-phone-add" {% if not phone_rows %}open{% endif %}><summary><i class="bi bi-plus-lg me-1"></i>Добавить телефон</summary>
+    <form method="post" action="{% url 'client_phone_manage' client.id %}" data-phone-form data-person-phone-form>{% csrf_token %}
+      <input type="hidden" name="operation" value="add"><input type="hidden" name="contacts_revision" value="{{ phone_revision }}">
+      <div class="contact-phone-fields">
+        <label>Номер телефона<input class="form-control" type="tel" name="phone" data-crm-phone="true" maxlength="40" aria-label="Номер телефона" required></label>
+        <label>Тип<select class="form-select" name="phone_type" aria-label="Тип телефона"><option value="work">Рабочий</option><option value="personal">Личный</option><option value="other" selected>Другой</option></select></label>
+        <label>Подпись<input class="form-control" name="label" maxlength="120" placeholder="Например, офис"></label>
+      </div>
+      <label class="small my-2"><input class="form-check-input me-1" type="checkbox" name="primary" value="1"> Основной номер</label>
+      <div><button class="btn btn-outline-primary btn-sm" type="submit" data-no-loading>Добавить номер</button></div><p class="text-danger small mt-2 mb-0" role="alert" data-phone-error hidden></p>
+    </form>
+  </details>
+  <p class="text-muted small mt-3 mb-0">Можно сохранить карточку без телефона. Удаление номера не удаляет историю звонков.</p>
+  {% endif %}
+</section>

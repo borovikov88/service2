@@ -122,7 +122,8 @@ def capture_client(conversation, *, body="", message_id=None, create=True):
             profile.save(update_fields=["communication_data", "updated_at"])
     # Only a real provider phone may enter the existing identity contacts.
     # Provider-supplied is still not a human confirmation of ownership.
-    if supplied_phone:
+    from .client_crm_models import ClientContactExclusion
+    if supplied_phone and not ClientContactExclusion.objects.filter(client=client, kind="phone", match_value=supplied_phone).exists():
         value = phone_value(supplied_phone)
         contact = ClientContact.objects.filter(client=client, kind="phone", match_value=supplied_phone).first()
         if contact is None:

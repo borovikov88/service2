@@ -328,11 +328,13 @@ def client_edit(request, client_id):
                     messages.success(request, "Карточка клиента обновлена.")
                     return redirect(card_url(updated.pk, tab))
         contacts = list(ClientContact.objects.filter(client=client).order_by("kind", "-is_primary", "id"))
+    from .services.contact_people import phone_revision, phone_rows
     return render(request, "pool_service/client_edit.html", {
+        "phone_rows": phone_rows(client), "phone_revision": phone_revision(client), "can_manage_phones": True,
         "editor_revision": revision,
         "client": client, "profile": profile, "client_form": client_form,
         "profile_form": profile_form, "contacts": contacts, "return_tab": tab,
         "return_url": card_url(client.pk, tab), "contacts_url": card_url(client.pk, "contacts"),
-        "page_title": "Редактирование клиента", "page_subtitle": client.name,
+        "page_title": None, "page_subtitle": None,
         "active_tab": "clients", "show_search": False, "show_add_button": False, "add_url": None,
     })

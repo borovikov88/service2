@@ -448,7 +448,7 @@ class CrmEvent(CommercialModel):
     def clean(self):
         super().clean()
         allowed = {"work_subject_changed", "planned_object_changed", "object_kind", "pool_id", "client_object_id", "specialization_changed", "fulfillment_kind", "amount", "currency", "amount_basis", "expected_decision_at", "outcome", "closed_at", "stage_id", "pipeline_id", "manager_id", "assignee_id", "revision", "is_archived", "status", "result", "needs_review", "column", "title_changed", "need_changed", "next_action_changed", "manual_completion_exception"}
-        allowed |= {"budget_kind", "budget_min", "budget_max"}
+        allowed |= {"budget_kind", "budget_min", "budget_max", "client_id", "contact_id"}
         if not isinstance(self.safe_diff, dict) or not self.safe_diff.keys() <= allowed:
             raise ValidationError("Event diff accepts only structural CRM fields.")
         for field, change in self.safe_diff.items():
@@ -463,7 +463,7 @@ class CrmEvent(CommercialModel):
                 "budget_kind": {"unknown", "exact", "range"},
                 "outcome": {"open", "won", "lost", "cancelled", "unknown"},
             }
-            if field in {"pool_id", "client_object_id"}:
+            if field in {"pool_id", "client_object_id", "client_id", "contact_id"}:
                 if any(value is not None and (type(value) is not int or value <= 0) for value in change.values()):
                     raise ValidationError("Object history values must be positive IDs or NULL.")
                 continue

@@ -18,10 +18,11 @@ def phone_revision(client):
     return hashlib.sha256(json.dumps([client.phone, rows], default=str, sort_keys=True).encode()).hexdigest()
 
 
-def _locked_person(actor, person_id):
+def _locked_person(actor, person_id, *, companies=False):
     org_id = Client.objects.filter(pk=person_id).values_list("organization_id", flat=True).first()
     org = Organization.objects.select_for_update().filter(pk=org_id).first()
-    person = Client.objects.select_for_update().filter(pk=person_id, organization_id=org_id, client_type="private").first()
+    person = Client.objects.select_for_update().filter(pk=person_id, organization_id=org_id,
+        client_type__in=("private", "legal") if companies else ("private",)).first()
     actor = get_user_model().objects.select_for_update().filter(pk=getattr(actor, "pk", None), is_active=True).first()
     if not org or not person or not actor or not active_clients().filter(pk=person.pk).exists():
         raise PermissionDenied
@@ -32,8 +33,8 @@ def _locked_person(actor, person_id):
 
 
 @transaction.atomic
-def save_phone(actor, person_id, *, value, phone_type, primary, revision):
-    person, actor = _locked_person(actor, person_id)
+def save_phone(actor, person_id, *, value, phone_type, primary, revision, _companies=False):
+    person, actor = _locked_person(actor, person_id, companies=_companies)
     if revision != phone_revision(person):
         raise ValidationError("Карточка изменилась. Обновите её.")
     key = normalize_phone(value)
@@ -58,11 +59,108 @@ def save_phone(actor, person_id, *, value, phone_type, primary, revision):
     make_primary = primary == "1" or not person.phone
     row.is_primary = make_primary or normalize_phone(person.phone) == key
     row.save()
+    from pool_service.client_crm_models import ClientContactExclusion
+    ClientContactExclusion.objects.filter(client=person, kind="phone", match_value=key).delete()
     if make_primary:
         ClientContact.objects.filter(client=person, kind="phone").exclude(pk=row.pk).update(is_primary=False)
         person.phone = row.value
         person.save(update_fields=["phone"])
     return row
+
+
+def _phone_key(value):
+    return normalize_phone(value) or "raw:" + str(value)
+
+
+def phone_rows(client):
+    """Include legacy scalar phones without creating records on a read."""
+    from pool_service.phone_utils import format_phone
+    rows, seen = [], set()
+    primary_key = _phone_key(client.phone) if client.phone else ""
+    for item in ClientContact.objects.filter(client=client, kind="phone").order_by("-is_primary", "pk"):
+        key = _phone_key(item.value)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(dict(key=key, value=item.value, display=format_phone(item.value),
+            phone_type=item.phone_type, type_label=item.get_phone_type_display(),
+            label="" if item.label == "Основной" else item.label, primary=bool(key and key == primary_key)))
+    if client.phone and primary_key not in seen:
+        rows.insert(0, dict(key=primary_key, value=client.phone, display=format_phone(client.phone),
+            phone_type="other", type_label="Другой", label="", primary=True))
+    return sorted(rows, key=lambda row: not row["primary"])
+
+
+@transaction.atomic
+def manage_phone(actor, client_id, *, action, key, value="", phone_type="other", label="", primary="0", revision):
+    """Edit/delete an identity-shaped phone, including imported and legacy rows."""
+    import re
+    from pool_service.client_crm_models import ClientContactExclusion
+    client, actor = _locked_person(actor, client_id, companies=True)
+    if actor.is_superuser:
+        raise PermissionDenied
+    if revision != phone_revision(client):
+        raise ValidationError("Карточка изменилась. Обновите страницу перед сохранением.")
+    if action not in {"add", "edit", "delete"}:
+        raise ValidationError("Выберите действие с номером.")
+    rows = list(ClientContact.objects.select_for_update().filter(client=client, kind="phone"))
+    old_key = normalize_phone(client.phone)
+    matches = [row for row in rows if _phone_key(row.value) == key]
+    scalar_match = bool(client.phone and _phone_key(client.phone) == key)
+    if action != "add" and not (matches or scalar_match):
+        raise ValidationError("Этот номер уже изменён или удалён. Обновите карточку.")
+    new_key = normalize_phone(value)
+    if action != "delete":
+        if (not new_key or not re.fullmatch(r"[+0-9 ().\-\s]+", value)
+                or len(value) > 40 or len(canonical_phone_value(value)) > 20
+                or phone_type not in dict(ClientContact.PHONE_TYPES) or len(label) > 120
+                or primary not in {"0", "1"}):
+            raise ValidationError("Проверьте номер, его тип и подпись.")
+        if new_key != key and any(normalize_phone(row.value) == new_key for row in rows):
+            raise ValidationError("Такой номер уже есть. Отредактируйте существующую строку.")
+    if action == "delete" or action == "edit" and new_key != key:
+        data = [dict(value=row.value, label=row.label, sources=row.sources, source_reference=row.source_reference) for row in matches]
+        if scalar_match and not matches:
+            data.append(dict(value=client.phone, sources=["legacy_primary"]))
+        exclusion_key = key[4:].strip() if key.startswith("raw:") else key
+        ClientContactExclusion.objects.update_or_create(client=client, kind="phone", match_value=exclusion_key,
+            defaults={"removed_data": data, "actor": actor})
+        ClientContact.objects.filter(pk__in=[row.pk for row in matches]).delete()
+    if action == "delete":
+        if scalar_match:
+            remaining = ClientContact.objects.filter(client=client, kind="phone").order_by("-is_primary", "pk").first()
+            client.phone = remaining.value if remaining else ""
+            client.save(update_fields=["phone"])
+    else:
+        if action == "edit" and new_key == key and matches:
+            row = matches[0]
+            row.value, row.match_value = canonical_phone_value(value), new_key
+            row.phone_type, row.label = phone_type, label.strip()
+            row.sources = list(dict.fromkeys([*(row.sources or []), "contact_directory"]))
+            # A legacy duplicate is folded into this one explicit phone row.
+            for duplicate in matches[1:]:
+                row.sources = list(dict.fromkeys([*row.sources, *(duplicate.sources or [])]))
+                duplicate.delete()
+            row.save()
+            if scalar_match or primary == "1":
+                client.phone = row.value
+                client.save(update_fields=["phone"])
+        else:
+            if scalar_match:
+                client.phone = ""
+                client.save(update_fields=["phone"])
+            row = save_phone(actor, client.pk, value=value, phone_type=phone_type,
+                primary="1" if scalar_match else primary, revision=phone_revision(client), _companies=True)
+            row.label = label.strip()
+            row.save(update_fields=["label", "updated_at"])
+        ClientContactExclusion.objects.filter(client=client, kind="phone", match_value=new_key).delete()
+    client.refresh_from_db(fields=["phone"])
+    current_key = normalize_phone(client.phone)
+    for row in ClientContact.objects.filter(client=client, kind="phone"):
+        row.is_primary = bool(current_key and normalize_phone(row.value) == current_key)
+        if row.label == "Основной":
+            row.label = ""
+        row.save(update_fields=["is_primary", "label", "updated_at"])
 
 
 @transaction.atomic

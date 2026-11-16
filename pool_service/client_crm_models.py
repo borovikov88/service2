@@ -136,6 +136,29 @@ class ClientContact(models.Model):
         return f"{self.client}: {self.value}"
 
 
+class ClientContactExclusion(models.Model):
+    """An explicit deletion prevents the next import from restoring a number."""
+    client = models.ForeignKey("pool_service.Client", on_delete=models.CASCADE, related_name="contact_exclusions")
+    kind = models.CharField(max_length=12, choices=ClientContact.KIND_CHOICES)
+    match_value = models.CharField(max_length=255)
+    removed_data = models.JSONField(default=list)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["client", "kind", "match_value"], name="contact_exclusion_identity_uniq")]
+
+
+class ClientMergeRecord(models.Model):
+    """Keep the reviewed identities even after later merges of the survivor."""
+    organization = models.ForeignKey("pool_service.Organization", on_delete=models.PROTECT)
+    target = models.ForeignKey("pool_service.Client", on_delete=models.PROTECT, related_name="merge_records")
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL)
+    snapshot = models.JSONField(default=dict)
+    operation_key = models.CharField(max_length=64, unique=True, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
 class ClientOwnedObject(models.Model):
     TYPE_POOL = "pool"
     TYPE_IRRIGATION = "irrigation"
