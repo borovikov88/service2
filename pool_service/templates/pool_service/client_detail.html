@@ -2,9 +2,13 @@
 {% load static %}
 {% block title %}{{ client.name }}{% endblock %}
 
+{% block extra_head %}
+<link rel="stylesheet" href="{% static 'pool_service/contact_management.css' %}?v=20261116-contacts">
+<script src="{% static 'pool_service/contact_management.js' %}?v=20261116-contacts" defer></script>
+{% endblock %}
 {% block content %}
 {% include "pool_service/_admin_workspace_styles.html" %}
-<div class="admin-desktop">
+<div class="admin-desktop contact-card">
   <div class="admin-card card card-soft p-4">
     <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
       <div>
@@ -64,7 +68,7 @@
       </div>
     </div>
 
-    <div class="row g-3 mb-4">
+    <div class="row g-3 mb-4 contact-metrics">
       <div class="col-6 col-lg-3">
         <div class="border rounded-3 p-3 h-100">
           <div class="text-muted small">Объекты</div>
@@ -123,7 +127,7 @@
                 <dt class="col-sm-4 text-muted fw-normal">Тип</dt>
                 <dd class="col-sm-8">{{ client_kind_label }}</dd>
                 <dt class="col-sm-4 text-muted fw-normal">Телефон</dt>
-                <dd class="col-sm-8">{{ client.phone_display|default:"—" }}</dd>
+                <dd class="col-sm-8">{% for phone in phone_rows %}<div class="mb-1"><a href="tel:{{ phone.value }}">{{ phone.display }}</a>{% if phone.primary %} <span class="contact-primary">Основной</span>{% endif %}</div>{% empty %}<span class="text-muted">Не указан</span>{% endfor %}{% if can_manage_phones %}<a class="small" href="?tab=contacts">Управлять номерами</a>{% endif %}</dd>
                 <dt class="col-sm-4 text-muted fw-normal">Email</dt>
                 <dd class="col-sm-8">{{ client.email|default:"—" }}</dd>
                 {% if client.client_type == "legal" %}<dt class="col-sm-4 text-muted fw-normal">ИНН</dt>
@@ -203,34 +207,25 @@
       </div>
 
       <div class="tab-pane fade{% if card_tab == 'contacts' %} show active{% endif %}" id="client-contacts" role="tabpanel">
+        {% if merge_history %}<details class="border rounded-3 p-3 mb-3"><summary class="small fw-semibold">История объединений</summary>{% for merge in merge_history %}<div class="small mt-2">{{ merge.created_at|date:"d.m.Y H:i" }} · {{ merge.actor.get_full_name|default:merge.actor.username }}<div class="text-muted">{% for card in merge.snapshot.cards %}{{ card.name }}{% if not forloop.last %} · {% endif %}{% endfor %}</div></div>{% endfor %}</details>{% endif %}
+
         {% if can_manage and client.client_type == 'private' %}
-        <div class="border rounded-3 p-3 mb-3">
+        <details class="border rounded-3 p-3 mb-3 contact-user-link"><summary class="small fw-semibold">Связь с пользователем{% if person_user_link %} · {{ person_user_link.user.get_full_name|default:person_user_link.user.username }}{% endif %}</summary><div class="mt-3">
           {% if person_user_link %}<p>Пользователь: {{ person_user_link.user.get_full_name|default:person_user_link.user.username }}</p>
           {% else %}<form method="post" data-person-user-form>{% csrf_token %}<input type="hidden" name="action" value="link_person_user">
           <label class="form-label">Связать с существующим пользователем организации</label>
           <select class="form-select" name="user_id" required><option value="">Выберите пользователя</option>{% for option in staff_options %}<option value="{{ option.pk }}">{{ option.get_full_name|default:option.username }}</option>{% endfor %}</select>
           <button class="btn btn-outline-primary btn-sm" type="submit">Подтвердить связь</button></form>{% endif %}
           <small class="text-muted">Связь не меняет права доступа и не объединяет карточки.</small>
-        </div>
+        </div></details>
         {% endif %}
 
         <div class="row g-4">
           <div class="col-12 col-lg-6">
             <div class="border rounded-3 p-4 h-100">
-              <h6 class="fw-bold mb-3">Телефоны</h6>
-              {% if can_manage and client.client_type == 'private' %}
-              <form method="post" class="mb-3" data-person-phone-form>{% csrf_token %}
-                <input type="hidden" name="action" value="save_person_phone">
-                <input type="hidden" name="contacts_revision" value="{{ phone_revision }}">
-                <label class="form-label">Добавить номер или изменить тип существующего</label>
-                <input class="form-control" type="tel" name="phone" required maxlength="40" aria-label="Номер телефона">
-                <select class="form-select" name="phone_type" aria-label="Тип телефона"><option value="work">Рабочий</option><option value="personal">Личный</option><option value="other" selected>Другой</option></select>
-                <label><input type="checkbox" name="primary" value="1"> Основной номер</label>
-                <p class="text-muted small">Тип номера не отключает сохранение звонков.</p>
-                <button class="btn btn-outline-primary btn-sm" type="submit">Сохранить номер</button>
-              </form>
-              {% endif %}
+              {% include "pool_service/_contact_phones.html" %}
               {% if personal_call_state %}
+              <details class="mt-3 contact-call-privacy" {% if personal_call_state.marked %}open{% endif %}><summary class="small text-muted">Личные звонки</summary>
               <form method="post" class="mb-3" data-owner-personal-peer>{% csrf_token %}
                 <input type="hidden" name="action" value="set_personal_call_peer">
                 <input type="hidden" name="privacy_revision" value="{{ personal_call_state.revision }}">
@@ -240,26 +235,8 @@
                 <button class="btn btn-outline-secondary btn-sm" {% if not personal_call_state.keys %}disabled{% endif %}>{% if personal_call_state.marked %}Снять отметку для моих звонков{% else %}Отметить текущие номера личными для моих звонков{% endif %}</button>
                 <small>Для исключения до сохранения нужна подтверждённая привязка вашего пользователя телефонии. Настройки записи оператора и общие сообщения не меняются.</small>
               </form>
+              </details>
               {% endif %}
-
-              <div class="d-grid gap-2">
-                {% if client.phone %}
-                  <div class="d-flex justify-content-between gap-2 border rounded-2 px-3 py-2">
-                    <a href="tel:{{ client.phone }}" class="text-decoration-none">{{ client.phone_display }}</a>
-                    <span class="badge text-bg-secondary">Основной</span>{% for item in phones %}{% if item.value == client.phone %}<span class="small">{{ item.get_phone_type_display }}</span>{% endif %}{% endfor %}
-                  </div>
-                {% endif %}
-                {% for contact in phones %}
-                  {% if contact.value != client.phone %}
-                    <div class="d-flex justify-content-between gap-2 border rounded-2 px-3 py-2">
-                      <a href="tel:{{ contact.value }}" class="text-decoration-none">{{ contact.display_value }}</a>
-                      <span class="text-muted small">{{ contact.get_phone_type_display }} · {{ contact.label|default:"" }}</span>
-                    </div>
-                  {% endif %}
-                {% empty %}
-                  {% if not client.phone %}<div class="text-muted">Телефоны не указаны.</div>{% endif %}
-                {% endfor %}
-              </div>
             </div>
           </div>
 

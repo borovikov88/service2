@@ -31,6 +31,7 @@ FIELD_LABELS = {
     "status": "Состояние", "result": "Результат", "outcome": "Исход", "column": "Этап",
     "expected_decision_at": "Ожидаемое решение", "closed_at": "Завершение",
     "fulfillment_kind": "Исполнение", "object_kind": "Объект",
+    "client_id": "Клиент", "contact_id": "Контакт",
 }
 VALUE_LABELS = {
     "unknown": "Не указано", "indicative": "Предварительная оценка", "agreed": "Согласовано",
@@ -102,7 +103,8 @@ def _event_entries(request, organization, subject, family, kind, before):
     from pool_service.crm_lead_views import EVENTS
     labels = {**EVENT_LABELS, **EVENTS, "quote.prepare": "Подготовлено коммерческое предложение",
         "quote.send": "Коммерческое предложение отправлено", "quote.accept": "Коммерческое предложение принято",
-        "quote.reject": "Коммерческое предложение отклонено", "quote.replace": "Коммерческое предложение заменено"}
+        "quote.reject": "Коммерческое предложение отклонено", "quote.replace": "Коммерческое предложение заменено",
+        "contact_merged": "Карточки контактов объединены"}
     scope = Q(lead_id__in=family)
     if not isinstance(subject, CrmLead):
         scope |= Q(deal=subject)
@@ -113,13 +115,16 @@ def _event_entries(request, organization, subject, family, kind, before):
     elif kind == "change":
         queryset = queryset.exclude(comments)
     rows = _portion(queryset, "occurred_at", RANK["event"], before)
-    stage_ids, user_ids = set(), set()
+    stage_ids, user_ids, client_ids = set(), set(), set()
     for event in rows:
         for key, change in event.safe_diff.items():
             if key == "stage_id":
                 stage_ids.update(value for value in change.values() if type(value) is int)
             if key in {"manager_id", "assignee_id"}:
                 user_ids.update(value for value in change.values() if type(value) is int)
+            if key in {"client_id", "contact_id"}:
+                client_ids.update(value for value in change.values() if type(value) is int)
+    client_names = dict(readable_clients(request.user).filter(organization=organization, pk__in=client_ids).values_list("pk", "name"))
     stages = dict(CrmStage.objects.filter(pipeline__organization=organization, pk__in=stage_ids).values_list("pk", "name"))
     staff = {access.user_id: _name(access.user) for access in OrganizationAccess.objects.filter(
         organization=organization, user_id__in=user_ids).select_related("user")}
@@ -130,6 +135,8 @@ def _event_entries(request, organization, subject, family, kind, before):
             return stages.get(value, "Стадия недоступна")
         if key in {"manager_id", "assignee_id"}:
             return staff.get(value, "Сотрудник недоступен")
+        if key in {"client_id", "contact_id"}:
+            return client_names.get(value, "Карточка объединена или недоступна")
         if key in {"amount", "budget_min", "budget_max"}:
             return format(Decimal(value), ",.2f").replace(",", "\u00a0").replace(".", ",")
         return VALUE_LABELS.get(str(value), str(value))

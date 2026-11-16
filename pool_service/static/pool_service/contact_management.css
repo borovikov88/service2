@@ -1,0 +1,52 @@
+.contact-card{max-width:1440px;margin:auto}
+.contact-card.admin-desktop>.admin-card{padding:24px!important}
+.contact-card .admin-card>div:first-child h4{font-size:1.4rem!important;line-height:1.25}
+.contact-card>.admin-card{border:1px solid #e1e9f4;border-radius:20px!important;box-shadow:0 8px 28px #17375e08}
+.contact-card .nav-pills{border-bottom:1px solid #e2eaf5;padding-bottom:12px;gap:6px!important}
+.contact-card .nav-link{border-radius:9px;font-weight:600}
+.contact-card .contact-metrics{display:flex;flex-wrap:wrap;gap:10px!important;margin-bottom:20px!important}
+.contact-metrics>div{width:auto!important;flex:1;min-width:135px;padding:0!important}
+.contact-metrics .border{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 16px!important;background:#f7faff;border-color:#e7edf6!important}
+.contact-metrics .fs-4{font-size:1.1rem!important}
+.contact-phone-row{border:1px solid #e2eaf4;border-radius:12px;padding:13px 15px;margin-bottom:10px;background:#fff}
+.contact-phone-summary{display:flex;align-items:center;flex-wrap:wrap;gap:8px 14px}
+.contact-phone-summary>a{text-decoration:none;font-weight:600;color:#1e3a5c}
+.contact-primary{font-size:.72rem;font-weight:600;color:#1261c9;background:#edf4ff;padding:4px 8px;border-radius:6px}
+.contact-phone-edit summary,.contact-phone-add summary{color:#1768d2;font-size:.85rem;cursor:pointer;padding-top:8px}
+.contact-phone-edit[open] summary{margin-bottom:12px}
+.contact-phone-fields{display:grid;grid-template-columns:minmax(140px,1.3fr) minmax(105px,.7fr);gap:10px;margin-top:12px}
+.contact-phone-fields label{font-size:.8rem;color:#6b7d96}
+.contact-phone-fields label:last-child{grid-column:1/-1}
+.contact-phone-fields .form-control,.contact-phone-fields .form-select{margin-top:5px;border-radius:8px}
+.contact-phone-actions{display:flex;flex-wrap:wrap;gap:8px}
+.contact-phone-add{border:1px dashed #bcd0eb;border-radius:12px;padding:4px 15px 12px}
+.contact-empty{color:#7a8aa1;padding:20px 0}
+.contact-bulk-bar{position:fixed;bottom:20px;left:50%;transform:translateX(-35%);z-index:1090;max-width:calc(100vw - 36px);background:#203852;color:#fff;box-shadow:0 10px 32px #182f5840;border-radius:15px;padding:12px 18px;display:flex;align-items:center;flex-wrap:wrap;gap:12px}
+.contact-bulk-bar[hidden]{display:none}
+.contact-bulk-bar .btn-outline-light{border-color:#ffffff40}
+.contact-select{width:18px;height:18px;cursor:pointer}
+.contact-merge-card{display:grid;grid-template-columns:24px minmax(0,1fr);gap:10px;border:1px solid #dce6f3;padding:14px;border-radius:12px;cursor:pointer}
+.contact-merge-card:has(input:checked){border-color:#347df4;background:#f2f7ff}
+.contact-merge-card small{display:block;color:#73839b;overflow-wrap:anywhere}
+.contact-merge-cards{display:grid;gap:10px}
+.contact-merge-result{background:#f5f8fc;border-radius:12px;padding:16px;margin-top:16px;overflow-wrap:anywhere}
+.contact-merge-summary{font-size:.9rem;color:#566a85}
+.contact-selected-row{background:#f1f6ff!important}
+.contact-merge-dialog{border:0;border-radius:18px;padding:0;width:min(680px,calc(100vw - 24px));max-height:90vh;box-shadow:0 24px 100px #14294340}
+.contact-merge-dialog::backdrop{background:#18324e66;backdrop-filter:blur(3px)}
+.contact-merge-head,.contact-merge-foot{padding:18px 22px;display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid #e6edf6}
+.contact-merge-foot{border-bottom:0;border-top:1px solid #e6edf6}
+.contact-merge-body{padding:20px 22px;max-height:65vh;overflow:auto}
+.contact-merge-foot button{white-space:normal}
+@media(max-width:767px){.contact-card>.admin-card{padding:16px!important}
+.contact-bulk-bar{left:12px;right:12px;bottom:max(80px,env(safe-area-inset-bottom));transform:none;max-width:none}
+.contact-phone-fields{grid-template-columns:1fr}
+.contact-metrics>div{min-width:40%}
+.contact-merge-head,.contact-merge-foot,.contact-merge-body{padding:16px}
+.contact-merge-foot{flex-wrap:wrap}
+}
+
+.contact-bulk-bar{z-index:1090}
+@media(max-width:767px){.contact-card.admin-desktop>.admin-card{padding:16px!important}}
+@media(max-width:767px){.contact-bulk-bar{bottom:max(80px,env(safe-area-inset-bottom))}
+}

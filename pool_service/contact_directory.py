@@ -6,7 +6,7 @@ from django.db.models import Count, F, Q, Value, Window
 from django.db.models.functions import Replace, RowNumber, Trim
 from .client_queries import readable_clients, readable_company_links
 from .client_crm_models import ClientBusinessRole, ClientContact
-from .models import ClientAccess, PoolAccess
+from .models import ClientAccess, PoolAccess, OrganizationAccess
 from .phone_utils import format_phone, normalize_phone
 
 PAGE_SIZE = 50
@@ -114,6 +114,7 @@ def directory_context(request):
         queryset = search_contacts(queryset, request.user, query)
         pages[group] = page(queryset.annotate(pool_count=Count("pool")).select_related("organization", "crm_profile").order_by("name", "pk"), request, group)
     clients = {client.pk: client for result in pages.values() for client in result.object_list}
+    manage_orgs = set(OrganizationAccess.objects.filter(user=request.user, role__in=("owner", "admin")).values_list("organization_id", flat=True)) if not request.user.is_superuser else set()
     categories_by_client = {}
     for client_id, role_code in ClientBusinessRole.objects.filter(client_id__in=clients,
             active=True, role__in=ClientBusinessRole.ROLE_LABELS).values_list("client_id", "role"):
@@ -130,6 +131,7 @@ def directory_context(request):
     ).filter(directory_row__lte=RELATED_LIMIT + 1).select_related("user"):
         staff_by_company.setdefault(access.client_id, []).append(access)
     for item in clients.values():
+        item.can_merge = item.organization_id in manage_orgs
         item.phone_display = format_phone(item.phone)
         item.contact_categories = [{"code": code, "label": label}
             for code, label in ClientBusinessRole.ROLE_CHOICES
@@ -165,7 +167,7 @@ def directory_context(request):
     for token in tokens[:12]:
         staff = staff.filter(_clause(("user__first_name", "user__last_name", "user__username", "user__email", "pool__client__name", "pool__address"), token))
     staff_page = page(staff.select_related("pool__client", "pool__organization", "user").order_by("pool__client__name", "pk"), request, "staff")
-    return {"companies": pages["companies"].object_list, "private_contacts": pages["people"].object_list,
+    return {"can_merge_contacts": bool(manage_orgs), "companies": pages["companies"].object_list, "private_contacts": pages["people"].object_list,
         "contact_category": category, "contact_category_choices": ClientBusinessRole.ROLE_CHOICES,
         "suppliers": pages["suppliers"].object_list, "pool_staff": staff_page.object_list,
         "companies_page": pages["companies"], "people_page": pages["people"], "suppliers_page": pages["suppliers"], "staff_page": staff_page,

@@ -71,6 +71,21 @@ class Fixture:
 
 @override_settings(COMMUNICATION_CLIENT_ENRICHMENT_ENABLED=False)
 class ContactIdentityTests(Fixture, TestCase):
+    def test_deleted_provider_phone_stays_removed_while_messages_and_provenance_continue(self):
+        from pool_service.services.contact_people import manage_phone, phone_revision
+        from pool_service.client_crm_models import ClientContactExclusion
+        first = self.incoming()
+        customer = first.conversation.client
+        manage_phone(self.user, customer.pk, action="delete", key="9001234567", revision=phone_revision(customer))
+        second = self.incoming(external_message_id="after-explicit-removal", body="Synthetic follow-up")
+        customer.refresh_from_db()
+        self.assertEqual(second.conversation.client_id, customer.pk)
+        self.assertEqual(customer.phone, "")
+        self.assertFalse(ClientContact.objects.filter(client=customer, kind="phone").exists())
+        self.assertTrue(ClientContactExclusion.objects.filter(client=customer, match_value="9001234567").exists())
+        self.assertEqual(ConversationMessage.objects.filter(conversation=first.conversation).count(), 2)
+        self.assertTrue(ContactObservation.objects.filter(conversation=first.conversation, origin="provider_phone").exists())
+
     def test_ambiguous_provider_phone_retains_messages_one_review_no_client_or_foreign_candidate(self):
         foreign = Client.objects.create(organization=self.other, name="Private foreign", phone=PHONE)
         conversation = self.ambiguous()

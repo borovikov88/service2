@@ -42,3 +42,24 @@ class ContactsBrowserTests(StaticLiveServerTestCase):
         self.assertFalse(ClientBusinessRole.objects.filter(client=companies[-1], active=True).exists())
         self.assertEqual(ClientBusinessRoleEvent.objects.count(),4)
         self.assertEqual(Client.objects.count(),54)
+
+    def test_phone_management_and_reviewed_merges_on_desktop_and_mobile(self):
+        from pool_service.client_crm_models import ClientMergeRecord, ClientContactExclusion, ClientContact
+        from pool_service.client_queries import active_clients
+        from pool_service.tests.test_crm_lead_kanban_browser import _bounded_browser_process
+        org=Organization.objects.create(name="Synthetic contact editor",paid_until=timezone.now()+timedelta(days=30))
+        user=get_user_model().objects.create_user(username="synthetic-contact-editor")
+        OrganizationAccess.objects.create(user=user,organization=org,role="owner")
+        a=Client.objects.create(organization=org,client_type="legal",name="Synthetic Main",phone="+12025550101")
+        b=Client.objects.create(organization=org,client_type="legal",name="Synthetic Duplicate",phone="+12025550102")
+        p=Client.objects.create(organization=org,client_type="private",name="Synthetic Person")
+        q=Client.objects.create(organization=org,client_type="private",name="Synthetic Person Duplicate")
+        self.client.force_login(user)
+        fixture=dict(base=self.live_server_url,a=a.pk,b=b.pk,p=p.pk,q=q.pk,
+            sessionCookie=self.client.cookies[settings.SESSION_COOKIE_NAME].value,sessionCookieName=settings.SESSION_COOKIE_NAME)
+        code,output=_bounded_browser_process(['node',str(Path(__file__).with_name('contact_management.browser.cjs'))],fixture)
+        self.assertEqual(code,0,output)
+        self.assertEqual(set(active_clients().values_list('pk',flat=True)),{a.pk,p.pk})
+        self.assertEqual(ClientMergeRecord.objects.count(),2)
+        self.assertTrue(ClientContactExclusion.objects.filter(client=a,match_value='+12025550101').exists())
+        self.assertEqual(set(ClientContact.objects.filter(client=a,kind='phone').values_list('value',flat=True)),{'+12025550102','+12025550104'})

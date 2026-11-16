@@ -8,14 +8,16 @@ const {readFileSync}=require('node:fs');
  try{
   const context=await browser.newContext({viewport:{width:390,height:844},serviceWorkers:'block'});
   await context.addCookies([{name:f.cookieName,value:f.ownerCookie,url:f.base}]);
-  await context.route('**/*',route=>{
+  const localRoute=route=>{
    const url=route.request().url();
    if(url==='https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js')return route.fulfill({contentType:'application/javascript',body:readFileSync(require.resolve('bootstrap/dist/js/bootstrap.bundle.min.js'),'utf8')});
    if(url.includes('bootstrap@5.2.3/dist/css/bootstrap.min.css'))return route.fulfill({contentType:'text/css',body:readFileSync(require.resolve('bootstrap/dist/css/bootstrap.min.css'),'utf8')});
    return new URL(url).origin===f.base?route.continue():route.abort();
-  });
+  };
+  await context.route('**/*',localRoute);
   const page=await context.newPage();page.setDefaultTimeout(10000);
   await page.goto(f.base+f.card+'?tab=contacts');
+  await page.locator('.contact-call-privacy summary').click();
   const form=page.locator('[data-owner-personal-peer]');
   assert.match(await form.locator('[name=privacy_revision]').inputValue(),/^[a-f0-9]{64}$/);
   assert.equal(await form.locator('[name=enabled]').inputValue(),'1');
@@ -24,8 +26,15 @@ const {readFileSync}=require('node:fs');
   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
   result=await Promise.all([page.waitForNavigation(),form.getByRole('button').click()]);assert.equal(result[0].status(),200);
   await page.reload();assert.equal(await form.locator('[name=enabled]').inputValue(),'1');
-  await context.clearCookies();await context.addCookies([{name:f.cookieName,value:f.staffCookie,url:f.base}]);
-  await page.goto(f.base+f.card+'?tab=contacts');assert.equal(await page.locator('[data-owner-personal-peer]').count(),0);
+  // Background requests refresh session cookies. Use an independent real
+  // browser session instead of swapping cookies under outstanding owner reads.
+  const staffContext=await browser.newContext({viewport:{width:390,height:844},serviceWorkers:'block'});
+  await staffContext.route('**/*',localRoute);
+  await staffContext.addCookies([{name:f.cookieName,value:f.staffCookie,url:f.base}]);
+  const staffPage=await staffContext.newPage();
+  const staffResponse=await staffPage.goto(f.base+f.card+'?tab=contacts');
+  assert.equal((await staffResponse.text()).includes('data-owner-personal-peer'),false,'Staff HTML must not contain owner controls');
+  assert.equal(await staffPage.locator('[data-owner-personal-peer]').count(),0);
   console.log('Owner-only personal-peer form/reload/remove/mobile and staff non-disclosure PASS');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

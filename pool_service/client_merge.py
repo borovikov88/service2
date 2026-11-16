@@ -20,6 +20,8 @@ from .client_crm_models import (
     ClientImportCandidate,
     ClientImportProposal,
     ClientImportRun,
+    ClientContactExclusion,
+    ClientMergeRecord,
 )
 
 
@@ -51,7 +53,7 @@ def _merge_profile(source, target, actor):
     source_profile.save(update_fields=["merged_into", "merged_at", "merged_by", "updated_at"])
 
 
-def _merge_contacts(source, target):
+def _merge_contacts(source, target, *, prefer_target=False):
     for contact in ClientContact.objects.filter(client=source).order_by("id"):
         target_contacts = ClientContact.objects.filter(
             client=target,
@@ -66,7 +68,7 @@ def _merge_contacts(source, target):
             existing = target_contacts.filter(value=contact.value).first()
 
         if existing:
-            if contact.kind == "phone" and contact.phone_type != "other" and existing.phone_type != "other" and contact.phone_type != existing.phone_type:
+            if not prefer_target and contact.kind == "phone" and contact.phone_type != "other" and existing.phone_type != "other" and contact.phone_type != existing.phone_type:
                 raise ValueError("Разные типы одного номера требуют явной сверки перед объединением.")
             sources = list(existing.sources or [])
             for value in contact.sources or []:
@@ -184,7 +186,7 @@ def _merge_staff_access(source, target):
             access.save(update_fields=["client"])
 
 
-def _generic_relations(source, target):
+def _generic_relations(source, target, *, directory=False):
     special_models = {
         ClientCRMProfile,
         ClientContact,
@@ -194,6 +196,8 @@ def _generic_relations(source, target):
         ClientImportCandidate,
         ClientImportProposal,
         ClientAccess,
+        ClientContactExclusion,
+        ClientMergeRecord,
         # These relations have a separate validated write contract. The source
         # preflight in merge_clients() refuses existing links before any write.
         CrmLead,
@@ -209,6 +213,8 @@ def _generic_relations(source, target):
     moved = {}
     for rel in relations:
         model = rel.related_model
+        if directory and model.__name__ == "DataAuditLog":
+            continue
         if model in special_models:
             continue
         if rel.many_to_many:
@@ -234,7 +240,7 @@ def _generic_relations(source, target):
 
 
 @transaction.atomic
-def merge_clients(source_id, target_id, *, organization_id, actor=None):
+def merge_clients(source_id, target_id, *, organization_id, actor=None, _directory=False):
     if not organization_id:
         raise ValueError("Организация для объединения не указана")
     if source_id == target_id:
@@ -273,9 +279,9 @@ def merge_clients(source_id, target_id, *, organization_id, actor=None):
     target_profile = ClientCRMProfile.objects.filter(client=target).first()
     if source_profile and source_profile.merged_into_id:
         raise ValueError("Исходная карточка уже объединена")
-    if target_profile is None or not target_profile.onec_ref:
+    if not _directory and (target_profile is None or not target_profile.onec_ref):
         raise ValueError("Целевая карточка должна быть импортирована из 1С")
-    if target_profile.merged_into_id:
+    if target_profile and target_profile.merged_into_id:
         raise ValueError("Целевая карточка уже объединена с другой карточкой")
     if source_profile and source_profile.onec_ref:
         raise ValueError("Исходная карточка уже связана с 1С")
@@ -288,7 +294,7 @@ def merge_clients(source_id, target_id, *, organization_id, actor=None):
     # writer. Inspect every source link, including archived or inconsistent
     # tenant links, before moving any legacy relation. Flags do not bypass this
     # compatibility boundary. Target-only links are retained without changes.
-    if (CrmLead.objects.filter(Q(client_id=source.pk) | Q(contact_id=source.pk)).exists()
+    if not _directory and (CrmLead.objects.filter(Q(client_id=source.pk) | Q(contact_id=source.pk)).exists()
             or CrmDeal.objects.filter(Q(client_id=source.pk) | Q(contact_id=source.pk)).exists()):
         raise ValueError(
             "Нельзя автоматически объединить клиента с коммерческими лидами или сделками CRM. "
@@ -305,16 +311,46 @@ def merge_clients(source_id, target_id, *, organization_id, actor=None):
 
     # Decisions retain their original target. Never bulk-reparent audit records.
     ClientImportProposal.objects.filter(client_id__in=[source.pk, target.pk], state="pending").update(state="stale")
-    moved = _generic_relations(source, target)
+    moved = _generic_relations(source, target, directory=_directory)
+    if _directory:
+        # Parent objects/tasks have moved first. Respect the validated CRM
+        # instance writer, revisions and board cursor; never bulk-update CRM.
+        for model in (CrmLead, CrmDeal):
+            for card in model.objects.select_for_update().filter(Q(client_id=source.pk) | Q(contact_id=source.pk)).order_by("pk"):
+                if card.organization_id != organization_id:
+                    raise ValueError("Связи CRM относятся к другой организации. Требуется сверка.")
+                fields = []
+                before = {field: getattr(card, field + "_id") for field in ("client", "contact")}
+                for field in ("client", "contact"):
+                    if getattr(card, field + "_id") == source.pk:
+                        setattr(card, field, target)
+                        fields.append(field)
+                card.revision += 1
+                card.save(update_fields=[*fields, "revision"])
+                from .crm_commercial_models import CrmEvent
+                CrmEvent.objects.create(organization_id=organization_id,
+                    **{"lead" if model is CrmLead else "deal": card}, actor=actor,
+                    event_type="contact_merged", safe_diff={field + "_id": {
+                        "before": before[field], "after": target.pk} for field in fields})
+                moved[model.__name__] = moved.get(model.__name__, 0) + 1
+        # Legacy scalar contacts must also survive when both cards have phones.
+        for item in (source, target):
+            for kind in ("phone", "email"):
+                value = getattr(item, kind)
+                if value:
+                    key = normalize_phone(value) if kind == "phone" else value.casefold()
+                    if not ClientContact.objects.filter(client=item, kind=kind, match_value=key).exists():
+                        ClientContact.objects.get_or_create(client=item, kind=kind, value=value,
+                            defaults={"match_value": key, "sources": ["legacy_primary"]})
     _merge_staff_access(source, target)
-    _merge_contacts(source, target)
+    _merge_contacts(source, target, prefer_target=_directory)
     _merge_company_links(source, target)
     from .services.contact_roles import merge_supplier_role
     merge_supplier_role(source, target, actor)
     for candidate in ClientImportCandidate.objects.select_for_update().filter(
         matched_client=source
     ):
-        if candidate.source_ref == target_profile.onec_ref:
+        if target_profile and candidate.source_ref == target_profile.onec_ref:
             candidate.matched_client = target
             candidate.save(update_fields=["matched_client", "updated_at"])
             continue
@@ -329,6 +365,11 @@ def merge_clients(source_id, target_id, *, organization_id, actor=None):
         candidate.save(update_fields=update_fields)
 
     changed = []
+    if _directory:
+        for field in ("first_name", "last_name", "company_name", "contact_position"):
+            if not getattr(target, field) and getattr(source, field):
+                setattr(target, field, getattr(source, field))
+                changed.append(field)
     if not target.phone and source.phone:
         target.phone = source.phone
         changed.append("phone")

@@ -267,6 +267,7 @@ jobs:
             pool_service.tests.test_contact_people_concurrency \
             pool_service.tests.test_contacts_pagination \
             pool_service.tests.test_contacts_roles \
+            pool_service.tests.test_contacts_management \
             pool_service.tests.test_contacts_preservation_contract \
             pool_service.tests.test_contacts_migration \
             pool_service.tests.test_contacts_concurrency \

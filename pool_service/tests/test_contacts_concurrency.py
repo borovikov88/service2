@@ -63,3 +63,44 @@ class ContactsConcurrencyTests(TransactionTestCase):
             finally:release.set()
             first.result(timeout=20);self.assertEqual(second.result(timeout=20),"denied")
         self.assertFalse(ClientBusinessRoleEvent.objects.exists())
+
+    def test_two_merge_requests_return_one_receipt_and_same_survivor(self):
+        from pool_service.services.contact_management import preview_merge, execute_merge
+        from pool_service.client_crm_models import ClientMergeRecord
+        token=preview_merge(self.actor,[self.source.pk,self.target.pk],self.target.pk)["token"]
+        barrier=Barrier(2)
+        def run():
+            barrier.wait(timeout=10)
+            return execute_merge(self.actor,token).pk
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures=[executor.submit(self.threaded,run) for _ in range(2)]
+            self.assertEqual([f.result(timeout=20) for f in futures],[self.target.pk,self.target.pk])
+        self.assertEqual(ClientMergeRecord.objects.count(),1)
+
+    def test_waiting_phone_edit_rechecks_source_after_merge(self):
+        from pool_service.services.contact_management import preview_merge, execute_merge
+        from pool_service.services.contact_people import manage_phone, phone_revision
+        from pool_service.client_crm_models import ClientContact
+        token=preview_merge(self.actor,[self.source.pk,self.target.pk],self.target.pk)["token"]
+        revision=phone_revision(self.source)
+        held,release,started,done=Event(),Event(),Event(),Event()
+        def merger():
+            with transaction.atomic():
+                Organization.objects.select_for_update().get(pk=self.org.pk)
+                held.set()
+                if not release.wait(10):raise RuntimeError("Release timeout")
+                execute_merge(self.actor,token)
+        def writer():
+            started.set()
+            try:
+                manage_phone(self.actor,self.source.pk,action="add",key="",value="+12025550108",revision=revision)
+                return "ok"
+            except (PermissionDenied,ValidationError):return "denied"
+            finally:done.set()
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first=executor.submit(self.threaded,merger);self.assertTrue(held.wait(10))
+            second=executor.submit(self.threaded,writer)
+            try:self.assertTrue(started.wait(10));self.assertFalse(done.wait(.2))
+            finally:release.set()
+            first.result(timeout=20);self.assertEqual(second.result(timeout=20),"denied")
+        self.assertFalse(ClientContact.objects.filter(value="+12025550108").exists())
