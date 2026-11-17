@@ -158,9 +158,15 @@ def leads_for_user(user, organization, *, assignment_subject=None):
         return CrmLead.objects.none()
     # Structural corruption still closes the card. A private/unauthorized event
     # alone cannot suppress independent, readable work in a mixed card.
+    # Anchor each correlated check to this family's source primary keys first.
+    # Joining positive tenant/source predicates directly to the OR of two lead
+    # IDs lets some planners start at every inbox row in the organization.
+    # The locator subquery still includes malformed links for the denial check.
+    source_ids = CrmLeadSource.objects.filter(
+        Q(lead_id=OuterRef(OuterRef("pk")))
+        | Q(lead_id=OuterRef(OuterRef("origin_lead_id"))))
     sources = _source_access_annotations(user, organization, assignment_subject=assignment_subject).filter(
-        Q(lead_id=OuterRef("pk")) | Q(lead_id=OuterRef("origin_lead_id"))
-    )
+        pk__in=source_ids.values('pk'))
     valid = Q(organization_id=organization.pk, lead__organization_id=organization.pk,
         inbox__organization_id=organization.pk, inbox__scope_verified=True, _crm_channel=True) & (
         Q(inbox__source_type='call', inbox__provider_kind='megafon', _crm_call_valid=True)
@@ -182,7 +188,7 @@ def leads_for_user(user, organization, *, assignment_subject=None):
         Q(contact__isnull=True) | Q(contact__organization_id=organization.pk, contact__client_type='private')
     ).filter(
         Q(origin_lead__isnull=True) | Q(origin_lead__organization_id=organization.pk, origin_lead__origin_lead__isnull=True)
-    ).annotate(_crm_forbidden_source=Exists(forbidden), _crm_any_source=Exists(sources),
+    ).alias(_crm_forbidden_source=Exists(forbidden), _crm_any_source=Exists(sources),
         _crm_readable_source=Exists(readable), _crm_readable_activity=Exists(activity)).filter(_crm_forbidden_source=False).filter(
         Q(_crm_any_source=False) | Q(_crm_readable_source=True) | Q(_crm_readable_activity=True))
     return exclude_private_only_cards(queryset, organization, kind='lead')
@@ -227,11 +233,11 @@ def source_metadata_many(*, user, organization, leads, limit=1, before=None):
     leads = list(leads)
     if not leads:
         return {}
-    allowed = set(leads_for_user(user, organization).filter(pk__in=[lead.pk for lead in leads]).values_list("pk", flat=True))
+    readable = leads_for_user(user, organization)
+    allowed = set(readable.filter(pk__in=[lead.pk for lead in leads]).values_list("pk", flat=True))
     leads = [lead for lead in leads if lead.pk in allowed]
     source_leads = {pk for lead in leads for pk in (lead.pk, lead.origin_lead_id) if pk}
     limit = max(1, min(int(limit), 50))
-    readable = leads_for_user(user, organization)
     # A source may belong both to its immutable original card and to the
     # confirmed continuation target on the same page. Rank each projection
     # separately so page composition cannot change either card's history.

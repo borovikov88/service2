@@ -15,7 +15,7 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db.models import Case, Count, F, Q, Sum, OuterRef, Subquery, Value, When, BigIntegerField
 from django.db import transaction
-from .services.crm_board_cursor import BoardReset, epoch, portion, cursor_time
+from .services.crm_board_cursor import BoardReset, epoch, initial_portions, portion, cursor_time
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -376,11 +376,14 @@ def _workspace_data(request, organization, *, board=None):
             'q':query,'owner':owner,'outcome':outcome,'object':object_kind,'stage':stage,
             'specialization':specialization,'attention':attention,'as_of':as_of.isoformat(),
             'from':request.GET.get('decision_from',''),'to':request.GET.get('decision_to','')}
+        windows=initial_portions(queryset,scope=scope,columns=stage_ids,column_field='board_stage_id',
+            revision=revision,as_of=as_of) if not requested else {}
         deals=[]
         for stage_id in stage_ids:
             if requested and requested!=str(stage_id): continue
-            rows,cursor=portion(queryset.filter(board_stage_id=stage_id),scope=scope,column=stage_id,
-                revision=revision,cursor=request.GET.get('cursor','') if requested else '',as_of=as_of)
+            rows,cursor=windows[str(stage_id)] if not requested else portion(
+                queryset.filter(board_stage_id=stage_id),scope=scope,column=stage_id,
+                revision=revision,cursor=request.GET.get('cursor',''),as_of=as_of)
             deals.extend(rows)
             column_windows.append({'stage_id':stage_id,'cursor':cursor,'loaded':len(rows),'has_more':bool(cursor)})
     else:

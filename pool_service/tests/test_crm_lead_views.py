@@ -268,6 +268,37 @@ class LeadWorkspaceTests(TestCase):
             self.assertEqual(len(response.json()["leads"]), 6)
         self.assertLessEqual(len(many), len(first) + 2, "List must batch task privacy and avoid per-row version hashing")
 
+    def test_populated_columns_share_source_and_task_authorization_queries(self):
+        self.create()
+        url=self.url('crm_live_lead_data')+'&layout=board'
+        with CaptureQueriesContext(connection) as first:
+            self.assertEqual(self.client.get(url).status_code,200)
+        for changes in ({'status':'new'}, {'status':'closed','result':'no_deal','reason':'Synthetic closed'},
+                        {'status':'closed','result':'spam'}, {'is_archived':True}):
+            CrmLead.objects.create(organization=self.org,title='Synthetic performance lane',
+                assignee=self.actor,**changes)
+        with CaptureQueriesContext(connection) as expanded:
+            response=self.client.get(url)
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.json()['total'],5)
+        self.assertEqual([column['total'] for column in response.json()['columns']],[1,1,1,0,1,1])
+        self.assertLessEqual(len(expanded),len(first)+3,
+            'Populating lanes must not repeat the live source/task authority graph per lane')
+
+    def test_corrupt_pointer_in_other_lane_does_not_hide_valid_next_action(self):
+        from django.db.models import QuerySet
+        good=self.create()
+        task_id=good['next_action']['id']
+        broken=CrmLead.objects.create(organization=self.org,title='Synthetic malformed pointer',
+            assignee=self.actor,status='new')
+        # Trusted legacy-corruption fixture; the supported save rejects this pointer.
+        QuerySet(CrmLead).filter(pk=broken.pk).update(next_task_id=task_id)
+        response=self.client.get(self.url('crm_live_lead_data')+'&layout=board')
+        self.assertEqual(response.status_code,200,response.content)
+        rows={row['id']:row for row in response.json()['leads']}
+        self.assertEqual(rows[broken.pk]['next_action'],{'restricted':True})
+        self.assertEqual(rows[good['id']]['next_action']['id'],task_id)
+
     def test_completed_history_pagination_and_new_incoming_are_disjoint(self):
         for index in range(51):
             CrmLead.objects.create(organization=self.org, assignee=self.actor,

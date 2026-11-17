@@ -5,12 +5,13 @@ import time
 from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.core import signing
-from django.db import transaction
+from django.db import connection, transaction
 from django.test import TestCase, SimpleTestCase
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 from pool_service.tests.test_crm_live_pilot_commands import PilotFixture
-from pool_service.crm_commercial_models import CrmDeal, CrmLead, CrmAccess
+from pool_service.crm_commercial_models import CrmDeal, CrmLead, CrmAccess, CrmStage
 from pool_service.crm_board_models import CrmBoardEpoch
 from pool_service.models import Organization, OrganizationAccess, Employee
 
@@ -35,6 +36,19 @@ class ColumnLoadingTests(PilotFixture, TestCase):
 
     def token(self,data=None):
         return next(w['cursor'] for w in (data or self.data().json())['column_windows'] if w['stage_id']==self.stage.pk)
+
+    def test_more_stages_do_not_add_database_roundtrips_to_first_screen(self):
+        with CaptureQueriesContext(connection) as first:
+            original=self.data().json()
+        for index in range(6):
+            CrmStage.objects.create(pipeline=self.pipeline,code=f'performance_{index}',
+                name=f'Synthetic performance stage {index}',position=100+index)
+        with CaptureQueriesContext(connection) as expanded:
+            result=self.data().json()
+        self.assertEqual([row['id'] for row in result['deals']],[row['id'] for row in original['deals']])
+        self.assertEqual(len(result['column_windows']),len(original['column_windows'])+6)
+        self.assertLessEqual(len(expanded),len(first)+1,
+            'Empty stages must not repeat the authorized deal query')
 
     def test_all_rows_over_200_two_columns_replay_and_full_totals(self):
         self.rows+=self.seed(self.stage,154)
