@@ -282,6 +282,10 @@ def _finish_next(using, actor, lead, task):
 
 
 def _write_fields(using, lead, values):
+    if {"client_id", "contact_id"} & set(values):
+        lead.identity_origin = "manual"
+    if "title" in values:
+        lead.title_is_manual = True
     for field in EDIT_FIELDS & set(values):
         value = values[field]
         if field in {"client_id", "contact_id"}:
@@ -306,7 +310,8 @@ def _write_fields(using, lead, values):
 
 def _new_lead(using, actor, organization, values, origin=None):
     lead = CrmLead(organization=organization, assignee=actor, status="working", revision=1,
-                   acquisition_source="manual", first_contact_channel="manual", last_activity_at=timezone.now())
+                   acquisition_source="manual", first_contact_channel="manual", identity_origin="manual",
+                   last_activity_at=timezone.now())
     lead.origin_lead = origin
     _write_fields(using, lead, values)
     lead.save(using=using)
@@ -636,6 +641,7 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
                     raise CommercialConflict("Следующий шаг изменён. Обновите карточку перед завершением лида.")
             from .crm_conversion_contacts import resolve_conversion_customer
             lead.client, lead.contact = resolve_conversion_customer(using, actor, organization, values["customer"])
+            lead.identity_origin = "manual"
             _finish_next(using, actor, lead, task)
             # Retain task provenance and its original client. A closed lead has
             # no current reminder, even if its confirmed customer has changed.
@@ -688,6 +694,11 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
         if command_type != "lead.comment" and (command_type != "lead.disposition" or values["column"] in {"working", "history"}):
             lead.needs_review = False
         lead.save(using=using)
+        if (command_type in {"lead.create", "lead.new_need"}
+                or command_type == "lead.edit" and {"client_id", "contact_id"} & set(values)
+                or before_status == "closed" or before_archived):
+            from .crm_lead_identity import ensure_single_active_lead
+            ensure_single_active_lead(lead, using=using)
         command = CrmCommand.objects.using(using).create(organization=organization, actor=actor,
             operation_key=operation_key, command_type=command_type, payload_hash=digest)
         if "previous_lead_id" in additional:
@@ -750,7 +761,8 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
             # as well. Multi-deal conversion retains the original lead identity.
             if command_type == 'lead.qualify' and len(values['deals']) == 1:
                 lead.client, lead.contact = client, contact
-                lead.save(using=using, update_fields=['client', 'contact'])
+                lead.identity_origin = "manual"
+                lead.save(using=using, update_fields=['client', 'contact', 'identity_origin'])
             additional["deal_ids"] = ids
         if command_type == "lead.transition" and lead.result == "duplicate":
             # Explicit confirmation only. Preserve immutable source evidence on
@@ -760,6 +772,9 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
                 thread.lead = target
                 thread.save(using=using)
             old_revision = target.revision
+            # The user explicitly chose this card as the continuation target;
+            # different source contacts must not replace its selected identity.
+            target.identity_origin = "manual"
             target.revision += 1
             target.needs_review = True
             if lead.last_activity_at and (not target.last_activity_at or lead.last_activity_at > target.last_activity_at):

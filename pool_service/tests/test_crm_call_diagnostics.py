@@ -14,7 +14,7 @@ from django.utils import timezone
 from pool_service.call_processing_models import CallPrivateNumber
 from pool_service.communication_models import ChannelConnection, CommunicationAccess, CommunicationChannel, PhoneCall, TelephonyConnection
 from pool_service.crm_commercial_models import CrmAccess, CrmIntakeActivation, CrmLead, CrmLeadSource
-from pool_service.crm_inbox_models import CrmInboxEvent
+from pool_service.crm_inbox_models import CrmInboxBoundary, CrmInboxEvent
 from pool_service.management.commands import crm_call_diagnostics as diagnostic
 from pool_service.models import Client, Employee, Organization, OrganizationAccess
 from pool_service.services.call_processing_policy import phone_key
@@ -118,6 +118,18 @@ class CallDiagnosticsTests(TestCase):
         self.activation.delete()
         CrmIntakeActivation.objects.create(organization=self.org, starts_at=self.now + timedelta(seconds=1))
         self.assertEqual(self.read()['source_gate'], 'historical')
+
+    def test_outgoing_diagnostics_respect_rollout_boundary_without_repair(self):
+        self.call.direction = 'out'; self.call.save()
+        CrmInboxBoundary.objects.filter(key='outbound_calls').delete()
+        self.assertEqual(self.read()['source_gate'], 'outbound_boundary_missing')
+        boundary = CrmInboxBoundary.objects.create(key='outbound_calls', captured_at=self.now - timedelta(minutes=1))
+        self.assertEqual(self.read()['source_gate'], 'eligible')
+        boundary.captured_at = self.now + timedelta(minutes=1); boundary.save()
+        self.assertEqual(self.read()['source_gate'], 'historical')
+        self.assertFalse(CrmInboxEvent.objects.exists())
+        self.assertFalse(CrmLead.objects.exists())
+
 
     def test_disabled_missing_activation_expired_access_and_unverified(self):
         for field in ('crm_v2_write', 'crm_intake_process'):

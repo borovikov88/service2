@@ -28,6 +28,7 @@ class Fixture:
         super().setUp()
         self.now = timezone.now()
         CrmInboxBoundary.objects.update_or_create(key="sources", defaults={"captured_at": self.now - timedelta(hours=1)})
+        CrmInboxBoundary.objects.update_or_create(key="outbound_calls", defaults={"captured_at": self.now - timedelta(hours=1)})
         self.org = Organization.objects.create(name="Inbox synthetic", crm_intake_process=False)
         self.channel = CommunicationChannel.objects.create(organization=self.org, kind="avito", name="Synthetic")
         self.connection = ChannelConnection.objects.create(channel=self.channel, external_id="synthetic-account", name="Synthetic")
@@ -281,14 +282,14 @@ class InboxCaptureTests(Fixture, TestCase):
         self.assertEqual(CrmInboxEvent.objects.count(), count)
         self.assertTrue(CrmInboxEvent.objects.latest("revision").historical)
 
-    def test_call_capture_failure_rolls_back_and_event_outgoing_internal_upload_excluded(self):
+    def test_call_capture_failure_rolls_back_outgoing_captured_internal_upload_excluded(self):
         self.megafon()
         with patch("pool_service.services.crm_inbox.capture_source", side_effect=RuntimeError("synthetic")):
             with self.assertRaises(RuntimeError):
                 self.history()
         self.assertFalse(PhoneCall.objects.exists())
         self.history(type="out")
-        self.assertFalse(CrmInboxEvent.objects.exists())
+        self.assertEqual(CrmInboxEvent.objects.count(), 1)
         for direction, source_kind in [("internal", "telephony"), ("in", "uploaded")]:
             call = PhoneCall.objects.create(organization=self.org, connection=self.telephony if source_kind == "telephony" else None,
                 external_id=direction, source_kind=source_kind, phone_number="synthetic", direction=direction,
@@ -297,7 +298,7 @@ class InboxCaptureTests(Fixture, TestCase):
                 self.assertIsNone(capture_source("call", call))
         response = self.history(cmd="event", type="INCOMING", callid="")
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(CrmInboxEvent.objects.exists())
+        self.assertEqual(CrmInboxEvent.objects.count(), 1)
 
 
 class InboxWorkerTests(Fixture, TestCase):

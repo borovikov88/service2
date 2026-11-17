@@ -133,6 +133,7 @@ class CrmAssignmentBrowserTests(LeadFixture, StaticLiveServerTestCase):
         fixture = dict(base=self.live_server_url, org=self.org.pk,
             leads=reverse("crm_live_leads") + "?org_id=" + str(self.org.pk),
             deals=reverse("crm_live_workspace") + "?org_id=" + str(self.org.pk),
+            detailPrefix=reverse("crm_live_detail", args=[1]).rsplit('1/', 1)[0],
             ownLead=own.pk, actor=self.user.pk, recipients=[user.pk for user in recipients],
             names=[user.get_full_name() for user in recipients], clientName=self.client.name,
             recipientCookie=receiver_http.cookies[settings.SESSION_COOKIE_NAME].value,

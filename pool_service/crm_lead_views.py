@@ -102,17 +102,19 @@ def _client_summary(client, *, details=False):
     return data
 
 
-def _serialize(lead, user, capabilities, *, detail=False, visible_tasks=None):
+def _serialize(lead, user, capabilities, *, detail=False, visible_tasks=None, client_cache=None, projection=None):
+    from .services.crm_lead_identity import lead_identity
+    identity = lead_identity(lead, user=user, client_cache=client_cache, projection=projection)
+    client, contact = identity.client, identity.contact
     own = lead.assignee_id == user.pk
     opened = not lead.is_archived and lead.status != "closed"
-    contact = lead.contact or (lead.client if lead.client_id and lead.client.client_type == 'private' else None)
-    company = lead.client if lead.client_id and lead.client.client_type == 'legal' else None
+    company = client if client and client.client_type == 'legal' else None
     row = {"id": lead.pk, "title": lead.title, "revision": lead.revision,
         "column": lead_column(lead), "is_archived": lead.is_archived,
         "can_move": capabilities["transition_own_leads"] and (own or lead.assignee_id is None and lead.status == "new" and capabilities["take_leads"]),
         "status": lead.status, "status_label": STATES.get(lead.status, lead.status),
         "result": lead.result, "result_label": RESULTS.get(lead.result, ""),
-        "client": _client_summary(lead.client, details=detail),
+        "client": _client_summary(client, details=detail),
         "contact": _client_summary(contact, details=detail),
         "company": _client_summary(company, details=detail),
         "assignee": {"id": lead.assignee_id,
@@ -133,8 +135,8 @@ def _serialize(lead, user, capabilities, *, detail=False, visible_tasks=None):
         "needs_review": lead.needs_review, "next_action": None,
         "intake_reason_label": "" if lead.assignee_id and lead.intake_reason in ROUTING_REASONS else INTAKE_REASONS.get(lead.intake_reason, ""),
         "last_activity_at": lead.last_activity_at.isoformat() if lead.last_activity_at else None}
-    if detail and row["client"] and readable_clients(user).filter(pk=lead.client_id,organization=lead.organization).exists():
-        row["client"]["url"] = reverse("client_detail",args=[lead.client_id])
+    if detail and row["client"]:
+        row["client"]["url"] = reverse("client_detail",args=[client.pk])
     if detail:
         from .services.crm_assignments import assignment_available, assignment_task_data, ASSIGNMENT_NOTE
         row['can_assign'] = assignment_available(user, lead.organization, lead)
@@ -177,14 +179,24 @@ def _serialize_many(leads, user, capabilities, *, detail=False):
         organization_id=leads[0].organization_id if leads else None).values_list("lead_id", "task_id"))
     from .services.crm_lead_access import source_metadata_many
     sources = source_metadata_many(user=user, organization=leads[0].organization, leads=leads) if leads else {}
+    from .services.crm_lead_identity import identity_projection
+    projection = identity_projection(leads, user)
+    clients = projection["clients"] if projection else {}
+    edited_ids = set(CrmEvent.objects.filter(lead__in=leads, event_type="lead.edit",
+        safe_diff__title_changed__after=True).values_list("lead_id", flat=True))
     output = []
     for lead in leads:
         row = _serialize(lead, user, capabilities, detail=detail,
-            visible_tasks=visible if (lead.pk,lead.next_task_id) in links else {})
+            visible_tasks=visible if (lead.pk,lead.next_task_id) in links else {},
+            client_cache=clients, projection=projection)
         row["source"] = next(iter(sources.get(lead.pk, [])), None)
-        if row["source"] and row["source"]["type"] == "call" and row["source"]["direction"] == "in":
-            from .services.crm_lead_titles import automatic_call_title
-            row["title"] = automatic_call_title(row["title"], row["source"]["phone"], row["source"].get("result") == "missed")
+        from .services.crm_lead_titles import display_call_title, has_manual_title
+        if not has_manual_title(lead, edited_ids):
+            call_ids = {link.inbox.source_id for link in projection["links"].get(lead.pk, []) if link.inbox.source_type == "call"}
+            calls = sorted((projection["calls"][pk] for pk in call_ids if pk in projection["calls"]),
+                key=lambda call: (call.started_at, call.pk), reverse=True)
+            row["title"] = display_call_title(lead, row,
+                [{key: getattr(call, key) for key in ("phone_number", "result", "direction")} for call in calls])
         output.append(row)
     return output
 

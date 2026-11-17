@@ -3,8 +3,8 @@ from urllib.parse import urlencode
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.db.models import BooleanField, Case, Exists, F, OuterRef, Q, Value, When, Window
-from django.db.models.functions import Coalesce, RowNumber
+from django.db.models import BooleanField, Case, CharField, Exists, F, OuterRef, Q, Value, When, Window
+from django.db.models.functions import Coalesce, Concat, Length, Replace, RowNumber, Substr, Trim
 from django.urls import reverse
 
 from pool_service.call_processing_models import CallPrivateNumber
@@ -49,6 +49,30 @@ def _communication_caps(user, organization):
         return dict.fromkeys(names, True)
     grant = current(CommunicationAccess.objects).filter(user_id=user.pk, organization=organization).first()
     return {name: bool(access.role != "accountant" and grant and getattr(grant, name)) for name in names}
+
+
+def _with_phone_key(queryset, field="phone_number"):
+    """SQL counterpart of normalize_phone for scoped communication queries."""
+    raw = F(field)
+    # Provider writes canonical values; trim legacy whitespace conservatively.
+    for char in ("\r", "\n", "\t", "\v", "\f", "\u00a0"):
+        raw = Replace(raw, Value(char), Value(" "))
+    raw = Trim(raw)
+    digits = raw
+    for char in ("+", " ", "(", ")", ".", "-"):
+        digits = Replace(digits, Value(char), Value(""))
+    return queryset.annotate(_crm_raw=raw, _crm_digits=digits).filter(
+        Q(_crm_digits="") | Q(_crm_digits__regex=r"^[0-9]+$")
+    ).annotate(
+        _crm_length=Length("_crm_digits")
+    ).annotate(_crm_phone_key=Case(
+        When(_crm_raw__startswith="+", _crm_length=11, _crm_digits__startswith="7", then=Substr("_crm_digits", 2)),
+        When(_crm_raw__startswith="+", _crm_length__gte=8, _crm_length__lte=15, then=Concat(Value("+"), F("_crm_digits"))),
+        When(Q(_crm_length=11) & (Q(_crm_digits__startswith="7") | Q(_crm_digits__startswith="8")), then=Substr("_crm_digits", 2)),
+        When(_crm_length=10, then=F("_crm_digits")),
+        When(_crm_length__gte=8, _crm_length__lte=15, then=Concat(Value("+"), F("_crm_digits"))),
+        default=Value(""), output_field=CharField(),
+    ))
 
 
 def _private_call_annotations(queryset):

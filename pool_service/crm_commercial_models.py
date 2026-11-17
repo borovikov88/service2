@@ -195,6 +195,9 @@ class CrmLead(CommercialModel):
         related_name="contact_leads")
     assignee = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT)
     title = models.CharField(max_length=255)
+    identity_origin = models.CharField(max_length=8, default="legacy",
+        choices=[("legacy", "Existing binding"), ("incoming", "Incoming sources"), ("manual", "User selection")])
+    title_is_manual = models.BooleanField(default=False)
     need = models.TextField(blank=True)
     acquisition_source = models.CharField(max_length=80, blank=True)
     first_contact_channel = models.CharField(max_length=40, blank=True)

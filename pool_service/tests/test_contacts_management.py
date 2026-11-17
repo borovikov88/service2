@@ -247,6 +247,40 @@ class ContactManagementTests(TestCase):
         execute_merge(self.actor,self.preview([self.person.pk,second.pk],self.person.pk)["token"])
         lead.refresh_from_db();self.assertEqual((lead.client_id,lead.contact_id),(self.person.pk,self.person.pk))
 
+    def test_person_merge_refuses_two_active_episodes_atomically(self):
+        second = Client.objects.create(organization=self.org, client_type="private", name="Synthetic second person")
+        for person in (self.person, second):
+            CrmLead.objects.create(organization=self.org, client=person, contact=person,
+                identity_origin="manual", title="Synthetic active episode")
+        snapshot = list(CrmLead.objects.order_by("pk").values())
+        with self.assertRaises(ValidationError):
+            execute_merge(self.actor, self.preview([self.person.pk, second.pk], self.person.pk)["token"])
+        self.assertEqual(list(CrmLead.objects.order_by("pk").values()), snapshot)
+        self.assertEqual(active_clients().filter(pk__in=[self.person.pk, second.pk]).count(), 2)
+        self.assertFalse(CrmEvent.objects.filter(event_type="contact_merged").exists())
+        self.assertFalse(ClientMergeRecord.objects.exists())
+
+    def test_person_merge_preserves_terminal_episodes_with_one_active(self):
+        second = Client.objects.create(organization=self.org, client_type="private", name="Synthetic former duplicate")
+        live = CrmLead.objects.create(organization=self.org, client=self.person, contact=self.person,
+            identity_origin="manual", title="Synthetic active episode")
+        for status, result, archived in (("closed", "lost", False), ("new", "", True)):
+            CrmLead.objects.create(organization=self.org, client=second, contact=second,
+                identity_origin="manual", title="Synthetic historical episode", status=status,
+                result=result, reason="Synthetic resolution", is_archived=archived)
+        execute_merge(self.actor, self.preview([self.person.pk, second.pk], self.person.pk)["token"])
+        self.assertEqual(CrmLead.objects.filter(contact=self.person).count(), 3)
+        self.assertEqual(CrmLead.objects.filter(is_archived=False, result="").exclude(status="closed").get().pk, live.pk)
+
+    def test_company_merge_keeps_distinct_contacts_active(self):
+        second = Client.objects.create(organization=self.org, client_type="private", name="Synthetic other representative")
+        for company, person in ((self.a, self.person), (self.b, second)):
+            CrmLead.objects.create(organization=self.org, client=company, contact=person,
+                identity_origin="manual", title="Synthetic representative episode")
+        execute_merge(self.actor, self.preview()["token"])
+        self.assertEqual(set(CrmLead.objects.values_list("contact_id", flat=True)), {self.person.pk, second.pk})
+        self.assertEqual(set(CrmLead.objects.values_list("client_id", flat=True)), {self.a.pk})
+
     def test_stale_preview_actor_binding_revoked_access_and_replay(self):
         preview=self.preview()
         self.b.name="Changed synthetic";self.b.save()

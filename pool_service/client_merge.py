@@ -389,6 +389,17 @@ def merge_clients(source_id, target_id, *, organization_id, actor=None, _directo
         target.save(update_fields=changed)
 
     _merge_profile(source, target, actor)
+    # Every merge path can move source FKs even when a lead's cached client is
+    # empty. Check final identity before committing any history or contact data.
+    from django.core.exceptions import ValidationError
+    from .services.crm_lead_identity import ensure_merged_contact_episode
+    try:
+        ensure_merged_contact_episode(organization, target)
+    except ValidationError as error:
+        if _directory:
+            raise
+        # The legacy merge view presents ValueError as a controlled refusal.
+        raise ValueError(" ".join(error.messages)) from error
     return {
         "source_id": source.id,
         "target_id": target.id,

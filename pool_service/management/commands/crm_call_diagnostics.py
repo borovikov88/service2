@@ -10,7 +10,7 @@ from django.utils import timezone
 from pool_service.communication_models import ChannelConnection, PhoneCall
 from pool_service.communication_services import conversation_capability
 from pool_service.crm_commercial_models import CrmIntakeActivation, CrmLeadSource
-from pool_service.crm_inbox_models import CrmInboxEvent
+from pool_service.crm_inbox_models import CrmInboxBoundary, CrmInboxEvent
 from pool_service.models import Organization
 from pool_service.services.call_privacy import is_private_call
 from pool_service.services.crm_inbox import fingerprint, source_scope
@@ -74,12 +74,18 @@ def _gate(org, activation, call, *, verified, historical, received, occurred):
         return 'disabled'
     if not activation:
         return 'activation_missing'
-    if call.direction != 'in':
+    if call.direction not in {'in', 'out'}:
         return 'not_incoming'
     if not verified:
         return 'unverified'
     if historical or received < activation.starts_at or occurred and occurred < activation.starts_at:
         return 'historical'
+    if call.direction == 'out':
+        boundary = CrmInboxBoundary.objects.filter(key='outbound_calls').first()
+        if not boundary:
+            return 'outbound_boundary_missing'
+        if received < boundary.captured_at or occurred and occurred < boundary.captured_at:
+            return 'historical'
     return 'eligible'
 
 

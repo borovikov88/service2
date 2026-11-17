@@ -8,6 +8,16 @@
   }
 })(function () {
   "use strict";
+  function leadEditChanges(lead, values) {
+    const changes = {...values};
+    // Generated title and source-derived identity are projections. Sending an
+    // unchanged projection back would accidentally turn it into a manual choice.
+    if (changes.title === (lead.title || "").trim()) delete changes.title;
+    if (changes.client_id === (lead.client?.id ?? null) && changes.contact_id === (lead.contact?.id ?? null)) {
+      delete changes.client_id; delete changes.contact_id;
+    }
+    return changes;
+  }
   function intakeStatusText(intake, dateText) {
     const parts = ["Приём обращений: " + (intake.enabled ? "включён" : "выключен")];
     const attempted = intake.last_attempt_at || intake.last_run_at;
@@ -231,7 +241,7 @@
       const heading = button(displayTitle(lead), () => {if(Date.now()>=suppressClickUntil)openLead(lead.id);}); heading.className = "lead-card-heading"; title.append(heading);
       if(lead.needs_review){const mark=el("span","lead-review-marker");mark.title="Есть обращение для разбора";mark.setAttribute("aria-label","Есть обращение для разбора");title.append(mark);}
       const customer = lead.client?.name || lead.source?.contact?.name || lead.source?.contact_name || lead.source?.phone;
-      if (customer) title.append(el("p", "lead-card-customer", customer));
+      if (customer && !displayTitle(lead).split(" · ").includes(customer)) title.append(el("p", "lead-card-customer", customer));
       if(lead.need)title.append(el("p","lead-card-need",lead.need.slice(0,160)));
       const meta = el("div", "lead-card-meta"), source = el("span", "lead-card-source");
       source.append(icon(lead.source?.type === "call" ? "phone" : lead.source?.type === "message" ? "message" : "note"), el("span", "", lead.source?.label || "Обращение")); meta.append(source);
@@ -459,7 +469,7 @@
       if (!creating) need.dataset.leadNeed = "true";
       if (!creating && lead.next_action?.restricted) {
         form.append(el("p", "lead-form-note", "Следующее действие осталось у прежнего исполнителя и ограничено доступом. Здесь можно изменить название и потребность лида."));
-        formSubmit(form, "Сохранить изменения", () => submit(form, "lead.edit", lead, {title:title.value.trim(), need:need.value.trim()}));
+        formSubmit(form, "Сохранить изменения", () => submit(form, "lead.edit", lead, leadEditChanges(lead, {title:title.value.trim(), need:need.value.trim()})));
         return;
       }
       const client = picker(fields, "Клиент / компания", initial.urls.clients, "clients", creating ? null : lead.client);
@@ -492,7 +502,7 @@
         if (nextAction) changes.next_action = nextAction();
         if (responsible) { if (!responsible.value) throw new Error("Выберите ответственного."); changes.responsible_id = Number(responsible.value); }
         if (!creating && canNext && lead.next_action && !lead.next_action.restricted && !lead.next_action.completed) changes.expected_task_version = lead.next_action.version;
-        submit(form, kind, kind === "lead.create" ? null : lead, changes);
+        submit(form, kind, kind === "lead.create" ? null : lead, creating ? changes : leadEditChanges(lead, changes));
       });
     }
     function transitionForm(host, lead) {
@@ -655,7 +665,12 @@
       input.required=required; if(type === "textarea") input.rows=2;
       if(type === "text" || type === "textarea") input.maxLength=({title:255,need:10000,specialization:40,location:255})[name];
       if(name === "need") input.dataset.inlineLeadNeed="true";
-      formSubmit(form,"Сохранить",()=>{if(!form.reportValidity())return; const raw=input.value.trim(); submit(form,"lead.edit",lead,{[name]:type === "datetime-local" ? (raw ? deadlineISO(raw,initial.utc_offset) : null) : raw});});
+      formSubmit(form,"Сохранить",()=>{
+        if(!form.reportValidity())return;
+        const raw=input.value.trim(), changes=leadEditChanges(lead,{[name]:type === "datetime-local" ? (raw ? deadlineISO(raw,initial.utc_offset) : null) : raw});
+        if(!Object.keys(changes).length) {form.crmInlineEditor.close(); return;}
+        submit(form,"lead.edit",lead,changes);
+      });
       form.querySelector('button[type=submit]').remove();
       win.CrmInline.mount(row,{display,form,editLabel:"Редактировать: "+label,saveLabel:"Сохранить: "+label,
         clearLabel:"Удалить: "+label,clearMessage:"Удалить значение поля «"+label+"»? Изменение сохранится в истории.",
@@ -771,5 +786,5 @@
     const selected = new URL(win.location.href).searchParams.get("lead"); renderList(); if (selected && /^\d+$/.test(selected)) openLead(Number(selected));
     return {state, operations, loadList, openLead};
   }
-  return {intakeStatusText, LeadOperations, localDateTime, deadlineISO, moveTargets, mount};
+  return {intakeStatusText, LeadOperations, localDateTime, deadlineISO, moveTargets, leadEditChanges, mount};
 });

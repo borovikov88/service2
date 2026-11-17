@@ -1,37 +1,31 @@
-"""SQL-only consumer for current, verified incoming communication evidence.
+"""SQL-only consumer for current, verified communication evidence.
 
 The inbox owns delivery/lease/retry transactions and locks connection, organization,
 source and event before calling this module. No AI, provider API or client message.
 """
-import hashlib
-import json
-
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.db.models import Q
-from django.utils import timezone
-
-from pool_service.client_queries import active_clients
 from pool_service.communication_models import PhoneCall, TelephonyEmployeeIdentity
 from pool_service.crm_commercial_models import (
     CrmAccess, CrmEvent, CrmIntakeActivation, CrmLead, CrmLeadSource, CrmLeadThread,
 )
-from pool_service.models import Client, Employee, Organization, OrganizationAccess
-from pool_service.services.call_privacy import is_private_call
+from pool_service.models import Employee, Organization, OrganizationAccess
 from pool_service.services.crm_lead_access import can_read_lead
-from pool_service.services.crm_lead_titles import automatic_call_title, call_title
+from pool_service.services.crm_lead_titles import automatic_call_title, call_title, has_manual_title
+from pool_service.services.call_privacy import is_private_call
+from .crm_lead_identity import context_hash, is_active, lead_identity, matching_active_leads, source_identity
 
 
 INTAKE_OUTCOMES = frozenset({"lead_created", "lead_linked", "historical_ignored", "private_ignored"})
 
 
 def _context_key(event):
-    # Never match by phone/client or choose a most recent deal. A call's revisions
-    # share one source identity; messages share a verified conversation namespace.
+    # Legacy conversation pointers remain useful for unidentified participants.
+    # Event deduplication MUST NOT use this movable pointer.
     value = (["call", event.source_key] if event.source_type == "call" else
         ["conversation", event.organization_id, event.provider_kind,
          event.connection_id_snapshot, event.account_id_snapshot, event.namespace])
-    return hashlib.sha256(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+    return context_hash(value)
 
 
 def _initial_employee(source, organization, lead):
@@ -89,30 +83,62 @@ def consume_incoming(event, source, operation_identity):
     existing = CrmLeadSource.objects.select_for_update().filter(inbox=event).first()
     if existing:
         return "lead_linked"
-    thread = CrmLeadThread.objects.select_for_update().filter(
-        organization=organization, context_key=_context_key(event)).first()
-    created = thread is None
+    original = CrmLeadSource.objects.select_for_update().filter(organization=organization,
+        inbox__organization=organization, inbox__source_key=event.source_key).order_by("inbox__revision", "pk").first()
+    identity = source_identity(organization, source)
+    thread = None
+    created = False
+    if original:
+        lead = CrmLead.objects.select_for_update().get(pk=original.lead_id, organization=organization)
+    else:
+        matches = matching_active_leads(organization, identity)
+        if len(matches) > 1:
+            # Existing duplicates need an explicit decision; do not merge them,
+            # pick one arbitrarily or create a third card.
+            raise ValueError("crm_active_lead_ambiguous")
+        lead = matches[0] if matches else None
+        thread = CrmLeadThread.objects.select_for_update().filter(
+            organization=organization, context_key=_context_key(event)).first()
+        if lead is None and thread:
+            candidate = CrmLead.objects.select_for_update().get(pk=thread.lead_id, organization=organization)
+            candidate_identity = lead_identity(candidate, validate_sources=True)
+            confirmed = event.source_type == "message" and CrmLeadSource.objects.filter(
+                organization=organization, lead__organization=organization,
+                lead__duplicate_of=candidate, lead__status="closed", lead__result="duplicate",
+                inbox__organization=organization, inbox__source_type="message",
+                inbox__connection_id_snapshot=event.connection_id_snapshot,
+                inbox__account_id_snapshot=event.account_id_snapshot, inbox__namespace=event.namespace).exists()
+            if (is_active(candidate) and not candidate_identity.ambiguous and (confirmed or not identity.ambiguous
+                    and (identity.key is None or candidate_identity.key is None or identity.key == candidate_identity.key))):
+                lead = candidate
+        created = lead is None
     if created:
-        client_id = source.conversation.client_id if event.source_type == "message" else source.client_id
-        if client_id and not active_clients(Client.objects.filter(pk=client_id, organization=organization)).exists():
-            client_id = None
         lead = CrmLead.objects.create(
-            organization=organization, client_id=client_id,
-            title=call_title(source.phone_number, source.result == PhoneCall.RESULT_MISSED) if event.source_type == "call" else "Входящее обращение — требуется уточнение",
+            organization=organization, client=identity.client, contact=identity.contact, identity_origin="incoming",
+            title=call_title(source.phone_number, source.result == PhoneCall.RESULT_MISSED, source.direction) if event.source_type == "call" else "Входящее обращение — требуется уточнение",
             acquisition_source=event.provider_kind if event.source_type == "message" else "",
             first_contact_channel=event.provider_kind, first_occurred_at=event.occurred_at,
             received_at=event.received_at, last_activity_at=event.occurred_at or event.received_at,
             needs_review=True, intake_reason="unassigned",
         )
-        thread = CrmLeadThread.objects.create(organization=organization, context_key=_context_key(event), lead=lead)
-    else:
-        lead = CrmLead.objects.select_for_update().get(pk=thread.lead_id, organization=organization)
+    if not original:
+        if thread:
+            thread.lead = lead
+            thread.save(update_fields=["lead"])
+        else:
+            CrmLeadThread.objects.create(organization=organization, context_key=_context_key(event), lead=lead)
     CrmLeadSource.objects.create(organization=organization, inbox=event, lead=lead)
+    if not is_active(lead):
+        return "lead_linked"  # A revision of old evidence never reopens an episode.
     before = lead.revision
     old_assignee = lead.assignee_id
     old_status = lead.status
-    if event.source_type == "call":
-        lead.title = automatic_call_title(lead.title, source.phone_number, source.result == PhoneCall.RESULT_MISSED)
+    if not lead.next_task_id and (lead.identity_origin == "incoming" or not lead.client_id and not lead.contact_id and lead.identity_origin != "manual"):
+        current_identity = lead_identity(lead)
+        if not current_identity.ambiguous:
+            lead.client, lead.contact = current_identity.client, current_identity.contact
+    if event.source_type == "call" and not has_manual_title(lead):
+        lead.title = automatic_call_title(lead.title, source.phone_number, source.result == PhoneCall.RESULT_MISSED, source.direction)
     # First confirmed answer can fill an unassigned card. Explicit take, later
     # calls, completed qualification and manual ownership are never overwritten.
     if event.source_type == "call" and lead.assignee_id is None and not lead.result and not lead.is_archived:
