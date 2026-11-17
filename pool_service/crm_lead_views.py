@@ -175,14 +175,12 @@ def _serialize_many(leads, user, capabilities, *, detail=False):
     # A pointer alone cannot turn an unrelated task into a commercial next step.
     links = set(CrmLeadTaskLink.objects.filter(lead_id__in=[lead.pk for lead in leads], task_id__in=ids,
         organization_id=leads[0].organization_id if leads else None).values_list("lead_id", "task_id"))
-    for lead in leads:
-        if lead.next_task_id and (lead.pk, lead.next_task_id) not in links:
-            visible.pop(lead.next_task_id, None)
     from .services.crm_lead_access import source_metadata_many
     sources = source_metadata_many(user=user, organization=leads[0].organization, leads=leads) if leads else {}
     output = []
     for lead in leads:
-        row = _serialize(lead, user, capabilities, detail=detail, visible_tasks=visible)
+        row = _serialize(lead, user, capabilities, detail=detail,
+            visible_tasks=visible if (lead.pk,lead.next_task_id) in links else {})
         row["source"] = next(iter(sources.get(lead.pk, [])), None)
         if row["source"] and row["source"]["type"] == "call" and row["source"]["direction"] == "in":
             from .services.crm_lead_titles import automatic_call_title
