@@ -76,15 +76,24 @@ def exclude_before_save(*, connection, provider_user, extension, peer_phone, occ
             if saved and saved != expected:
                 return False
     key = phone_key(peer_phone)
-    return bool(key and CallPrivateNumber.objects.filter(organization_id=connection.organization_id,
-        owner_id=owner_id, phone_key=key).exists())
+    rules = CallPrivateNumber.objects.filter(organization_id=connection.organization_id,
+        owner_id=owner_id, phone_key=key)
+    if not key:
+        return False
+    if rules.filter(removed_at__isnull=True).exists():
+        return True
+    if existing:
+        from pool_service.staff_call_models import CallPrivacyHold
+        if CallPrivacyHold.objects.filter(call=existing, owner_id=owner_id, released_at__isnull=False).exists():
+            return False
+    return rules.filter(removed_at__gt=occurred_at).exists()
 
 
 def contact_state(actor, person):
     keys = sorted({key for key in [phone_key(person.phone), *(phone_key(value) for value in
         ClientContact.objects.filter(client=person, kind="phone").values_list("value", flat=True))] if key})
     private = sorted(CallPrivateNumber.objects.filter(organization_id=person.organization_id,
-        owner_id=actor.pk, phone_key__in=keys).values_list("phone_key", flat=True))
+        owner_id=actor.pk, phone_key__in=keys, removed_at__isnull=True).values_list("phone_key", flat=True))
     revision = hashlib.sha256(json.dumps([person.pk, keys, private]).encode()).hexdigest()
     return {"keys": keys, "revision": revision, "marked": bool(keys) and keys == private,
         "partial": bool(private) and keys != private}
@@ -110,5 +119,5 @@ def set_personal_peer(actor, person_id, enabled, revision):
             numbers_text="\n".join(state["keys"]))
     else:
         for pk in CallPrivateNumber.objects.filter(organization=organization, owner=owner,
-                phone_key__in=state["keys"]).values_list("pk", flat=True):
+                phone_key__in=state["keys"], removed_at__isnull=True).values_list("pk", flat=True):
             remove_private_number(user=owner, organization=organization, number_id=pk)

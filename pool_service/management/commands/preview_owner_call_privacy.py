@@ -20,6 +20,6 @@ class Command(BaseCommand):
         rows = list(TelephonyEmployeeIdentity.objects.filter(organization_id=org, employee__user_id=owner).select_related('connection'))
         ready = sum(verified_owner(row.connection, row.external_user, row.extension, timezone.now()) == owner for row in rows)
         self.stdout.write(json.dumps({'owner_identity_rows':len(rows), 'verified_current_rows':ready,
-            'private_peer_numbers':CallPrivateNumber.objects.filter(organization_id=org,owner_id=owner).count(),
+            'private_peer_numbers':CallPrivateNumber.objects.filter(organization_id=org,owner_id=owner,removed_at__isnull=True).count(),
             'early_gate_ready':ready > 0, 'historical_or_ambiguous_identity':'requires_review',
             'provider_recording_changed':False, 'writes':False}, sort_keys=True))

@@ -87,9 +87,17 @@ def _transfer_task(subject, task, actor, recipient, expected_version):
     call_id = (task.payload_json or {}).get('source_call_id')
     if call_id:
         from .crm_lead_access import has_readable_family_call
+        from .call_access import can_read_call
+        from pool_service.communication_models import PhoneCall
+        from pool_service.staff_call_models import CallWorkContext
+        call = PhoneCall.objects.filter(pk=call_id, organization=subject.organization).first()
+        explicit = CallWorkContext.objects.filter(call_id=call_id, organization=subject.organization,
+            **{'lead' if isinstance(subject, CrmLead) else 'deal': subject}).exists()
         leads = [subject] if isinstance(subject, CrmLead) else [link.lead for link in CrmLeadDealLink.objects.filter(deal=subject, organization_id=subject.organization_id).select_related('lead')]
-        if not any(can_read_lead(recipient, subject.organization, lead)
-                and has_readable_family_call(recipient, subject.organization, lead, call_id) for lead in leads):
+        if not can_read_call(recipient, call, media=True, assignment_subject=subject) or not (explicit or any(
+                can_read_lead(recipient, subject.organization, lead, assignment_subject=subject)
+                and has_readable_family_call(recipient, subject.organization, lead, call_id,
+                    assignment_subject=subject) for lead in leads)):
             raise PermissionDenied('У нового ответственного нет доступа к источнику текущей задачи. Снимите передачу задачи или выберите другого сотрудника.')
     old_id = task.primary_responsible_id
     task.primary_responsible = recipient
@@ -99,12 +107,17 @@ def _transfer_task(subject, task, actor, recipient, expected_version):
         field_name='crm_responsible', old_value=str(old_id), new_value=str(recipient.pk))
 
 
-def _readable(user, organization, kind, subject=None, *, lock=False):
+def _readable(user, organization, kind, subject=None, *, lock=False, assignment=False):
     if kind == 'lead':
+        if subject and assignment:
+            return can_read_lead(user, organization, subject, assignment_subject=subject)
         return can_read_lead(user, organization, subject) if subject else can_view_leads(user, organization)
     if not can_view_team_deals(user, organization):
         return False
     if subject:
+        from .crm_commercial_access import deals_for_user
+        if subject.pk is not None and not deals_for_user(user, organization).filter(pk=subject.pk).exists():
+            return False
         from .crm_deal_objects import validate_deal_object
         try:
             validate_deal_object('default', user, subject, lock=lock)
@@ -137,9 +150,13 @@ def assignment_recipient(using, organization, responsible_id, kind, *, subject=N
     grant = CrmAccess.objects.using(using).select_for_update().filter(organization=organization, user_id=responsible_id).first()
     capabilities = ('edit_own_leads', 'transition_own_leads', 'create_own_leads', 'take_leads') if kind == 'lead' else (
         'edit_own_deals', 'transition_own_deals', 'create_own_deals', 'manage_own_next_action')
-    if (not user or not memberships or not grant or not any(getattr(grant, key) for key in capabilities)
+    from pool_service.staff_call_models import StaffAccount
+    account = StaffAccount.objects.using(using).select_for_update().filter(
+        organization=organization, user_id=responsible_id).first()
+    nonhuman = bool(account and account.kind in {'service', 'system'})
+    if (not user or user.is_superuser or nonhuman or not memberships or not grant or not any(getattr(grant, key) for key in capabilities)
             or any(not employee.is_active or employee.employment_status == Employee.STATUS_DISMISSED for employee in employees)
-            or not _readable(user, organization, kind, subject, lock=True)
+            or not _readable(user, organization, kind, subject, lock=True, assignment=True)
             or source_lead is not None and not can_read_lead(user, organization, source_lead)):
         raise PermissionDenied('Сотрудник недоступен или не имеет доступа к этой карточке CRM и её источникам.')
     return user

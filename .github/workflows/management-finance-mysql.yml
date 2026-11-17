@@ -24,6 +24,14 @@ on:
       - "pool_service/tests/test_crm_service_binding*.py"
       - "pool_service/services/owner_call_privacy.py"
       - "pool_service/services/call_privacy.py"
+      - "pool_service/services/call_access.py"
+      - "pool_service/services/call_processing_settings.py"
+      - "pool_service/services/crm_card_privacy.py"
+      - "pool_service/services/staff_*.py"
+      - "pool_service/staff_call_models.py"
+      - "pool_service/staff_control_views.py"
+      - "pool_service/call_processing_models.py"
+      - "pool_service/tests/test_staff_call_control.py"
       - "pool_service/tests/test_owner_call_privacy*.py"
       - "pool_service/tests/test_contacts*.py"
       - "pool_service/tests/test_contact_identity*.py"
@@ -238,6 +246,7 @@ jobs:
             pool_service.tests.test_contact_identity \
             pool_service.tests.test_contact_identity_migrations \
             pool_service.tests.test_owner_call_privacy \
+            pool_service.tests.test_staff_call_control \
             pool_service.tests.test_call_privacy_enforcement \
             pool_service.tests.test_crm_service_binding_http \
             pool_service.tests.test_crm_service_bindings \

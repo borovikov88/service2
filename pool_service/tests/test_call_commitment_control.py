@@ -7,6 +7,7 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 
 from pool_service.models import Client, Employee, Notification, Organization, OrganizationAccess, ServiceTask
+from pool_service.communication_models import PhoneCall, TelephonyConnection
 from pool_service.services.call_commitment_control import (
     _control_key, _deliver_control_push, _effective_deadline, process_call_commitment_controls,
 )
@@ -36,6 +37,10 @@ class CallCommitmentControlTests(TestCase):
             name="Клиент контроля",
             phone="+79000000001",
         )
+        line = TelephonyConnection.objects.create(organization=self.organization, external_id='synthetic-control-line')
+        PhoneCall.objects.create(pk=777, organization=self.organization, connection=line,
+            employee=self.manager, client=self.client_entity, external_id='synthetic-control-call',
+            direction='in', phone_number=self.client_entity.phone, started_at=datetime(2026, 10, 6, 9, 0, tzinfo=BARNAUL))
 
     def _task(
         self,

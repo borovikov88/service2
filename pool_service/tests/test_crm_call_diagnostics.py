@@ -249,7 +249,7 @@ class CallDiagnosticsTests(TestCase):
             cursor.execute('UPDATE pool_service_crmlead SET client_id=%s WHERE id=%s', [client.pk, lead.pk])
         self.unavailable()
 
-    def test_another_private_source_hides_related_lead_metadata(self):
+    def test_private_source_preserves_independent_work_diagnostic_metadata(self):
         event = self.event(state='done', processed_at=self.now)
         lead = self.link(event)
         owner = get_user_model().objects.create_user('synthetic-private-owner')
@@ -264,7 +264,11 @@ class CallDiagnosticsTests(TestCase):
             state='done', processed_at=self.now)
         self.link(other, lead)
         CallPrivateNumber.objects.create(organization=self.org, owner=owner, phone_key=phone_key(private.phone_number))
-        self.unavailable()
+        result = self.read()
+        self.assertEqual(len(result['revisions']), 1)
+        self.assertTrue(result['revisions'][0]['lead_linked'])
+        self.assertEqual(result['call_id'], self.call.pk)
+        self.assertNotIn(private.external_id, json.dumps(result))
 
     def test_superuser_revocation_is_read_from_database(self):
         self.actor.is_superuser = True; self.actor.save()

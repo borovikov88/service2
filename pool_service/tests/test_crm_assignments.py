@@ -156,8 +156,8 @@ class CrmAssignmentTests(PilotFixture, TestCase):
     def test_recipient_source_visibility_is_enforced_on_list_and_write(self):
         lead = CrmLead.objects.get(pk=self.lead_create()['lead_id'])
         from pool_service.services.crm_lead_access import can_read_lead
-        def readable(user, organization, subject):
-            return user.pk != self.recipient.pk and can_read_lead(user, organization, subject)
+        def readable(user, organization, subject, **kwargs):
+            return user.pk != self.recipient.pk and can_read_lead(user, organization, subject, **kwargs)
         with patch('pool_service.services.crm_assignments.can_read_lead', side_effect=readable):
             choices = responsible_candidates(actor=self.user, organization=self.org, kind='lead', subject_id=lead.pk)
             self.assertNotIn(self.recipient.pk, [row['id'] for row in choices['users']])

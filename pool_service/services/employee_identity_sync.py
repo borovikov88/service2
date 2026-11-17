@@ -7,6 +7,8 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import Q
+from django.db.models.functions import Coalesce
+from django.db.models import Value
 from django.utils import timezone
 
 from pool_service.communication_models import (
@@ -548,6 +550,13 @@ def _read_megafon_accounts(telephony):
     return provider, accounts
 
 
+def _call_owner_snapshot(employee):
+    if employee.user_id and OrganizationAccess.objects.filter(
+            organization=employee.organization, user_id=employee.user_id, role='owner').exists():
+        return {'owner_user_snapshot': Coalesce('owner_user_snapshot', Value(employee.user_id))}
+    return {}
+
+
 def apply_telephony_identity_to_calls(
     identity,
     *,
@@ -557,10 +566,16 @@ def apply_telephony_identity_to_calls(
     if not identity.employee_id or identity.requires_manual_confirmation:
         return 0
     employee = identity.employee
+    owner_snapshot = _call_owner_snapshot(employee)
+    # Current ATS identity is not historical proof for an internal party.
+    # New internal ingestion uses dated assignments; legacy parties stay fixed.
     base = PhoneCall.objects.filter(
         organization=identity.organization,
         connection=identity.connection,
-    )
+    ).exclude(direction=PhoneCall.DIRECTION_INTERNAL).filter(Q(classification_evidence={}) | (
+        Q(classification_evidence__kind='review')
+        & ~Q(classification_evidence__has_key='assignments')
+        & ~Q(classification_evidence__has_key='primary_assignment')))
     external_user_is_unique = bool(identity.external_user) and not (
         TelephonyEmployeeIdentity.objects.filter(
             connection=identity.connection,
@@ -584,14 +599,7 @@ def apply_telephony_identity_to_calls(
             | Q(employee_profile_id=previous_employee_id)
         )
         if reassignment_boundary is not None:
-            primary_reassignment = Q(
-                started_at__gte=reassignment_boundary
-            ) | Q(created_at__gte=reassignment_boundary)
-            if identity.external_user:
-                primary_reassignment |= Q(
-                    provider_user=identity.external_user
-                )
-            primary_matches = primary_matches.filter(primary_reassignment)
+            primary_matches = primary_matches.filter(started_at__gte=reassignment_boundary)
     else:
         primary_matches = primary_matches.filter(
             employee_profile__isnull=True
@@ -600,6 +608,7 @@ def apply_telephony_identity_to_calls(
     updated = primary_matches.update(
         employee_profile_id=employee.pk,
         employee_id=employee.user_id,
+        **owner_snapshot,
     )
 
     peer_selector = Q(peer_provider_extension=identity.extension)
@@ -616,14 +625,7 @@ def apply_telephony_identity_to_calls(
             | Q(peer_employee_profile_id=previous_employee_id)
         )
         if reassignment_boundary is not None:
-            peer_reassignment = Q(
-                started_at__gte=reassignment_boundary
-            ) | Q(created_at__gte=reassignment_boundary)
-            if identity.external_user:
-                peer_reassignment |= Q(
-                    peer_provider_user=identity.external_user
-                )
-            peer_matches = peer_matches.filter(peer_reassignment)
+            peer_matches = peer_matches.filter(started_at__gte=reassignment_boundary)
     else:
         peer_matches = peer_matches.filter(
             peer_employee_profile__isnull=True
@@ -632,6 +634,7 @@ def apply_telephony_identity_to_calls(
     updated += peer_matches.update(
         peer_employee_profile_id=employee.pk,
         peer_employee_id=employee.user_id,
+        **owner_snapshot,
     )
     return updated
 
@@ -643,6 +646,7 @@ def backfill_employee_calls(
     exclude_telephony_identity_id=None,
 ):
     total = 0
+    owner_snapshot = _call_owner_snapshot(employee)
     if previous_user_id and previous_user_id != employee.user_id:
         total += PhoneCall.objects.filter(
             organization=employee.organization,
@@ -653,18 +657,21 @@ def backfill_employee_calls(
         ).update(
             employee_profile_id=employee.pk,
             employee_id=employee.user_id,
+            **owner_snapshot,
         )
     total += PhoneCall.objects.filter(
         organization=employee.organization,
         employee_profile=employee,
     ).exclude(employee_id=employee.user_id).update(
         employee_id=employee.user_id,
+        **owner_snapshot,
     )
     total += PhoneCall.objects.filter(
         organization=employee.organization,
         peer_employee_profile=employee,
     ).exclude(peer_employee_id=employee.user_id).update(
         peer_employee_id=employee.user_id,
+        **owner_snapshot,
     )
     identities = employee.telephony_identities.filter(
         is_active=True,

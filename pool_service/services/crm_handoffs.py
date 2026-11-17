@@ -120,7 +120,7 @@ def _locked_context(actor_id, org, deal_id, item_id, task_ids, recipient_id, gra
         for uid in ids:
             if not (users[uid].is_superuser or task.created_by_id==uid or uid in task._handoff_responsibles or roles[uid].intersection({'owner','admin'})):
                 raise PermissionDenied
-    if private_source_task_ids(tasks,for_update=True): raise PermissionDenied
+    if private_source_task_ids(tasks,for_update=True,user=users[actor_id]) or private_source_task_ids(tasks,for_update=True,user=users[recipient_id]): raise PermissionDenied
     return deal,quote,item,tasks,users[recipient_id]
 
 

@@ -11,6 +11,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from pool_service.models import Organization, OrganizationAccess, ServiceTask, ServiceTaskChange
+from pool_service.communication_models import PhoneCall, TelephonyConnection
 from pool_service.services.task_feedback import (
     FeedbackConflict, apply_feedback, history_for, state_for, version_for, waiting_control,
 )
@@ -28,6 +29,10 @@ class TaskFeedbackTests(TestCase):
         self.outsider = User.objects.create_user("feedback-outsider", password="test")
         other_org = Organization.objects.create(name="Other feedback organization")
         OrganizationAccess.objects.create(organization=other_org, user=self.outsider, role="owner")
+        line = TelephonyConnection.objects.create(organization=self.org, external_id='synthetic-feedback-line')
+        PhoneCall.objects.create(pk=700, organization=self.org, connection=line,
+            employee=self.user, external_id='synthetic-feedback-call', direction='in',
+            phone_number='+79990000001', started_at=timezone.now())
         self.task = ServiceTask.objects.create(
             organization=self.org, title="Appointment", description="Original call agreement",
             start_date=date(2026, 10, 7), end_date=date(2026, 10, 7),
@@ -60,6 +65,12 @@ class TaskFeedbackTests(TestCase):
         self.assertEqual(self.task.payload_json["operations_mcp_idempotency_key"], "preserve-me")
         self.assertEqual(history_for(self.task)[0]["comment"], "<script>alert(1)</script>")
         self.assertNotIn("control_revision", state_for(self.task))
+
+    def test_missing_call_source_denies_feedback(self):
+        self.task.payload_json['source_call_id'] = 700001
+        self.task.save(update_fields=['payload_json'])
+        with self.assertRaises(PermissionDenied):
+            self.apply(comment='Synthetic missing-source request')
 
     def test_wait_clears_appointment_and_keeps_separate_control(self):
         next_check = timezone.now() + timedelta(days=2)

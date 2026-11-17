@@ -5,6 +5,7 @@ from . import crm_service_binding_views
 from . import crm_order_views
 from . import crm_assignment_views
 from django.urls import path
+from . import staff_control_views
 from .views import (
     home,
     pool_list,
@@ -383,7 +384,11 @@ urlpatterns = [
     path("security/passkeys/authenticate/verify/", webauthn_authentication_verify, name="webauthn_authentication_verify"),
     path("security/passkeys/prompt/dismiss/", webauthn_prompt_dismiss, name="webauthn_prompt_dismiss"),
     path("security/passkeys/<int:credential_id>/delete/", webauthn_credential_delete, name="webauthn_credential_delete"),
-    path("users/", users_view, name="users"),
+    path("users/", staff_control_views.users_directory, name="users"),
+    path('users/employees/<int:employee_id>/', staff_control_views.employee_control, name='staff_employee_control'),
+    path('users/accounts/<int:org_id>/<int:user_id>/', staff_control_views.account_kind, name='staff_account_kind'),
+    path('communications/calls/<int:call_id>/context/', staff_control_views.call_context, name='communication_call_context'),
+    path('communications/personal-history/', staff_control_views.personal_history, name='communication_personal_history'),
     path("notifications/", notifications_list, name="notifications"),
     path("notifications/<int:notification_id>/read/", notification_mark_read, name="notifications_mark_read"),
     path("notifications/<int:notification_id>/open/", notification_push_open, name="notification_push_open"),
@@ -392,8 +397,8 @@ urlpatterns = [
     path("notifications/resolve-all/", notifications_resolve_all, name="notifications_resolve_all"),
     path("notifications/<int:notification_id>/resolve/", notification_resolve, name="notification_resolve"),
     path("organization/norms/", organization_norms, name="organization_norms"),
-    path("users/<int:access_id>/block/", staff_toggle_block, name="staff_toggle_block"),
-    path("users/<int:access_id>/delete/", staff_delete, name="staff_delete"),
+    path("users/<int:access_id>/block/", staff_control_views.legacy_staff_action, name="staff_toggle_block"),
+    path("users/<int:access_id>/delete/", staff_control_views.legacy_staff_action, name="staff_delete"),
     path("users/<int:access_id>/role/", staff_change_role, name="staff_change_role"),
     path("users/pool-access/<int:access_id>/role/", pool_staff_change_role, name="pool_staff_change_role"),
     path("users/invite/", invite_create, name="invite_create"),

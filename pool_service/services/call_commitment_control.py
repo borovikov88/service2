@@ -100,6 +100,7 @@ def _locked_users_with_access(task, user_ids, *, roles=None):
         locked_users[user_id]
         for user_id in ordered_ids
         if user_id in locked_users and user_id in allowed and user_id not in unavailable
+        and not task_source_is_private(task, user=locked_users[user_id])
     ]
 
 

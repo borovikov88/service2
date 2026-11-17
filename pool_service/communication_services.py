@@ -21,7 +21,7 @@ def users_with_conversation_access(organization):
 
 
 def organization_access(user, organization=None):
-    if not user.is_authenticated:
+    if not user.is_authenticated or not user.is_active:
         return None
     queryset = OrganizationAccess.objects.select_related("organization").filter(user=user)
     if organization is not None:
@@ -30,6 +30,13 @@ def organization_access(user, organization=None):
 
 
 def conversation_capability(user, capability, organization=None):
+    if not user or not user.is_authenticated or not user.is_active:
+        return False
+    from .models import Employee
+    from django.db.models import Q
+    if organization and Employee.objects.filter(user=user, organization=organization).filter(
+        Q(is_active=False) | Q(employment_status='dismissed')).exists():
+        return False
     if user.is_superuser:
         return True
     access = organization_access(user, organization)

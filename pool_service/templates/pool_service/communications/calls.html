@@ -2,6 +2,7 @@
 {% load static %}
 {% block title %}{% if manual_archive %}Аудиофайлы{% else %}Звонки{% endif %}{% endblock %}
 {% block content %}
+{% if can_manage_personal %}<div class="mb-2"><a class="btn btn-outline-secondary btn-sm" href="{% url 'communication_personal_history' %}?org_id={{ organization.pk }}">Ранее скрытая личная история</a></div>{% endif %}
 {% include "pool_service/communications/_section_nav.html" %}
 <style>
   .call-player{
@@ -169,6 +170,7 @@
         <option value="in" {% if request.GET.direction == 'in' %}selected{% endif %}>Входящие</option>
         <option value="out" {% if request.GET.direction == 'out' %}selected{% endif %}>Исходящие</option>
         <option value="internal" {% if request.GET.direction == 'internal' %}selected{% endif %}>Внутренние</option>
+        {% if can_manage_personal %}<option value="review" {% if request.GET.direction == 'review' %}selected{% endif %}>Требуют проверки участников</option>{% endif %}
       </select>
     </div>
     {% endif %}
@@ -313,7 +315,7 @@
           {% endif %}
           <td>
             {% if call.direction == 'internal' %}
-              <span>Внутренний звонок</span>
+              {% if call.classification_evidence.kind == 'review' %}<span class="text-warning">Участники требуют проверки</span>{% else %}<span>Внутренний звонок</span>{% endif %}
               {% if call.provider_extension or call.peer_provider_extension %}
                 <br><small class="text-muted">
                   {{ call.provider_extension|default:call.provider_user }}
@@ -324,6 +326,7 @@
             {% else %}
             <div class="call-contact">
               {% if call.phone_number %}{{ call.phone_display }}{% elif not manual_archive %}<span class="text-muted">—</span>{% endif %}
+              {% if call.primary_context_url %}<a class="small ms-2" href="{{ call.primary_context_url }}">Связь с CRM</a>{% endif %}
               {% if call.create_client_url %}
                 <a class="call-save-contact" href="{{ call.create_client_url }}" data-call-create-client aria-label="Сохранить контакт для номера {{ call.phone_display }}" title="Сохранить контакт">
                   {% include "pool_service/communications/_icon.html" with name="contact" only %}
@@ -354,6 +357,7 @@
             {% if call.is_missed %}<span class="call-direction call-direction--missed" role="img" aria-label="Пропущенный · {{ call.get_direction_display }}" title="Пропущенный · {{ call.get_direction_display }}">{% include "pool_service/communications/_icon.html" with name="missed" only %}</span>
             {% elif call.direction == 'in' %}<span class="call-direction call-direction--in" role="img" aria-label="Входящий" title="Входящий">{% include "pool_service/communications/_icon.html" with name="in" only %}</span>
             {% elif call.direction == 'out' %}<span class="call-direction call-direction--out" role="img" aria-label="Исходящий" title="Исходящий">{% include "pool_service/communications/_icon.html" with name="out" only %}</span>
+            {% elif call.classification_evidence.kind == 'review' %}<span class="text-warning" title="Недостаточно подтверждений для внутреннего звонка">?</span>
             {% else %}<span class="call-direction call-direction--internal" role="img" aria-label="Внутренний" title="Внутренний">{% include "pool_service/communications/_icon.html" with name="internal" only %}</span>{% endif %}
           </td>
           <td class="call-duration">{{ call.duration_seconds }} сек.</td>

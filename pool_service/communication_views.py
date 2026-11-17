@@ -107,11 +107,14 @@ def _is_manual_recording_call(call):
 
 
 def _authorize_call_access(request, call):
+    from .services.call_access import can_read_call
     access = organization_access(request.user, call.organization)
     if not access:
         raise PermissionDenied
     if is_private_call(call):
         raise Http404
+    if not can_read_call(request.user, call, media=True):
+        raise PermissionDenied
     if _is_manual_recording_call(call):
         if not (
             access.role in {"owner", "admin"}
@@ -120,12 +123,6 @@ def _authorize_call_access(request, call):
             raise PermissionDenied
         return access.organization
     if not conversation_capability(request.user, "can_listen_calls", access.organization):
-        raise PermissionDenied
-    if (
-        not conversation_capability(request.user, "can_view_all_calls", access.organization)
-        and call.employee_id != request.user.id
-        and call.peer_employee_id != request.user.id
-    ):
         raise PermissionDenied
     return access.organization
 
@@ -408,6 +405,8 @@ def _apply_date_filters(queryset, request):
 
 
 def _filter_telephony_calls(request, queryset, organization, can_view_all):
+    from .services.call_access import scope_calls
+    queryset = scope_calls(request.user, organization, queryset)
     queryset = _apply_date_filters(queryset, request)
 
     employee_id = (request.GET.get("employee") or "").strip()
@@ -465,6 +464,10 @@ def _filter_telephony_calls(request, queryset, organization, can_view_all):
     direction = request.GET.get("direction")
     if direction in ("in", "out", PhoneCall.DIRECTION_INTERNAL):
         queryset = queryset.filter(direction=direction)
+        if direction == PhoneCall.DIRECTION_INTERNAL:
+            queryset = queryset.filter(Q(classification_evidence={}) | Q(classification_evidence__kind='internal'))
+    elif direction == 'review':
+        queryset = queryset.filter(direction=PhoneCall.DIRECTION_INTERNAL, classification_evidence__kind='review')
     if request.GET.get("missed"):
         queryset = queryset.filter(result=PhoneCall.RESULT_MISSED)
 
@@ -1193,7 +1196,7 @@ def call_recording(request, call_id):
         )
         response["Accept-Ranges"] = "bytes"
         response["Content-Length"] = str(file_size)
-        response["Cache-Control"] = "private, max-age=3600"
+        response["Cache-Control"] = "private, no-store"
         response["X-Content-Type-Options"] = "nosniff"
         return response
 
@@ -1236,7 +1239,7 @@ def call_recording(request, call_id):
     response["Content-Length"] = str(length)
     response["Content-Range"] = f"bytes {start}-{end}/{file_size}"
     response["Accept-Ranges"] = "bytes"
-    response["Cache-Control"] = "private, max-age=3600"
+    response["Cache-Control"] = "private, no-store"
     response["X-Content-Type-Options"] = "nosniff"
     return response
 

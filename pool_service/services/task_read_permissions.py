@@ -52,7 +52,7 @@ def readable_task_queryset(queryset, user, *, allow_preview=False):
 def readable_tasks(queryset, user, *, allow_preview=False):
     """Batch source privacy after SQL authority, without a query per task."""
     tasks = list(readable_task_queryset(queryset, user, allow_preview=allow_preview))
-    hidden = private_source_task_ids(tasks)
+    hidden = private_source_task_ids(tasks, user=user)
     return [task for task in tasks if task.pk not in hidden]
 
 

@@ -181,11 +181,33 @@ class CommunicationSuperuserAdmin(admin.ModelAdmin):
         return request.user.is_superuser
 
 
+class CommunicationContentAdmin(admin.ModelAdmin):
+    """Technical Django admin cannot bypass the product's conversation policy."""
+
+    def has_module_permission(self, request):
+        return False
+
+    def has_view_permission(self, request, obj=None):
+        return False
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).none()
+
+
 admin.site.register(CommunicationChannel, CommunicationSuperuserAdmin)
 admin.site.register(ChannelConnection, CommunicationSuperuserAdmin)
 admin.site.register(CommunicationAccess, CommunicationSuperuserAdmin)
-admin.site.register(Conversation, CommunicationSuperuserAdmin)
+admin.site.register(Conversation, CommunicationContentAdmin)
 admin.site.register(TelephonyConnection, CommunicationSuperuserAdmin)
-admin.site.register(PhoneCall, CommunicationSuperuserAdmin)
+admin.site.register(PhoneCall, CommunicationContentAdmin)
 # Credentials are provisioned through the dedicated command and are not exposed
 # in Django admin, where encrypted values could otherwise be overwritten.

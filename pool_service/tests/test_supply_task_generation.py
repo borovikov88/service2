@@ -6,7 +6,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from pool_service.communication_models import CommunicationAccess, PhoneCall, TelephonyConnection
-from pool_service.models import Client, CrmItem, Notification, Organization, OrganizationAccess, Pool, ServiceTask, WaterReading
+from pool_service.models import Client, CrmItem, Employee, Notification, Organization, OrganizationAccess, Pool, ServiceTask, WaterReading
 from pool_service.services.notifications import notify_task_assignment
 from pool_service.services.task_archive import archive_task, restore_task
 from pool_service.services.task_generation import (
@@ -321,7 +321,7 @@ class SupplyTaskGenerationTests(TestCase):
         self.assertContains(call_response, f'id="call-{call.pk}"')
         self.assertEqual(len(call_response.context["calls"]), 1)
 
-    def test_call_source_details_are_hidden_without_call_access(self):
+    def test_unavailable_call_source_hides_derived_task_but_independent_work_remains_visible(self):
         connection = TelephonyConnection.objects.create(
             organization=self.organization,
             name="Restricted task source line",
@@ -353,9 +353,12 @@ class SupplyTaskGenerationTests(TestCase):
         self.client.force_login(self.service_user)
         response = self.client.get(reverse("task_edit", kwargs={"task_id": task.pk}))
 
-        self.assertEqual(response.status_code, 200)
-        self.assertNotContains(response, f"Источник задачи — звонок №{call.pk}")
-        self.assertNotContains(response, "Открыть звонок")
+        self.assertEqual(response.status_code, 404)
+        self.assertNotContains(response, self.pool_client.name, status_code=404)
+        independent = ServiceTask.objects.create(organization=self.organization, title='Synthetic independent work',
+            created_by=self.service_user, start_date=timezone.localdate())
+        independent_response = self.client.get(reverse('task_edit', kwargs={'task_id': independent.pk}))
+        self.assertContains(independent_response, independent.title)
 
     def test_uploaded_call_context_is_hidden_from_manager_participant(self):
         CommunicationAccess.objects.update_or_create(
@@ -399,6 +402,9 @@ class SupplyTaskGenerationTests(TestCase):
         admin_response = self.client.get(
             reverse("task_edit", kwargs={"task_id": task.pk})
         )
+        self.assertEqual(admin_response.status_code, 404)
+        Employee.objects.create(organization=self.organization, user=self.admin, display_name='Synthetic human administrator')
+        admin_response = self.client.get(reverse('task_edit', kwargs={'task_id': task.pk}))
         self.assertEqual(admin_response.status_code, 200)
         self.assertContains(admin_response, f"Источник задачи — звонок №{call.pk}")
         manual_call_response = self.client.get(

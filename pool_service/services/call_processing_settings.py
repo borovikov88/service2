@@ -6,10 +6,10 @@ from decimal import Decimal, InvalidOperation
 from django.contrib.auth.models import User
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
-from django.db.models import BooleanField, Case, Value, When
+from django.db.models import BooleanField, Case, Value, When, Q
 from django.utils import timezone
 
-from pool_service.models import Organization, OrganizationAccess
+from pool_service.models import Employee, Organization, OrganizationAccess
 from pool_service.communication_models import PhoneCall, TelephonyEmployeeIdentity
 from pool_service.call_processing_models import (
     CallProcessingBudget,
@@ -18,7 +18,7 @@ from pool_service.call_processing_models import (
     CallProcessingRuleAudit,
 )
 from pool_service.services.call_processing_policy import (
-    MANUAL, MODES, MAX_NUMBERS, CallFacts, Rule, decide_call, parse_numbers, phone_key,
+    MANUAL, MODES, MAX_NUMBERS, CallFacts, Rule, Decision, decide_call, parse_numbers, phone_key,
 )
 
 STAFF_ROLES = frozenset({"owner", "admin", "manager", "service", "installer"})
@@ -46,10 +46,13 @@ REASONS = {
 
 def settings_allowed(user, organization):
     return bool(
-        user and user.is_authenticated and user.is_active and not user.is_superuser
+        user and user.is_authenticated
+        and User.objects.filter(pk=user.pk, is_active=True, is_superuser=False).exists()
         and organization and OrganizationAccess.objects.filter(
             organization=organization, user=user, role="owner",
         ).exists()
+        and not Employee.objects.filter(organization=organization, user_id=user.pk).filter(
+            Q(is_active=False) | Q(employment_status='dismissed')).exists()
     )
 
 
@@ -63,6 +66,9 @@ def _lock_owner(user, organization):
         organization=organization, user_id=user.pk,
     ).order_by("pk").values_list("role", flat=True))
     if not actor or not actor.is_active or actor.is_superuser or "owner" not in roles:
+        raise PermissionDenied
+    if Employee.objects.select_for_update().filter(organization=organization, user_id=actor.pk).filter(
+            Q(is_active=False) | Q(employment_status='dismissed')).exists():
         raise PermissionDenied
     return actor
 
@@ -191,6 +197,9 @@ def pause_rule(*, user, organization, employee_id, expected_revision):
 
 def runtime_decision_for_call(call):
     """Evaluate one persisted call against current activated rules, fail closed."""
+    from .call_privacy import is_private_call
+    if is_private_call(call):
+        return Decision('exclude', 'personal')
     participants = tuple(
         dict.fromkeys(
             uid for uid in (call.employee_id, call.peer_employee_id) if uid
@@ -219,14 +228,6 @@ def runtime_decision_for_call(call):
             employee_id__in=participants,
         )
     }
-    private = defaultdict(set)
-    for owner_id, key in CallPrivateNumber.objects.filter(
-        organization_id=call.organization_id,
-        owner_id__in=participants,
-    ).values_list("owner_id", "phone_key"):
-        private[owner_id].add(key)
-    private = {uid: frozenset(keys) for uid, keys in private.items()}
-
     identities = _identity_rows(call.organization, participants)
     references = defaultdict(set)
     user_numbers = defaultdict(set)
@@ -309,7 +310,8 @@ def runtime_decision_for_call(call):
             analysis and (analysis.transcript or "").strip()
         ),
     )
-    return decide_call(facts, rules, private, simulation=False)
+    # Canonical privacy above includes saved holds and removal boundaries.
+    return decide_call(facts, rules, {}, simulation=False)
 
 
 @transaction.atomic
@@ -366,7 +368,7 @@ def add_private_numbers(*, user, organization, label, numbers_text):
     if not numbers:
         raise ValidationError("Добавьте хотя бы один номер.")
     existing = set(CallPrivateNumber.objects.filter(
-        organization=organization, owner=actor,
+        organization=organization, owner=actor, removed_at__isnull=True,
     ).values_list("phone_key", flat=True))
     if len(existing | set(numbers)) > MAX_NUMBERS:
         raise ValidationError("В личном списке допускается не более 500 номеров.")
@@ -376,12 +378,14 @@ def add_private_numbers(*, user, organization, label, numbers_text):
             organization=organization, owner=actor, phone_key=key,
             defaults={"label": label.strip()},
         )
-        if not created and row.label != label.strip():
-            row.label = label.strip()
-            row.save(update_fields=["label"])
+        if not created and (row.label != label.strip() or row.removed_at is not None):
+            row.label, row.removed_at = label.strip(), None
+            row.save(update_fields=["label", "removed_at"])
             changed += 1
         elif created:
             changed += 1
+        from .call_privacy import preserve_private_history
+        preserve_private_history(organization, actor, key)
     if changed:
         _audit(organization, actor, actor.pk, "private_numbers_saved", {"changed_count": changed})
     return changed
@@ -395,7 +399,13 @@ def remove_private_number(*, user, organization, number_id):
     ).first()
     if row is None:
         raise PermissionDenied
-    row.delete()
+    if row.removed_at is not None:
+        return
+    # Removing a rule must not reopen the owner's previously protected history.
+    from .call_privacy import preserve_private_history
+    preserve_private_history(organization, actor, row.phone_key)
+    row.removed_at = timezone.now()
+    row.save(update_fields=['removed_at'])
     _audit(organization, actor, actor.pk, "private_number_removed", {"changed_count": 1})
 
 
@@ -428,10 +438,6 @@ This simulates future rules against history; it does not request processing.
         work_numbers=frozenset(row.work_numbers if isinstance(row.work_numbers, list) else []),
         effective_from=row.effective_from,
     ) for row in CallProcessingRule.objects.filter(organization=organization, employee_id__in=users)}
-    private = defaultdict(set)
-    for owner_id, key in CallPrivateNumber.objects.filter(organization=organization).values_list("owner_id", "phone_key"):
-        private[owner_id].add(key)
-    private = {uid: frozenset(keys) for uid, keys in private.items()}
     references = defaultdict(set)
     user_numbers = defaultdict(set)
     for item in _identity_rows(organization, users):
@@ -466,13 +472,20 @@ This simulates future rules against history; it does not request processing.
         default=Value(False), output_field=BooleanField(),
     )).order_by("-started_at", "-pk")
     calls = list(queryset.values(
-        "id", "connection_id", "employee_id", "peer_employee_id",
+        "id", "organization_id", "connection_id", "employee_id", "peer_employee_id", "owner_user_snapshot",
         "provider_extension", "provider_user", "peer_provider_extension", "peer_provider_user",
         "phone_number", "direction", "started_at", "duration_seconds", "result",
         "recording_status", "recording_file", "analysis__status", "saved_text",
     )[:PREVIEW_LIMIT + 1])
+    from .call_privacy import private_call_owner_pairs
+    private_pairs = private_call_owner_pairs([PhoneCall(**{key: value for key, value in row.items()
+        if key not in {'analysis__status', 'saved_text'}}) for row in calls[:PREVIEW_LIMIT]])
+    private_ids = {pk for pk, _ in private_pairs}
     rows, selected_seconds, selected_count, private_count = [], 0, 0, 0
     for row in calls[:PREVIEW_LIMIT]:
+        if row['id'] in private_ids:
+            private_count += int((row['id'], user.pk) in private_pairs)
+            continue
         participants = tuple(uid for uid in (row["employee_id"], row["peer_employee_id"]) if uid)
         external_keys = set()
         key = phone_key(row["phone_number"])
@@ -505,21 +518,7 @@ This simulates future rules against history; it does not request processing.
             audio_ready=row["recording_status"] == PhoneCall.RECORDING_STORED and bool(row["recording_file"]),
             analysis_status=row["analysis__status"] or "", saved_transcript=row["saved_text"],
         )
-        decision = decide_call(facts, rules, private, simulation=True)
-        if decision.reason == "personal":
-            # Count only exclusions that match the viewing owner's actual
-            # counterpart. Never use the aggregate internal-call number set:
-            # it can include the viewer's own number and leak that a peer's
-            # private rule hid the row.
-            viewer_counterparts = dict(
-                facts.counterpart_numbers_by_participant
-            ).get(user.pk, frozenset())
-            if (
-                user.pk in participants
-                and private.get(user.pk, frozenset()) & viewer_counterparts
-            ):
-                private_count += 1
-            continue
+        decision = decide_call(facts, rules, {}, simulation=True)
         if decision.selected:
             selected_count += 1
             selected_seconds += row["duration_seconds"]

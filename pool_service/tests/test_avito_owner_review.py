@@ -189,11 +189,10 @@ class OwnerReviewTests(ProposalFixture, TestCase):
         call = PhoneCall.objects.create(organization=self.org, connection=telephone,
             external_id='synthetic-call', employee=self.owner, direction='in',
             phone_number='+79990000001', started_at=self.now, source_kind='telephony')
-        with patch.object(links, 'is_private_call', return_value=False):
-            self.assertEqual(len(review.water_quality_queue(self.owner, self.connection)['rows']), 1)
-            links.save_link(self.owner, 4, 'call', call.pk, quality='unknown', call_origin='manual',
-                ad_mode='manual', manual_ad_id=review.WATER_ID, operation=uuid.uuid4(), expected_revision=0)
-            rows = review.water_quality_queue(self.owner, self.connection)['rows']
+        self.assertEqual(len(review.water_quality_queue(self.owner, self.connection)['rows']), 1)
+        links.save_link(self.owner, 4, 'call', call.pk, quality='unknown', call_origin='manual',
+            ad_mode='manual', manual_ad_id=review.WATER_ID, operation=uuid.uuid4(), expected_revision=0)
+        rows = review.water_quality_queue(self.owner, self.connection)['rows']
         self.assertEqual({row['kind'] for row in rows}, {'call', 'conversation'})
         self.assertNotIn('+79990000001', json.dumps(rows))
 

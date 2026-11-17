@@ -168,7 +168,7 @@ class CrmAttributionTests(TestCase):
             self.save(ad_mode="manual", manual_ad_id="foreign-ad", expected_revision=1)
         self.assertEqual(CrmSourceLink.objects.get().revision, 1)
 
-    @patch("pool_service.crm_source_links.is_private_call")
+    @patch("pool_service.services.call_privacy.is_private_call")
     def test_call_quality_does_not_silently_become_an_avito_inquiry_and_privacy_is_current(self, private):
         private.return_value = False
         call = self.make_call()

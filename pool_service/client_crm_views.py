@@ -446,8 +446,8 @@ def client_detail(request, client_id):
             if not (request.user.is_superuser or is_org_admin):
                 # Uploaded audio is an owner/admin archive, not staff call history.
                 call_qs = call_qs.filter(source_kind=PhoneCall.SOURCE_TELEPHONY)
-            if not can_view_all_calls:
-                call_qs = call_qs.filter(employee=request.user)
+            from .services.call_access import scope_calls
+            call_qs = scope_calls(request.user, client.organization, call_qs)
             call_qs = resolved_calls_for_client(call_qs, client).select_related(
                 "employee", "peer_employee", "analysis",
             ).order_by("-started_at", "-pk")
@@ -459,7 +459,7 @@ def client_detail(request, client_id):
             )
             can_view_calls = True
 
-    annotate_missed_call_callbacks(calls, client.organization_id)
+    annotate_missed_call_callbacks(calls, client.organization_id, user=request.user)
     for call in calls:
         minutes, seconds = divmod(call.duration_seconds or 0, 60)
         call.duration_display = f"{minutes}:{seconds:02d}"

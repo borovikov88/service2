@@ -190,5 +190,5 @@ def call_processing_settings(request):
         "private_form": private_form, "budget_form": budget_form,
         "usage": usage_summary(organization),
         "errors": errors, "preview": preview,
-        "private_numbers": CallPrivateNumber.objects.filter(organization=organization, owner=request.user).order_by("label", "phone_key"),
+        "private_numbers": CallPrivateNumber.objects.filter(organization=organization, owner=request.user, removed_at__isnull=True).order_by("label", "phone_key"),
     }, status=status)

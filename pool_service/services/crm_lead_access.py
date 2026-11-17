@@ -3,8 +3,8 @@ from urllib.parse import urlencode
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.db.models import Case, CharField, Exists, F, OuterRef, Q, Value, When, Window
-from django.db.models.functions import Coalesce, Concat, Length, Replace, Substr, Trim, RowNumber
+from django.db.models import BooleanField, Case, Exists, F, OuterRef, Q, Value, When, Window
+from django.db.models.functions import Coalesce, RowNumber
 from django.urls import reverse
 
 from pool_service.call_processing_models import CallPrivateNumber
@@ -51,39 +51,35 @@ def _communication_caps(user, organization):
     return {name: bool(access.role != "accountant" and grant and getattr(grant, name)) for name in names}
 
 
-def _without_private_calls(queryset):
-    """SQL counterpart of phone_key for bounded lists, including national aliases.
-
-    Only external inbound calls reach this query. Direct reads also use the
-    canonical Python privacy policy. No historical call list is loaded in Python.
-    """
-    raw = F("phone_number")
-    # Provider writes canonical values; trim legacy whitespace conservatively.
-    for char in ("\r", "\n", "\t"):
-        raw = Replace(raw, Value(char), Value(" "))
-    raw = Trim(raw)
-    digits = raw
-    for char in ("+", " ", "(", ")", ".", "-"):
-        digits = Replace(digits, Value(char), Value(""))
-    queryset = queryset.annotate(_crm_raw=raw, _crm_digits=digits).filter(
-        Q(_crm_digits="") | Q(_crm_digits__regex=r"^[0-9]+$")
-    ).annotate(
-        _crm_length=Length("_crm_digits")
-    ).annotate(_crm_phone_key=Case(
-        When(_crm_raw__startswith="+", _crm_length=11, _crm_digits__startswith="7", then=Substr("_crm_digits", 2)),
-        When(_crm_raw__startswith="+", _crm_length__gte=8, _crm_length__lte=15, then=Concat(Value("+"), F("_crm_digits"))),
-        When(Q(_crm_length=11) & (Q(_crm_digits__startswith="7") | Q(_crm_digits__startswith="8")), then=Substr("_crm_digits", 2)),
-        When(_crm_length=10, then=F("_crm_digits")),
-        When(_crm_length__gte=8, _crm_length__lte=15, then=Concat(Value("+"), F("_crm_digits"))),
-        default=Value(""), output_field=CharField(),
-    ))
+def _private_call_annotations(queryset):
+    """Actor-independent, confirmed privacy evidence for external calls."""
+    from pool_service.staff_call_models import CallPrivacyHold
+    held = CallPrivacyHold.objects.filter(call_id=OuterRef('pk'), released_at__isnull=True)
+    from .call_privacy import privacy_time_expression
+    queryset = queryset.alias(_crm_held=Exists(held), _crm_privacy_at=privacy_time_expression())
+    queryset = queryset.alias(_crm_key_current=Case(
+        When(privacy_phone_source=F('phone_number'), then=Value(True)),
+        default=Value(False), output_field=BooleanField()))
     hidden = CallPrivateNumber.objects.filter(
-        organization_id=OuterRef("organization_id"), phone_key=OuterRef("_crm_phone_key"),
-    ).filter(Q(owner_id=OuterRef("employee_id")) | Q(owner_id=OuterRef("peer_employee_id")))
-    return queryset.annotate(_crm_private=Exists(hidden)).filter(_crm_private=False)
+        organization_id=OuterRef("organization_id"), phone_key=OuterRef('privacy_phone_key'),
+    ).filter(Q(owner_id=OuterRef("employee_id")) | Q(owner_id=OuterRef("peer_employee_id"))
+             | Q(owner_id=OuterRef('owner_user_snapshot')))
+    released = CallPrivacyHold.objects.filter(call_id=OuterRef(OuterRef('pk')),
+        owner_id=OuterRef('owner_id'), released_at__isnull=False)
+    hidden = hidden.alias(_released=Exists(released)).filter(Q(removed_at__isnull=True)
+        | Q(removed_at__gt=OuterRef('_crm_privacy_at'), _released=False))
+    return queryset.alias(_crm_private=Case(
+        When(_crm_key_current=True, then=Exists(hidden)), default=Value(False), output_field=BooleanField()))
 
 
-def _source_access_annotations(user, organization):
+def _without_private_calls(queryset):
+    """Bounded source-read predicate; malformed legacy identities fail closed."""
+    return _private_call_annotations(queryset).filter(
+        _crm_private=False, _crm_held=False, _crm_key_current=True).filter(
+        Q(phone_number__regex=r'^\s*$') | ~Q(privacy_phone_key=''))
+
+
+def _source_access_annotations(user, organization, *, assignment_subject=None):
     """Annotate authority without discarding invalid or foreign source links."""
     org_id = organization.pk
     capabilities = _communication_caps(user, organization)
@@ -112,11 +108,12 @@ def _source_access_annotations(user, organization):
     ).filter(Q(conversation__client__isnull=True) | Q(conversation__client__organization_id=org_id)).annotate(
         _crm_external=Coalesce("external_id", Value(""))
     ).filter(_crm_external=OuterRef("inbox__external_id"))
+    valid_messages = messages
     if not capabilities["can_view_conversations"]:
         messages = messages.none()
     calls = PhoneCall.objects.filter(
         pk=OuterRef("inbox__source_id"), organization_id=org_id,
-        source_kind=PhoneCall.SOURCE_TELEPHONY, direction=PhoneCall.DIRECTION_IN,
+        source_kind=PhoneCall.SOURCE_TELEPHONY, direction__in=('in', 'out', 'internal'),
         connection_id=OuterRef("inbox__connection_id_snapshot"),
         connection__organization_id=org_id, connection__is_active=True,
         connection__external_id=OuterRef("inbox__account_id_snapshot"),
@@ -132,13 +129,12 @@ def _source_access_annotations(user, organization):
     ).filter(Q(client__isnull=True) | Q(client__organization_id=org_id)).filter(
         Q(employee_profile__isnull=True) | Q(employee_profile__organization_id=org_id)
     )
-    if not capabilities["can_view_all_calls"]:
-        if not capabilities["can_view_own_calls"]:
-            calls = calls.none()
-        else:
-            calls = calls.filter(Q(employee_id=user.pk) | Q(peer_employee_id=user.pk))
+    valid_calls = calls
+    from .call_access import scope_calls
+    calls = scope_calls(user, organization, calls.exclude(direction='internal'), assignment_subject=assignment_subject)
     calls = _without_private_calls(calls)
-    return source_links.alias(_crm_message=Exists(messages), _crm_call=Exists(calls))
+    return source_links.alias(_crm_message=Exists(messages), _crm_call=Exists(calls),
+        _crm_message_valid=Exists(valid_messages), _crm_call_valid=Exists(valid_calls))
 
 
 def _readable_source_scope(organization):
@@ -152,44 +148,54 @@ def _readable_source_scope(organization):
     )
 
 
-def _readable_sources(user, organization):
+def _readable_sources(user, organization, *, assignment_subject=None):
     """Scoped locator queryset, with live source permission and connection binding."""
-    return _source_access_annotations(user, organization).filter(_readable_source_scope(organization))
+    return _source_access_annotations(user, organization, assignment_subject=assignment_subject).filter(_readable_source_scope(organization))
 
 
-def leads_for_user(user, organization):
+def leads_for_user(user, organization, *, assignment_subject=None):
     if not can_view_leads(user, organization):
         return CrmLead.objects.none()
-    # An inconsistent, revoked or private source hides the derived card. An
-    # independent manually created lead has no source link and remains readable.
-    # Test the same predicate on each linked source directly. Nesting a second
-    # source query through NOT IN overflows older SQLite parsers once the phone
-    # privacy expression is expanded. Keep every invalid link in this predicate
-    # so corrupt/foreign links still hide the whole card, including its origin.
-    forbidden = _source_access_annotations(user, organization).filter(
+    # Structural corruption still closes the card. A private/unauthorized event
+    # alone cannot suppress independent, readable work in a mixed card.
+    sources = _source_access_annotations(user, organization, assignment_subject=assignment_subject).filter(
         Q(lead_id=OuterRef("pk")) | Q(lead_id=OuterRef("origin_lead_id"))
-    ).filter(~_readable_source_scope(organization))
-    return CrmLead.objects.filter(organization_id=organization.pk).filter(
+    )
+    valid = Q(organization_id=organization.pk, lead__organization_id=organization.pk,
+        inbox__organization_id=organization.pk, inbox__scope_verified=True, _crm_channel=True) & (
+        Q(inbox__source_type='call', inbox__provider_kind='megafon', _crm_call_valid=True)
+        | Q(inbox__source_type='message', _crm_message_valid=True))
+    forbidden = sources.filter(~valid)
+    readable = sources.filter(_readable_source_scope(organization))
+    from pool_service.staff_call_models import CallWorkContext
+    from .call_access import scope_calls
+    from .crm_card_privacy import exclude_private_only_cards
+    contexts = CallWorkContext.objects.filter(organization=organization,
+        lead_id=OuterRef(OuterRef('pk'))).values('call_id')
+    activity = PhoneCall.objects.filter(organization=organization).exclude(direction='internal').filter(
+        Q(pk__in=contexts) | Q(client_id=OuterRef('client_id'), client__isnull=False)
+        | Q(client_id=OuterRef('contact_id'), client__isnull=False))
+    activity = _without_private_calls(scope_calls(user, organization, activity, assignment_subject=assignment_subject))
+    queryset = CrmLead.objects.filter(organization_id=organization.pk).filter(
         Q(client__isnull=True) | Q(client__organization_id=organization.pk)
     ).filter(
         Q(contact__isnull=True) | Q(contact__organization_id=organization.pk, contact__client_type='private')
     ).filter(
         Q(origin_lead__isnull=True) | Q(origin_lead__organization_id=organization.pk, origin_lead__origin_lead__isnull=True)
-    ).annotate(_crm_forbidden_source=Exists(forbidden)).filter(_crm_forbidden_source=False)
+    ).annotate(_crm_forbidden_source=Exists(forbidden), _crm_any_source=Exists(sources),
+        _crm_readable_source=Exists(readable), _crm_readable_activity=Exists(activity)).filter(_crm_forbidden_source=False).filter(
+        Q(_crm_any_source=False) | Q(_crm_readable_source=True) | Q(_crm_readable_activity=True))
+    return exclude_private_only_cards(queryset, organization, kind='lead')
 
 
-def can_read_lead(user, organization, lead):
-    if not lead or not leads_for_user(user, organization).filter(pk=lead.pk).exists():
-        return False
-    call_ids = CrmLeadSource.objects.filter(lead_id__in={lead.pk, lead.origin_lead_id}, organization=organization,
-        inbox__source_type="call").values_list("inbox__source_id", flat=True).distinct()
-    return not private_call_ids(PhoneCall.objects.filter(pk__in=call_ids, organization=organization))
+def can_read_lead(user, organization, lead, *, assignment_subject=None):
+    return bool(lead and leads_for_user(user, organization, assignment_subject=assignment_subject).filter(pk=lead.pk).exists())
 
 
-def source_family(user, organization, lead):
+def source_family(user, organization, lead, *, assignment_subject=None):
     """Only direct, explicitly confirmed contributors with current card access."""
     roots = {lead.pk, lead.origin_lead_id} - {None}
-    return leads_for_user(user, organization).filter(Q(pk__in=roots) |
+    return leads_for_user(user, organization, assignment_subject=assignment_subject).filter(Q(pk__in=roots) |
         Q(duplicate_of_id__in=roots, status="closed", result="duplicate")).values("pk")
 
 
@@ -207,11 +213,11 @@ def _identity_batches(queryset, field='pk'):
             return
 
 
-def has_readable_family_call(user, organization, lead, call_id):
-    sources = _readable_sources(user, organization).filter(
+def has_readable_family_call(user, organization, lead, call_id, *, assignment_subject=None):
+    sources = _readable_sources(user, organization, assignment_subject=assignment_subject).filter(
         inbox__source_type='call', inbox__source_id=call_id)
     for ids in _identity_batches(sources, 'lead_id'):
-        if source_family(user, organization, lead).filter(pk__in=ids).exists():
+        if source_family(user, organization, lead, assignment_subject=assignment_subject).filter(pk__in=ids).exists():
             return True
     return False
 
@@ -252,8 +258,8 @@ def source_metadata_many(*, user, organization, leads, limit=1, before=None):
                 top[row._family] = {item.pk:item for item in sorted(items.values(),
                     key=lambda item:(item.inbox.received_at,item.pk), reverse=True)[:limit]}
     rows = [row for items in top.values() for row in items.values()]
-    # Recheck whole contributor cards after the split reads too. Revoking access
-    # to another source on that card must not expose its remaining public source.
+    # Recheck contributor authority after split reads. A private call alone
+    # does not revoke an independent working message on a mixed card.
     current = set()
     for ids in _identity_batches(CrmLead.objects.filter(pk__in={row.lead_id for row in rows})):
         current.update(leads_for_user(user, organization).filter(pk__in=ids).values_list('pk',flat=True))
@@ -263,7 +269,7 @@ def source_metadata_many(*, user, organization, leads, limit=1, before=None):
         .select_related("conversation").only("pk", "sender_name", "direction", "conversation_id", "conversation__uuid", "conversation__client_id", "conversation__provider_phone", "conversation__participant_phone")}
     calls = {row.pk: row for row in PhoneCall.objects.filter(organization=organization,
         pk__in=[row.inbox.source_id for row in rows if row.inbox.source_type == "call"])
-        .select_related("employee", "employee_profile").only("pk", "organization_id", "client_id", "employee_id", "peer_employee_id",
+        .select_related("employee", "employee_profile").only("pk", "organization_id", "client_id", "employee_id", "peer_employee_id", "owner_user_snapshot",
             "provider_user", "provider_extension", "peer_provider_user", "peer_provider_extension", "phone_number", "direction", "result",
             "employee_profile_id", "employee_profile__display_name", "employee_profile__organization_id",
             "employee__username", "employee__first_name", "employee__last_name")}

@@ -13,7 +13,7 @@ from django.utils import timezone
 from pool_service.tests.test_crm_quotes import QuoteFixture
 from pool_service.models import Pool, CrmItem, ServiceTask, Organization, OrganizationAccess, Client
 from pool_service.crm_handoff_models import CrmHandoff, CrmHandoffTask, CrmHandoffEvent
-from pool_service.communication_models import PhoneCall, TelephonyConnection
+from pool_service.communication_models import CommunicationAccess, PhoneCall, TelephonyConnection
 from pool_service.call_processing_models import CallPrivateNumber
 from pool_service.services import crm_handoffs as service
 from pool_service.services.crm_commercial_commands import CommercialConflict
@@ -135,6 +135,8 @@ class HandoffTests(HandoffFixture,TestCase):
         call=PhoneCall.objects.create(organization=self.org,connection=connection,source_kind='telephony',
             external_id='synthetic-call',employee=self.user,phone_number='+79990000099',started_at=timezone.now())
         self.task.payload_json={'source_call_id':call.pk};self.task.save()
+        with self.assertRaises(PermissionDenied): self.preview()
+        CommunicationAccess.objects.filter(organization=self.org,user=self.recipient).update(can_view_all_calls=True)
         self.submit()
         CallPrivateNumber.objects.create(organization=self.org,owner=self.user,phone_key='9990000099',label='Synthetic privacy')
         with self.assertRaises(PermissionDenied):self.accept_packet()
@@ -163,7 +165,7 @@ class HandoffTests(HandoffFixture,TestCase):
         self.task.payload_json={'source_call_id':123456};self.task.save()
         response=self.http.post(self.handoff_url,dict(action='submit',selection=token,operation_key='stale-source',
             confirm='on',evidence='Synthetic'))
-        self.assertEqual(response.status_code,409);self.assertEqual(CrmHandoff.objects.count(),0)
+        self.assertEqual(response.status_code,403);self.assertEqual(CrmHandoff.objects.count(),0)
 
     def test_other_organization_role_and_foreign_task_are_not_authority(self):
         foreign=Organization.objects.create(name='Synthetic unrelated organization')

@@ -355,12 +355,11 @@ class LeadIntakeTests(Fixture, TestCase):
             transcript='Unready synthetic content', facts={'request':'Not ready'}))
         CommunicationAccess.objects.filter(user=self.user, organization=self.org).update(can_listen_calls=True)
         lead = CrmLead.objects.get(); self.client.force_login(self.user)
-        data = self.client.get(reverse('crm_live_lead_detail', args=[lead.pk]) + '?org_id=' + str(self.org.pk)).json()
-        source = data['sources'][0]
-        self.assertEqual(source['employee'], '')
-        self.assertIsNone(source['media']['recording_url'])
-        self.assertNotIn('transcript', source['media'])
-        self.assertNotIn('Not ready', json.dumps(data))
+        response = self.client.get(reverse('crm_live_lead_detail', args=[lead.pk]) + '?org_id=' + str(self.org.pk))
+        # An unresolved participant may be the owner; all-calls cannot disclose
+        # the source before a responsible work context has been established.
+        self.assertEqual(response.status_code, 404)
+        self.assertNotIn('Unready synthetic content', response.content.decode())
 
     def test_recording_explicit_organization_and_current_listening_permissions(self):
         from io import BytesIO

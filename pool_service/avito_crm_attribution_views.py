@@ -205,6 +205,8 @@ def attribution(request, connection_id):
                 "last_message_at": row.last_message_at})
     call_query = PhoneCall.objects.filter(organization=connection.channel.organization,
         source_kind=PhoneCall.SOURCE_TELEPHONY).exclude(direction=PhoneCall.DIRECTION_INTERNAL)
+    from .services.call_access import scope_calls
+    call_query = scope_calls(request.user, connection.channel.organization, call_query)
     if not conversation_capability(request.user, "can_view_all_calls", connection.channel.organization):
         if conversation_capability(request.user, "can_view_own_calls", connection.channel.organization):
             call_query = call_query.filter(Q(employee=request.user) | Q(peer_employee=request.user))

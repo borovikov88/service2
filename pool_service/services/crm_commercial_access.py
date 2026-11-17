@@ -22,12 +22,19 @@ def can_view_team_deals(user, organization):
     return "manager" in roles or CrmAccess.objects.filter(organization_id=organization.pk, user_id=user.pk, view_team_deals=True).exists()
 
 
-def deals_for_user(user, organization):
-    if not can_view_team_deals(user, organization):
-        return CrmDeal.objects.none()
+def deal_object_scope(organization):
+    """Tenant/object integrity, also used inside per-call authority predicates."""
     return CrmDeal.objects.filter(organization_id=organization.pk).filter(
         Q(client__isnull=True) | Q(client__organization_id=F("organization_id"))
     ).filter(Q(contact__isnull=True) | Q(contact__organization_id=F("organization_id"), contact__client_type='private'))
+
+
+def deals_for_user(user, organization):
+    if not can_view_team_deals(user, organization):
+        return CrmDeal.objects.none()
+    from .crm_card_privacy import exclude_private_only_cards
+    queryset = deal_object_scope(organization)
+    return exclude_private_only_cards(queryset, organization, kind='deal')
 
 
 def can_write_commercial(user, organization):
