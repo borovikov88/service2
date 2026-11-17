@@ -1242,7 +1242,9 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
             "development-codex-chatgpt-canary.yml",
             "development-codex-chatgpt-repo-canary.yml",
         }
-        manual_maintenance_workflows = {"crm-db-backup.yml", "crm-intake-diagnostics.yml"}
+        manual_maintenance_workflows = {
+            "crm-db-backup.yml", "crm-intake-diagnostics.yml", "organization-owner.yml",
+        }
         allowed_automatic_workflows = {
             "avito-status-monitor.yml",
             "avito-readonly-audit.yml",
@@ -1292,6 +1294,30 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
                     for forbidden in ("contents: write", "actions: write", "pull-requests: write", "schedule:",
                                       "manage.py migrate", "run_crm_intake", "update.sh", "collectstatic", "restart.txt",
                                       "upload-artifact", "continue-on-error"):
+                        self.assertNotIn(forbidden, text)
+                elif workflow.name == "organization-owner.yml":
+                    expected_triggers = ["pull_request", "workflow_dispatch"]
+                    validation = text.split("  validate:\n", 1)[1].split("  configure:\n", 1)[0]
+                    configuration = text.split("  configure:\n", 1)[1]
+                    header = configuration.split("    steps:\n", 1)[0]
+                    for required in ("github.repository == 'borovikov88/service2'",
+                                     "github.ref == 'refs/heads/main'",
+                                     "github.event_name == 'workflow_dispatch'",
+                                     "needs: validate", "environment: production"):
+                        self.assertIn(required, header)
+                    for forbidden in ("secrets.", "environment: production", "ssh -", "manage.py"):
+                        self.assertNotIn(forbidden, validation)
+                    for required in ("contents: read", "organization_owner_ops.py validate-request",
+                                     "crm_pilot_db_backup_remote.sh", "organization_owner_remote.sh",
+                                     '"$OWNER_MODE" == apply', "organization_owner_ops.py receipt",
+                                     "path: ${{ runner.temp }}/organization-owner-result.json"):
+                        self.assertIn(required, text)
+                    self.assertEqual(text.count("uses: actions/upload-artifact@"), 1)
+                    for forbidden in ("contents: write", "actions: write", "pull-requests: write",
+                                      "schedule:", "workflow_run:", "pull_request_target:",
+                                      "openai/codex-action", "codex exec", "OPENAI_API_KEY",
+                                      "CHATGPT_AUTH_JSON", "GITHUB_DEVELOPMENT_TOKEN",
+                                      "manage.py migrate", "collectstatic", "restart.txt", "continue-on-error"):
                         self.assertNotIn(forbidden, text)
                 elif workflow.name == "crm-db-backup.yml":
                     expected_triggers = ["workflow_dispatch"]
