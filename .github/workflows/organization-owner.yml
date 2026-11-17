@@ -1,0 +1,227 @@
+name: Explicit first organization owner
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/organization-owner.yml
+      - .github/scripts/organization_owner_remote.sh
+      - .github/tests/test_organization_owner_ops.py
+      - scripts/organization_owner_ops.py
+      - pool_service/services/organization_ownership.py
+      - pool_service/management/commands/establish_organization_owner.py
+      - pool_service/tests/test_organization_ownership.py
+  workflow_dispatch:
+    inputs:
+      confirm_main_sha:
+        description: Exact current main already installed on the server
+        required: true
+        type: string
+      organization_id:
+        description: Organization whose first owner was explicitly confirmed
+        required: true
+        type: string
+      owner_user_id:
+        description: Confirmed existing human administrator account ID
+        required: true
+        type: string
+      mode:
+        description: Preview first; apply requires that preview plan
+        required: true
+        type: choice
+        options: [preview, apply]
+        default: preview
+      expected_plan:
+        description: Plan digest from a successful preview of this exact main
+        required: false
+        type: string
+      confirm_scope:
+        description: Explicitly approve only this organization's first owner
+        required: true
+        type: choice
+        options: [unconfirmed, first-owner-approved]
+        default: unconfirmed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: service2-first-owner-${{ github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13'
+      - name: Validate request boundaries, receipts, shell and workflow
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python -m unittest discover -s .github/tests -p test_organization_owner_ops.py -v
+          bash -n .github/scripts/organization_owner_remote.sh
+          lint_dir="$(mktemp -d "$RUNNER_TEMP/owner-actionlint.XXXXXX")"
+          trap 'rm -rf -- "$lint_dir"' EXIT
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+            --connect-timeout 10 --max-time 60 \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$lint_dir/actionlint.tar.gz"
+          printf '%s  %s\n' '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' \
+            "$lint_dir/actionlint.tar.gz" | sha256sum --check --status
+          tar -xzf "$lint_dir/actionlint.tar.gz" -C "$lint_dir" actionlint
+          "$lint_dir/actionlint" -shellcheck= -pyflakes= .github/workflows/organization-owner.yml
+
+  configure:
+    if: github.repository == 'borovikov88/service2' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    environment: production
+    env:
+      COMMIT_SHA: ${{ github.sha }}
+      ORGANIZATION_ID: ${{ inputs.organization_id }}
+      OWNER_USER_ID: ${{ inputs.owner_user_id }}
+      OWNER_MODE: ${{ inputs.mode }}
+      EXPECTED_PLAN: ${{ inputs.expected_plan }}
+      RUN_ID: ${{ github.run_id }}
+      RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Checkout exact main
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Confirm exact main, scope and preview plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REPOSITORY: ${{ github.repository }}
+          CONFIRM_MAIN_SHA: ${{ inputs.confirm_main_sha }}
+          CONFIRM_SCOPE: ${{ inputs.confirm_scope }}
+        run: |
+          set -Eeuo pipefail
+          CURRENT_MAIN_SHA="$(curl --fail --silent --show-error --connect-timeout 10 --max-time 20 \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            'https://api.github.com/repos/borovikov88/service2/git/ref/heads/main' | jq -er '.object.sha')"
+          export CURRENT_MAIN_SHA
+          python3 scripts/organization_owner_ops.py validate-request
+      - name: Configure existing pinned SSH identity
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_deploy
+          chmod 600 ~/.ssh/service2_deploy
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          ssh-keygen -y -f ~/.ssh/service2_deploy >/dev/null
+          PORT="${DEPLOY_PORT:-22}"
+          [[ "$PORT" =~ ^[0-9]+$ ]]
+          HOST_LOOKUP="$DEPLOY_HOST"
+          if [[ "$PORT" != 22 ]]; then HOST_LOOKUP="[$DEPLOY_HOST]:$PORT"; fi
+          ssh-keygen -F "$HOST_LOOKUP" -f ~/.ssh/known_hosts >/dev/null
+          cat > ~/.ssh/service2_deploy.conf <<'SSH_CONFIG'
+          Host *
+            ControlMaster auto
+            ControlPath ~/.ssh/service2-owner-%C
+            ControlPersist 600
+          SSH_CONFIG
+      - name: Verify healthy deployed site before operation
+        env:
+          DEPLOY_HEALTH_URL: ${{ secrets.DEPLOY_HEALTH_URL }}
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import os
+          from urllib.parse import urlsplit
+          url = urlsplit(os.environ['DEPLOY_HEALTH_URL'])
+          assert url.scheme == 'https' and url.hostname and not any([url.username, url.password, url.query, url.fragment])
+          PY
+          status="$(curl --silent --show-error --connect-timeout 10 --max-time 30 \
+            --retry 3 --retry-delay 5 --retry-connrefused --output /dev/null --write-out '%{http_code}' "$DEPLOY_HEALTH_URL")"
+          [[ "$status" =~ ^2[0-9][0-9]$ ]]
+      - name: Verify backup and execute only the reviewed owner operation
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          owner_temp="$(mktemp -d "$RUNNER_TEMP/owner-operation.XXXXXX")"
+          trap 'rm -rf -- "$owner_temp"' EXIT
+          PORT="${DEPLOY_PORT:-22}"
+          [[ "$PORT" =~ ^[0-9]+$ ]]
+          test -n "$DEPLOY_HOST" && test -n "$DEPLOY_USER" && test -n "$DEPLOY_APP_PATH"
+          owner_ssh=(ssh -F ~/.ssh/service2_deploy.conf -i ~/.ssh/service2_deploy
+            -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no
+            -o StrictHostKeyChecking=yes -o ConnectTimeout=20
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=3
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST")
+          if [[ "$OWNER_MODE" == apply ]]; then
+            printf -v REMOTE_COMMAND 'bash -s -- %q %q' "$COMMIT_SHA" "$DEPLOY_APP_PATH"
+            if ! "${owner_ssh[@]}" "$REMOTE_COMMAND" < .github/scripts/crm_pilot_db_backup_remote.sh \
+                >"$owner_temp/backup.stdout" 2>"$owner_temp/backup.stderr"; then
+              echo 'ORG_OWNER_BACKUP_UNAVAILABLE'
+              exit 2
+            fi
+            python3 scripts/crm_pilot_db_backup_receipt.py "$owner_temp/backup.stdout" "$COMMIT_SHA"
+          fi
+          owner_plan="${EXPECTED_PLAN:--}"
+          printf -v REMOTE_COMMAND 'bash -s -- %q %q %q %q %q %q %q %q' \
+            "$COMMIT_SHA" "$DEPLOY_APP_PATH" "$ORGANIZATION_ID" "$OWNER_USER_ID" \
+            "$OWNER_MODE" "$owner_plan" "$RUN_ID" "$RUN_ATTEMPT"
+          if ! "${owner_ssh[@]}" "$REMOTE_COMMAND" < .github/scripts/organization_owner_remote.sh \
+              >"$owner_temp/stdout" 2>"$owner_temp/stderr"; then
+            echo 'ORG_OWNER_OPERATION_UNAVAILABLE'
+            exit 2
+          fi
+          python3 scripts/organization_owner_ops.py receipt "$owner_temp/stdout" "$RUNNER_TEMP/organization-owner-result.json"
+      - name: Save validated operation metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: organization-owner-result
+          path: ${{ runner.temp }}/organization-owner-result.json
+          retention-days: 1
+          if-no-files-found: error
+      - name: Verify site health
+        env:
+          DEPLOY_HEALTH_URL: ${{ secrets.DEPLOY_HEALTH_URL }}
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import os
+          from urllib.parse import urlsplit
+          url = urlsplit(os.environ['DEPLOY_HEALTH_URL'])
+          assert url.scheme == 'https' and url.hostname and not any([url.username, url.password, url.query, url.fragment])
+          PY
+          status="$(curl --silent --show-error --connect-timeout 10 --max-time 30 \
+            --retry 3 --retry-delay 5 --retry-connrefused --output /dev/null --write-out '%{http_code}' "$DEPLOY_HEALTH_URL")"
+          [[ "$status" =~ ^2[0-9][0-9]$ ]]
+      - name: Close SSH connection and remove runner material
+        if: always()
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -Eeuo pipefail
+          if [[ -f ~/.ssh/service2_deploy.conf ]]; then
+            PORT="${DEPLOY_PORT:-22}"
+            [[ "$PORT" =~ ^[0-9]+$ ]]
+            ssh -F ~/.ssh/service2_deploy.conf -O exit -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" || true
+          fi
+          rm -f -- ~/.ssh/service2_deploy ~/.ssh/known_hosts ~/.ssh/service2_deploy.conf

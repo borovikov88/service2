@@ -32,6 +32,9 @@ on:
       - "pool_service/staff_control_views.py"
       - "pool_service/call_processing_models.py"
       - "pool_service/tests/test_staff_call_control.py"
+      - "pool_service/services/organization_ownership.py"
+      - "pool_service/management/commands/establish_organization_owner.py"
+      - "pool_service/tests/test_organization_ownership.py"
       - "pool_service/tests/test_owner_call_privacy*.py"
       - "pool_service/tests/test_contacts*.py"
       - "pool_service/tests/test_contact_identity*.py"
@@ -247,6 +250,7 @@ jobs:
             pool_service.tests.test_contact_identity_migrations \
             pool_service.tests.test_owner_call_privacy \
             pool_service.tests.test_staff_call_control \
+            pool_service.tests.test_organization_ownership \
             pool_service.tests.test_call_privacy_enforcement \
             pool_service.tests.test_crm_service_binding_http \
             pool_service.tests.test_crm_service_bindings \
