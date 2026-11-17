@@ -12,9 +12,9 @@ from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.paginator import Paginator
-from django.db.models import Q
+from django.db.models import Case, CharField, Count, Q, Value, When
 from django.db import transaction
-from .services.crm_board_cursor import BoardReset, epoch, portion
+from .services.crm_board_cursor import BoardReset, epoch, initial_portions, portion
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
@@ -244,21 +244,38 @@ def _data(request, organization, *, board=None):
         if board and (requested and requested not in COLUMNS or request.GET.get('cursor') and not requested): raise BoardReset()
         revision=epoch(organization.pk) if board else None
         scope={'kind':'leads','actor':request.user.pk,'org':organization.pk,'mode':mode,'status':status,'q':query}
-        totals={key:ordered.filter(predicate).count() for key,predicate in predicates.items()}
+        windows={}
+        if board and not requested:
+            lanes=ordered.annotate(_board_column=Case(
+                *[When(predicate,then=Value(key)) for key,predicate in predicates.items()],
+                output_field=CharField()))
+            windows=initial_portions(lanes,scope=scope,columns=COLUMNS,column_field='_board_column',
+                revision=revision,chronological=True,with_totals=True)
+            totals={key:rows[0]._board_total if rows else 0 for key,(rows,_cursor) in windows.items()}
+        else:
+            totals=queryset.aggregate(**{key:Count('pk',filter=predicate) for key,predicate in predicates.items()})
         for key, label in COLUMNS.items():
             if requested and requested!=key: continue
             subset=ordered.filter(predicates[key])
             if board:
-                rows,cursor=portion(subset,scope=scope,column=key,revision=revision,
-                    cursor=request.GET.get('cursor','') if requested else '',chronological=True)
+                rows,cursor=windows[key] if not requested else portion(
+                    subset,scope=scope,column=key,revision=revision,
+                    cursor=request.GET.get('cursor',''),chronological=True)
                 columns.append({'key':key,'label':label,'page':1,'pages':1,'total':totals[key],
-                    'cursor':cursor,'leads':_serialize_many(rows,request.user,capabilities)})
+                    'cursor':cursor,'_rows':rows})
             else:
                 paginator = Paginator(subset, PAGE_SIZE)
+                paginator.count = totals[key]
                 page = paginator.get_page(page_number("page_" + key))
                 columns.append({"key": key, "label": label, "page": page.number,
                     "pages": paginator.num_pages, "total": paginator.count,
-                    "leads": _serialize_many(page, request.user, capabilities)})
+                    "_rows":list(page)})
+        # The first screen contains several lanes, but shares one batch of live
+        # source/task checks. Detail and later portions still reauthorize anew.
+        serialized={row['id']:row for row in _serialize_many(
+            [lead for column in columns for lead in column['_rows']],request.user,capabilities)}
+        for column in columns:
+            column['leads']=[serialized[lead.pk] for lead in column.pop('_rows')]
         leads = [lead for column in columns for lead in column["leads"]]
         total = sum(totals.values())
     activation = CrmIntakeActivation.objects.filter(organization=organization).first()

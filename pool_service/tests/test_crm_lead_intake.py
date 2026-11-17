@@ -63,6 +63,26 @@ class LeadIntakeTests(Fixture, TestCase):
         self.assertEqual(self.history(user="synthetic-provider", ext="101", **changes).status_code, 200)
         return PhoneCall.objects.get(connection=self.telephony)
 
+    def test_private_cards_are_filtered_before_initial_column_limit_and_totals(self):
+        from pool_service.services.call_processing_policy import phone_key
+        OrganizationAccess.objects.filter(organization=self.org,user=self.user).update(role='owner')
+        call=self.mapped_call()
+        self.deliver('call')
+        private=CrmLead.objects.get()
+        public=CrmLead.objects.create(organization=self.org,title='Synthetic independent public lead')
+        for index in range(55):
+            CrmLead.objects.create(organization=self.org,title=f'Synthetic private continuation {index}',
+                origin_lead=private,received_at=self.now+timedelta(seconds=index+1))
+        CallPrivateNumber.objects.create(organization=self.org,owner=self.user,
+            phone_key=phone_key(call.phone_number))
+        self.client.force_login(self.user)
+        response=self.client.get(reverse('crm_live_lead_data'),{'org_id':self.org.pk,'layout':'board'})
+        self.assertEqual(response.status_code,200,response.content)
+        data=response.json()
+        self.assertEqual((data['total'],[row['id'] for row in data['leads']]),(1,[public.pk]))
+        self.assertEqual([column['total'] for column in data['columns']],[1,0,0,0,0,0])
+        self.assertTrue(all(column['cursor'] is None for column in data['columns']))
+
     def test_explicit_continuation_routes_context_preserves_sources_and_pages(self):
         from pool_service.services.crm_lead_commands import execute_lead_command
         from pool_service.services.crm_lead_access import source_metadata_many
