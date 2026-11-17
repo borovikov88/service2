@@ -2,6 +2,17 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {LeadOperations, deadlineISO, localDateTime} = require("../static/pool_service/crm_live/leads.js");
+const {leadEditChanges} = require("../static/pool_service/crm_live/leads.js");
+
+test("editing need does not freeze a generated title or incoming contact identity", () => {
+  const lead = {title:"Входящий звонок · Synthetic contact", client:{id:10}, contact:{id:20}};
+  const values = {title:lead.title, client_id:10, contact_id:20, need:"Changed need", budget_kind:"unknown"};
+  assert.deepEqual(leadEditChanges(lead, values), {need:"Changed need", budget_kind:"unknown"});
+  assert.equal(values.title, lead.title, "The form snapshot stays intact");
+  assert.deepEqual(leadEditChanges(lead, {...values, title:"Manual title", client_id:30}),
+    {title:"Manual title", client_id:30, contact_id:20, need:"Changed need", budget_kind:"unknown"});
+  assert.deepEqual(leadEditChanges(lead, {title:lead.title, need:"Private task safe edit"}), {need:"Private task safe edit"});
+});
 const payload = () => ({operation_key: "synthetic-operation", command_type: "lead.qualify", subject_id: 12, expected_revision: 3,
   changes: {deals: [{title: "Synthetic deal", pipeline_id: 1, next_action: {title: "Call", due_at: "2026-10-27T12:00:00+07:00"}}]}});
 

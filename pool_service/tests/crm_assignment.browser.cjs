@@ -12,10 +12,12 @@ const {chromium} = require('playwright');
     const bootstrap=readFileSync(require.resolve('bootstrap/dist/js/bootstrap.bundle.min.js'));
     await context.route('**/*',route=>route.request().url()==='https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js'
       ?route.fulfill({contentType:'application/javascript',body:bootstrap}):new URL(route.request().url()).origin===f.base?route.continue():route.abort());
-    const page=await context.newPage(),errors=[],writes=[]; page.setDefaultTimeout(15000);
-    page.on('pageerror',error=>errors.push(error.message));
-    page.on('request',request=>{if(request.method()==='POST')writes.push(request);});
-    const leadDialog=page.locator('#lead-dialog'), dealDialog=page.locator('#crm-live-dialog');
+    const errors=[],writes=[];
+    const observe=p=>{p.setDefaultTimeout(15000);
+      p.on('pageerror',error=>errors.push(error.message));
+      p.on('request',request=>{if(request.method()==='POST')writes.push(request);});};
+    let page=await context.newPage();observe(page);
+    let leadDialog=page.locator('#lead-dialog'), dealDialog=page.locator('#crm-live-dialog');
     const choose=async(form,id)=>{const field=form.locator('[name="responsible_id"]');await field.locator('option[value="'+id+'"]').waitFor({state:'attached'});await field.selectOption(String(id));return field;};
     const submit=async(form,kind)=>{
       const response=page.waitForResponse(r=>r.request().method()==='POST'&&r.request().postDataJSON()?.command_type===kind);
@@ -68,6 +70,9 @@ const {chromium} = require('playwright');
     phase='deal transfer cancellation';
     await dealDialog.getByRole('button',{name:'Сменить ответственного',exact:true}).click();let dealAssign=dealDialog.locator('[data-command-form="assign"]');
     await choose(dealAssign,f.recipients[1]);before=writes.length;await dealAssign.getByRole('button',{name:'Отмена',exact:true}).click();
+    // Cancel reloads the detail asynchronously; do not reopen the old form
+    // while its still-visible summary belongs to the previous render.
+    await page.waitForLoadState('networkidle');
     await dealDialog.locator('.crm-live-detail-meta').filter({hasText:f.names[0]}).waitFor();assert.equal(writes.length,before);
     phase='deal transfer';
     await dealDialog.getByRole('button',{name:'Сменить ответственного',exact:true}).click();dealAssign=dealDialog.locator('[data-command-form="assign"]');await choose(dealAssign,f.recipients[1]);
@@ -81,9 +86,26 @@ const {chromium} = require('playwright');
     assert.equal(writes.find(r=>r.postDataJSON()?.command_type==='lead.assign').postDataJSON().changes.transfer_next_action,false);
     assert.equal(writes.find(r=>r.postDataJSON()?.command_type==='deal.assign').postDataJSON().changes.transfer_next_action,true);
     phase='new responsible works on transferred task';
+    // A late response from the previous actor must not satisfy the recipient's
+    // detail wait. Use a fresh page while keeping the same local network policy.
+    await page.close();
     await context.clearCookies();await context.addCookies([{name:f.sessionCookieName,value:f.recipientCookie,url:f.base}]);
+    page=await context.newPage();observe(page);await page.setViewportSize({width:390,height:844});
+    leadDialog=page.locator('#lead-dialog');dealDialog=page.locator('#crm-live-dialog');
+    const recipientDetail=page.waitForResponse(r=>new URL(r.url()).pathname===f.detailPrefix+createdDeal.deal.id+'/');
     await page.goto(f.base+f.deals+'&deal='+createdDeal.deal.id);
+    const recipientResponse=await recipientDetail;
+    const recipientHeaders=await recipientResponse.request().allHeaders();
+    assert.ok((recipientHeaders.cookie||'').split('; ').includes(f.sessionCookieName+'='+f.recipientCookie),
+      'Recipient detail must originate from the recipient session');
+    assert.equal(recipientResponse.status(),200,'The new responsible must be able to read the assigned deal');
+    const recipientDeal=(await recipientResponse.json()).deal;
+    assert.deepEqual({manager:recipientDeal.manager?.id, can_next_action:recipientDeal.can_next_action,
+      restricted:Boolean(recipientDeal.next_action?.restricted),waiting:Boolean(recipientDeal.next_action?.waiting),archived:recipientDeal.is_archived},
+      {manager:f.recipients[1],can_next_action:true,restricted:false,waiting:false,archived:false});
     await page.waitForLoadState('networkidle'); // File SQLite: finish unrelated candidate GET transactions first.
+    assert.deepEqual((await dealDialog.locator('.crm-live-form-error').allTextContents()).filter(Boolean),[],
+      'Recipient detail must render successfully before editing the transferred task');
     await dealDialog.getByRole('tab',{name:'Дела',exact:true}).click();
     const nextForm=dealDialog.locator('[data-command-form="next_action"]');await nextForm.locator('[name="next_title"]').fill('Synthetic recipient accepted next action');
     await submit(nextForm,'deal.next_action');
@@ -94,7 +116,8 @@ const {chromium} = require('playwright');
     await basic.getByLabel('Что требуется / контекст',{exact:true}).fill('Synthetic recipient updated basic need');
     const editedLead=await submit(basic,'lead.edit');assert.equal(editedLead.lead.need,'Synthetic recipient updated basic need');
     const basicPayload=writes.filter(r=>r.postDataJSON()?.command_type==='lead.edit').at(-1).postDataJSON().changes;
-    assert.deepEqual(Object.keys(basicPayload).sort(),['need','title']);
+    assert.deepEqual(Object.keys(basicPayload).sort(),['need']);
+    assert.equal(editedLead.lead.title,createdLead.lead.title);
     assert.deepEqual(errors,[]);console.log('PASS lead/deal create, transfer, cancel, conversion selector, explicit next-task transfer, recipient editing, mobile, persisted ownership');
   } catch(error) {throw new Error('Phase: '+phase+'; '+error.stack);} finally {await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

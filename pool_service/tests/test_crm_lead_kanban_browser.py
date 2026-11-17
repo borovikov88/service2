@@ -140,6 +140,12 @@ class LeadSourceBrowserTests(InboxFixture, StaticLiveServerTestCase):
             self.assertEqual(code, 0, output)
             lead.refresh_from_db(); analysis.refresh_from_db()
             self.assertEqual(lead.need, 'Synthetic suggested requirement')
+            self.assertTrue(lead.title_is_manual)
+            self.assertEqual(lead.title, 'Synthetic manually titled inquiry')
+            peer.name = 'Synthetic renamed caller'
+            peer.save(update_fields=['name'])
+            detail = self.client.get(reverse('crm_live_lead_detail', args=[lead.pk]), {'org_id': self.org.pk}).json()
+            self.assertEqual(detail['lead']['title'], lead.title)
             self.assertIsNone(lead.client_id)
             self.assertEqual(lead.next_task_id, before_next_task_id)
             self.assertEqual((analysis.attempts, analysis.requested_at), before_analysis)

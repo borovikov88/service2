@@ -22,8 +22,7 @@ from pool_service.services.crm_lead_intake import consume_incoming
 from pool_service.tests.test_crm_inbox import Fixture
 
 
-@override_settings(COMMUNICATION_RECORDING_DOWNLOAD_INLINE=False, COMMUNICATION_CLIENT_ENRICHMENT_ENABLED=False)
-class LeadIntakeTests(Fixture, TestCase):
+class LeadIntakeFixture(Fixture):
     def setUp(self):
         super().setUp()
         self.org.crm_v2_read = self.org.crm_v2_write = self.org.crm_intake_process = True
@@ -63,6 +62,9 @@ class LeadIntakeTests(Fixture, TestCase):
         self.assertEqual(self.history(user="synthetic-provider", ext="101", **changes).status_code, 200)
         return PhoneCall.objects.get(connection=self.telephony)
 
+
+@override_settings(COMMUNICATION_RECORDING_DOWNLOAD_INLINE=False, COMMUNICATION_CLIENT_ENRICHMENT_ENABLED=False)
+class LeadIntakeTests(LeadIntakeFixture, TestCase):
     def test_private_cards_are_filtered_before_initial_column_limit_and_totals(self):
         from pool_service.services.call_processing_policy import phone_key
         OrganizationAccess.objects.filter(organization=self.org,user=self.user).update(role='owner')
@@ -89,7 +91,7 @@ class LeadIntakeTests(Fixture, TestCase):
         self.grant.transition_own_leads = True; self.grant.save()
         self.incoming(); self.deliver()
         original = CrmLead.objects.get()
-        self.incoming(external_conversation_id="synthetic-second-context", external_message_id="repeat-first")
+        self.incoming(external_conversation_id="synthetic-second-context", external_message_id="repeat-first", participant_external_id="second-person")
         self.deliver()
         incoming = CrmLead.objects.exclude(pk=original.pk).get()
         for lead in (original, incoming):
@@ -108,18 +110,18 @@ class LeadIntakeTests(Fixture, TestCase):
         second = source_metadata(user=self.user, organization=self.org, lead=original, limit=1,
             before=(parse_datetime(first["received_at"]), first["id"]))
         self.assertEqual(len(second), 1); self.assertNotEqual(first["id"], second[0]["id"])
-        self.incoming(external_conversation_id="synthetic-second-context", external_message_id="repeat-next")
+        self.incoming(external_conversation_id="synthetic-second-context", external_message_id="repeat-next", participant_external_id="second-person")
         event = self.deliver()
         self.assertEqual(CrmLeadSource.objects.get(inbox=event).lead_id, original.pk)
         self.assertEqual(CrmLead.objects.count(), 2)
         self.assertEqual(ServiceTask.objects.count(), 0)
-        self.incoming(external_conversation_id="synthetic-new-need", external_message_id="independent")
+        self.incoming(external_conversation_id="synthetic-new-need", external_message_id="independent", participant_external_id="third-person")
         self.deliver()
         self.assertEqual(CrmLead.objects.count(), 3, "A new unconfirmed context remains independent")
         CommunicationAccess.objects.filter(user=self.user, organization=self.org).update(can_view_conversations=False)
         self.assertEqual(source_metadata(user=self.user, organization=self.org, lead=original), [])
 
-    def test_messages_group_only_confirmed_conversation_and_do_not_copy_content(self):
+    def test_messages_group_resolved_contact_across_conversations_without_copying_content(self):
         self.incoming()
         self.assertEqual(self.deliver().error_code, "lead_created")
         first = CrmLead.objects.get()
@@ -134,8 +136,8 @@ class LeadIntakeTests(Fixture, TestCase):
         self.assertNotIn("Synthetic private body", first.title + first.need + str(list(CrmEvent.objects.values())))
         self.incoming(external_conversation_id="other-need", external_message_id="third")
         self.deliver()
-        self.assertEqual(CrmLead.objects.count(), 2)
-        self.assertEqual(len(source_metadata(user=self.user, organization=self.org, lead=first)), 2)
+        self.assertEqual(CrmLead.objects.count(), 1)
+        self.assertEqual(len(source_metadata(user=self.user, organization=self.org, lead=first)), 3)
 
     def test_earlier_capture_and_historical_events_do_not_start_current_queue(self):
         self.activation.delete()
@@ -259,7 +261,7 @@ class LeadIntakeTests(Fixture, TestCase):
                 self.assertFalse(can_read_lead(self.user, self.org, lead))
                 self.assertEqual(source_metadata(user=self.user, organization=self.org, lead=lead), [])
 
-    def test_closed_thread_receives_activity_without_reopening_or_tasks(self):
+    def test_closed_thread_starts_new_episode_without_reopening_or_tasks(self):
         self.incoming()
         self.deliver()
         lead = CrmLead.objects.get()
@@ -270,8 +272,8 @@ class LeadIntakeTests(Fixture, TestCase):
         self.deliver()
         lead.refresh_from_db()
         self.assertEqual((lead.status, lead.result), ("closed", "no_deal"))
-        self.assertTrue(lead.needs_review)
-        self.assertEqual((CrmLead.objects.count(), ServiceTask.objects.count()), (1, 0))
+        self.assertFalse(lead.needs_review)
+        self.assertEqual((CrmLead.objects.count(), ServiceTask.objects.count()), (2, 0))
 
     def test_worker_heartbeat_and_current_processing_are_bounded(self):
         self.incoming()
@@ -298,15 +300,15 @@ class LeadIntakeTests(Fixture, TestCase):
         self.assertEqual(execute_lead_command(**payload), first)
         self.client.force_login(self.user)
         url = reverse("crm_live_lead_data") + "?org_id=" + str(self.org.pk)
-        self.assertEqual({column["key"]: column["total"] for column in self.client.get(url).json()["columns"]}, {"unparsed": 0, "working": 0, "history": 0, "failed": 0, "spam": 1, "deleted": 0})
+        self.assertEqual({column["key"]: column["total"] for column in self.client.get(url).json()["columns"]}, {"unparsed": 1, "working": 0, "history": 0, "failed": 0, "spam": 1, "deleted": 0})
         execute_lead_command(actor=self.user, organization=self.org, operation_key="source-trash-synthetic",
             command_type="lead.disposition", subject_id=lead.pk, expected_revision=lead.revision,
             changes={"column": "deleted", "reason": "Synthetic removal"})
         self.incoming(external_message_id="after-trash"); self.deliver()
         lead.refresh_from_db()
         self.assertTrue(lead.is_archived)
-        self.assertEqual((lead.status, lead.result, CrmLeadSource.objects.filter(lead=lead).count()), ("closed", "spam", 3))
-        self.assertEqual({column["key"]: column["total"] for column in self.client.get(url).json()["columns"]}, {"unparsed": 0, "working": 0, "history": 0, "failed": 0, "spam": 0, "deleted": 1})
+        self.assertEqual((lead.status, lead.result, CrmLeadSource.objects.filter(lead=lead).count()), ("closed", "spam", 1))
+        self.assertEqual({column["key"]: column["total"] for column in self.client.get(url).json()["columns"]}, {"unparsed": 1, "working": 0, "history": 0, "failed": 0, "spam": 0, "deleted": 1})
         CommunicationAccess.objects.filter(user=self.user, organization=self.org).update(can_view_conversations=False)
         self.assertEqual(self.client.get(url).json()["total"], 0)
         self.assertEqual(self.client.get(reverse("crm_live_lead_detail", args=[lead.pk]) + "?org_id=" + str(self.org.pk)).status_code, 404)

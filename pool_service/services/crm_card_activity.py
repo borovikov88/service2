@@ -177,8 +177,17 @@ def activity_page(request, organization, subject):
         rows += _event_entries(request, organization, subject, family, kind, before)
     sources = CrmLeadSource.objects.filter(organization=organization, lead_id__in=family,
         inbox__organization=organization, inbox__scope_verified=True)
+    phone_key = ""
+    if isinstance(subject, CrmLead):
+        from .crm_lead_identity import lead_identity, history_phone_key
+        contact_identity = lead_identity(subject, user=request.user)
+        phone_key = history_phone_key(organization, contact_identity)
+        # A representative's card must not absorb coworkers' company calls.
+        linked_clients = {contact_identity.contact.pk} if contact_identity.contact else ({contact_identity.client.pk} if contact_identity.client else set())
+    else:
+        linked_clients = {subject.contact_id} if subject.contact_id else {subject.client_id} - {None}
     client_ids = readable_clients(request.user).filter(organization=organization,
-        pk__in={subject.client_id, subject.contact_id} - {None}).values("pk")
+        pk__in=linked_clients).values("pk")
     if kind in {"all", "message"} and caps["can_view_conversations"]:
         source_messages = sources.filter(inbox__source_type="message").values("inbox__source_id")
         conversations = ConversationMessage.objects.filter(pk__in=source_messages,
@@ -191,24 +200,34 @@ def activity_page(request, organization, subject):
         ).filter(Q(conversation__client__isnull=True) | Q(conversation__client__organization=organization))
         messages = messages.select_related("conversation__connection__channel", "sent_by").annotate(
             _activity_at=Coalesce("intake_occurred_at", "created_at"))
-        for message in _portion(messages, "_activity_at", RANK["message"], before):
+        candidates = _portion(messages, "_activity_at", RANK["message"], before)
+        linked_messages = set(sources.filter(inbox__source_type="message", inbox__source_id__in=[message.pk for message in candidates])
+            .values_list("inbox__source_id", flat=True))
+        for message in candidates:
             channel = message.conversation.connection.channel
             title = ("Входящее" if message.direction == "in" else "Исходящее") + " сообщение · " + channel.get_kind_display()
             rows.append(_entry("message", message, message._activity_at, "message", title,
                 body=message.body[:10000], truncated=len(message.body) > 10000,
                 actor=message.sender_name or (_name(message.sent_by) if message.sent_by_id else ""),
-                status=message.get_delivery_status_display(), origin="Связанный диалог клиента",
+                status=message.get_delivery_status_display(),
+                relation="lead_source" if message.pk in linked_messages else "contact_history",
+                origin="Источник этого лида" if message.pk in linked_messages else "Общая история контакта / диалога",
                 url=reverse("communications_conversations") + "?" + urlencode({"org_id": organization.pk, "conversation": str(message.conversation.uuid)})))
     if kind in {"all", "call"} and (caps["can_view_all_calls"] or caps["can_view_own_calls"]):
         from .call_access import scope_calls
+        from .crm_lead_access import _with_phone_key
+        call_scope = Q(pk__in=sources.filter(inbox__source_type="call").values("inbox__source_id")) | Q(client_id__in=client_ids)
+        call_scope |= (Q(work_context__lead_id__in=family) if isinstance(subject, CrmLead)
+            else Q(work_context__deal_id=subject.pk))
+        if phone_key:
+            call_scope |= Q(client__isnull=True, _crm_phone_key=phone_key)
         calls = PhoneCall.objects.filter(
-            Q(pk__in=sources.filter(inbox__source_type="call").values("inbox__source_id")) | Q(client_id__in=client_ids)
-            | (Q(work_context__lead_id__in=family) if isinstance(subject, CrmLead) else Q(work_context__deal_id=subject.pk)),
             organization=organization, source_kind=PhoneCall.SOURCE_TELEPHONY,
             direction__in=[PhoneCall.DIRECTION_IN, PhoneCall.DIRECTION_OUT],
             connection__organization=organization, connection__is_active=True,
         ).filter(Q(client__isnull=True) | Q(client__organization=organization)).filter(
             Q(employee_profile__isnull=True) | Q(employee_profile__organization=organization))
+        calls = _with_phone_key(calls).filter(call_scope)
         calls = scope_calls(request.user, organization, calls)
         calls = _without_private_calls(calls).select_related("analysis", "employee", "employee_profile")
         candidates = _portion(calls, "started_at", RANK["call"], before)
@@ -252,7 +271,9 @@ def activity_page(request, organization, subject):
             rows.append(_entry("call", call, call.started_at, "call", title, body=call.phone_number,
                 details=[" → ".join(participants)],
                 status=call.get_result_display() + " · " + str(call.duration_seconds) + " сек", media=media,
-                origin="Связанный звонок клиента", url=reverse("communications_calls") + "?" + urlencode({"org_id": organization.pk, "call_id": call.pk})))
+                relation="lead_source" if call.pk in linked_calls else "contact_history",
+                origin="Источник этого лида" if call.pk in linked_calls else "Общая история контакта",
+                url=reverse("communications_calls") + "?" + urlencode({"org_id": organization.pk, "call_id": call.pk})))
     if kind in {"all", "task"}:
         task_scope = Q(commercial_lead_link__lead_id__in=family, commercial_lead_link__organization=organization)
         if not isinstance(subject, CrmLead):

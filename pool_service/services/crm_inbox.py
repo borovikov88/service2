@@ -1,4 +1,4 @@
-"""Transactional inbox for saved incoming sources, with a SQL-only adapter seam.
+"""Transactional inbox for saved communication sources, with a SQL-only adapter seam.
 
 All capture callers hold connection -> organization -> source locks. Claims use
 inbox-only transactions; delivery reacquires source locks before the inbox lock.
@@ -85,7 +85,7 @@ def capture_source(source_type, source):
         provider = source.conversation.connection.channel.kind
         namespace = source.conversation.external_id
     else:
-        if source.source_kind != "telephony" or source.direction != "in" or not source.connection_id:
+        if source.source_kind != "telephony" or source.direction not in {"in", "out"} or not source.connection_id:
             return None
         org_id, connection_id, provider, namespace = source.organization_id, source.connection_id, "megafon", ""
     scope = source.intake_scope
@@ -104,6 +104,10 @@ def capture_source(source_type, source):
     if source_type == "call" and verified:
         historical = source.intake_historical or source.intake_revision_historical or bool(
             source.intake_occurred_at and source.intake_cutover_at and source.intake_occurred_at < source.intake_cutover_at)
+        if source.direction == "out":
+            boundary = CrmInboxBoundary.objects.filter(key="outbound_calls").first()
+            historical = historical or not boundary or source.intake_received_at < boundary.captured_at or bool(
+                source.intake_occurred_at and source.intake_occurred_at < boundary.captured_at)
         if historical and not source.intake_revision_historical:
             source.intake_revision_historical = True
             source.save(update_fields=["intake_revision_historical"])
@@ -159,7 +163,7 @@ def _locked_source(source_type, source_id, channel_id, organization_id):
             return org, None, "source_missing"
         if (not telephony or not telephony.is_active or telephony.organization_id != organization_id
                 or telephony.external_id != connection.external_id or connection.channel.kind != "megafon"
-                or source.organization_id != organization_id or source.direction != "in" or source.source_kind != "telephony"
+                or source.organization_id != organization_id or source.direction not in {"in", "out"} or source.source_kind != "telephony"
                 or source.client_id and source.client.organization_id != organization_id
                 or source.employee_profile_id and source.employee_profile.organization_id != organization_id):
             return org, None, "source_scope_changed"
@@ -346,7 +350,7 @@ def reconcile(*, organization_id, source_type, connection_id, limit=100, seconds
             conversation__connection_id=connection_id, direction="in")
     else:
         query = PhoneCall.objects.filter(organization_id=organization_id, connection_id=connection_id,
-            source_kind="telephony", direction="in")
+            source_kind="telephony", direction__in=("in", "out"))
     if not include_legacy:
         query = query.filter(intake_received_at__isnull=False, intake_scope__account=account,
             intake_scope__organization=organization_id, intake_scope__connection=connection_id)
