@@ -155,8 +155,7 @@ def _serialize(lead, user, capabilities, *, detail=False, visible_tasks=None, cl
                 "completed": task.is_archived or task.status in (ServiceTask.STATUS_DONE, ServiceTask.STATUS_CANCELLED),
                 "url": reverse("task_edit", args=[task.pk]),
                 "waiting": waiting_control(task)[0] or task.status == ServiceTask.STATUS_WAITING}
-            if detail:
-                row["next_action"]["version"] = version_for(task)
+            row["next_action"]["version"] = version_for(task)
     if detail:
         row.update(need=lead.need, reason=lead.reason,
             acquisition_source=lead.acquisition_source, first_contact_channel=lead.first_contact_channel,
@@ -351,6 +350,7 @@ def workspace(request):
         pipelines=list(CrmPipeline.objects.filter(organization=organization, is_active=True).values("id", "code", "name")),
         urls={"data": reverse("crm_live_lead_data") + scope,
             "command": reverse("crm_live_lead_command") + scope,
+            "bulk_command": reverse("crm_live_lead_bulk_command") + scope,
             "clients": reverse("crm_live_lead_clients") + scope,
             "targets": reverse("crm_live_lead_targets") + scope,
             "responsibles": reverse("crm_assignment_candidates") + scope,

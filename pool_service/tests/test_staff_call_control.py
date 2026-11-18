@@ -168,6 +168,57 @@ class StaffCallControlTests(LeadFixture, TestCase):
         remove_private_number(user=self.owner, organization=self.org, number_id=mark.pk)
         self.assertTrue(task_source_is_private(child, user=self.user))
 
+    def test_bulk_stage_does_not_modify_or_disclose_owner_private_card(self):
+        call, private, working = self.call(), self.create(), self.create()
+        set_work_context(actor=self.owner, call_id=call.pk, lead_id=private.pk)
+        add_private_numbers(user=self.owner, organization=self.org, label='Synthetic bulk private scope', numbers_text=call.phone_number)
+        commands = [dict(operation_key='synthetic-batch-private-' + str(index), command_type='lead.disposition',
+            subject_id=lead.pk, expected_revision=lead.revision,
+            changes={'column': 'unparsed', 'reason': 'Synthetic batch review'}) for index, lead in enumerate([private, working])]
+        response = self.http.post(reverse('crm_live_lead_bulk_command') + '?org_id=' + str(self.org.pk),
+            {'commands': commands}, content_type='application/json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row['status'] for row in response.json()['results']], [403, 200])
+        self.assertNotIn('result', response.json()['results'][0])
+        revision = private.revision
+        private.refresh_from_db()
+        self.assertEqual(private.revision, revision)
+
+    def test_bulk_and_single_stage_reject_private_deal_before_write_or_replay(self):
+        from pool_service.crm_commercial_models import CrmCommand
+        from pool_service.services.crm_commercial_access import deals_for_user
+        self.grant.transition_own_deals = True
+        self.grant.save(update_fields=['transition_own_deals'])
+        stage = self.pipeline.stages.get(code='technical')
+        deals = [CrmDeal.objects.create(organization=self.org, pipeline=self.pipeline,
+            stage=self.pipeline.stages.order_by('position').first(), manager=self.user,
+            title='Synthetic stage privacy ' + str(index)) for index in range(2)]
+        call = self.call()
+        set_work_context(actor=self.owner, call_id=call.pk, deal_id=deals[0].pk)
+        add_private_numbers(user=self.owner, organization=self.org, label='Synthetic private deal', numbers_text=call.phone_number)
+        self.assertFalse(deals_for_user(self.user, self.org).filter(pk=deals[0].pk).exists())
+        commands = [dict(operation_key='synthetic-private-deal-stage-' + str(index), command_type='deal.transition',
+            subject_id=deal.pk, expected_revision=deal.revision, changes={'stage_id': stage.pk, 'reason': ''})
+            for index, deal in enumerate(deals)]
+        before = (deals[0].stage_id, deals[0].revision)
+        url = reverse('crm_live_bulk_command') + '?org_id=' + str(self.org.pk)
+        response = self.http.post(url, {'commands': commands}, content_type='application/json')
+        self.assertEqual([row['status'] for row in response.json()['results']], [403, 200])
+        deals[0].refresh_from_db()
+        self.assertEqual((deals[0].stage_id, deals[0].revision), before)
+        self.assertFalse(CrmCommand.objects.filter(operation_key=commands[0]['operation_key']).exists())
+        self.assertFalse(CrmEvent.objects.filter(deal=deals[0]).exists())
+        response = self.http.post(reverse('crm_live_command') + '?org_id=' + str(self.org.pk),
+            commands[0], content_type='application/json')
+        self.assertEqual(response.status_code, 403)
+        second_call = self.call(phone_number='+79990003344')
+        set_work_context(actor=self.owner, call_id=second_call.pk, deal_id=deals[1].pk)
+        add_private_numbers(user=self.owner, organization=self.org, label='Synthetic changed privacy', numbers_text=second_call.phone_number)
+        count = CrmEvent.objects.count()
+        response = self.http.post(url, {'commands': [commands[1]]}, content_type='application/json')
+        self.assertEqual(response.json()['results'][0]['status'], 403)
+        self.assertEqual(CrmEvent.objects.count(), count)
+
     def test_new_requests_to_audio_and_transcript_refuse_unassigned_owner_call(self):
         call = self.call()
         for name in ['communication_call_recording', 'communication_call_analysis_transcript', 'communication_call_analysis_status']:
@@ -371,6 +422,13 @@ class StaffCallControlTests(LeadFixture, TestCase):
         add_private_numbers(user=self.owner, organization=self.org, label='Synthetic private linked lead', numbers_text=call.phone_number)
         self.assertTrue(deals_for_user(self.user, self.org).filter(pk=deal.pk).exists())
         self.assertFalse(can_read_call(self.user, call))
+        self.grant.transition_own_deals = True
+        self.grant.save(update_fields=['transition_own_deals'])
+        response = self.http.post(reverse('crm_live_bulk_command') + '?org_id=' + str(self.org.pk),
+            {'commands': [dict(operation_key='synthetic-mixed-deal-stage', command_type='deal.transition',
+                subject_id=deal.pk, expected_revision=deal.revision,
+                changes={'stage_id': self.pipeline.stages.get(code='technical').pk, 'reason': ''})]}, content_type='application/json')
+        self.assertEqual(response.json()['results'][0]['status'], 200)
 
     def test_inactive_account_links_existing_hr_record_without_duplicate_or_call_rewrite(self):
         self.other.is_active = False

@@ -48,14 +48,14 @@
       const item = {payload: freeze(JSON.parse(JSON.stringify(payload))), label, status: "ready", everUncertain: false, running: null};
       this.entries.set(payload.operation_key, item); this.changed(); return item;
     }
-    async run(key) {
+    async run(key, transport = this.transport) {
       const item = this.entries.get(key);
       if (!item) throw new Error("Операция не найдена.");
       if (item.running) return item.running;
       if (!["ready", "uncertain"].includes(item.status)) return item;
       item.status = "sending"; this.changed();
       item.running = Promise.resolve().then(async () => {
-        try { item.response = await this.transport(item.payload); item.status = "succeeded"; }
+        try { item.response = await transport(item.payload); item.status = "succeeded"; }
         catch (error) { item.error = error; item.status = error.definitive && !item.everUncertain ? "failed" : "uncertain"; if (item.status === "uncertain") item.everUncertain = true; }
         finally { item.running = null; this.changed(); }
         return item;
@@ -137,18 +137,22 @@
       return body;
     }
     const csrf = () => root.querySelector("[name=csrfmiddlewaretoken]").value;
-    const operations = new LeadOperations(async (payload) => {
+    async function write(url, payload) {
       const controller = new AbortController(), timer = win.setTimeout(() => controller.abort(), 20000);
       try {
-        const response = await win.fetch(initial.urls.command, {method: "POST", credentials: "same-origin", signal: controller.signal,
+        const response = await win.fetch(url, {method: "POST", credentials: "same-origin", signal: controller.signal,
           headers: {"Content-Type": "application/json", "X-CSRFToken": csrf(), Accept: "application/json"}, body: JSON.stringify(payload)});
         let body; try { body = await response.json(); } catch (_error) { throw new Error("Результат сохранения неизвестен. Проверьте эту же операцию."); }
         if (!response.ok) { const error = new Error(body.error || "Не удалось сохранить."); error.code = body.code; error.definitive = response.status >= 400 && response.status < 500 && ![408, 429].includes(response.status); throw error; }
+        return body;
+      } finally { win.clearTimeout(timer); }
+    }
+    const operations = new LeadOperations(async (payload) => {
+        const body = await write(initial.urls.command, payload);
         const transferred = body.result?.assignment_saved === true && body.result.can_open === false && Number.isInteger(body.result.lead_id);
         if (!transferred && (!body.result || !body.lead || body.result.lead_id !== body.lead.id || !Number.isInteger(body.lead.revision))) throw new Error("Сервер не подтвердил результат. Проверьте эту же операцию.");
         return body;
-      } finally { win.clearTimeout(timer); }
-    }, renderOperations);
+    }, () => { if (!bulk?.isRunning()) renderOperations(); });
     const bulk = win.CrmBulk?.mount({root, kind: "lead", offset: initial.utc_offset, deadlineISO, moveTargets,
       items: () => state.mode === "closed" ? state.data.leads : (state.data.columns || []).filter(column => state.showArchiveQueues || !["spam", "deleted"].includes(column.key)).flatMap(column => column.leads),
       loading: () => state.loading, pending: id => operations.forSubject(id), notice,
@@ -158,7 +162,8 @@
         return (await read(url, signal)).users;
       },
       run: async (payload, label) => { const item = operations.add(payload, label); const result = await operations.run(item.payload.operation_key); if (result.status === "succeeded") operations.dismiss(item.payload.operation_key); return result; },
-      reload: () => loadList({keepNotice: true, keepSelection: true}),
+      runBatch: records => win.CrmBulk.runBatch(operations, records, payload => write(initial.urls.bulk_command, payload)),
+      reload: () => { renderOperations(); return loadList({keepNotice: true, keepSelection: true}); },
     });
     function renderOperations() {
       const host = byId("lead-operations"); host.replaceChildren();

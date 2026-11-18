@@ -53,7 +53,7 @@
       this.onChange();
       return entry;
     }
-    async run(operationKey) {
+    async run(operationKey, transport = this.transport) {
       const entry = this.entries.get(operationKey);
       if (!entry) throw new Error("Операция не найдена.");
       if (entry.running) return entry.running;
@@ -64,7 +64,7 @@
       this.onChange();
       entry.running = Promise.resolve().then(async () => {
         try {
-          entry.response = await this.transport(entry.payload);
+          entry.response = await transport(entry.payload);
           entry.status = "succeeded";
         } catch (error) {
           entry.error = error;
@@ -295,7 +295,7 @@
       const transferred = response.result?.assignment_saved === true && response.result.can_open === false && Number.isInteger(response.result.deal_id);
       if (!transferred && (!response.result || !response.deal || !sameId(response.result.deal_id, response.deal.id))) throw new Error("Сервер не подтвердил результат сохранения.");
       return response;
-    }, () => { renderOperations(); renderContent(); updateFormLocks(); });
+    }, () => { if (!bulk?.isRunning()) { renderOperations(); renderContent(); updateFormLocks(); } });
 
     const bulk = win.CrmBulk?.mount({root, kind: "deal", offset, deadlineISO, transitionIntent, pipelineFor,
       items: () => (state.data.deals || []).filter(deal => sameId(deal.pipeline_id, state.pipelineId)),
@@ -306,7 +306,10 @@
         return (await requestJSON(url, {headers: {Accept: "application/json"}}, signal)).users;
       },
       run: async (payload, label) => { const item = queue.add(payload, label); const result = await queue.run(item.payload.operation_key); if (result.status === "succeeded") queue.dismiss(item.payload.operation_key); return result; },
-      reload: () => loadData({keepNotice: true, keepSelection: true}),
+      runBatch: records => win.CrmBulk.runBatch(queue, records, payload => requestJSON(scopedURL(bootstrap.urls.bulk_command), {
+        method: "POST", headers: {"Content-Type": "application/json", "Accept": "application/json", "X-CSRFToken": csrf ? csrf.value : ""}, body: JSON.stringify(payload),
+      })),
+      reload: () => { renderOperations(); return loadData({keepNotice: true, keepSelection: true}); },
     });
 
     function syncURL() {

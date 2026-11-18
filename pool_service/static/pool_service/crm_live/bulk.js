@@ -7,6 +7,34 @@
   const ranks = {unparsed: 0, working: 1, history: 2, failed: 2, spam: 3, deleted: 4};
   const leadStages = [{id: "unparsed", name: "Не разобраны"}, {id: "working", name: "В работе"}, {id: "failed", name: "Лид провален"}, {id: "spam", name: "Спам"}];
 
+  async function runBatch(queue, records, send) {
+    if (!records.length) return [];
+    const items = records.map(record => queue.add(record.payload, record.label));
+    const exchange = Promise.resolve().then(() => send({commands: items.map(item => item.payload)}));
+    const results = await Promise.all(items.map(item => queue.run(item.payload.operation_key, async payload => {
+      const body = await exchange;
+      if (!Array.isArray(body?.results) || body.results.length !== items.length
+          || new Set(body.results.map(row => row.operation_key)).size !== items.length
+          || body.results.some(row => !items.some(entry => entry.payload.operation_key === row.operation_key))) {
+        throw new Error("Сервер не подтвердил результат группы. Проверьте те же операции.");
+      }
+      const row = body.results.find(result => result.operation_key === payload.operation_key);
+      if (row.status !== 200) {
+        const error = new Error(row.error || "Не удалось сохранить карточку.");
+        error.code = row.code; error.status = row.status;
+        error.definitive = row.status >= 400 && row.status < 500 && ![408, 429].includes(row.status);
+        throw error;
+      }
+      const kind = payload.command_type.split(".")[0], subject = row[kind];
+      if (!row.result || !subject || subject.id !== payload.subject_id
+          || row.result[kind + "_id"] !== subject.id || !Number.isInteger(subject.revision)
+          || subject.revision !== row.result.revision) throw new Error("Сервер не подтвердил результат карточки. Проверьте ту же операцию.");
+      return {result: row.result, [kind]: subject};
+    })));
+    for (const item of results) if (item.status === "succeeded") queue.dismiss(item.payload.operation_key);
+    return results;
+  }
+
   function changesFor(config, action, subject, values) {
     const kind = config.kind;
     if (action === "assign") {
@@ -119,9 +147,9 @@
       busy = true; stopped = false; refresh();
       const token = ++generation, snapshots = Array.from(selected.values()); controller = new AbortController();
       const title = node("h2", "", action === "assign" ? "Сменить ответственного" : action === "fail" ? "Провалить выбранные карточки" : "Изменить стадию"); title.id = config.kind + "-bulk-title";
-      const status = node("p", "crm-bulk-status", "Проверяем выбранные карточки…"); status.setAttribute("role", "status");
+      const status = node("p", "crm-bulk-status", action === "assign" ? "Загружаем доступных сотрудников…" : "Выбрано карточек: " + snapshots.length); status.setAttribute("role", "status");
       const report = node("ul", "crm-bulk-report"), form = node("form", "crm-bulk-form"), footer = node("div", "crm-bulk-footer");
-      const cancel = button("Отмена", () => { if (running) { stopped = true; cancel.disabled = true; status.textContent = "Завершаем текущую карточку…"; } else close(); });
+      const cancel = button("Отмена", () => { if (running) { stopped = true; cancel.disabled = true; status.textContent = "Завершаем отправленную группу…"; } else close(); });
       footer.append(cancel); dialog.replaceChildren(title, status, report, form, footer); dialog.showModal();
       const active = () => token === generation && dialog.open;
       const records = [];
@@ -131,7 +159,9 @@
           if (!active()) return;
           try {
             if (config.pending(snapshot.id)) throw new Error("Сначала проверьте предыдущее сохранение.");
-            const subject = await config.detail(snapshot.id, controller.signal);
+            // Stage forms need only the projection already shown on the board.
+            // Current authorization/revisions are checked once at the write.
+            const subject = action === "assign" ? await config.detail(snapshot.id, controller.signal) : snapshot;
             if (!active()) return;
             if (subject.revision !== snapshot.revision) throw new Error("Карточка изменилась. Обновите доску и выберите её заново.");
             const allowed = action === "assign" ? subject.can_assign : config.kind === "lead" ? config.moveTargets(subject).length : action === "fail" ? subject.can_close_negative : subject.can_transition;
@@ -185,18 +215,28 @@
           });
           running = true; cancel.textContent = "Остановить"; form.querySelectorAll("input,select,textarea,button").forEach(item => { item.disabled = true; });
           let saved = 0, unchanged = 0, failed = snapshots.length - records.length, uncertain = 0, remaining = 0;
-          for (const record of prepared) {
-            if (stopped) { remaining++; continue; }
-            if (record.error) { failed++; reportRow(record.snapshot, record.error.message); continue; }
-            if (!record.command) { unchanged++; selected.delete(record.subject.id); reportRow(record.snapshot, "уже соответствует выбранному значению"); continue; }
-            status.textContent = "Сохраняем: " + record.snapshot.title;
+          for (let index = 0; index < prepared.length;) {
+            if (stopped) { remaining += prepared.length - index; break; }
+            const group = prepared.slice(index, index + (action === "assign" ? 1 : 25)); index += group.length;
+            const ready = [];
+            for (const record of group) {
+              if (record.error) { failed++; reportRow(record.snapshot, record.error.message); continue; }
+              if (!record.command) { unchanged++; selected.delete(record.subject.id); reportRow(record.snapshot, "уже соответствует выбранному значению"); continue; }
+              ready.push({...record, payload: {operation_key: win.crypto.randomUUID(), ...record.command,
+                subject_id: record.subject.id, expected_revision: record.subject.revision}});
+            }
+            if (!ready.length) continue;
+            status.textContent = "Сохраняем карточки: " + ready.length + ". Обработано: " + (index - group.length) + " из " + prepared.length;
             try {
-              const payload = {operation_key: win.crypto.randomUUID(), ...record.command, subject_id: record.subject.id, expected_revision: record.subject.revision};
-              const result = await config.run(payload, record.snapshot.title);
-              if (result.status === "succeeded") { saved++; selected.delete(record.subject.id); reportRow(record.snapshot, "сохранено"); }
-              else if (result.status === "uncertain") { uncertain++; stopped = true; reportRow(record.snapshot, "результат неизвестен — используйте «Проверить результат» на доске"); }
-              else { failed++; reportRow(record.snapshot, result.error?.message || "не сохранено"); }
-            } catch (error) { failed++; reportRow(record.snapshot, error.message); }
+              const results = action === "assign" ? [await config.run(ready[0].payload, ready[0].snapshot.title)]
+                : await config.runBatch(ready.map(record => ({payload: record.payload, label: record.snapshot.title})));
+              for (let position = 0; position < ready.length; position++) {
+                const record = ready[position], result = results[position];
+                if (result.status === "succeeded") { saved++; selected.delete(record.subject.id); reportRow(record.snapshot, "сохранено"); }
+                else if (result.status === "uncertain") { uncertain++; stopped = true; reportRow(record.snapshot, "результат неизвестен — используйте «Проверить результат» на доске"); }
+                else { failed++; reportRow(record.snapshot, result.error?.message || "не сохранено"); }
+              }
+            } catch (error) { for (const record of ready) { failed++; reportRow(record.snapshot, error.message); } }
           }
           running = false; busy = false; cancel.disabled = false; cancel.textContent = "Закрыть"; form.hidden = true;
           const message = `Сохранено: ${saved}. Без изменений: ${unchanged}. Не выполнено: ${failed}.` + (uncertain ? ` Требует проверки: ${uncertain}.` : "") + (remaining ? ` Не начато: ${remaining}.` : "");
@@ -205,7 +245,7 @@
         });
       } catch (error) { if (active()) { status.textContent = error.message; cancel.textContent = "Закрыть"; } }
     }
-    return {checkbox, refresh, reset, hasSelection: () => selected.size > 0, remove: id => { selected.delete(id); refresh(); }};
+    return {checkbox, refresh, reset, isRunning: () => running, hasSelection: () => selected.size > 0, remove: id => { selected.delete(id); refresh(); }};
   }
-  return {mount, changesFor};
+  return {mount, changesFor, runBatch};
 });
