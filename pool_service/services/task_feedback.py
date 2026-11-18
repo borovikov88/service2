@@ -51,6 +51,8 @@ def _iso(value):
 
 
 def snapshot(task):
+    prefetched = getattr(task, "_prefetched_objects_cache", {}).get("responsibles")
+    responsible_ids = (user.pk for user in prefetched) if prefetched is not None else task.responsibles.values_list("id", flat=True)
     return {
         "title": task.title,
         "description": task.description,
@@ -60,7 +62,7 @@ def snapshot(task):
         "due_at": _iso(task.due_at), "completed_at": _iso(task.completed_at),
         "is_archived": task.is_archived,
         "primary_responsible_id": task.primary_responsible_id,
-        "responsibles": sorted(task.responsibles.values_list("id", flat=True)),
+        "responsibles": sorted(responsible_ids),
         "feedback": state_for(task),
     }
 

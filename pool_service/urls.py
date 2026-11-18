@@ -87,7 +87,7 @@ from .views import (
     push_unsubscribe,
 )
 from . import views
-from . import crm_live_views, crm_pilot_views, crm_lead_views, crm_object_need_views, crm_activity_views
+from . import crm_live_views, crm_pilot_views, crm_lead_views, crm_object_need_views, crm_activity_views, crm_bulk_views
 from .estimate_views import estimate_page, estimate_api, estimate_print, estimate_document
 from .client_crm_views import client_detail, client_merge_index, client_merge_search, client_onec_import
 from .contact_management_views import client_phone_manage, client_bulk_merge
@@ -439,6 +439,7 @@ urlpatterns = [
     path("crm/workspace/responsibles/", crm_assignment_views.candidates, name="crm_assignment_candidates"),
     path("crm/workspace/orders/refresh/", crm_order_views.refresh, name="crm_order_refresh"),
     path("crm/workspace/commands/", crm_live_views.command, name="crm_live_command"),
+    path("crm/workspace/commands/bulk/", crm_bulk_views.command, {"kind": "deal"}, name="crm_live_bulk_command"),
     path("crm/workspace/deals/<int:deal_id>/quotes/", crm_quote_views.workspace, name="crm_quotes"),
     path("crm/workspace/deals/<int:deal_id>/construction/", crm_construction_views.workspace, name="crm_construction"),
     path("crm/workspace/deals/<int:deal_id>/handoff/", crm_handoff_views.workspace, name="crm_handoff"),
@@ -451,6 +452,7 @@ urlpatterns = [
     path("crm/workspace/leads/clients/", crm_lead_views.clients, name="crm_live_lead_clients"),
     path("crm/workspace/leads/targets/", crm_lead_views.targets, name="crm_live_lead_targets"),
     path("crm/workspace/leads/commands/", crm_lead_views.command, name="crm_live_lead_command"),
+    path("crm/workspace/leads/commands/bulk/", crm_bulk_views.command, {"kind": "lead"}, name="crm_live_lead_bulk_command"),
     path("crm/workspace/leads/<int:lead_id>/", crm_lead_views.detail, name="crm_live_lead_detail"),
     path("crm/workspace/leads/<int:lead_id>/activity/", crm_activity_views.lead_activity, name="crm_lead_activity"),
     path("crm/tasks/", crm_tasks, name="crm_tasks"),

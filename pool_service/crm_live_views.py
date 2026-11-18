@@ -228,8 +228,7 @@ def _serialize_deals(deals, user, organization, grant, *, detail=False):
                 "completed": bool(task.completed_at) or task.is_archived or task.status in (ServiceTask.STATUS_DONE, ServiceTask.STATUS_CANCELLED),
                 "url": reverse("task_edit", args=[task.pk]), "can_open": True,
             }
-            if detail:
-                next_action["version"] = version_for(task)
+            next_action["version"] = version_for(task)
         object_data = _object_data(deal, pools, owned)
         writable = not (object_data and object_data.get("restricted")) and deal.manager_id == user.pk and deal.outcome == "open" and not deal.is_archived
         rows.append({
@@ -496,6 +495,7 @@ def workspace(request):
             "order_refresh": reverse("crm_order_refresh") + scope,
             "responsibles": reverse("crm_assignment_candidates") + scope,
             "command": reverse("crm_live_command") + scope,
+            "bulk_command": reverse("crm_live_bulk_command") + scope,
             "detail_prefix": reverse("crm_live_detail", args=[1]).rsplit("1/", 1)[0]},
     })
     return render(request, "pool_service/crm_live/workspace.html", {

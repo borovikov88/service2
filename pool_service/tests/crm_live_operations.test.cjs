@@ -2,6 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+require("./crm_bulk_batch.test.cjs");
 const {OperationQueue, transitionIntent, deadlineISO, localDateTime, attentionFor, editableDeadline, conflictDraft} = require("../static/pool_service/crm_live/workspace.js");
 
 const payload = (key = "7b40eeaa-1d41-470c-a470-a218f9db6a20", subject = 41) => ({

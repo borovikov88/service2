@@ -13,9 +13,12 @@ const {chromium} = require('playwright');
     const bootstrap = readFileSync(require.resolve('bootstrap/dist/js/bootstrap.bundle.min.js'));
     await context.route('**/*', route => route.request().url() === 'https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js'
       ? route.fulfill({contentType: 'application/javascript', body: bootstrap}) : new URL(route.request().url()).origin === f.base ? route.continue() : route.abort());
-    const page = await context.newPage(), errors = [], writes = []; page.setDefaultTimeout(15000);
+    const page = await context.newPage(), errors = [], writes = [], detailReads = []; page.setDefaultTimeout(15000);
     page.on('pageerror', error => errors.push(error.message));
-    page.on('request', request => { if (request.method() === 'POST') writes.push(request); });
+    page.on('request', request => {
+      if (request.method() === 'POST') writes.push(request);
+      if (request.method() === 'GET' && /\/crm\/workspace\/(leads|deals)\/\d+\//.test(new URL(request.url()).pathname)) detailReads.push(request);
+    });
     const bar = page.locator('.crm-bulk-bar'), modal = page.locator('.crm-bulk-dialog');
     const check = async ids => { for (const id of ids) await page.locator('input[data-bulk-id="' + id + '"]').check(); };
     const open = async label => { await bar.getByRole('button', {name: label, exact: true}).click(); await modal.getByRole('button', {name: /^Применить к /}).waitFor(); };
@@ -41,12 +44,17 @@ const {chromium} = require('playwright');
     assert.equal(await page.locator('input[data-bulk-id]:checked').count(), 3);
     await bar.getByRole('button', {name: 'Снять выделение', exact: true}).click();
     assert.equal(await bar.isVisible(), false);
+    const readsBeforeStage = detailReads.length;
     await check(f.dealIds.slice(0, 2)); await open('Изменить стадию');
+    assert.equal(detailReads.length, readsBeforeStage, 'Opening the stage form must use the existing board projection');
     await modal.locator('[name=stage]').selectOption(String(f.technicalStage));
     await modal.getByRole('button', {name: 'Отмена', exact: true}).click(); assert.equal(writes.length, 0);
     if (f.screenshotDir) await page.screenshot({path: join(f.screenshotDir, 'crm-bulk-desktop.png')});
     phase = 'bulk deal stage';
     await open('Изменить стадию'); await modal.locator('[name=stage]').selectOption(String(f.technicalStage)); await apply(2); await close();
+    assert.equal(writes.length, 1, 'Two stage changes need one HTTP request');
+    assert.equal(writes[0].postDataJSON().commands.length, 2);
+    assert.equal(detailReads.length, readsBeforeStage, 'Saving the group must not reload each card');
     phase = 'deal assignment with lost response and same-key retry';
     await check(f.dealIds.slice(0, 2)); await open('Сменить ответственного');
     await modal.locator('[name=responsible_id]').selectOption(String(f.recipient));
@@ -86,9 +94,16 @@ const {chromium} = require('playwright');
     assert.equal(await bar.isVisible(), false);
     await page.locator('#lead-search').fill(''); await page.waitForFunction(() => document.querySelector('#lead-list').getAttribute('aria-busy') === 'false' && document.querySelectorAll('input[data-bulk-id]').length === 3);
     phase = 'bulk lead stage with one conflicting card';
+    const leadReadsBeforeStage = detailReads.length;
     await check(f.leadIds); await open('Изменить стадию'); await modal.locator('[name=stage]').selectOption('unparsed'); await modal.locator('[name=reason]').fill('Synthetic review');
-    const reject = route => route.request().method() === 'POST' && route.request().postDataJSON()?.subject_id === f.leadIds[2]
-      ? route.fulfill({status: 409, contentType: 'application/json', body: JSON.stringify({code: 'conflict', error: 'Synthetic card changed'})}) : route.continue();
+    assert.equal(detailReads.length, leadReadsBeforeStage);
+    const reject = async route => {
+      const body = route.request().postDataJSON();
+      if (route.request().method() === 'POST' && body?.commands?.some(command => command.subject_id === f.leadIds[2])) {
+        for (const command of body.commands) if (command.subject_id === f.leadIds[2]) command.expected_revision++;
+        const response = await route.fetch({postData: JSON.stringify(body)}); await route.fulfill({response});
+      } else await route.continue();
+    };
     await page.route('**/crm/workspace/leads/commands/**', reject); await apply(2);
     assert.match(await modal.locator('.crm-bulk-status').innerText(), /Не выполнено: 1/); await close();
     await page.unroute('**/crm/workspace/leads/commands/**', reject);

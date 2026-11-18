@@ -168,6 +168,22 @@ class StaffCallControlTests(LeadFixture, TestCase):
         remove_private_number(user=self.owner, organization=self.org, number_id=mark.pk)
         self.assertTrue(task_source_is_private(child, user=self.user))
 
+    def test_bulk_stage_does_not_modify_or_disclose_owner_private_card(self):
+        call, private, working = self.call(), self.create(), self.create()
+        set_work_context(actor=self.owner, call_id=call.pk, lead_id=private.pk)
+        add_private_numbers(user=self.owner, organization=self.org, label='Synthetic bulk private scope', numbers_text=call.phone_number)
+        commands = [dict(operation_key='synthetic-batch-private-' + str(index), command_type='lead.disposition',
+            subject_id=lead.pk, expected_revision=lead.revision,
+            changes={'column': 'unparsed', 'reason': 'Synthetic batch review'}) for index, lead in enumerate([private, working])]
+        response = self.http.post(reverse('crm_live_lead_bulk_command') + '?org_id=' + str(self.org.pk),
+            {'commands': commands}, content_type='application/json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row['status'] for row in response.json()['results']], [403, 200])
+        self.assertNotIn('result', response.json()['results'][0])
+        revision = private.revision
+        private.refresh_from_db()
+        self.assertEqual(private.revision, revision)
+
     def test_new_requests_to_audio_and_transcript_refuse_unassigned_owner_call(self):
         call = self.call()
         for name in ['communication_call_recording', 'communication_call_analysis_transcript', 'communication_call_analysis_status']:
