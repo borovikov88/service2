@@ -1,0 +1,22 @@
+{% extends 'pool_service/base.html' %}
+{% block content %}
+<div class="container py-3" style="max-width: 900px">
+<h1>Роли и права CRM</h1>
+<p>Организация №{{ organization_id }}, сотрудник №{{ target_id }}. Текущие роли: {{ current_roles|join:', ' }}.</p>
+<p class="alert alert-warning">Старые индивидуальные настройки требуют проверки: «По роли» может изменить текущий доступ. Личные звонки и ограничения ответственных не отменяются. При понижении роли права коммуникаций могут сократиться. Административные и финансовые роли здесь не изменяются.</p>
+{% if error %}<p role="alert" class="alert alert-danger">{{ error }}</p>{% endif %}
+<details><summary>Текущие флаги CRM</summary><ul>{% for name,value in current_flags %}<li>{{ name }}: {{ value|yesno:'разрешено,запрещено' }}</li>{% endfor %}</ul></details>
+{% if confirmation %}
+<h2>Проверьте результат</h2><p>Новые роли: {{ proposed_roles|join:', ' }}.</p>
+<div class="table-responsive"><table class="table"><thead><tr><th>Возможность</th><th>Сейчас</th><th>После изменения</th></tr></thead><tbody>
+{% for row in rows %}<tr><td>{{ row.label }}</td><td>{{ row.before|yesno:'Да,Нет' }}</td><td>{{ row.proposed|yesno:'Да,Нет' }}</td></tr>{% endfor %}
+</tbody></table></div>
+<form method="post">{% csrf_token %}<input type="hidden" name="operation" value="apply"><input type="hidden" name="confirmation" value="{{ confirmation }}">
+{% if needs_call_ack %}<label class="d-block mb-3"><input type="checkbox" name="call_visibility_ack" value="yes" required> Понимаю, что новые права чтения CRM могут открыть назначенные этому сотруднику звонки, включая записи, если прослушивание уже разрешено.</label>{% endif %}
+<button class="btn btn-primary">Подтвердить изменение прав</button>
+<a href="{% url 'crm_role_review' organization_id target_id %}" class="btn btn-outline-secondary">Отменить</a></form>
+{% else %}
+<form method="post">{% csrf_token %}<input type="hidden" name="operation" value="preview">{{ form.as_p }}<button class="btn btn-primary">Проверить изменения</button></form>
+{% endif %}
+</div>
+{% endblock %}

@@ -1,3 +1,4 @@
+from . import crm_role_views
 from . import crm_construction_views
 from . import crm_quote_views
 from . import crm_handoff_views
@@ -399,6 +400,7 @@ urlpatterns = [
     path("organization/norms/", organization_norms, name="organization_norms"),
     path("users/<int:access_id>/block/", staff_control_views.legacy_staff_action, name="staff_toggle_block"),
     path("users/<int:access_id>/delete/", staff_control_views.legacy_staff_action, name="staff_delete"),
+    path("users/organization/<int:organization_id>/member/<int:target_id>/crm-roles/", crm_role_views.review_roles, name="crm_role_review"),
     path("users/<int:access_id>/role/", staff_change_role, name="staff_change_role"),
     path("users/pool-access/<int:access_id>/role/", pool_staff_change_role, name="pool_staff_change_role"),
     path("users/invite/", invite_create, name="invite_create"),

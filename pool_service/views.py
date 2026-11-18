@@ -1,4 +1,5 @@
 ﻿from zoneinfo import ZoneInfo
+from .services.staff_access_mutex import serialized_staff_action
 
 from django.contrib import messages
 
@@ -3118,6 +3119,7 @@ def client_invite_accept(request, token):
 
 @login_required
 
+@serialized_staff_action
 def staff_toggle_block(request, access_id):
 
     readonly = _deny_superuser_write(request)
@@ -3200,6 +3202,7 @@ def staff_toggle_block(request, access_id):
 
 @login_required
 
+@serialized_staff_action
 def staff_delete(request, access_id):
 
     readonly = _deny_superuser_write(request)
@@ -3278,6 +3281,7 @@ def staff_delete(request, access_id):
 
 @login_required
 
+@serialized_staff_action
 def staff_change_role(request, access_id):
 
     readonly = _deny_superuser_write(request)

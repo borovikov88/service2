@@ -120,5 +120,10 @@
   "pool_service.tests.test_avito_services_feed_versions",
   "pool_service.tests.test_avito_autoload_auto",
   "pool_service.tests.test_avito_autoload_report",
-  "pool_service.tests.test_avito_readonly_audit"
+  "pool_service.tests.test_avito_readonly_audit",
+  "pool_service.tests.test_crm_role_policy_preview",
+  "pool_service.tests.test_crm_role_preview_snapshot",
+  "pool_service.tests.test_crm_role_transition",
+  "pool_service.tests.test_crm_role_views",
+  "pool_service.tests.test_crm_role_runtime"
 ]

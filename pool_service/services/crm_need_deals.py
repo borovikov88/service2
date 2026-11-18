@@ -3,6 +3,7 @@
 All supported writes join the Organization mutex and acquire the complete
 existing task set before actor locks. No operational source is written here.
 """
+from pool_service.services.crm_role_runtime import resolve_crm_capabilities
 from dataclasses import dataclass
 import re
 
@@ -259,7 +260,7 @@ def readable_need(actor, organization, task_id):
     from .crm_commercial_access import can_view_team_deals
     from .permissions import company_has_access
     if (not company_has_access(organization) or not can_view_team_deals(actor, organization)
-            or not CrmAccess.objects.filter(organization=organization, user_id=actor.pk, view_team_deals=True).exists()):
+            or not resolve_crm_capabilities(actor.pk, organization.pk).view_team_deals):
         raise PermissionDenied
     tasks = readable_tasks(source_tasks(actor, organization).filter(pk=task_id), actor)
     if len(tasks) != 1:

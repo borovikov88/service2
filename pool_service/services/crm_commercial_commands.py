@@ -1,4 +1,5 @@
 """Authorized commercial commands; HTTP adapters never write the models directly."""
+from pool_service.services.crm_role_runtime import resolve_crm_capabilities
 from datetime import datetime, timezone as datetime_timezone
 from decimal import Decimal, InvalidOperation
 import re
@@ -125,14 +126,13 @@ def _authorize(using, actor_id, organization, capability):
         user_id=actor_id, organization_id=organization.pk).order_by("pk"))
     employees = list(Employee.objects.using(using).select_for_update().filter(
         user_id=actor_id, organization_id=organization.pk).order_by("pk"))
-    grant = CrmAccess.objects.using(using).select_for_update().filter(
-        user_id=actor_id, organization_id=organization.pk).first()
+    grant = resolve_crm_capabilities(actor_id, organization.pk, using=using, lock=True)
     capabilities = (capability,) if isinstance(capability, str) else tuple(capability)
     if (not actor or not actor.is_active or not memberships
             or not organization.crm_v2_read or not organization.crm_v2_write
             or any(not employee.is_active or employee.employment_status == Employee.STATUS_DISMISSED for employee in employees)
             or not grant or not all(getattr(grant, name) for name in capabilities)
-            or not (any(item.role == "manager" for item in memberships) or grant.view_team_deals)):
+            or not grant.team_read):
         raise PermissionDenied("Current CRM command access is unavailable.")
     return actor
 

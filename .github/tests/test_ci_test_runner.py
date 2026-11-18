@@ -58,6 +58,14 @@ class ShardTests(unittest.TestCase):
         self.assertEqual(selected, cases[:-1])
         self.assertEqual(R.domain(cases[-2]), "core")
 
+    def test_reviewed_roles_browser_and_mysql_are_not_skipped(self):
+        import json
+        self.assertIn("CRM_ROLE_BROWSER_TEST", R.BROWSER_FLAGS)
+        self.assertEqual(sum(group.count("test_crm_role_browser") for group in R.BROWSERS.values()), 1)
+        labels = json.loads((ROOT / ".github/mysql_test_labels.json").read_text())
+        for name in ("policy_preview", "preview_snapshot", "transition", "views", "runtime"):
+            self.assertIn("pool_service.tests.test_crm_role_" + name, labels)
+
     def test_invalid_shard_count_is_an_error(self):
         for count in (0, -1, 9):
             with self.assertRaises(ValueError): R.partition(self.cases(), count)

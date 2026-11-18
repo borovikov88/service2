@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib import admin
 from import_export import resources
 from import_export.admin import ImportExportModelAdmin
@@ -18,6 +19,19 @@ class PoolAccessInline(admin.TabularInline):
     extra = 1
 
 class OrganizationAccessInline(admin.TabularInline):
+    def _reviewed_org(self, obj):
+        from .crm_role_models import CrmRolePolicy
+        return bool(obj and CrmRolePolicy.objects.filter(organization=obj).exists())
+
+    def has_add_permission(self, request, obj=None):
+        return not self._reviewed_org(obj) and not getattr(settings, 'CRM_ROLE_TRANSITION_ENABLED', False) and super().has_add_permission(request, obj)
+
+    def has_change_permission(self, request, obj=None):
+        return not self._reviewed_org(obj) and not getattr(settings, 'CRM_ROLE_TRANSITION_ENABLED', False) and super().has_change_permission(request, obj)
+
+    def has_delete_permission(self, request, obj=None):
+        return not self._reviewed_org(obj) and not getattr(settings, 'CRM_ROLE_TRANSITION_ENABLED', False) and super().has_delete_permission(request, obj)
+
     model = OrganizationAccess
     extra = 1
 
@@ -137,6 +151,26 @@ class WaterReadingAdmin(ImportExportModelAdmin):
 # Organization admin
 @admin.register(Organization)
 class OrganizationAdmin(admin.ModelAdmin):
+    def save_formset(self, request, form, formset, change):
+        if formset.model is OrganizationAccess:
+            # Django also submits view-only inlines when only the parent changes.
+            # No save is needed, and no membership mutation is permitted here.
+            if not formset.has_changed():
+                # Admin change logging expects the bookkeeping normally set by save().
+                formset.new_objects = []
+                formset.changed_objects = []
+                formset.deleted_objects = []
+                return
+            from django.core.exceptions import PermissionDenied
+            from django.db import transaction
+            from .crm_role_models import CrmRolePolicy
+            with transaction.atomic():
+                Organization.objects.select_for_update().get(pk=form.instance.pk)
+                if getattr(settings, 'CRM_ROLE_TRANSITION_ENABLED', False) or CrmRolePolicy.objects.filter(organization=form.instance).exists():
+                    raise PermissionDenied
+                return super().save_formset(request, form, formset, change)
+        return super().save_formset(request, form, formset, change)
+
     list_display = ("name",)
     inlines = [OrganizationAccessInline]
 
@@ -205,7 +239,58 @@ class CommunicationContentAdmin(admin.ModelAdmin):
 
 admin.site.register(CommunicationChannel, CommunicationSuperuserAdmin)
 admin.site.register(ChannelConnection, CommunicationSuperuserAdmin)
-admin.site.register(CommunicationAccess, CommunicationSuperuserAdmin)
+class CommunicationGrantAdmin(CommunicationSuperuserAdmin):
+    def save_model(self, request, obj, form, change):
+        from django.core.exceptions import PermissionDenied
+        from django.db import transaction
+        from .crm_role_models import CrmRolePolicy
+        with transaction.atomic():
+            old = CommunicationAccess.objects.filter(pk=obj.pk).values('organization_id', 'user_id').first() if change else None
+            scopes = {(obj.organization_id, obj.user_id)}
+            if old:
+                scopes.add((old['organization_id'], old['user_id']))
+            list(Organization.objects.select_for_update().filter(pk__in=sorted({org for org, _ in scopes})).order_by('pk'))
+            current = CommunicationAccess.objects.select_for_update().filter(pk=obj.pk).values('organization_id', 'user_id').first() if change else None
+            if current != old:
+                raise PermissionDenied
+            if any(CrmRolePolicy.objects.filter(organization_id=org, user_id=user).exists() for org, user in scopes):
+                raise PermissionDenied
+            return super().save_model(request, obj, form, change)
+
+    def delete_model(self, request, obj):
+        return self.delete_queryset(request, CommunicationAccess.objects.filter(pk=obj.pk))
+
+    def delete_queryset(self, request, queryset):
+        from django.core.exceptions import PermissionDenied
+        from django.db import transaction
+        from .crm_role_models import CrmRolePolicy
+        with transaction.atomic():
+            before = list(queryset.order_by('pk').values_list('pk', 'organization_id', 'user_id'))
+            list(Organization.objects.select_for_update().filter(pk__in=sorted({org for _, org, _ in before})).order_by('pk'))
+            current = list(queryset.select_for_update().order_by('pk').values_list('pk', 'organization_id', 'user_id'))
+            if current != before or any(CrmRolePolicy.objects.filter(organization_id=org, user_id=user).exists() for _, org, user in current):
+                raise PermissionDenied
+            return super().delete_queryset(request, queryset)
+
+    def _reviewed(self, obj=None):
+        from .crm_role_models import CrmRolePolicy
+        query = CrmRolePolicy.objects.all()
+        if obj:
+            query = query.filter(organization_id=obj.organization_id, user_id=obj.user_id)
+        return query.exists()
+
+    # Opt-in CRM role policy cannot coexist with unreviewed raw grant edits.
+    def has_add_permission(self, request):
+        return not self._reviewed() and not getattr(settings, 'CRM_ROLE_TRANSITION_ENABLED', False) and super().has_add_permission(request)
+
+    def has_change_permission(self, request, obj=None):
+        return not self._reviewed(obj) and not getattr(settings, 'CRM_ROLE_TRANSITION_ENABLED', False) and super().has_change_permission(request, obj)
+
+    def has_delete_permission(self, request, obj=None):
+        return not self._reviewed(obj) and not getattr(settings, 'CRM_ROLE_TRANSITION_ENABLED', False) and super().has_delete_permission(request, obj)
+
+
+admin.site.register(CommunicationAccess, CommunicationGrantAdmin)
 admin.site.register(Conversation, CommunicationContentAdmin)
 admin.site.register(TelephonyConnection, CommunicationSuperuserAdmin)
 admin.site.register(PhoneCall, CommunicationContentAdmin)

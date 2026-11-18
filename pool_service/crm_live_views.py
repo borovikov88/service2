@@ -3,6 +3,7 @@
 Writes enter the commercial command boundary; this module never saves deals or
 tasks directly. Team deal visibility does not imply visibility of linked tasks.
 """
+from pool_service.services.crm_role_runtime import resolve_crm_capabilities
 from functools import wraps
 from datetime import datetime, time, timedelta
 from django.utils.dateparse import parse_date
@@ -83,7 +84,7 @@ def _organization(request):
 
 
 def _grant(user, organization):
-    return CrmAccess.objects.filter(organization=organization, user_id=user.pk).first()
+    return resolve_crm_capabilities(user.pk, organization.pk)
 
 
 def _write_capability(grant, organization, name):

@@ -3,6 +3,7 @@
 All writes enter the lead command service. Lists contain bounded source metadata. Saved call content is returned only in
 detail after the existing listening authorization; GET never starts analysis.
 """
+from pool_service.services.crm_role_runtime import resolve_crm_capabilities
 from functools import wraps
 import json
 from urllib.parse import urlencode
@@ -70,7 +71,7 @@ def _organization(request):
 
 
 def _capabilities(user, organization):
-    grant = CrmAccess.objects.filter(user_id=user.pk, organization=organization).first()
+    grant = resolve_crm_capabilities(user.pk, organization.pk)
     from .services.permissions import company_has_access
     enabled = organization.crm_v2_write and company_has_access(organization)
     names = ("create_own_leads", "take_leads", "edit_own_leads", "transition_own_leads", "qualify_own_leads",

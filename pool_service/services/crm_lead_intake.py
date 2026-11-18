@@ -3,6 +3,7 @@
 The inbox owns delivery/lease/retry transactions and locks connection, organization,
 source and event before calling this module. No AI, provider API or client message.
 """
+from pool_service.services.crm_role_runtime import resolve_crm_capabilities
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from pool_service.communication_models import PhoneCall, TelephonyEmployeeIdentity
@@ -56,9 +57,8 @@ def _initial_employee(source, organization, lead):
     hr = list(Employee.objects.select_for_update().filter(user=employee, organization=organization))
     if not hr or any(not row.is_active or row.employment_status == Employee.STATUS_DISMISSED for row in hr):
         return None, "employee_unavailable"
-    grant = CrmAccess.objects.select_for_update().filter(user=employee, organization=organization,
-        view_leads=True, edit_own_leads=True, take_leads=True).first()
-    if not grant or not can_read_lead(employee, organization, lead):
+    grant = resolve_crm_capabilities(employee.pk, organization.pk, lock=True)
+    if not (grant.view_leads and grant.edit_own_leads and grant.take_leads) or not can_read_lead(employee, organization, lead):
         return None, "employee_unavailable"
     return employee, "needs_qualification"
 

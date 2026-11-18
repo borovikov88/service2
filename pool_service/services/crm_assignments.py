@@ -1,4 +1,5 @@
 """Explicit CRM responsibility and optional canonical next-action handoff."""
+from pool_service.services.crm_role_runtime import resolve_crm_capabilities
 import hashlib
 import json
 
@@ -132,7 +133,7 @@ def assignment_available(user, organization, subject, *, lock=False):
         return False
     if not _readable(user, organization, kind, subject, lock=lock):
         return False
-    grant = CrmAccess.objects.filter(organization=organization, user_id=user.pk).first()
+    grant = resolve_crm_capabilities(user.pk, organization.pk, lock=lock)
     if not organization.crm_v2_write or not grant or not getattr(grant, 'edit_own_' + ('leads' if kind == 'lead' else 'deals')):
         return False
     owner_id = subject.assignee_id if kind == 'lead' else subject.manager_id
@@ -147,7 +148,7 @@ def assignment_recipient(using, organization, responsible_id, kind, *, subject=N
     memberships = list(OrganizationAccess.objects.using(using).select_for_update().filter(
         organization=organization, user_id=responsible_id))
     employees = list(Employee.objects.using(using).select_for_update().filter(organization=organization, user_id=responsible_id))
-    grant = CrmAccess.objects.using(using).select_for_update().filter(organization=organization, user_id=responsible_id).first()
+    grant = resolve_crm_capabilities(responsible_id, organization.pk, using=using, lock=True)
     capabilities = ('edit_own_leads', 'transition_own_leads', 'create_own_leads', 'take_leads') if kind == 'lead' else (
         'edit_own_deals', 'transition_own_deals', 'create_own_deals', 'manage_own_next_action')
     from pool_service.staff_call_models import StaffAccount

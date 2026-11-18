@@ -2,6 +2,7 @@
 
 No task creation/assignment, project start, contract terms, or financial writes.
 """
+from pool_service.services.crm_role_runtime import resolve_crm_capabilities
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
@@ -80,12 +81,12 @@ def _locked_context(actor_id, org, deal_id, item_id, task_ids, recipient_id, gra
     users={u.pk:u for u in get_user_model().objects.select_for_update().filter(pk__in=ids).order_by('pk')}
     memberships=list(OrganizationAccess.objects.select_for_update().filter(organization=org,user_id__in=ids).order_by('pk'))
     employees=list(Employee.objects.select_for_update().filter(organization=org,user_id__in=ids).order_by('pk'))
-    grants={g.user_id:g for g in CrmAccess.objects.select_for_update().filter(organization=org,user_id__in=ids).order_by('pk')}
+    grants={uid:resolve_crm_capabilities(uid, org.pk, lock=True) for uid in ids}
     roles={uid:{m.role for m in memberships if m.user_id==uid} for uid in ids}
     for uid in ids:
         if (uid not in users or not users[uid].is_active or not org.crm_v2_read
                 or not roles[uid].intersection({'owner','admin','manager'})
-                or ('manager' not in roles[uid] and not (uid in grants and grants[uid].view_team_deals))
+                or not grants[uid].team_read
                 or any(e.user_id==uid and (not e.is_active or e.employment_status==Employee.STATUS_DISMISSED) for e in employees)):
             raise PermissionDenied('Текущие права на КП недоступны.')
     deal=CrmDeal.objects.select_for_update().filter(pk=deal_id,organization=org).first()

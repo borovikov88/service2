@@ -109,6 +109,11 @@ def create_communication_access(sender, instance, created, **_kwargs):
     if effective_role is None:
         return
     defaults = _communication_access_defaults(effective_role)
+    from .crm_role_models import CrmRolePolicy
+    managed = CrmRolePolicy.objects.filter(organization=instance.organization, user=instance.user).exists()
+    previous = CommunicationAccess.objects.filter(organization=instance.organization, user=instance.user).first() if managed else None
+    if managed:
+        defaults = {name: bool(previous and getattr(previous, name)) and value for name, value in defaults.items()}
     access, access_created = CommunicationAccess.objects.get_or_create(
         organization=instance.organization,
         user=instance.user,
@@ -134,7 +139,12 @@ def recompute_communication_access_after_role_delete(sender, instance, **_kwargs
     if effective_role is None:
         access.delete()
         return
-    access.update(**_communication_access_defaults(effective_role))
+    defaults = _communication_access_defaults(effective_role)
+    from .crm_role_models import CrmRolePolicy
+    if CrmRolePolicy.objects.filter(organization=instance.organization, user=instance.user).exists():
+        previous = access.first()
+        defaults = {name: bool(previous and getattr(previous, name)) and value for name, value in defaults.items()}
+    access.update(**defaults)
 
 
 class ChannelConnection(models.Model):

@@ -1,3 +1,5 @@
+from pool_service.services.crm_role_runtime import resolve_crm_capabilities
+from pool_service.crm_role_models import CrmRolePolicy
 from urllib.parse import urlencode
 
 from django.contrib.auth import get_user_model
@@ -49,6 +51,7 @@ def entry_options(user, *, navigation_accesses=None, include_leads=False):
     blocked_employees = Employee.objects.filter(user_id=user.pk, organization_id=OuterRef("pk")).filter(
         Q(is_active=False) | Q(employment_status=Employee.STATUS_DISMISSED))
     organizations = organizations.annotate(
+        entry_managed=Exists(CrmRolePolicy.objects.filter(user_id=user.pk, organization_id=OuterRef("pk"))),
         entry_grant=Exists(CrmAccess.objects.filter(user_id=user.pk, organization_id=OuterRef("pk"), view_team_deals=True)),
         entry_leads=Exists(CrmAccess.objects.filter(user_id=user.pk, organization_id=OuterRef("pk"), view_leads=True)),
         entry_blocked=Exists(blocked_employees),
@@ -60,6 +63,13 @@ def entry_options(user, *, navigation_accesses=None, include_leads=False):
     options = []
     for organization in organizations:
         scope = "?" + urlencode({"org_id": organization.pk})
+        if organization.entry_managed:
+            effective = resolve_crm_capabilities(user.pk, organization.pk)
+            organization.entry_manager = False
+            organization.entry_grant = effective.team_read
+            organization.entry_leads = effective.view_leads
+            if not (effective.team_read or include_leads and effective.view_leads):
+                continue
         deal_reader = organization.crm_v2_read and (organization.entry_manager or organization.entry_grant)
         url = reverse("crm_live_workspace") + scope if deal_reader else (
             reverse("crm_live_start") + scope if organization.entry_owner else "")

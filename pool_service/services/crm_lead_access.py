@@ -1,4 +1,5 @@
 """Current lead/source authority. CRM access never grants communication access."""
+from pool_service.services.crm_role_runtime import resolve_crm_capabilities
 from urllib.parse import urlencode
 
 from django.contrib.auth import get_user_model
@@ -32,7 +33,7 @@ def can_view_leads(user, organization):
         Q(is_active=False) | Q(employment_status=Employee.STATUS_DISMISSED)
     ).exists():
         return False
-    grant = current(CrmAccess.objects).filter(user_id=user.pk, organization=organization).first()
+    grant = resolve_crm_capabilities(user.pk, organization.pk, lock=transaction.get_connection().in_atomic_block)
     return bool(grant and grant.view_leads)
 
 
