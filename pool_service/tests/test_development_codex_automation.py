@@ -1245,6 +1245,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         manual_maintenance_workflows = {
             "crm-db-backup.yml", "crm-intake-diagnostics.yml", "organization-owner.yml",
         }
+        reusable_test_workflows = {"management-finance-mysql.yml"}
         allowed_automatic_workflows = {
             "avito-status-monitor.yml",
             "avito-readonly-audit.yml",
@@ -1257,18 +1258,17 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
             "direct-pr-review.yml",
             "finance-sync.yml",
             "hosting-connection-check.yml",
-            "management-finance-mysql.yml",
             "production-health.yml",
         }
         expected_workflows = (
             manual_canary_workflows | manual_maintenance_workflows
-            | {production_workflow} | allowed_automatic_workflows
+            | {production_workflow} | allowed_automatic_workflows | reusable_test_workflows
         )
 
         self.assertEqual({item.name for item in workflows}, expected_workflows)
         self.assertEqual(
             [item.name for item in workflows if item.name not in manual_canary_workflows],
-            sorted({production_workflow} | allowed_automatic_workflows | manual_maintenance_workflows),
+            sorted({production_workflow} | allowed_automatic_workflows | manual_maintenance_workflows | reusable_test_workflows),
         )
         for workflow in workflows:
             with self.subTest(workflow=workflow.name):
@@ -1345,6 +1345,20 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
                         self.assertNotIn(forbidden, text)
                 elif workflow.name in {"call-recordings-sync.yml", "client-sync.yml", "employee-identity-sync.yml"}:
                     expected_triggers = ["schedule", "workflow_dispatch"]
+                elif workflow.name in reusable_test_workflows:
+                    expected_triggers = ["workflow_call", "workflow_dispatch"]
+                    for required in ("contents: read", "fail-fast: false", "shard: [0, 1, 2, 3]",
+                                     "needs: mysql-shard", "if: ${{ always() }}",
+                                     'test "$SHARDS_RESULT" = success', "NativeMySQLTests"):
+                        self.assertIn(required, text)
+                    for forbidden in ("secrets.", "environment: production", "contents: write", "actions: write",
+                                      "pull-requests: write", "ssh -", "update.sh", "continue-on-error",
+                                      "openai/codex-action", "codex exec", "OPENAI_API_KEY", "CHATGPT_AUTH_JSON"):
+                        self.assertNotIn(forbidden, text)
+                    caller = (workflow_dir / "ci-deploy.yml").read_text(encoding="utf-8")
+                    self.assertEqual(caller.count("uses: ./.github/workflows/" + workflow.name), 1)
+                    self.assertIn("needs.scope.outputs.ci_mysql == 'true' && needs.scope.outputs.ci_reuse != 'true'", caller)
+                    self.assertIn("needs: [scope, checks, server, browser, mysql]", caller)
                 elif workflow.name == "ci-deploy.yml":
                     expected_triggers = ["pull_request", "push", "workflow_dispatch"]
                 elif workflow.name == "direct-pr-review.yml":
