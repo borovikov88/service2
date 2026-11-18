@@ -17,6 +17,11 @@ from datetime import datetime, timezone
 REPO = 'borovikov88/service2'
 WORKFLOW = '.github/workflows/ci-deploy.yml'
 POLICY = '.github/scripts/reuse_pr_tests.py'
+POLICY_FILES = (
+    WORKFLOW, POLICY, '.github/workflows/management-finance-mysql.yml',
+    '.github/scripts/ci_policy.py', '.github/scripts/ci_test_runner.py',
+    '.github/mysql_test_labels.json', '.github/scripts/aqualine22_scope.py',
+)
 PROOF_PATTERN = re.compile(r'PR_TESTED_TREE_V1 ([0-9a-f]{40}) ([0-9a-f]{40})')
 LIMIT = 2 * 1024 * 1024
 MAX_AGE = 24 * 60 * 60
@@ -41,7 +46,7 @@ def digest(data):
 
 def policy_hashes(ref='HEAD'):
     return {path: digest(subprocess.check_output(['git', 'show', f'{ref}:{path}'], stderr=subprocess.DEVNULL))
-            for path in (WORKFLOW, POLICY)}
+            for path in POLICY_FILES}
 
 
 def capture_tree(env):
