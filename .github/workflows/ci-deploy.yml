@@ -57,6 +57,8 @@ jobs:
         run: python3 .github/scripts/reuse_pr_tests.py
       - name: Select conservative checks from the complete Git diff
         id: plan
+        env:
+          CI_REUSE_VERIFIED: ${{ steps.reuse.outputs.verified }}
         run: python3 .github/scripts/ci_policy.py plan
 
   checks:

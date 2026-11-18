@@ -58,12 +58,12 @@ class SelectionTests(unittest.TestCase):
             calls.append(args)
             return {"rev-parse": HEAD.encode(), "merge-base": b"", "diff": b"docs/a.md\0docs/b.md\0"}[args[0]]
         for event, payload in (("pull_request", {"pull_request": {"base": {"sha": BASE}}}), ("push", {"before": BASE})):
-            selected = P.event_plan({"GITHUB_SHA": HEAD, "GITHUB_EVENT_NAME": event, "GITHUB_REF": "refs/heads/main"}, payload, read)
+            selected = P.event_plan({"GITHUB_SHA": HEAD, "GITHUB_EVENT_NAME": event, "GITHUB_REF": "refs/heads/main", "CI_REUSE_VERIFIED": "true"}, payload, read)
             self.assertEqual(selected["mode"], "docs")
             self.assertIn(("diff", "--no-renames", "--name-only", "-z", BASE, HEAD), calls)
 
     def test_unknown_or_unavailable_boundaries_and_manual_runs_are_full(self):
-        env = {"GITHUB_SHA": HEAD, "GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main"}
+        env = {"GITHUB_SHA": HEAD, "GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main", "CI_REUSE_VERIFIED": "true"}
         for payload in ({}, {"before": "0" * 40}, {"before": "bad"}):
             self.assertEqual(P.event_plan(env, payload, lambda *a: HEAD.encode())["mode"], "full")
         def denied(*args):
@@ -72,6 +72,15 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(P.event_plan(env | {"GITHUB_EVENT_NAME": "workflow_dispatch"}, {}, lambda *a: HEAD.encode())["mode"], "full")
         # The old and new names are both considered, including moves out of docs.
         self.assertEqual(P.classify(["docs/old.md", "pool_service/new.py"])["mode"], "full")
+
+    def test_unproven_main_reuse_always_runs_full_even_for_docs(self):
+        env = {"GITHUB_SHA": HEAD, "GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main"}
+        def read(*args):
+            return {"rev-parse": HEAD.encode(), "merge-base": b"", "diff": b"docs/a.md\0"}[args[0]]
+        for evidence in (None, "", "false", "unknown"):
+            value = env | ({"CI_REUSE_VERIFIED": evidence} if evidence is not None else {})
+            self.assertEqual(P.event_plan(value, {"before": BASE}, read)["mode"], "full")
+        self.assertEqual(P.event_plan(env | {"CI_REUSE_VERIFIED": "true"}, {"before": BASE}, read)["mode"], "docs")
 
 
 class GateTests(unittest.TestCase):

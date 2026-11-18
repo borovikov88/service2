@@ -81,6 +81,10 @@ def event_plan(env, payload, git_reader=git):
         if event == "pull_request":
             base = payload["pull_request"]["base"]["sha"]
         elif event == "push" and env.get("GITHUB_REF") == "refs/heads/main":
+            # Missing/denied/ambiguous PR metadata must retain the verifier's
+            # documented full-main fallback, even for a known UI/docs diff.
+            if env.get("CI_REUSE_VERIFIED") != "true":
+                return plan()
             base = payload["before"]
         else:
             return plan()
