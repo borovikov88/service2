@@ -272,8 +272,15 @@ def execute_commercial_command(*, actor, organization, operation_key, command_ty
         except Organization.DoesNotExist as exc:
             raise PermissionDenied("Organization unavailable.") from exc
         actor = _authorize(using, actor_id, organization, capability)
+        subjects = model.objects.using(using)
+        if model is CrmDeal:
+            # A board projection can become private before a command arrives.
+            # Apply the same privacy predicate as owned-deal commands while the
+            # organization mutex is held, before both mutation and key replay.
+            from .crm_card_privacy import exclude_private_only_cards
+            subjects = exclude_private_only_cards(subjects, organization, kind="deal")
         try:
-            subject = model.objects.using(using).select_for_update().get(pk=subject_id, organization_id=organization_id)
+            subject = subjects.select_for_update().get(pk=subject_id, organization_id=organization_id)
         except model.DoesNotExist as exc:
             raise PermissionDenied("CRM subject unavailable.") from exc
         if isinstance(subject, CrmLead) and (subject.next_task_id or subject.sources.exists() or subject.threads.exists()):
