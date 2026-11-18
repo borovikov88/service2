@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import re
 import tempfile
 import urllib.error
 import unittest
@@ -16,7 +17,7 @@ reuse = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(reuse)
 SHA, BASE, HEAD, TREE, TESTED = ('a'*40, 'b'*40, 'c'*40, 'd'*40, 'e'*40)
 NOW = datetime(2026, 10, 23, 8, tzinfo=timezone.utc)
-POLICY = {reuse.WORKFLOW:'f'*64, reuse.POLICY:'0'*64}
+POLICY = {path: 'f'*64 for path in reuse.POLICY_FILES}
 
 
 class Api:
@@ -68,6 +69,7 @@ class ReuseTests(unittest.TestCase):
         cases += [{'env':self.env|{'GITHUB_REPOSITORY':'other/repo'}},
                   {'env':self.env|{'GITHUB_REF':'refs/heads/other'}}, {'commit':BASE},
                   {'parents':[BASE]}, {'parent_policy':{}}, {'parent_policy':POLICY|{reuse.POLICY:'forged'}}]
+        cases += [{'parent_policy': POLICY | {path: 'changed'}} for path in reuse.POLICY_FILES]
         for case in cases:
             with self.subTest(case=case),self.assertRaises(reuse.EvidenceError):self.verify(**case)
         self.assertEqual(self.api.calls,[])
@@ -173,8 +175,19 @@ class ReuseTests(unittest.TestCase):
         self.assertLess(text.index('name: Run test suite'),text.index('name: PR_TESTED_TREE_V1'))
         reuse_step=text[text.index('- name: Verify equivalent successful PR tests'):text.index('- name: Validate deploy workflow syntax')]
         self.assertNotIn('GH_TOKEN',reuse_step)
-        for name in ('Install dependencies','Run test suite','Validate Django configuration and migration state'):
-            self.assertIn('- name: '+name+"\n        if: steps.reuse.outputs.verified != 'true'",text)
+        gate = text.split('\n  test:\n')[1].split('\n  deploy:\n')[0]
+        self.assertIn('if: ${{ always() }}', gate)
+        self.assertIn('needs: [scope, checks, server, browser, mysql]', gate)
+        self.assertIn('CI_NEEDS_JSON: ${{ toJSON(needs) }}', gate)
+        self.assertIn('python3 .github/scripts/ci_policy.py gate', gate)
+        for job in ('server', 'browser', 'mysql'):
+            worker = re.split(r'\n  [a-z][a-z-]*:\n', text.split('\n  '+job+':\n')[1], maxsplit=1)[0]
+            # The job-level decision, rather than per-step skips, controls work.
+            self.assertIn("needs.scope.outputs.ci_"+job+" == 'true' && needs.scope.outputs.ci_reuse != 'true'", worker)
+        self.assertNotIn('continue-on-error', text)
+        self.assertEqual(text.count("!cancelled() && needs.test.result == 'success'"), 2)
+        self.assertTrue({'.github/scripts/ci_policy.py', '.github/scripts/ci_test_runner.py',
+                         '.github/mysql_test_labels.json', '.github/workflows/management-finance-mysql.yml'} <= set(reuse.POLICY_FILES))
 
 
 if __name__ == '__main__':unittest.main()

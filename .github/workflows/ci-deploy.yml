@@ -21,18 +21,30 @@ concurrency:
 
 jobs:
   scope:
-    name: Identify isolated calculator changes
+    name: Plan exact-diff checks and deployment
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       service_deploy: ${{ steps.scope.outputs.service_deploy }}
       calculator_deploy: ${{ steps.scope.outputs.calculator_deploy }}
+      ci_mode: ${{ steps.plan.outputs.ci_mode }}
+      ci_domains: ${{ steps.plan.outputs.ci_domains }}
+      ci_server: ${{ steps.plan.outputs.ci_server }}
+      ci_mysql: ${{ steps.plan.outputs.ci_mysql }}
+      ci_browser: ${{ steps.plan.outputs.ci_browser }}
+      ci_browser_matrix: ${{ steps.plan.outputs.ci_browser_matrix }}
+      ci_reuse: ${{ steps.reuse.outputs.verified }}
+      ci_tree: ${{ steps.test_tree.outputs.tree }}
+      ci_commit: ${{ steps.test_tree.outputs.commit }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Capture checked-out tree
+        id: test_tree
+        run: python3 .github/scripts/reuse_pr_tests.py capture
       - name: Determine deployment scope from the exact push diff
         id: scope
         env:
@@ -40,17 +52,20 @@ jobs:
           WORKFLOW_REF: ${{ github.ref }}
           BEFORE_SHA: ${{ github.event.before }}
         run: python3 .github/scripts/aqualine22_scope.py
+      - name: Verify equivalent successful PR tests
+        id: reuse
+        run: python3 .github/scripts/reuse_pr_tests.py
+      - name: Select conservative checks from the complete Git diff
+        id: plan
+        env:
+          CI_REUSE_VERIFIED: ${{ steps.reuse.outputs.verified }}
+        run: python3 .github/scripts/ci_policy.py plan
 
-  test:
-    name: Django checks and tests
+  checks:
+    name: CI policy and configuration
     needs: scope
-    outputs:
-      service_deploy: ${{ needs.scope.outputs.service_deploy }}
-      calculator_deploy: ${{ needs.scope.outputs.calculator_deploy }}
     runs-on: ubuntu-latest
-    # Keep the full server and browser gates within a bounded job budget.
-    # Hosted-runner variance exhausted 45 minutes while tests still progressed.
-    timeout-minutes: 60
+    timeout-minutes: 15
     env:
       SECRET_KEY: ci-only-secret
       DEBUG: "1"
@@ -60,11 +75,8 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
         with:
-          fetch-depth: 2
+          ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Capture checked-out tree
-        id: test_tree
-        run: python3 .github/scripts/reuse_pr_tests.py capture
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.0.0
         with:
           python-version: "3.13"
@@ -72,13 +84,11 @@ jobs:
       - name: Check reuse policy regressions
         run: |
           python -m unittest discover -s .github/tests -p test_reuse_pr_tests.py -v
+          python -m unittest discover -s .github/tests -p 'test_ci_*.py' -v
           python -m unittest discover -s .github/tests -p test_crm_pilot_db_backup.py -v
           python -m unittest discover -s .github/tests -p test_crm_pre_migrate_backup.py -v
           python -m unittest discover -s .github/tests -p test_crm_approved_access.py -v
           python -m unittest discover -s .github/tests -p test_crm_lead_intake_ops.py -v
-      - name: Verify equivalent successful PR tests
-        id: reuse
-        run: python .github/scripts/reuse_pr_tests.py
       - name: Validate deploy workflow syntax
         shell: bash
         run: |
@@ -100,25 +110,84 @@ jobs:
             .github/workflows/avito-outbox-readonly.yml .github/workflows/management-finance-mysql.yml \
             .github/workflows/crm-db-backup.yml .github/workflows/crm-intake-diagnostics.yml
       - name: Verify Avito monitor scheduling and deployment locks
-        if: steps.reuse.outputs.verified != 'true'
+        if: needs.scope.outputs.ci_reuse != 'true'
         run: python -m unittest discover -s .github/tests -p 'test_avito*py' -v
       - name: Verify water calculator and publication boundaries
-        if: steps.reuse.outputs.verified != 'true'
+        if: needs.scope.outputs.ci_reuse != 'true'
         run: |
           node --test tools/aqualine22-calculator/tests/engine.test.mjs
           node --test pool_service/tests/estimate_state.test.mjs pool_service/tests/estimate_parameters.test.mjs pool_service/tests/estimate_numbers.test.mjs
           node --test pool_service/tests/crm_live_operations.test.cjs pool_service/tests/crm_lead_operations.test.cjs
           python -m unittest discover -s .github/tests -p test_aqualine22_publication.py -v
       - name: Install dependencies
-        if: steps.reuse.outputs.verified != 'true'
+        if: needs.scope.outputs.ci_server == 'true' && needs.scope.outputs.ci_reuse != 'true'
         run: python -m pip install -r requirements.txt
       - name: Validate Django configuration and migration state
-        if: steps.reuse.outputs.verified != 'true'
+        if: needs.scope.outputs.ci_server == 'true' && needs.scope.outputs.ci_reuse != 'true'
         run: |
           python manage.py check --settings=service_site.test_settings
           python manage.py makemigrations --check --dry-run --settings=service_site.test_settings
+
+  server:
+    name: Django server shard (${{ matrix.shard }})
+    needs: scope
+    if: needs.scope.outputs.ci_server == 'true' && needs.scope.outputs.ci_reuse != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      SECRET_KEY: ci-only-secret
+      DEBUG: "1"
+      ALLOWED_HOSTS: testserver,localhost,127.0.0.1
+      EMAIL_BACKEND: django.core.mail.backends.locmem.EmailBackend
+      ADVISOR_MCP_TEST_ENABLED: "false"
+      CI_MODE: ${{ needs.scope.outputs.ci_mode }}
+      CI_SHARD: ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run test suite
+        run: python .github/scripts/ci_test_runner.py server --settings=service_site.test_settings --mode "$CI_MODE" --shard "$CI_SHARD" --shards 4
+
+  browser:
+    name: Chromium acceptance (${{ matrix.group }})
+    needs: scope
+    if: needs.scope.outputs.ci_browser == 'true' && needs.scope.outputs.ci_reuse != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.scope.outputs.ci_browser_matrix) }}
+    env:
+      SECRET_KEY: ci-only-secret
+      DEBUG: "1"
+      ALLOWED_HOSTS: testserver,localhost,127.0.0.1
+      EMAIL_BACKEND: django.core.mail.backends.locmem.EmailBackend
+      ADVISOR_MCP_TEST_ENABLED: "false"
+      CI_BROWSER_GROUP: ${{ matrix.group }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
       - name: Install Chromium commercial card dependencies
-        if: steps.reuse.outputs.verified != 'true'
         timeout-minutes: 20
         shell: bash
         run: |
@@ -130,42 +199,11 @@ jobs:
             "$browser_dir" "$NODE_PATH" "$PLAYWRIGHT_BROWSERS_PATH" >> "$GITHUB_ENV"
           npm install --prefix "$browser_dir" --ignore-scripts --no-audit --no-fund --package-lock=false playwright@1.62.1 bootstrap@5.2.3
           node "$browser_dir/node_modules/playwright/cli.js" install --with-deps chromium
-      - name: Chromium reviewed CRM roles acceptance
-        if: steps.reuse.outputs.verified != 'true'
-        timeout-minutes: 5
-        run: CRM_ROLE_BROWSER_TEST=1 python manage.py test pool_service.tests.test_crm_role_browser --settings=service_site.test_settings --verbosity 2
-      - name: Chromium shared workspace acceptance
-        if: steps.reuse.outputs.verified != 'true'
-        timeout-minutes: 5
-        shell: bash
-        run: |
-          set -euo pipefail
-          AVITO_OWNER_BROWSER_TEST=1 CONTACTS_BROWSER_TEST=1 CRM_CARD_BROWSER_TEST=1 CRM_COLUMN_BROWSER_TEST=1 CRM_NEEDS_BROWSER_TEST=1 CRM_LEADS_BROWSER_TEST=1 python manage.py test pool_service.tests.test_avito_owner_dashboard_browser pool_service.tests.test_sqlite_live_server_safety pool_service.tests.test_crm_column_browser pool_service.tests.test_contacts_browser pool_service.tests.test_owner_call_privacy_browser --settings=service_site.test_settings --verbosity 2
-      - name: Chromium commercial card acceptance
-        if: steps.reuse.outputs.verified != 'true'
-        # 23 bounded cases plus a fresh migrated DB; per-browser limits remain.
-        timeout-minutes: 8
-        shell: bash
-        run: |
-          set -euo pipefail
-          CONTACTS_BROWSER_TEST=1 CRM_CARD_BROWSER_TEST=1 CRM_COLUMN_BROWSER_TEST=1 CRM_NEEDS_BROWSER_TEST=1 CRM_LEADS_BROWSER_TEST=1 python manage.py test pool_service.tests.test_crm_commercial_card_browser pool_service.tests.test_crm_failure_browser pool_service.tests.test_crm_object_need_browser pool_service.tests.test_crm_lead_kanban_browser pool_service.tests.test_crm_service_binding_browser pool_service.tests.test_crm_quote_browser pool_service.tests.test_crm_handoff_browser pool_service.tests.test_crm_construction_browser pool_service.tests.test_crm_recurring_browser --settings=service_site.test_settings --verbosity 2
-      - name: Chromium CRM release acceptance
-        if: steps.reuse.outputs.verified != 'true'
-        # Includes a fresh migrated DB and bounded contact/assignment flows.
-        timeout-minutes: 8
-        shell: bash
-        run: |
-          set -euo pipefail
-          CONTACTS_BROWSER_TEST=1 CRM_CARD_BROWSER_TEST=1 CRM_LEADS_BROWSER_TEST=1 python manage.py test pool_service.tests.test_contact_creation_browser pool_service.tests.test_crm_lead_customer_completion_browser pool_service.tests.test_crm_onec_finance_browser pool_service.tests.test_crm_assignment_browser --settings=service_site.test_settings --verbosity 2
-      - name: Chromium material journal acceptance
-        if: steps.reuse.outputs.verified != 'true'
-        timeout-minutes: 5
-        shell: bash
-        run: |
-          set -euo pipefail
-          CRM_MATERIAL_BROWSER_TEST=1 python manage.py test pool_service.tests.test_crm_material_browser --settings=service_site.test_settings --verbosity 1
+      - name: Run selected Chromium acceptance
+        timeout-minutes: 10
+        run: python .github/scripts/ci_test_runner.py browser --settings=service_site.test_settings --group "$CI_BROWSER_GROUP"
       - name: Clean up Chromium commercial card files
-        if: always() && steps.reuse.outputs.verified != 'true'
+        if: always()
         timeout-minutes: 2
         shell: bash
         run: |
@@ -187,17 +225,39 @@ jobs:
               if directory.exists():
                   shutil.rmtree(directory)
           PYTHON
-      - name: Run test suite
-        if: steps.reuse.outputs.verified != 'true'
-        run: python manage.py test --settings=service_site.test_settings --verbosity 1
 
-      - name: PR_TESTED_TREE_V1 ${{ steps.test_tree.outputs.tree }} ${{ steps.test_tree.outputs.commit }}
+  mysql:
+    name: MySQL compatibility
+    needs: scope
+    if: needs.scope.outputs.ci_mysql == 'true' && needs.scope.outputs.ci_reuse != 'true'
+    uses: ./.github/workflows/management-finance-mysql.yml
+
+  test:
+    name: Django checks and tests
+    if: ${{ always() }}
+    needs: [scope, checks, server, browser, mysql]
+    outputs:
+      service_deploy: ${{ needs.scope.outputs.service_deploy }}
+      calculator_deploy: ${{ needs.scope.outputs.calculator_deploy }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require every selected check to succeed
+        env:
+          CI_NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python3 .github/scripts/ci_policy.py gate
+      - name: PR_TESTED_TREE_V1 ${{ needs.scope.outputs.ci_tree }} ${{ needs.scope.outputs.ci_commit }}
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        run: echo 'Full PR checks completed for the captured checkout.'
+        run: echo 'All checks required by the trusted CI plan completed for the captured checkout.'
 
   deploy:
     name: Deploy tested main to Passenger
     if: >-
+      !cancelled() && needs.test.result == 'success' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/main' && needs.test.outputs.service_deploy == 'true'
     needs: test
@@ -675,6 +735,7 @@ jobs:
   calculator:
     name: Publish calculator to the verified informational website
     if: >-
+      !cancelled() && needs.test.result == 'success' &&
       github.event_name == 'push' && github.ref == 'refs/heads/main' &&
       needs.test.outputs.calculator_deploy == 'true'
     needs: test
