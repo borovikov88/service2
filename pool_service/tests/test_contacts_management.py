@@ -91,8 +91,11 @@ class ContactManagementTests(TestCase):
         self.assertEqual(cleared.status_code, 200)
         self.a.refresh_from_db(); self.assertFalse(self.a.email)
         self.access.role="manager"; self.access.save()
-        denied = self.client.post(url, {"name":"Denied", "editor_revision":editor_revision(self.a,profile)}, HTTP_ACCEPT="application/json")
-        self.assertEqual(denied.status_code, 403)
+        edited = self.client.post(url, {"name":"Manager correction", "profile-contact_address":"Synthetic mailing address",
+            "inn":"1234567890", "editor_revision":editor_revision(self.a,profile)}, HTTP_ACCEPT="application/json")
+        self.assertEqual(edited.status_code, 200, edited.content)
+        self.a.refresh_from_db(); profile.refresh_from_db()
+        self.assertEqual((self.a.name, profile.contact_address, self.a.inn), ("Manager correction", "Synthetic mailing address", None))
 
     def test_inline_edit_preserves_unchanged_legacy_short_phone(self):
         from pool_service.client_import_review import editor_revision
@@ -165,7 +168,12 @@ class ContactManagementTests(TestCase):
         with self.assertRaises(ValidationError): self.phone(action="delete",key=self.a.phone,revision=previous)
         with self.assertRaises(ValidationError): self.phone(action="edit",key=self.a.phone,value="+12025550103")
         self.access.role="manager";self.access.save()
-        with self.assertRaises(PermissionDenied): self.phone(action="delete",key=self.a.phone)
+        self.phone(action="delete", key=self.a.phone)
+        self.a.refresh_from_db()
+        self.assertNotEqual(self.a.phone, "+12025550101")
+        self.access.role="accountant"; self.access.save()
+        with self.assertRaises(PermissionDenied):
+            self.phone(value="+12025550104")
 
     def test_legacy_short_numbers_have_distinct_editable_keys(self):
         from pool_service.services.contact_people import phone_rows

@@ -5,7 +5,12 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
   const ranks = {unparsed: 0, working: 1, history: 2, failed: 2, spam: 3, deleted: 4};
-  const leadStages = [{id: "unparsed", name: "Не разобраны"}, {id: "working", name: "В работе"}, {id: "failed", name: "Лид провален"}, {id: "spam", name: "Спам"}];
+  const leadStages = [
+    {id: "unparsed", name: "Не разобраны"}, {id: "working", name: "В работе"},
+    {id: "history", name: "Завершённые"}, {id: "failed", name: "Лид провален"},
+    {id: "spam", name: "Спам"}, {id: "deleted", name: "Удалённые"}, {id: "restore", name: "Восстановить"}
+  ];
+  const closesLead = ["history", "failed", "spam", "deleted"];
 
   async function runBatch(queue, records, send) {
     if (!records.length) return [];
@@ -55,13 +60,13 @@
     if (kind === "lead") {
       if (subject.column === target) return null;
       if (!config.moveTargets(subject).includes(target)) throw new Error("Перенос этой карточки в выбранную стадию недоступен.");
-      if ((["failed", "spam"].includes(target) || ranks[target] < ranks[subject.column]) && !reason) throw new Error("Укажите причину перемещения.");
+      if ((closesLead.includes(target) || target === "restore" || ranks[target] < ranks[subject.column]) && !reason) throw new Error("Укажите комментарий к завершению или перемещению.");
       const changes = {column: target, reason};
       if (target === "working" && (!subject.next_action || subject.next_action.completed)) {
         if (!(values.next_title || "").trim()) throw new Error("Укажите следующий шаг для лидов без открытого дела.");
         changes.next_action = {title: values.next_title.trim(), due_at: config.deadlineISO(values.due_at, config.offset)};
       }
-      if (["failed", "spam"].includes(target) && subject.next_action?.version && !subject.next_action.completed) changes.expected_task_version = subject.next_action.version;
+      if (closesLead.includes(target) && subject.next_action?.version && !subject.next_action.completed) changes.expected_task_version = subject.next_action.version;
       return {command_type: "lead.disposition", changes};
     }
     if (target === "failed") {
@@ -184,7 +189,7 @@
           form.append(node("p", "crm-live-form-note", "Новый ответственный получит уведомление по каждой переданной карточке. Исполнители существующих задач сохранятся."));
           if (records.every(record => record.subject.assignment_task?.can_transfer)) controls.transfer = field(form, "Также передать текущее следующее действие в каждой карточке", "transfer", "checkbox").input;
         } else {
-          const stages = config.kind === "lead" ? leadStages : (config.pipelineFor(records[0].subject.pipeline_id)?.stages || []).filter(stage => stage.can_transition || stage.is_failure && stage.can_close_negative).map(stage => ({...stage, id: stage.is_failure ? "failed" : stage.id}));
+          const stages = config.kind === "lead" ? leadStages.filter(stage => records.some(({subject}) => config.moveTargets(subject).includes(stage.id))) : (config.pipelineFor(records[0].subject.pipeline_id)?.stages || []).filter(stage => stage.can_transition || stage.is_failure && stage.can_close_negative).map(stage => ({...stage, id: stage.is_failure ? "failed" : stage.id}));
           if (action === "stage") { controls.stage = field(form, "Новая стадия", "stage", "select", [{id: "", name: "Выберите стадию"}, ...stages]).input; controls.stage.required = true; }
           const reason = field(form, "Комментарий / причина перемещения", "reason", "textarea"); controls.reason = reason.input; controls.reason.maxLength = 500;
           const next = field(form, "Следующий шаг для лидов без открытого дела", "next_title"), due = field(form, "Срок следующего шага", "due_at", "datetime-local");
@@ -194,12 +199,12 @@
           const update = () => {
             const target = action === "fail" ? "failed" : controls.stage.value;
             const stage = stages.find(item => String(item.id) === target);
-            const failure = ["failed", "spam"].includes(target), manual = Boolean(stage?.requires_manual_confirmation);
+            const closes = config.kind === "lead" ? closesLead.includes(target) : target === "failed", manual = Boolean(stage?.requires_manual_confirmation);
             const needsNext = config.kind === "lead" && target === "working" && records.some(({subject}) => !subject.next_action || subject.next_action.completed);
             next.label.hidden = due.label.hidden = !needsNext; next.input.required = due.input.required = needsNext;
             confirm.label.hidden = !manual; confirm.input.required = manual; confirm.input.checked = false;
-            reason.input.required = failure || records.some(({subject}) => config.kind === "lead" ? ranks[target] < ranks[subject.column] : stage && stage.position < (config.pipelineFor(subject.pipeline_id)?.stages.find(item => item.id === subject.stage_id)?.position ?? 0));
-            warning.textContent = failure ? "Открытый следующий шаг будет отменён с сохранением истории." : manual ? "Исполнение и оплата не подтверждаются. Документы и открытые задачи сохранятся." : config.kind === "lead" ? "Свободные лиды при первом перемещении закрепятся за вами." : "Изменится этап работы менеджера. Данные 1С сохранятся.";
+            reason.input.required = closes || target === "restore" || records.some(({subject}) => config.kind === "lead" ? ranks[target] < ranks[subject.column] : stage && stage.position < (config.pipelineFor(subject.pipeline_id)?.stages.find(item => item.id === subject.stage_id)?.position ?? 0));
+            warning.textContent = closes ? "Открытый следующий шаг будет отменён с сохранением истории." : manual ? "Ручное завершение сохраняет документы, открытые задачи и текущие сведения об исполнении и оплате." : config.kind === "lead" ? "Свободные лиды при первом перемещении закрепятся за вами." : "Изменится этап работы менеджера. Данные 1С сохранятся.";
           };
           controls.stage?.addEventListener("change", update); update();
         }

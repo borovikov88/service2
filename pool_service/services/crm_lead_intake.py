@@ -8,7 +8,7 @@ from django.contrib.auth import get_user_model
 from django.db import transaction
 from pool_service.communication_models import PhoneCall, TelephonyEmployeeIdentity
 from pool_service.crm_commercial_models import (
-    CrmAccess, CrmEvent, CrmIntakeActivation, CrmLead, CrmLeadSource, CrmLeadThread,
+    CrmCommunicationRoute, CrmEvent, CrmIntakeActivation, CrmLead, CrmLeadSource, CrmLeadThread,
 )
 from pool_service.models import Employee, Organization, OrganizationAccess
 from pool_service.services.crm_lead_access import can_read_lead
@@ -17,7 +17,10 @@ from pool_service.services.call_privacy import is_private_call
 from .crm_lead_identity import context_hash, is_active, lead_identity, matching_active_leads, source_identity
 
 
-INTAKE_OUTCOMES = frozenset({"lead_created", "lead_linked", "historical_ignored", "private_ignored"})
+INTAKE_OUTCOMES = frozenset({
+    "lead_created", "lead_linked", "deal_linked", "needs_distribution",
+    "historical_ignored", "private_ignored", "internal_ignored", "classification_pending",
+})
 
 
 def _context_key(event):
@@ -80,6 +83,12 @@ def consume_incoming(event, source, operation_identity):
         return "historical_ignored"
     if event.source_type == "call" and is_private_call(source):
         return "private_ignored"
+    if event.source_type == "call":
+        classification = source.classification_evidence if isinstance(source.classification_evidence, dict) else {}
+        if classification.get("kind") == "review":
+            return "classification_pending"
+        if source.direction == PhoneCall.DIRECTION_INTERNAL or classification.get("kind") == "internal":
+            return "internal_ignored"
     existing = CrmLeadSource.objects.select_for_update().filter(inbox=event).first()
     if existing:
         return "lead_linked"
@@ -91,11 +100,23 @@ def consume_incoming(event, source, operation_identity):
     if original:
         lead = CrmLead.objects.select_for_update().get(pk=original.lead_id, organization=organization)
     else:
-        matches = matching_active_leads(organization, identity)
+        # A verified explicit lead context establishes a single owner even if
+        # the operator adds it between source capture and background delivery.
+        explicit_lead = None
+        work_context = None
+        if event.source_type == "call":
+            from pool_service.staff_call_models import CallWorkContext
+            work_context = CallWorkContext.objects.filter(call=source, organization=organization).first()
+            if work_context and work_context.lead_id:
+                explicit_lead = CrmLead.objects.select_for_update().filter(pk=work_context.lead_id, organization=organization).first()
+        from .crm_communication_routing import route_to_deal
+        disposition = route_to_deal(event, organization, identity, _context_key(event), work_context)
+        if disposition:
+            return disposition
+        matches = [explicit_lead] if explicit_lead else matching_active_leads(organization, identity)
         if len(matches) > 1:
-            # Existing duplicates need an explicit decision; do not merge them,
-            # pick one arbitrarily or create a third card.
-            raise ValueError("crm_active_lead_ambiguous")
+            CrmCommunicationRoute.objects.create(organization=organization, inbox=event, source_key=event.source_key)
+            return "needs_distribution"
         lead = matches[0] if matches else None
         thread = CrmLeadThread.objects.select_for_update().filter(
             organization=organization, context_key=_context_key(event)).first()

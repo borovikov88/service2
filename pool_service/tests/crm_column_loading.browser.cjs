@@ -49,7 +49,15 @@ const {chromium}=require('playwright');const {readFileSync}=require('node:fs');
  const lead=page.locator(`.lead-row[data-lead-id="${f.lead}"]`),empty=leadLane('history');await lead.scrollIntoViewIfNeeded();b=await lead.boundingBox();t=await empty.boundingBox();
  const before=writes;
  for(let i=0;i<2;i++){await lead.dragTo(empty,{targetPosition:{x:35,y:b.y+b.height/2-t.y}});await page.getByRole('button',{name:'Завершить без создания',exact:true}).click();await page.locator('#lead-dialog form').waitFor();await page.locator('#lead-close').click();await page.locator('#lead-dialog').waitFor({state:'hidden'});assert.equal(writes,before);}
- await lead.dragTo(empty,{targetPosition:{x:35,y:b.y+b.height/2-t.y}});await page.getByRole('button',{name:'Завершить без создания',exact:true}).click();const leadSaved=page.waitForResponse(r=>r.url().includes('/leads/commands/')&&r.request().method()==='POST');await page.locator('#lead-dialog form button[type=submit]').click();assert.equal((await leadSaved).status(),200);await page.getByText('Изменения сохранены.',{exact:true}).waitFor();await leadReady();await page.locator('#lead-close').click();await page.locator('#lead-dialog').waitFor({state:'hidden'});await empty.locator(`.lead-row[data-lead-id="${f.lead}"]`).waitFor();assert.equal(await leadRows().count(),101);
+  await lead.dragTo(empty,{targetPosition:{x:35,y:b.y+b.height/2-t.y}});
+  await page.getByRole('button',{name:'Завершить без создания',exact:true}).click();
+  await page.getByLabel('Комментарий к завершению',{exact:true}).fill('Synthetic confirmed result');
+  const leadSaved=page.waitForResponse(r=>r.url().includes('/leads/commands/')&&r.request().method()==='POST');
+  await page.locator('#lead-dialog form button[type=submit]').click();
+  assert.equal((await leadSaved).status(),200);
+  await page.getByText('Изменения сохранены.',{exact:true}).waitFor();await leadReady();
+  await page.locator('#lead-dialog').waitFor({state:'hidden'});
+  await empty.locator(`.lead-row[data-lead-id="${f.lead}"]`).waitFor();assert.equal(await leadRows().count(),101);
  for(const theme of ['light','dark']){
  await page.setViewportSize({width:390,height:844});await page.evaluate(t=>document.documentElement.setAttribute('data-theme',t),theme);
  await leadLane('unparsed').locator('[data-action=column-more]').click();await leadReady();

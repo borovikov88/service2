@@ -42,7 +42,8 @@ def source_scope(source_type, source, connection, telephony=None):
         conv = source.conversation
         return dict(organization=conv.organization_id, provider=connection.channel.kind,
             connection=connection.pk, channel=connection.pk, account=str(connection.external_id),
-            namespace=conv.external_id, external=str(source.external_id or ""))
+            namespace=conv.external_id, external=(f"reply:{source.pk}" if source.direction == "out"
+                else str(source.external_id or "")))
     return dict(organization=source.organization_id, provider="megafon", connection=telephony.pk,
         channel=connection.pk, account=str(telephony.external_id), namespace="", external=str(source.external_id))
 
@@ -79,7 +80,7 @@ def capture_source(source_type, source):
     if not transaction.get_connection().in_atomic_block:
         raise RuntimeError("inbox_capture_requires_transaction")
     if source_type == "message":
-        if source.direction != "in" or source.conversation.connection.channel.kind not in {"avito", "website"}:
+        if not _message_eligible(source) or source.conversation.connection.channel.kind not in {"avito", "website"}:
             return None
         org_id, connection_id = source.conversation.organization_id, source.conversation.connection_id
         provider = source.conversation.connection.channel.kind
@@ -138,6 +139,12 @@ def _wake_after_commit(event):
     schedule_wakeup(event)
 
 
+def _message_eligible(message):
+    return message.direction == "in" or (
+        message.direction == "out" and message.sent_by_id and message.intake_received_at
+        and (message.intake_scope or {}).get("external") == f"reply:{message.pk}")
+
+
 def _locked_source(source_type, source_id, channel_id, organization_id):
     connection = ChannelConnection.objects.select_for_update().select_related("channel").filter(pk=channel_id).first()
     org = Organization.objects.select_for_update().filter(pk=organization_id).first()
@@ -149,7 +156,7 @@ def _locked_source(source_type, source_id, channel_id, organization_id):
             return org, None, "source_missing"
         conv = Conversation.objects.select_for_update().select_related("connection__channel", "client").filter(pk=peek["conversation_id"]).first()
         source = ConversationMessage.objects.select_for_update().filter(pk=source_id).first()
-        if not source or conv.organization_id != organization_id or conv.connection_id != connection.pk or source.direction != "in" or connection.channel.kind not in {"website", "avito"}:
+        if not source or not conv or conv.organization_id != organization_id or conv.connection_id != connection.pk or not _message_eligible(source) or connection.channel.kind not in {"website", "avito"}:
             return org, None, "source_scope_changed"
         if conv.client_id and conv.client.organization_id != organization_id:
             return org, None, "source_scope_changed"

@@ -628,6 +628,41 @@ class CrmLeadThread(LeadEvidenceModel):
         constraints = [models.UniqueConstraint(fields=["organization", "context_key"], name="crm_lead_thread_context")]
 
 
+class CrmCommunicationRoute(LeadEvidenceModel):
+    """One disposition for a delivery across all revisions. Content stays at the source."""
+    immutable_scope = ("organization_id", "inbox_id", "source_key")
+    organization = models.ForeignKey("pool_service.Organization", on_delete=models.PROTECT)
+    inbox = models.OneToOneField("pool_service.CrmInboxEvent", on_delete=models.PROTECT, related_name="crm_route")
+    source_key = models.CharField(max_length=64, unique=True)
+    deal = models.ForeignKey(CrmDeal, null=True, blank=True, on_delete=models.PROTECT, related_name="routed_communications")
+    revision = models.PositiveIntegerField(default=1)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta(LeadEvidenceModel.Meta):
+        indexes = [models.Index(fields=["organization", "deal", "id"], name="crm_comm_route_queue_idx")]
+
+    def clean(self):
+        super().clean()
+        from .crm_inbox_models import CrmInboxEvent
+        if not CrmInboxEvent.objects.using(self._state.db or "default").filter(pk=self.inbox_id,
+                organization_id=self.organization_id, scope_verified=True, source_key=self.source_key).exists():
+            raise ValidationError("Communication route requires verified evidence in the same organization.")
+        if CrmLeadSource.objects.using(self._state.db or "default").filter(
+                inbox__source_key=self.source_key).exists():
+            raise ValidationError("Communication already has lead provenance.")
+
+
+class CrmConversationDeal(LeadEvidenceModel):
+    """Explicit selection for future messages in a verified, scoped dialog."""
+    immutable_scope = ("organization_id", "context_key")
+    organization = models.ForeignKey("pool_service.Organization", on_delete=models.PROTECT)
+    context_key = models.CharField(max_length=64)
+    deal = models.ForeignKey(CrmDeal, on_delete=models.PROTECT, related_name="+")
+
+    class Meta(LeadEvidenceModel.Meta):
+        constraints = [models.UniqueConstraint(fields=["organization", "context_key"], name="crm_deal_dialog_scope")]
+
+
 class CrmLeadDealLink(LeadEvidenceModel):
     immutable_scope = ("organization_id", "lead_id", "deal_id", "command_id", "kind")
     organization = models.ForeignKey("pool_service.Organization", on_delete=models.PROTECT)

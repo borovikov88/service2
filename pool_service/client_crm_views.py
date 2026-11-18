@@ -33,11 +33,12 @@ from .phone_utils import format_phone
 from .client_merge import merge_clients, merge_suggestions
 from .communication_models import CommunicationAccess, PhoneCall
 from .call_markers import annotate_missed_call_callbacks
-from .models import Client, CrmItem, Organization, OrganizationAccess, Pool, ServiceTask
+from .models import Client, CrmItem, DataAuditLog, Organization, OrganizationAccess, Pool, ServiceTask
 from .services.task_waiting_schedule import waiting_schedule_metadata
 from .services.crm_permissions import crm_items_for_user
 from .services.call_privacy import visible_calls_page
 from .services.task_read_permissions import readable_tasks
+from .services.contact_edit_access import contact_edit_roles
 
 
 IMPORT_ROLES = {"owner", "admin"}
@@ -98,6 +99,12 @@ def _user_label(user):
     return user.get_full_name() or user.username
 
 
+def _relationships_revision(client):
+    from .client_import_review import digest
+    return digest(list(ClientCompanyLink.objects.filter(Q(company=client) | Q(person=client))
+        .order_by("pk").values_list("pk", "position", "is_primary", "updated_at")))
+
+
 @login_required
 @transaction.atomic
 def client_detail(request, client_id):
@@ -129,20 +136,32 @@ def client_detail(request, client_id):
         request.user.is_superuser
         or (org_roles & IMPORT_ROLES)
     )
+    editor_roles = contact_edit_roles(request.user, client, lock=request.method == "POST")
+    can_edit_contacts = bool(editor_roles)
+    limited_editor = editor_roles == {"manager"}
     service_only = bool(
         org_roles & SERVICE_ONLY_ROLES
         and not (org_roles & {"owner", "admin", "manager"})
     )
 
     if request.method == "GET" and request.GET.get("lookup") == "relationships":
-        if not can_manage:
+        if not (can_manage or can_edit_contacts):
             return HttpResponseForbidden()
         return relationship_results(client, request.GET.get("q", ""))
 
     if request.method == "POST":
-        if not can_manage:
-            return HttpResponseForbidden()
         action = (request.POST.get("action") or "").strip()
+        relationship_action = action in {"add_company_link", "update_company_link", "delete_company_link"}
+        if not can_manage and not (can_edit_contacts and relationship_action):
+            return HttpResponseForbidden()
+        if limited_editor and relationship_action and request.POST.get("relationships_revision") != _relationships_revision(client):
+            from django.http import HttpResponse
+            return HttpResponse("Связи изменились. Обновите карточку.", status=409)
+
+        def audit_relationship(link, action):
+            DataAuditLog.objects.create(organization=client.organization, client=client, actor=request.user,
+                entity_type="ClientCompanyLink", entity_id=str(link.pk), action=action,
+                changed_fields=["company", "person", "position", "is_primary"])
 
         if action in {"save_person_phone", "link_person_user"}:
             from .services.contact_people import save_phone, link_person
@@ -266,6 +285,9 @@ def client_detail(request, client_id):
             company = client if client.client_type == "legal" else related
             person = related if client.client_type == "legal" else client
             is_primary = request.POST.get("is_primary") == "1"
+            if limited_editor and (ClientCompanyLink.objects.filter(company=company, person=person, automatic=True).exists()
+                    or is_primary and ClientCompanyLink.objects.filter(company=company, automatic=True, is_primary=True).exists()):
+                return HttpResponseForbidden()
             link, created = ClientCompanyLink.objects.get_or_create(
                 company=company,
                 person=person,
@@ -284,6 +306,7 @@ def client_detail(request, client_id):
                 readable_company_links(request.user).filter(company=company).exclude(pk=link.pk).update(
                     is_primary=False
                 )
+            audit_relationship(link, "create" if created else "update")
             messages.success(request, "Связь добавлена.")
             return redirect(card_url(client.id, "contacts"))
 
@@ -296,6 +319,9 @@ def client_detail(request, client_id):
             link = readable_company_links(request.user).filter(link_filter, pk=link_id).first()
             if link is None:
                 return HttpResponseForbidden()
+            if limited_editor and (link.automatic or request.POST.get("is_primary") == "1"
+                    and link.company.person_links.filter(automatic=True, is_primary=True).exists()):
+                return HttpResponseForbidden()
             if action == "delete_company_link":
                 if link.automatic:
                     messages.error(
@@ -303,6 +329,7 @@ def client_detail(request, client_id):
                         "Автоматическую связь ИП из 1С нельзя удалить вручную.",
                     )
                 else:
+                    audit_relationship(link, "delete")
                     link.delete()
                     messages.success(request, "Связь удалена.")
                 return redirect(card_url(client.id, "contacts"))
@@ -313,6 +340,7 @@ def client_detail(request, client_id):
                 readable_company_links(request.user).filter(company=link.company).exclude(pk=link.pk).update(
                     is_primary=False
                 )
+            audit_relationship(link, "update")
             messages.success(request, "Связь обновлена.")
             return redirect(card_url(client.id, "contacts"))
 
@@ -494,6 +522,18 @@ def client_detail(request, client_id):
     if conversation_capability(request.user, "can_view_conversations", client.organization):
         client_conversations = list(Conversation.objects.filter(client=client, organization_id=client.organization_id,
             connection__channel__organization_id=client.organization_id).select_related("connection__channel").order_by("-last_message_at")[:30])
+    pending_communications = []
+    if calls or client_conversations:
+        from .communication_models import ConversationMessage
+        from .services.crm_commercial_access import can_view_team_deals
+        from .services.crm_communication_routing import pending_routes, readable_routes
+        if can_view_team_deals(request.user, client.organization):
+            message_ids = ConversationMessage.objects.filter(
+                conversation_id__in=[conversation.pk for conversation in client_conversations]).values("pk")
+            pending_communications = list(pending_routes(readable_routes(request.user, client.organization), client.organization)
+                .filter(Q(inbox__source_type="call", inbox__source_id__in=[call.pk for call in calls])
+                    | Q(inbox__source_type="message", inbox__source_id__in=message_ids))
+                .select_related("inbox").order_by("-pk")[:10])
 
     from .services.contact_people import phone_revision, phone_rows
     from .client_crm_ui import inline_editor_context
@@ -513,14 +553,15 @@ def client_detail(request, client_id):
         "pool_service/client_detail.html",
         {
             "client": client,
-            **(inline_editor_context(client, profile) if can_manage and not request.user.is_superuser else {}),
+            **(inline_editor_context(client, profile, limited=limited_editor) if can_edit_contacts else {}),
             "client_conversations": client_conversations,
+            "pending_communications": pending_communications,
             "profile": profile,
             "client_kind_label": client_kind_label,
             "phones": phones,
-            "phone_revision": phone_revision(client) if can_manage else "",
+            "phone_revision": phone_revision(client) if can_edit_contacts else "",
             "phone_rows": phone_rows(client),
-            "can_manage_phones": can_manage and not request.user.is_superuser,
+            "can_manage_phones": can_edit_contacts,
             "merge_history": client.merge_records.select_related("actor").order_by("-created_at")[:10] if can_manage else [],
             "person_user_link": OrganizationPersonLink.objects.filter(person=client, organization_id=client.organization_id).select_related("user", "employee").first() if can_manage else None,
             "personal_call_state": personal_call_state,
@@ -538,6 +579,9 @@ def client_detail(request, client_id):
             "calls_total": calls_total,
             "can_view_calls": can_view_calls,
             "can_manage": can_manage,
+            "can_edit_contacts": can_edit_contacts,
+            "limited_contact_editor": limited_editor,
+            "relationships_revision": _relationships_revision(client) if limited_editor else "",
             "supplier_role": roles_by_code.get("supplier"),
             "contact_roles": contact_roles,
             "can_view_object_finance": bool(

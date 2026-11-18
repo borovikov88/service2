@@ -48,6 +48,7 @@ EVENT_LABELS = {
     "deal.next_action": "Следующее действие изменено",
     "deal.bind_order": "Заказ 1С связан со сделкой",
     "deal.unbind_order": "Связь с заказом 1С снята",
+    "deal.documents": "Обновлены связи с документами 1С",
     "deal.onec_completed": "Сделка автоматически завершена по данным 1С",
     "deal.onec_review": "Данные 1С требуют сверки",
     "deal.assign": "Ответственный за сделку изменён",
@@ -108,6 +109,23 @@ def _deal_queryset(user, organization):
 
 def _label(user):
     return (user.get_full_name() or user.username) if user else "Не назначен"
+
+
+def _responsible_filter(queryset, field, owner, user_id):
+    if owner == "all":
+        return queryset
+    if owner == "unassigned":
+        return queryset.filter(**{field + "__isnull": True})
+    return queryset.filter(**{field: user_id if owner == "me" else _id(owner)})
+
+
+def _responsible_options(organization):
+    from django.contrib.auth import get_user_model
+    users = get_user_model().objects.filter(
+        Q(organizationaccess__organization=organization, organizationaccess__role__in=("owner", "admin", "manager"))
+        | Q(employee_profiles__organization=organization, employee_profiles__employment_status="dismissed")
+    ).only("id", "first_name", "last_name", "username").distinct().order_by("last_name", "first_name", "username")
+    return [{"id": user.pk, "name": _label(user)} for user in users]
 
 
 def _task_for(deal):
@@ -279,7 +297,9 @@ def _serialize_deals(deals, user, organization, grant, *, detail=False):
             rows[-1]['assignment_note'] = ASSIGNMENT_NOTE
             rows[-1]['assignment_task'] = assignment_task_data(deal, user) if rows[-1]['can_assign'] else None
             from .services.crm_order_finance import finance_projection
+            from .services.crm_document_links import document_projection
             rows[-1]['onec_finance'] = finance_projection(deal, user, organization)
+            rows[-1]["onec_documents"] = document_projection(user, organization, deal)
     return rows
 
 
@@ -295,8 +315,8 @@ def _workspace_data(request, organization, *, board=None):
     if pipeline_id is not None and pipeline_id not in {pipeline.pk for pipeline in pipelines}:
         raise Http404
     owner = request.GET.get("owner", "all")
-    if owner not in ("me", "all"):
-        raise ValidationError("Выберите корректный фильтр ответственного.")
+    if owner not in {"all", "me", "unassigned"}:
+        owner = str(_id(owner))
     query = request.GET.get("q", "").strip()[:200]
     page = _id(request.GET.get("page", "1"))
     if page > 10000:
@@ -340,8 +360,7 @@ def _workspace_data(request, organization, *, board=None):
             except (ValueError, OverflowError) as exc:
                 raise ValidationError("Некорректная дата решения.") from exc
             queryset = queryset.filter(**{"expected_decision_at__" + lookup: bound})
-    if owner == "me":
-        queryset = queryset.filter(manager_id=request.user.pk)
+    queryset = _responsible_filter(queryset, "manager_id", owner, request.user.pk)
     if query:
         from .services.crm_deal_objects import object_querysets
         pools, owned = object_querysets(request.user, organization.pk)
@@ -489,11 +508,14 @@ def workspace(request):
     scope = "?" + urlencode({"org_id": organization.pk})
     data.update({
         "timezone": str(zone), "utc_offset": offset[:3] + ":" + offset[3:],
+        "responsible_options": _responsible_options(organization),
         "urls": {"data": reverse("crm_live_data") + scope,
             "clients": reverse("crm_live_clients") + scope,
             "objects": reverse("crm_live_objects") + scope,
             "order_candidates": reverse("crm_order_candidates") + scope,
             "order_refresh": reverse("crm_order_refresh") + scope,
+            "document_candidates": reverse("crm_document_candidates") + scope,
+            "document_refresh": reverse("crm_document_refresh") + scope,
             "responsibles": reverse("crm_assignment_candidates") + scope,
             "command": reverse("crm_live_command") + scope,
             "bulk_command": reverse("crm_live_bulk_command") + scope,
@@ -584,7 +606,7 @@ def detail(request, deal_id):
         # Task content remains in its protected source. Only stage-change
         # reasons belong on the team-visible deal timeline in this release.
         "manual_completion_exception": event.safe_diff.get("manual_completion_exception", {}).get("after", False),
-        "reason": event.reason if event.event_type in {"deal.transition", "deal.close_negative", "deal.bind_order", "deal.unbind_order", "deal.onec_completed", "deal.onec_review", "deal.assign"} else "",
+        "reason": event.reason if event.event_type in {"deal.transition", "deal.close_negative", "deal.bind_order", "deal.unbind_order", "deal.documents", "deal.onec_completed", "deal.onec_review", "deal.assign"} else "",
     } for event in events]})
 
 
@@ -633,6 +655,10 @@ def command(request):
     elif kind in ("deal.bind_order", "deal.unbind_order"):
         from .services.crm_order_finance import execute_order_command
         result = execute_order_command(**common, command_type=kind, subject_id=payload.get("subject_id"),
+            expected_revision=payload.get("expected_revision"), changes=changes)
+    elif kind == "deal.documents":
+        from .services.crm_document_links import execute_document_command
+        result = execute_document_command(**common, subject_id=payload.get("subject_id"),
             expected_revision=payload.get("expected_revision"), changes=changes)
     elif kind == "deal.assign":
         from .services.crm_assignments import execute_assignment

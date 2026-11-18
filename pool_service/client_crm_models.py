@@ -3,6 +3,7 @@ from django.db import models
 
 
 class ClientCRMProfile(models.Model):
+    contact_address = models.CharField("Контактный адрес", max_length=500, blank=True)
     LEGAL_FORM_NONE = ""
     LEGAL_FORM_ENTITY = "entity"
     LEGAL_FORM_IP = "ip"
@@ -415,6 +416,7 @@ class ClientBusinessRole(models.Model):
     """Explicit local classification; never an intake or access grant."""
     ROLE_CHOICES = [
         ("supplier", "Поставщик"),
+        ("buyer", "Покупатель"),
         ("personal", "Личный"),
         ("internal", "Внутренний"),
         ("landlord", "Арендодатель"),
@@ -426,6 +428,8 @@ class ClientBusinessRole(models.Model):
     role = models.CharField(max_length=20, choices=ROLE_CHOICES)
     active = models.BooleanField(default=False)
     revision = models.PositiveIntegerField(default=0)
+    onec_active = models.BooleanField(null=True, default=None)
+    manual_active = models.BooleanField(null=True, default=None)
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["client", "role"], name="client_business_role_uniq")]
@@ -449,10 +453,11 @@ class OrganizationPersonLink(models.Model):
 
 class ClientBusinessRoleEvent(models.Model):
     client = models.ForeignKey("pool_service.Client", on_delete=models.PROTECT, related_name="business_role_events")
-    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.PROTECT)
     role = models.CharField(max_length=20)
     active = models.BooleanField()
     revision = models.PositiveIntegerField()
+    onec_ref = models.CharField(max_length=36, blank=True)
     source_client = models.ForeignKey("pool_service.Client", null=True, on_delete=models.PROTECT, related_name="transferred_business_role_events")
     created_at = models.DateTimeField(auto_now_add=True)
 

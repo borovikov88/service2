@@ -22,12 +22,14 @@ from .odata_profit import (
 
 ORDER = "Document_ЗаказПокупателя"
 INVOICE = "Document_РасходнаяНакладная"
+FISCAL_CHECK = "Document_ЧекККМ"
 SETTLEMENTS = "AccumulationRegister_РасчетыСПокупателями_RecordType"
 RECEIPTS = frozenset({"Document_ПоступлениеНаСчет", "Document_ПоступлениеВКассу"})
 COMMON_FIELDS = ("Ref_Key", "Date", "Posted", "DeletionMark", "Number", "DataVersion",
                  "Организация_Key", "Контрагент_Key", "СуммаДокумента")
 ORDER_FIELDS = COMMON_FIELDS + ("Договор_Key", "ВалютаДокумента_Key", "ПричинаОтмены_Key")
 INVOICE_FIELDS = COMMON_FIELDS + ("Договор_Key", "ВалютаДокумента_Key", "Заказ", "Заказ_Type", "ВидОперации")
+CHECK_FIELDS = COMMON_FIELDS + ("ВалютаДокумента_Key", "Заказ_Key")
 PAYMENT_FIELDS = COMMON_FIELDS + ("ВалютаДенежныхСредств_Key", "ВидОперации")
 MOVEMENT_FIELDS = ("Recorder", "Recorder_Type", "LineNumber", "Period", "Active", "RecordType",
     "Организация_Key", "Контрагент_Key", "Договор_Key", "Заказ", "Заказ_Type", "ТипРасчетов",
@@ -162,7 +164,7 @@ def _refs_filter(field, refs):
 
 
 def _read(config, entity, fields, filters, opener, budget, *, latest_limit=None):
-    if entity not in {ORDER, INVOICE, SETTLEMENTS, *RECEIPTS}:
+    if entity not in {ORDER, INVOICE, FISCAL_CHECK, SETTLEMENTS, *RECEIPTS}:
         raise CrmOrdersReadError("Unsupported CRM order entity")
     remaining = config.max_pages - budget[0]
     if remaining <= 0:
@@ -355,6 +357,54 @@ def _public_document(row, kind, *, amount=None, movement=None):
     if movement:
         result["movement_line"] = movement["line"]
         result["invoice_ref"] = movement["document"]
+    if kind == "realization":
+        result.update(document_amount=str(row["amount"]), order_guid=row["order"] or "")
+    return result
+
+
+def read_crm_documents(*, config, kind, number, customers, now, opener=None):
+    """Read the headers of exact documents. These rows are never payment evidence."""
+    config = validate_config(config)
+    entity, fields = {"realization": (INVOICE, INVOICE_FIELDS), "check": (FISCAL_CHECK, CHECK_FIELDS)}[kind]
+    customers = sorted({_guid(value, "customer_guid") for value in customers})
+    number = _text(number, "document number", 80)
+    if urlsplit(config.base_url).scheme != "https" or not customers or len(customers) > MAX_ORDERS:
+        raise CrmOrdersReadError("Invalid CRM document scope")
+    if any(ord(char) < 32 or ord(char) == 127 for char in number):
+        raise CrmOrdersReadError("Invalid document number")
+    opener = opener or build_opener(NoRedirectHandler())
+    currencies = _currency_codes(config)
+    budget, result = [0, 0], {}
+    exact = number.replace("'", "''")
+    for start in range(0, len(customers), CHUNK):
+        chunk = customers[start:start + CHUNK]
+        filters = (_org_filter(config) + " and " + _refs_filter("Контрагент_Key", chunk)
+            + " and Number eq '" + exact + "'")
+        for raw in _read(config, entity, fields, filters, opener, budget):
+            guid = _guid(raw.get("Ref_Key"), "Ref_Key")
+            org = _org(raw, config)
+            customer = _guid(raw.get("Контрагент_Key"), "Контрагент_Key")
+            currency = _guid(raw.get("ВалютаДокумента_Key"), "ВалютаДокумента_Key", optional=True)
+            amount = _money(raw.get("СуммаДокумента"), "СуммаДокумента")
+            date = _moment(raw.get("Date"), "Date")
+            posted = _bool(raw, "Posted")
+            deleted = _bool(raw, "DeletionMark")
+            if (customer not in chunk or _text(raw.get("Number"), "Number", 80) != number
+                    or (org, guid) in result or abs(amount) >= Decimal("1e16")):
+                raise CrmOrdersReadError("CRM document response is outside the lookup scope or contains duplicates")
+            if kind == "check":
+                order = _guid(raw.get("Заказ_Key"), "Заказ_Key", optional=True)
+                supported = True
+            else:
+                order = _guid(raw.get("Заказ"), "Заказ", optional=True)
+                if order and normalize_document_type(raw.get("Заказ_Type"), field="Заказ_Type") != ORDER:
+                    order = None
+                supported = _text(raw.get("ВидОперации"), "ВидОперации", 160) == "ПродажаПокупателю"
+            result[org, guid] = dict(customer_guid=customer, order_guid=order or "", currency_guid=currency or "",
+                currency=currencies.get(currency, ""), number=number, document_date=date, amount=amount,
+                valid=posted and not deleted and date <= now and amount > 0 and supported)
+            if len(result) > MAX_ORDERS:
+                raise CrmOrdersReadError("CRM document lookup exceeds its supported scope")
     return result
 
 

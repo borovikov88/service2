@@ -189,12 +189,14 @@ def conversations(request):
         ).update(is_read=True, is_resolved=True, resolved_at=timezone.now())
     from .communication_enrichment import start_client_enrichment_worker
     from .crm_source_links import navigation as crm_source_navigation
+    from .services.crm_commercial_access import can_view_team_deals
     requested = ([selected.pk] if selected else []) + [item.pk for item in items if not item.client_id][:19]
     transaction.on_commit(lambda: start_client_enrichment_worker(requested))
     return render(request, "pool_service/communications/conversations.html", {
         "active_tab": "communications", "conversations": items, "selected": selected, "communication_org_id": organization.pk,
         **conversation_context(selected, organization, request.user, include_outbox=False),
         "avito_crm_url": crm_source_navigation(request.user, organization),
+        "show_distribution": can_view_team_deals(request.user, organization),
         "can_reply": conversation_capability(request.user, "can_reply_conversations", organization),
         "can_take": conversation_capability(request.user, "can_take_conversation", organization),
         "can_assign": conversation_capability(request.user, "can_assign_conversation", organization),
@@ -286,6 +288,16 @@ def conversation_reply(request, conversation_uuid):
         sent_by=request.user,
         delivery_status=ConversationMessage.DELIVERY_PENDING,
     )
+    if channel.kind in {"avito", "website"}:
+        from .models import Organization
+        from .services.crm_inbox import capture_source, initialize_source, source_scope
+        # Record the local outgoing message once, independently of delivery retries.
+        organization = Organization.objects.select_for_update().get(pk=organization.pk)
+        if organization.crm_intake_process:
+            initialize_source(message, source_scope("message", message, connection), occurred_at=message.created_at)
+            message.save(update_fields=["intake_scope", "intake_cutover_at", "intake_received_at",
+                "intake_occurred_at", "intake_origin", "intake_historical"])
+            capture_source("message", message)
     for uploaded in files:
         content_type = uploaded.content_type or "application/octet-stream"
         attachment = MessageAttachment.objects.create(message=message, original=uploaded, original_name=uploaded.name[:255], content_type=content_type, original_size=uploaded.size)
@@ -908,8 +920,11 @@ def calls(request):
         else:
             call.resolved_client = None
             call.ambiguous_clients = matches
+    from .services.crm_commercial_access import can_view_team_deals
     return render(request, "pool_service/communications/calls.html", {
         "active_tab": "communications",
+        "communication_org_id": organization.pk,
+        "show_distribution": can_view_team_deals(request.user, organization),
         "calls": calls,
         "employees": employees,
         "clients": clients,

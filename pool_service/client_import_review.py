@@ -276,7 +276,7 @@ def reconcile(candidate, client, profile, *, created=False, person=False):
 def editor_revision(client, profile):
     """Optimistic token for the full manual editor; sync metadata is excluded."""
     return digest([dict((f, scalar(getattr(client, f))) for f in (*CLIENT_FIELDS, "client_type", "contact_position")),
-        dict((f, scalar(getattr(profile, f))) for f in (*PROFILE_FIELDS, "legal_form", "ogrn", "notes", "manager_id", "responsible_id")),
+        dict((f, scalar(getattr(profile, f))) for f in (*PROFILE_FIELDS, "legal_form", "ogrn", "notes", "contact_address", "manager_id", "responsible_id")),
         list(ClientContact.objects.filter(client=client).order_by("pk").values())])
 
 

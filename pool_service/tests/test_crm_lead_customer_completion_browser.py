@@ -1,5 +1,6 @@
 """Real Chromium acceptance for completing a lead without a deal."""
 from datetime import timedelta
+from decimal import Decimal
 import os
 from pathlib import Path
 from unittest import skipUnless
@@ -79,3 +80,23 @@ class LeadCustomerCompletionBrowserTests(LeadFixture, StaticLiveServerTestCase):
 
     def test_company_only_completion_does_not_require_deal_creation_permission(self):
         self.exercise_completion(company_only=True)
+
+    def test_budget_save_keeps_card_open_and_converting_opens_the_new_deal(self):
+        self.org.plan_type = Organization.PLAN_COMPANY_PAID
+        self.org.paid_until = timezone.now() + timedelta(days=30)
+        self.org.save(update_fields=["plan_type", "paid_until"])
+        self.grant.view_team_deals = True
+        self.grant.save(update_fields=["view_team_deals"])
+        lead = self.create(client_id=self.client.pk)
+        http = HttpClient(); http.force_login(self.user)
+        fixture = {"base":self.live_server_url, "path":reverse("crm_live_leads") + "?org_id=" + str(self.org.pk),
+            "leadId":lead.pk, "command":reverse("crm_live_lead_command"), "deals":reverse("crm_live_workspace"),
+            "sessionCookie":http.cookies[settings.SESSION_COOKIE_NAME].value, "sessionCookieName":settings.SESSION_COOKIE_NAME,
+            "orgId":self.org.pk, "userId":self.user.pk}
+        code, output = _bounded_browser_process(
+            ["node", str(Path(__file__).with_name("crm_workflow_completion.browser.cjs"))], fixture)
+        self.assertEqual(code, 0, output)
+        lead.refresh_from_db()
+        self.assertEqual((lead.budget_min, lead.status, lead.result), (Decimal("62500.25"), "closed", "qualified"))
+        deal = CrmDeal.objects.get()
+        self.assertEqual((deal.amount, deal.manager_id, deal.work_subject), (Decimal("62500.25"), self.user.pk, "Pool construction"))

@@ -10,7 +10,7 @@ from uuid import UUID
 from django.test import SimpleTestCase, override_settings
 
 from pool_service.finance_imports.odata_crm_orders import (
-    ORDER, INVOICE, SETTLEMENTS, CrmOrdersReadError, read_crm_orders, source_identity,
+    FISCAL_CHECK, ORDER, INVOICE, SETTLEMENTS, CrmOrdersReadError, read_crm_documents, read_crm_orders, source_identity,
 )
 from pool_service.finance_imports.odata_profit import ODataConfig, ODataPreviewError, ZERO_GUID
 
@@ -120,6 +120,23 @@ class ExactNumberSource(Source):
 class CrmOrderReaderTests(SimpleTestCase):
     def read(self, source=None, **kwargs):
         return read_crm_orders(config=config(), now=NOW, opener=source or Source(), **kwargs)
+
+    def test_exact_fiscal_document_uses_scoped_header_and_claims_no_payment(self):
+        source = Source()
+        source.rows[FISCAL_CHECK] = [header(INVOICE, Number="SYN '100'", Заказ_Key=ORDER_ID)]
+        rows = read_crm_documents(config=config(), kind="check", number="SYN '100'",
+            customers=[CUSTOMER], now=NOW, opener=source)
+        row = rows[ORG, INVOICE_ID]
+        self.assertEqual((row["order_guid"], row["amount"], row["valid"]), (ORDER_ID, Decimal("100.00"), True))
+        self.assertNotIn("paid_amount", row)
+        entity, method, query = source.calls[0]
+        self.assertEqual((entity, method), (FISCAL_CHECK, "GET"))
+        self.assertIn("Number eq 'SYN ''100'''", query)
+        self.assertIn(f"Контрагент_Key eq guid'{CUSTOMER}'", query)
+        source.rows[FISCAL_CHECK][0]["Контрагент_Key"] = OTHER
+        with self.assertRaises(CrmOrdersReadError):
+            read_crm_documents(config=config(), kind="check", number="SYN '100'",
+                customers=[CUSTOMER], now=NOW, opener=source)
 
     def test_realization_and_actual_payment_are_independent_verified_facts(self):
         source = Source()

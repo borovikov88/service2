@@ -99,10 +99,13 @@ def _bounded(queryset, partition):
 def directory_context(request):
     allowed = readable_clients(request.user)
     category = request.GET.get("category", "")
-    if category not in ClientBusinessRole.ROLE_LABELS:
+    if category not in ClientBusinessRole.ROLE_LABELS and category != "buyer_supplier":
         category = ""
     categorized = allowed
-    if category:
+    if category == "buyer_supplier":
+        for role in ("buyer", "supplier"):
+            categorized = categorized.filter(pk__in=ClientBusinessRole.objects.filter(role=role, active=True).values("client_id"))
+    elif category:
         categorized = allowed.filter(pk__in=ClientBusinessRole.objects.filter(
             role=category, active=True).values("client_id"))
     supplier_ids = ClientBusinessRole.objects.filter(role="supplier", active=True).values("client_id")
@@ -168,7 +171,7 @@ def directory_context(request):
         staff = staff.filter(_clause(("user__first_name", "user__last_name", "user__username", "user__email", "pool__client__name", "pool__address"), token))
     staff_page = page(staff.select_related("pool__client", "pool__organization", "user").order_by("pool__client__name", "pk"), request, "staff")
     return {"can_merge_contacts": bool(manage_orgs), "companies": pages["companies"].object_list, "private_contacts": pages["people"].object_list,
-        "contact_category": category, "contact_category_choices": ClientBusinessRole.ROLE_CHOICES,
+        "contact_category": category, "contact_category_choices": [*ClientBusinessRole.ROLE_CHOICES, ("buyer_supplier", "Покупатель и поставщик")],
         "suppliers": pages["suppliers"].object_list, "pool_staff": staff_page.object_list,
         "companies_page": pages["companies"], "people_page": pages["people"], "suppliers_page": pages["suppliers"], "staff_page": staff_page,
         "companies_q": request.GET.get("companies_q", "")[:160], "people_q": staff_query[:160], "suppliers_q": request.GET.get("suppliers_q", "")[:160]}

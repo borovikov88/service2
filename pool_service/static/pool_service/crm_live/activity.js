@@ -53,6 +53,12 @@
       const footer = el("div", "crm-activity-event-footer");
       if (item.origin) footer.append(el("span", "", item.origin));
       if (item.url) { const target = new URL(item.url, win.location.origin); if (target.origin === win.location.origin && /^https?:$/.test(target.protocol)) { const link = el("a", "", item.kind === "task" ? "Открыть дело" : "Открыть источник"); link.href = target.href; footer.append(link); } }
+        if (item.route_url) {
+          const target = new URL(item.route_url, win.location.origin);
+          if (target.origin === win.location.origin && /^https?:$/.test(target.protocol)) {
+            const link = el("a", "", "Распределение обращения"); link.href = target.href; footer.append(link);
+          }
+        }
       card.append(footer); row.append(marker, card); list.append(row);
     }
     async function load(append) {

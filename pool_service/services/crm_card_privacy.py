@@ -4,8 +4,8 @@ A protected source cannot suppress an independent business event. This helper
 does not call card/read policies: call authority itself depends on those cards.
 """
 from django.db.models import Exists, OuterRef, Q
-from pool_service.communication_models import ConversationMessage, PhoneCall
-from pool_service.crm_commercial_models import CrmLeadSource, CrmLeadDealLink
+from pool_service.communication_models import ChannelConnection, ConversationMessage, PhoneCall
+from pool_service.crm_commercial_models import CrmCommunicationRoute, CrmLeadSource, CrmLeadDealLink
 from pool_service.staff_call_models import CallWorkContext
 from pool_service.staff_call_models import CallPrivacyHold
 from pool_service.call_processing_models import CallPrivateNumber
@@ -84,6 +84,27 @@ def card_origins(queryset, organization, *, kind):
     else:
         linked_contexts = CallWorkContext.objects.none()
         private_linked_contexts = linked_contexts
+    routed_work = CrmCommunicationRoute.objects.none()
+    if kind == "deal":
+        verified_channel = ChannelConnection.objects.filter(pk=OuterRef("inbox__channel_id_snapshot"),
+            external_id=OuterRef("inbox__account_id_snapshot"), channel__kind=OuterRef("inbox__provider_kind"),
+            is_active=True, channel__is_active=True, channel__organization=organization)
+        routed_work = CrmCommunicationRoute.objects.filter(organization=organization, deal_id=OuterRef("pk"),
+            inbox__organization=organization, inbox__scope_verified=True).filter(Exists(verified_channel)).alias(
+            _work_call=Exists(work.filter(pk=OuterRef("inbox__source_id"), source_kind=PhoneCall.SOURCE_TELEPHONY,
+                direction__in=("in", "out"), connection__is_active=True, intake_received_at__isnull=False,
+                connection_id=OuterRef("inbox__connection_id_snapshot"), external_id=OuterRef("inbox__external_id"),
+                intake_scope__organization=organization.pk, intake_scope__channel=OuterRef("inbox__channel_id_snapshot"),
+                intake_scope__account=OuterRef("inbox__account_id_snapshot")).filter(
+                    Q(work_context__isnull=True) | Q(work_context__deal_id=OuterRef("deal_id"),
+                        work_context__organization=organization))),
+            _work_message=Exists(messages.filter(pk=OuterRef("inbox__source_id"), direction__in=("in", "out"),
+                conversation__connection_id=OuterRef("inbox__connection_id_snapshot"),
+                conversation__external_id=OuterRef("inbox__namespace"), intake_received_at__isnull=False,
+                intake_scope__organization=organization.pk, intake_scope__channel=OuterRef("inbox__channel_id_snapshot"),
+                intake_scope__external=OuterRef("inbox__external_id"))))
+        routed_work = routed_work.filter(Q(inbox__source_type="call", _work_call=True)
+            | Q(inbox__source_type="message", _work_message=True))
     client_scope = Q(client_id=OuterRef('client_id')) | Q(client_id=OuterRef('contact_id'))
     history = work.filter(client__isnull=False).filter(client_scope)
     message_history = messages.filter(conversation__client__isnull=False).filter(
@@ -94,6 +115,7 @@ def card_origins(queryset, organization, *, kind):
         _origin_private_link=Exists(private_linked_contexts),
         _origin_work_source=Exists(work_sources),
         _origin_work_context=Exists(contexts.filter(_work=True)),
+        _origin_work_route=Exists(routed_work),
         _origin_work_link=Exists(linked_contexts.filter(_work=True)) if kind == 'deal' else Exists(linked_contexts),
         _origin_work_history=Exists(history), _origin_message_history=Exists(message_history))
 
@@ -109,7 +131,7 @@ def exclude_private_only_cards(queryset, organization, *, kind):
             _org_private_numbers=False, _org_private_holds=False)
     restricted_origin = (
         (Q(_origin_private_source=True) | Q(_origin_private_context=True) | Q(_origin_private_link=True))
-        & Q(_origin_work_source=False, _origin_work_context=False, _origin_work_link=False,
+        & Q(_origin_work_source=False, _origin_work_context=False, _origin_work_link=False, _origin_work_route=False,
             _origin_work_history=False, _origin_message_history=False))
     # Keep this shortcut in the SAME database statement. A cached Python test
     # for "no private numbers" could become stale while a query is still lazy.

@@ -26,7 +26,7 @@ from django.views.decorators.http import require_GET, require_POST
 
 from .client_queries import active_clients, readable_clients
 from .crm_commercial_models import CrmAccess, CrmEvent, CrmIntakeActivation, CrmLead, CrmLeadTaskLink, CrmPipeline
-from .crm_live_views import _id, CommercialConflict
+from .crm_live_views import _id, _responsible_filter, _responsible_options, CommercialConflict
 from .models import Client, Organization, ServiceTask
 from .services.task_read_permissions import readable_tasks
 from .services.task_feedback import version_for, waiting_control
@@ -113,6 +113,7 @@ def _serialize(lead, user, capabilities, *, detail=False, visible_tasks=None, cl
     row = {"id": lead.pk, "title": lead.title, "revision": lead.revision,
         "column": lead_column(lead), "is_archived": lead.is_archived,
         "can_move": capabilities["transition_own_leads"] and (own or lead.assignee_id is None and lead.status == "new" and capabilities["take_leads"]),
+        "can_restore": capabilities["transition_own_leads"] and own and (lead.is_archived or lead.result == "spam"),
         "status": lead.status, "status_label": STATES.get(lead.status, lead.status),
         "result": lead.result, "result_label": RESULTS.get(lead.result, ""),
         "client": _client_summary(client, details=detail),
@@ -210,6 +211,9 @@ def _data(request, organization, *, board=None):
         if not can_view_leads(request.user,organization): raise PermissionDenied
     capabilities = _capabilities(request.user, organization)
     mode = request.GET.get("mode", "all")
+    owner = request.GET.get("owner", {"mine": "me", "unassigned": "unassigned"}.get(mode, "all"))
+    if owner not in {"all", "me", "unassigned"}:
+        owner = str(_id(owner))
     status = request.GET.get("status", "")
     if mode not in {"unassigned", "mine", "all", "closed", "review"} or status and status not in STATES:
         raise ValidationError("Выберите корректный фильтр лидов.")
@@ -225,10 +229,7 @@ def _data(request, organization, *, board=None):
         queryset = queryset.filter(needs_review=True)
     elif mode == "closed":
         queryset = queryset.filter(status="closed", is_archived=False).exclude(result="spam")
-    if mode == "unassigned":
-        queryset = queryset.filter(assignee__isnull=True)
-    elif mode == "mine":
-        queryset = queryset.filter(assignee_id=request.user.pk)
+    queryset = _responsible_filter(queryset, "assignee_id", owner, request.user.pk)
     if status:
         queryset = queryset.filter(status=status)
     if query:
@@ -253,7 +254,7 @@ def _data(request, organization, *, board=None):
         requested=request.GET.get('board_column','') if board else ''
         if board and (requested and requested not in COLUMNS or request.GET.get('cursor') and not requested): raise BoardReset()
         revision=epoch(organization.pk) if board else None
-        scope={'kind':'leads','actor':request.user.pk,'org':organization.pk,'mode':mode,'status':status,'q':query}
+        scope={'kind':'leads','actor':request.user.pk,'org':organization.pk,'mode':mode,'status':status,'owner':owner,'q':query}
         windows={}
         if board and not requested:
             lanes=ordered.annotate(_board_column=Case(
@@ -295,7 +296,7 @@ def _data(request, organization, *, board=None):
         intake["serving_runtime"] = serving_runtime(organization.pk)
     return {"leads": leads, "columns": columns,
         "page": columns[0]["page"] if columns else page.number, "pages": columns[0]["pages"] if columns else paginator.num_pages, "total": total,
-        "page_size": PAGE_SIZE, "q": query, "mode": mode, "status": status,
+        "page_size": PAGE_SIZE, "q": query, "mode": mode, "status": status, "owner": owner,
         "can_create": capabilities["create_own_leads"],
         "can_categorize_contacts": capabilities['can_categorize_contacts'],
         "intake": intake}
@@ -347,12 +348,13 @@ def workspace(request):
     scope = "?" + urlencode({"org_id": organization.pk})
     data.update(organization_id=organization.pk, organization_name=organization.name,
         timezone=str(zone), utc_offset=offset[:3] + ":" + offset[3:],
-        states=STATES, results=RESULTS,
+        states=STATES, results=RESULTS, responsible_options=_responsible_options(organization),
         pipelines=list(CrmPipeline.objects.filter(organization=organization, is_active=True).values("id", "code", "name")),
         urls={"data": reverse("crm_live_lead_data") + scope,
             "command": reverse("crm_live_lead_command") + scope,
             "bulk_command": reverse("crm_live_lead_bulk_command") + scope,
             "clients": reverse("crm_live_lead_clients") + scope,
+            "objects": reverse("crm_live_objects") + scope,
             "targets": reverse("crm_live_lead_targets") + scope,
             "responsibles": reverse("crm_assignment_candidates") + scope,
             "detail_prefix": reverse("crm_live_lead_detail", args=[1]).rsplit("1/", 1)[0],

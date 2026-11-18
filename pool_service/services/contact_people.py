@@ -7,7 +7,7 @@ from django.db import transaction
 from django.db.models import Q
 from pool_service.client_crm_models import ClientContact, OrganizationPersonLink
 from pool_service.client_queries import active_clients
-from pool_service.models import Client, Employee, Organization, OrganizationAccess
+from pool_service.models import Client, DataAuditLog, Employee, Organization, OrganizationAccess
 from pool_service.phone_utils import normalize_phone, canonical_phone_value
 from .permissions import company_has_access
 
@@ -18,7 +18,7 @@ def phone_revision(client):
     return hashlib.sha256(json.dumps([client.phone, rows], default=str, sort_keys=True).encode()).hexdigest()
 
 
-def _locked_person(actor, person_id, *, companies=False):
+def _locked_person(actor, person_id, *, companies=False, contact_edit=False):
     org_id = Client.objects.filter(pk=person_id).values_list("organization_id", flat=True).first()
     org = Organization.objects.select_for_update().filter(pk=org_id).first()
     person = Client.objects.select_for_update().filter(pk=person_id, organization_id=org_id,
@@ -26,15 +26,19 @@ def _locked_person(actor, person_id, *, companies=False):
     actor = get_user_model().objects.select_for_update().filter(pk=getattr(actor, "pk", None), is_active=True).first()
     if not org or not person or not actor or not active_clients().filter(pk=person.pk).exists():
         raise PermissionDenied
-    if not actor.is_superuser and (not company_has_access(org) or not OrganizationAccess.objects.select_for_update().filter(
+    if contact_edit:
+        from .contact_edit_access import contact_edit_roles
+        if not contact_edit_roles(actor, person, lock=True):
+            raise PermissionDenied
+    elif not actor.is_superuser and (not company_has_access(org) or not OrganizationAccess.objects.select_for_update().filter(
             organization=org, user=actor, role__in=("owner", "admin")).exists()):
         raise PermissionDenied
     return person, actor
 
 
 @transaction.atomic
-def save_phone(actor, person_id, *, value, phone_type, primary, revision, _companies=False):
-    person, actor = _locked_person(actor, person_id, companies=_companies)
+def save_phone(actor, person_id, *, value, phone_type, primary, revision, _companies=False, _contact_edit=False):
+    person, actor = _locked_person(actor, person_id, companies=_companies, contact_edit=_contact_edit)
     if revision != phone_revision(person):
         raise ValidationError("Карточка изменилась. Обновите её.")
     key = normalize_phone(value)
@@ -96,7 +100,7 @@ def manage_phone(actor, client_id, *, action, key="", entry_key="", value="", ph
     """Edit/delete an identity-shaped phone, including imported and legacy rows."""
     import re
     from pool_service.client_crm_models import ClientContactExclusion
-    client, actor = _locked_person(actor, client_id, companies=True)
+    client, actor = _locked_person(actor, client_id, companies=True, contact_edit=True)
     if actor.is_superuser:
         raise PermissionDenied
     if revision != phone_revision(client):
@@ -162,7 +166,8 @@ def manage_phone(actor, client_id, *, action, key="", entry_key="", value="", ph
                 client.phone = ""
                 client.save(update_fields=["phone"])
             row = save_phone(actor, client.pk, value=value, phone_type=phone_type,
-                primary="1" if scalar_match else primary, revision=phone_revision(client), _companies=True)
+                primary="1" if scalar_match else primary, revision=phone_revision(client), _companies=True,
+                _contact_edit=True)
             row.label = label.strip()
             row.save(update_fields=["label", "updated_at"])
         ClientContactExclusion.objects.filter(client=client, kind="phone", match_value=new_key).delete()
@@ -173,6 +178,8 @@ def manage_phone(actor, client_id, *, action, key="", entry_key="", value="", ph
         if row.label == "Основной":
             row.label = ""
         row.save(update_fields=["is_primary", "label", "updated_at"])
+    DataAuditLog.objects.create(organization_id=client.organization_id, client=client, actor=actor,
+        entity_type="Client", entity_id=str(client.pk), action="update", changed_fields=["phone"])
 
 
 @transaction.atomic

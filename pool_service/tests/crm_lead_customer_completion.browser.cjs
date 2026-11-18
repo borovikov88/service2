@@ -82,8 +82,8 @@ const {chromium} = require('playwright');
     await fillCustomer(form);
     if (!f.companyOnly) {
       phase = 'switch outcome without losing customer draft';
-      await button('Создать сделку').click();
-      const dealForm = dialog.locator('[data-completion-panel="deal"] form');
+      await button('Создать сделку, контакт и компанию').click();
+      const dealForm = dialog.locator('[data-completion-panel="deal_contact_company"] form');
       await dealForm.getByLabel('Имя контакта', {exact: true}).waitFor({state: 'visible'});
       assert.equal(await dealForm.getByLabel('Имя контакта', {exact: true}).inputValue(), f.personName);
       assert.equal(await dealForm.getByLabel('Название компании', {exact: true}).inputValue(), f.companyName);
@@ -115,7 +115,9 @@ const {chromium} = require('playwright');
     assert.equal(writes.length, 1, 'One explicit confirmation must make exactly one command');
 
     phase = 'saved result and reload';
-    await page.reload();
+    await dialog.waitFor({state: 'hidden'});
+    assert.ok(!new URL(page.url()).searchParams.has('lead'));
+    await page.goto(f.base + f.path + '&lead=' + f.leadId);
     await dialog.waitFor({state: 'visible'});
     await dialog.getByRole('link', {name: f.companyName, exact: true}).first().waitFor();
     assert.equal(await button('Завершить лид').count(), 0, 'A completed lead cannot be completed again');

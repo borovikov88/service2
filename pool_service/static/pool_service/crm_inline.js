@@ -29,12 +29,13 @@
       actions.append(cancel,remove); dialog.append(title,text,actions); document.body.append(dialog); dialog.showModal(); cancel.focus();
     });
   }
-  function mount(host, {display, form, editLabel = 'Редактировать', saveLabel = 'Сохранить', clearLabel, clearMessage, onClear, busy = () => false, onOpen, onReset}) {
+  function mount(host, {display, form, editLabel = 'Редактировать', editText, saveLabel = 'Сохранить', clearLabel, clearMessage, onClear, busy = () => false, onOpen, onReset}) {
     host.classList.add('crm-inline');
     const view = document.createElement('div'); view.className = 'crm-inline-view';
     display.classList.add('crm-inline-value'); view.append(display);
     const actions = document.createElement('div'); actions.className = 'crm-inline-actions'; view.append(actions);
     const edit = button('edit', editLabel); actions.append(edit);
+    if (editText) { edit.classList.add('crm-live-button'); edit.classList.remove('crm-inline-button'); edit.textContent = editText; }
     form.classList.add('crm-inline-form'); form.hidden = true;
     const initial = [...form.querySelectorAll('input,select,textarea')].map(input => [input,input.value,input.checked]);
     const locked = () => busy() || form.dataset.busy === '1' || save.disabled;
