@@ -1,4 +1,5 @@
 """Bounded, explicit service handoff preview and acceptance."""
+from pool_service.services.crm_role_runtime import resolve_crm_capabilities
 from uuid import uuid4
 from django.contrib.auth.decorators import login_required
 from django.core import signing
@@ -90,5 +91,5 @@ def workspace(request,deal_id):
         packet=packet,packet_context=packet_context,blocked=blocked,preview=preview,items=items,selected=selected,
         tasks=tasks,recipients=recipients,operation_key=uuid4().hex,
         can_submit=supported and org.crm_v2_write and deal.manager_id==request.user.pk and not packet
-            and CrmAccess.objects.filter(organization=org,user=request.user,edit_own_deals=True).exists(),
+            and resolve_crm_capabilities(request.user.pk, org.pk).edit_own_deals,
         can_accept=packet and packet.status=='pending' and packet.recipient_id==request.user.pk and not blocked),status=status)

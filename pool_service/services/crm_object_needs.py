@@ -3,6 +3,7 @@
 Lock order is documented in docs/ai/crm-object-needs.md. No provider actions,
 new task assignment, commercial deal, contract or fulfilment is created here.
 """
+from pool_service.services.crm_role_runtime import resolve_crm_capabilities
 import hashlib
 import json
 import re
@@ -246,7 +247,7 @@ def authorize_review(task, actor, org):
         raise PermissionDenied('Источник задачи недоступен для этого разбора.')
     from pool_service.services.permissions import company_has_access
     actor = _authorize('default', actor.pk, org, 'edit_own_deals')
-    if not CrmAccess.objects.select_for_update().filter(organization=org, user_id=actor.pk, view_team_deals=True).exists():
+    if not resolve_crm_capabilities(actor.pk, org.pk, lock=True).view_team_deals:
         raise PermissionDenied('Индивидуальный доступ чтения CRM недоступен.')
     if not company_has_access(org) or task.primary_responsible_id != actor.pk or not editable(task):
         raise PermissionDenied('Разбор доступен только текущему ответственному своей редактируемой заявки.')

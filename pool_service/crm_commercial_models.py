@@ -539,6 +539,11 @@ class CrmCardComment(models.Model):
 
 
 class CrmAccess(CommercialModel):
+    def clean(self):
+        super().clean()
+        from .services.crm_role_runtime import guard_managed_grant_save
+        guard_managed_grant_save(self)
+
     immutable_scope = ("organization_id", "user_id")
     organization = models.ForeignKey("pool_service.Organization", on_delete=models.PROTECT)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)

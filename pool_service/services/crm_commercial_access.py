@@ -1,4 +1,5 @@
 """V2 read policy and advisory write availability; commands reauthorize under locks."""
+from pool_service.services.crm_role_runtime import resolve_crm_capabilities
 from django.contrib.auth import get_user_model
 from django.db.models import Q, F
 
@@ -19,7 +20,7 @@ def can_view_team_deals(user, organization):
     if Employee.objects.filter(organization_id=organization.pk, user_id=user.pk).filter(Q(is_active=False) | Q(employment_status=Employee.STATUS_DISMISSED)).exists():
         return False
     # D06 is the sole implicit role grant. Other roles need an explicit read grant.
-    return "manager" in roles or CrmAccess.objects.filter(organization_id=organization.pk, user_id=user.pk, view_team_deals=True).exists()
+    return resolve_crm_capabilities(user.pk, organization.pk).team_read
 
 
 def deal_object_scope(organization):
@@ -44,8 +45,6 @@ def can_write_commercial(user, organization):
         return False
     if not Organization.objects.filter(pk=organization.pk, crm_v2_write=True).exists():
         return False
-    return CrmAccess.objects.filter(organization_id=organization.pk, user_id=user.pk).filter(
-        Q(edit_own_leads=True) | Q(transition_own_leads=True)
-        | Q(edit_own_deals=True) | Q(transition_own_deals=True)
-        | Q(create_own_deals=True) | Q(manage_own_next_action=True)
-    ).exists()
+    grant = resolve_crm_capabilities(user.pk, organization.pk)
+    return any(getattr(grant, name) for name in ('edit_own_leads', 'transition_own_leads',
+        'edit_own_deals', 'transition_own_deals', 'create_own_deals', 'manage_own_next_action'))

@@ -1,4 +1,5 @@
 """Server-rendered bounded proposal lifecycle; no provider sending or task creation."""
+from pool_service.services.crm_role_runtime import resolve_crm_capabilities
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 from django.utils.dateparse import parse_datetime
@@ -72,7 +73,7 @@ def workspace(request,deal_id):
             error='; '.join(exc.messages) if isinstance(exc,ValidationError) else 'Некорректное или устаревшее подтверждение. Обновите страницу.'
             deal.refresh_from_db()
     writable=(deal.manager_id==request.user.pk and org.crm_v2_write and not deal.is_archived and deal.outcome=='open'
-        and company_has_access(org) and CrmAccess.objects.filter(organization=org,user=request.user,edit_own_deals=True).exists())
+        and company_has_access(org) and resolve_crm_capabilities(request.user.pk, org.pk).edit_own_deals)
     versions=Paginator(PoolEstimateVersion.objects.filter(estimate__organization=org).select_related('estimate').defer('snapshot').order_by('-pk'),20).get_page(request.GET.get('versions_page'))
     quotes=Paginator(CrmQuote.objects.filter(deal=deal).select_related('version__estimate').order_by('-pk'),20).get_page(request.GET.get('page'))
     current=CrmQuote.objects.filter(deal=deal,status='accepted').first()

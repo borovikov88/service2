@@ -3,6 +3,7 @@
 No network on reads and no inference of payment from a balance or a forecast.
 Only the server reader supplies snapshots; HTTP accepts an internal order ID.
 """
+from pool_service.services.crm_role_runtime import resolve_crm_capabilities
 from dataclasses import asdict
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -172,7 +173,7 @@ def _order_data(order):
 
 
 def _writable(user, organization, deal):
-    grant = CrmAccess.objects.filter(organization=organization, user=user, edit_own_deals=True).exists()
+    grant = resolve_crm_capabilities(user.pk, organization.pk).edit_own_deals
     return bool(organization.crm_v2_write and company_has_access(organization) and grant
         and deal.manager_id == user.pk and deal.outcome == 'open' and not deal.is_archived)
 

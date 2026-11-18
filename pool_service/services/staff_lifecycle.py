@@ -1,4 +1,5 @@
 """Explicit offboarding, preserving actors and source records."""
+from pool_service.services.crm_role_runtime import resolve_crm_capabilities
 from django.contrib.auth import get_user_model
 from datetime import datetime, time, timedelta
 from django.contrib.sessions.models import Session
@@ -43,8 +44,16 @@ def dismissal_recipients(organization):
         Q(edit_own_leads=True) | Q(transition_own_leads=True) | Q(create_own_leads=True) | Q(take_leads=True)
         | Q(edit_own_deals=True) | Q(transition_own_deals=True) | Q(create_own_deals=True)
         | Q(manage_own_next_action=True)).values('user_id')
-    return crm_staff_users(organization).filter(pk__in=grants).filter(
+    candidates = crm_staff_users(organization).filter(pk__in=grants).filter(
         Q(pk__in=people) | Q(pk__in=employees) | Q(pk__in=owners))
+    names = ('edit_own_leads', 'transition_own_leads', 'create_own_leads', 'take_leads',
+        'edit_own_deals', 'transition_own_deals', 'create_own_deals', 'manage_own_next_action')
+    eligible = []
+    for user_id in candidates.values_list('pk', flat=True).iterator(chunk_size=100):
+        effective = resolve_crm_capabilities(user_id, organization.pk)
+        if any(getattr(effective, name) for name in names):
+            eligible.append(user_id)
+    return candidates.filter(pk__in=eligible)
 
 
 @transaction.atomic

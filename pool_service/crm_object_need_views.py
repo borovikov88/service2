@@ -1,4 +1,5 @@
 """Bounded internal HTTP adapter; GET never creates source anchors."""
+from pool_service.services.crm_role_runtime import resolve_crm_capabilities
 import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -43,7 +44,7 @@ def _scope(request):
         raise PermissionDenied from exc
     org = Organization.objects.filter(pk=org_id).first()
     if (not org or not company_has_access(org) or not can_view_team_deals(request.user, org)
-            or not CrmAccess.objects.filter(organization=org, user_id=request.user.pk, view_team_deals=True).exists()):
+            or not resolve_crm_capabilities(request.user.pk, org.pk).view_team_deals):
         raise PermissionDenied
     return org
 
@@ -73,7 +74,7 @@ def _row(task, request, org, *, detail=False):
         or need.organization_id != org.pk or not source or source.content_hash != materials_hash(materials)))
     if mismatch:
         state = 'needs_resolution'
-    grant = CrmAccess.objects.filter(user_id=request.user.pk, organization=org).first()
+    grant = resolve_crm_capabilities(request.user.pk, org.pk)
     can_review = bool(state != 'needs_resolution' and len(materials) <= MAX_SOURCE_DISPLAY
         and org.crm_v2_write and grant and grant.edit_own_deals
         and grant.view_team_deals

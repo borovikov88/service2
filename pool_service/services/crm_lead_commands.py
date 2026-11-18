@@ -1,4 +1,5 @@
 """Atomic, authorized lead qualification. No accounting or communication writes."""
+from pool_service.services.crm_role_runtime import resolve_crm_capabilities
 from datetime import datetime, timezone as datetime_timezone
 from decimal import Decimal, InvalidOperation
 import hashlib
@@ -59,7 +60,7 @@ def _authorize_lead(using, actor_id, organization, kind):
         user_id=actor_id, organization=organization).order_by("pk"))
     employees = list(Employee.objects.using(using).select_for_update().filter(
         user_id=actor_id, organization=organization).order_by("pk"))
-    grant = CrmAccess.objects.using(using).select_for_update().filter(user_id=actor_id, organization=organization).first()
+    grant = resolve_crm_capabilities(actor_id, organization.pk, using=using, lock=True)
     caps = ("view_leads",) + CAPABILITIES[kind]
     if (not actor or not actor.is_active or not memberships or not organization.crm_v2_read
             or not organization.crm_v2_write or not grant or not all(getattr(grant, cap) for cap in caps)
@@ -489,7 +490,7 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
             if (column in {"failed", "spam", "deleted", "restore"} or ranks.get(column, -1) < ranks[lead_column(lead)]) and not values.get("reason"):
                 raise ValidationError("Для провала лида, перемещения назад, в спам или удалённые укажите причину.")
             if lead.assignee_id is None:
-                grant = CrmAccess.objects.using(using).select_for_update().get(user=actor, organization=organization)
+                grant = resolve_crm_capabilities(actor.pk, organization.pk, using=using, lock=True)
                 if not grant.take_leads:
                     raise PermissionDenied("Free lead claim requires take access.")
                 if lead.status != "new" or lead.result:
@@ -631,7 +632,7 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
             if lead.status not in ACTIVE_STATES | {"new"} or lead.result:
                 raise ValidationError("Контакт и компанию можно сохранить только из незавершённого лида.")
             if lead.assignee_id is None:
-                grant = CrmAccess.objects.using(using).select_for_update().get(user=actor, organization=organization)
+                grant = resolve_crm_capabilities(actor.pk, organization.pk, using=using, lock=True)
                 if not grant.take_leads or lead.status != "new":
                     raise PermissionDenied("Free lead completion requires take access.")
                 lead.assignee = actor
@@ -659,16 +660,16 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
                 raise ValidationError("Additional deals require an already qualified lead.")
             if command_type == "lead.qualify":
                 if lead.is_archived:
-                    grant = CrmAccess.objects.using(using).select_for_update().get(user=actor, organization=organization)
+                    grant = resolve_crm_capabilities(actor.pk, organization.pk, using=using, lock=True)
                     if not grant.transition_own_leads:
                         raise PermissionDenied("Restoring a deleted lead requires transition access.")
                 if lead.assignee_id is None:
-                    grant = CrmAccess.objects.using(using).select_for_update().get(user=actor, organization=organization)
+                    grant = resolve_crm_capabilities(actor.pk, organization.pk, using=using, lock=True)
                     if not grant.take_leads or lead.status != "new":
                         raise PermissionDenied("Free lead conversion requires take access.")
                     lead.assignee = actor
                 if "need" in values and values["need"] != lead.need:
-                    grant = CrmAccess.objects.using(using).select_for_update().get(user=actor, organization=organization)
+                    grant = resolve_crm_capabilities(actor.pk, organization.pk, using=using, lock=True)
                     if not grant.edit_own_leads:
                         raise PermissionDenied("Changing the need requires lead edit access.")
                     lead.need = values["need"]

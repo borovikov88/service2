@@ -130,6 +130,10 @@ jobs:
             "$browser_dir" "$NODE_PATH" "$PLAYWRIGHT_BROWSERS_PATH" >> "$GITHUB_ENV"
           npm install --prefix "$browser_dir" --ignore-scripts --no-audit --no-fund --package-lock=false playwright@1.62.1 bootstrap@5.2.3
           node "$browser_dir/node_modules/playwright/cli.js" install --with-deps chromium
+      - name: Chromium reviewed CRM roles acceptance
+        if: steps.reuse.outputs.verified != 'true'
+        timeout-minutes: 5
+        run: CRM_ROLE_BROWSER_TEST=1 python manage.py test pool_service.tests.test_crm_role_browser --settings=service_site.test_settings --verbosity 2
       - name: Chromium shared workspace acceptance
         if: steps.reuse.outputs.verified != 'true'
         timeout-minutes: 5

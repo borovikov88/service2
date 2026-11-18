@@ -4,6 +4,17 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - "pool_service/crm_role_models.py"
+      - "pool_service/migrations/0197_crm_role_policy.py"
+      - "pool_service/tests/crm_role.browser.cjs"
+      - "pool_service/views.py"
+      - "pool_service/urls.py"
+      - "pool_service/templates/pool_service/crm_role_review.html"
+      - "pool_service/crm_role_views.py"
+      - "pool_service/services/crm_role_*.py"
+      - "pool_service/services/staff_access_mutex.py"
+      - "pool_service/tests/test_crm_role_*.py"
+      - "pool_service/admin.py"
       - "pool_service/models.py"
       - "pool_service/avito_*.py"
       - "pool_service/contact_identity*.py"
@@ -250,6 +261,11 @@ jobs:
             pool_service.tests.test_contact_identity_migrations \
             pool_service.tests.test_owner_call_privacy \
             pool_service.tests.test_staff_call_control \
+            pool_service.tests.test_crm_role_policy_preview \
+            pool_service.tests.test_crm_role_runtime \
+            pool_service.tests.test_crm_role_preview_snapshot \
+            pool_service.tests.test_crm_role_transition \
+            pool_service.tests.test_crm_role_views \
             pool_service.tests.test_organization_ownership \
             pool_service.tests.test_call_privacy_enforcement \
             pool_service.tests.test_crm_service_binding_http \

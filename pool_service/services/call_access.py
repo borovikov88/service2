@@ -1,4 +1,5 @@
 """Current per-call authority; CRM links never override private visibility."""
+from pool_service.services.crm_role_runtime import resolve_crm_capabilities
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
@@ -49,7 +50,7 @@ def scope_calls(user, organization, queryset=None, *, media=False, assignment_su
     qs = qs.alias(_policy_held=Exists(held)).filter(_policy_held=False)
     if 'owner' in roles:
         return qs
-    crm = CrmAccess.objects.filter(user_id=user.pk, organization=organization).first()
+    crm = resolve_crm_capabilities(user.pk, organization.pk)
     lead_allowed = bool(crm and crm.view_leads and organization.crm_v2_read)
     # CRM permits staff to read their own deals even without team-deal access.
     from .crm_commercial_access import can_view_team_deals, deal_object_scope
