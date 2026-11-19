@@ -99,14 +99,21 @@ class CRMUIWorkflowTests(TestCase):
         self.assertEqual(len(data["results"]), 20)
         self.assertTrue(data["has_more"])
 
-    def test_lookup_and_editor_permissions_are_not_card_read_permissions(self):
-        for user in (self.manager, self.other):
-            self.client.force_login(user)
-            self.assertEqual(self.lookup("Строй").status_code, 403)
-            self.assertEqual(self.client.get(self.edit()).status_code, 403)
-            self.assertEqual(post_current_form(self.client, self.edit(), {"name": "Forbidden"}).status_code, 403)
+    def test_manager_can_lookup_and_edit_in_organization_but_foreign_user_cannot(self):
+        self.client.force_login(self.manager)
+        lookup = self.lookup("Строй")
+        self.assertEqual(lookup.status_code, 200)
+        self.assertEqual([item["id"] for item in lookup.json()["results"]], [self.company.pk])
+        self.assertEqual(self.client.get(self.edit()).status_code, 200)
+        edited = post_current_form(self.client, self.edit(), {"name": "Edited by manager"})
+        self.assertEqual(edited.status_code, 302)
+
+        self.client.force_login(self.other)
+        self.assertEqual(self.lookup("Строй").status_code, 403)
+        self.assertEqual(self.client.get(self.edit()).status_code, 403)
+        self.assertEqual(post_current_form(self.client, self.edit(), {"name": "Forbidden"}).status_code, 403)
         self.person.refresh_from_db()
-        self.assertEqual(self.person.name, "Example Person")
+        self.assertEqual(self.person.name, "Edited by manager")
 
     def test_unauthenticated_lookup_requires_login(self):
         self.client.logout()

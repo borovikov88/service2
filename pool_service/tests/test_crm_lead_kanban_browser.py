@@ -194,10 +194,12 @@ class LeadConversionBrowserTests(LeadFixture,StaticLiveServerTestCase):
         # LeadFixture uses self.client for the domain client; obtain an HTTP client separately.
         from django.test import Client as HttpClient
         http=HttpClient();http.force_login(self.user)
-        fixture=dict(base=self.live_server_url,path=reverse('crm_live_leads')+'?org_id='+str(self.org.pk),leadId=lead.pk,command=reverse('crm_live_lead_command'),sessionCookie=http.cookies[settings.SESSION_COOKIE_NAME].value,sessionCookieName=settings.SESSION_COOKIE_NAME)
+        fixture=dict(base=self.live_server_url,path=reverse('crm_live_leads')+'?org_id='+str(self.org.pk),leadId=lead.pk,command=reverse('crm_live_lead_command'),deals=reverse('crm_live_workspace'),sessionCookie=http.cookies[settings.SESSION_COOKIE_NAME].value,sessionCookieName=settings.SESSION_COOKIE_NAME)
         code,output=_bounded_browser_process(['node',str(Path(__file__).with_name('crm_lead_conversion.browser.cjs'))],fixture)
         self.assertEqual(code,0,output);lead.refresh_from_db();deal=CrmDeal.objects.get()
         self.assertEqual((lead.result,deal.next_action.task_link.task_id),('qualified',task_id))
+        self.assertEqual(lead.contact.name, 'Synthetic browser new person')
+        self.assertEqual(lead.client.name, 'Synthetic browser new company')
 
 @skipUnless(os.environ.get('CRM_LEADS_BROWSER_TEST') == '1', 'Dedicated Chromium acceptance')
 class LongLeadKanbanBrowserTests(StaticLiveServerTestCase):
