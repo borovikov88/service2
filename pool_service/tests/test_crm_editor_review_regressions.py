@@ -53,11 +53,21 @@ class CRMEditorReviewRegressionTests(TestCase):
         self.assertEqual(self.customer.name, "Updated Company")
         self.assertEqual(self.customer.company_name, "Updated Company")
 
-    def test_owner_of_first_tenant_cannot_use_manager_access_to_edit_second(self):
+    def test_owner_of_first_tenant_has_only_manager_edit_rights_in_second(self):
         OrganizationAccess.objects.filter(user=self.owner, organization=self.second_org).update(role="manager")
-        self.assertEqual(self.client.get(self.url).status_code, 403)
-        self.assertEqual(post_current_form(self.client, self.url, {"name": "Denied"}).status_code, 403)
-        self.assert_customer_unchanged()
+        page = self.client.get(self.url)
+        self.assertEqual(page.status_code, 200)
+        self.assertNotIn("inn", page.context["client_form"].fields)
+        self.assertNotIn("responsible", page.context["profile_form"].fields)
+        response = post_current_form(self.client, self.url, {
+            "name": "Updated by manager", "inn": "7701234560", "profile-responsible": self.owner.pk,
+        })
+        self.assertEqual(response.status_code, 302)
+        self.customer.refresh_from_db()
+        self.profile.refresh_from_db()
+        self.assertEqual(self.customer.name, "Updated by manager")
+        self.assertFalse(self.customer.inn)
+        self.assertIsNone(self.profile.responsible_id)
 
     def test_owner_cannot_edit_unrelated_tenant(self):
         Client.objects.filter(pk=self.customer.pk).update(organization=self.outside_org)

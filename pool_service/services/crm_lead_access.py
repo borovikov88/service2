@@ -5,7 +5,7 @@ from urllib.parse import urlencode
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.db.models import BooleanField, Case, CharField, Exists, F, OuterRef, Q, Value, When, Window
-from django.db.models.functions import Coalesce, Concat, Length, Replace, RowNumber, Substr, Trim
+from django.db.models.functions import Cast, Coalesce, Concat, Length, Replace, RowNumber, Substr, Trim
 from django.urls import reverse
 
 from pool_service.call_processing_models import CallPrivateNumber
@@ -104,11 +104,12 @@ def _without_private_calls(queryset):
         Q(phone_number__regex=r'^\s*$') | ~Q(privacy_phone_key=''))
 
 
-def _source_access_annotations(user, organization, *, assignment_subject=None):
+def _source_access_annotations(user, organization, *, assignment_subject=None, source_links=None):
     """Annotate authority without discarding invalid or foreign source links."""
     org_id = organization.pk
     capabilities = _communication_caps(user, organization)
-    source_links = CrmLeadSource.objects.all()
+    if source_links is None:
+        source_links = CrmLeadSource.objects.all()
     channel = ChannelConnection.objects.filter(
         pk=OuterRef("inbox__channel_id_snapshot"), is_active=True,
         channel__organization_id=org_id, channel__is_active=True,
@@ -117,7 +118,7 @@ def _source_access_annotations(user, organization, *, assignment_subject=None):
     )
     source_links = source_links.alias(_crm_channel=Exists(channel))
     messages = ConversationMessage.objects.filter(
-        pk=OuterRef("inbox__source_id"), direction="in",
+        pk=OuterRef("inbox__source_id"),
         conversation__organization_id=org_id,
         conversation__connection_id=OuterRef("inbox__connection_id_snapshot"),
         conversation__external_id=OuterRef("inbox__namespace"),
@@ -131,8 +132,10 @@ def _source_access_annotations(user, organization, *, assignment_subject=None):
         intake_scope__namespace=OuterRef("inbox__namespace"),
         intake_scope__external=OuterRef("inbox__external_id"),
     ).filter(Q(conversation__client__isnull=True) | Q(conversation__client__organization_id=org_id)).annotate(
-        _crm_external=Coalesce("external_id", Value(""))
-    ).filter(_crm_external=OuterRef("inbox__external_id"))
+        _crm_external=Coalesce("external_id", Value("")),
+        _crm_reply=Concat(Value("reply:"), Cast("pk", CharField())),
+    ).filter(Q(direction="in", _crm_external=OuterRef("inbox__external_id"))
+        | Q(direction="out", sent_by__isnull=False, _crm_reply=OuterRef("inbox__external_id")))
     valid_messages = messages
     if not capabilities["can_view_conversations"]:
         messages = messages.none()

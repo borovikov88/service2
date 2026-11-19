@@ -14,7 +14,7 @@ from django.utils.dateparse import parse_datetime
 
 from pool_service.client_queries import readable_clients
 from pool_service.communication_models import ConversationMessage, PhoneCall, CallAnalysis
-from pool_service.crm_commercial_models import CrmLead, CrmLeadSource, CrmEvent, CrmStage
+from pool_service.crm_commercial_models import CrmCommunicationRoute, CrmLead, CrmLeadSource, CrmEvent, CrmStage
 from pool_service.models import OrganizationAccess, ServiceTask, ServiceTaskChange
 from .crm_lead_access import (leads_for_user, can_read_lead, source_family,
     _communication_caps, _without_private_calls)
@@ -177,6 +177,10 @@ def activity_page(request, organization, subject):
         rows += _event_entries(request, organization, subject, family, kind, before)
     sources = CrmLeadSource.objects.filter(organization=organization, lead_id__in=family,
         inbox__organization=organization, inbox__scope_verified=True)
+    from .crm_communication_routing import readable_routes
+    routed = CrmCommunicationRoute.objects.filter(organization=organization, inbox__organization=organization)
+    direct = (readable_routes(request.user, organization).filter(deal_id=subject.pk)
+        if not isinstance(subject, CrmLead) else routed.none())
     phone_key = ""
     if isinstance(subject, CrmLead):
         from .crm_lead_identity import lead_identity, history_phone_key
@@ -192,8 +196,11 @@ def activity_page(request, organization, subject):
         source_messages = sources.filter(inbox__source_type="message").values("inbox__source_id")
         conversations = ConversationMessage.objects.filter(pk__in=source_messages,
             conversation__organization=organization).values("conversation_id")
-        messages = ConversationMessage.objects.filter(
-            Q(conversation_id__in=conversations) | Q(conversation__client_id__in=client_ids),
+        all_routed_messages = routed.filter(inbox__source_type="message").values("inbox__source_id")
+        direct_messages = direct.filter(inbox__source_type="message")
+        message_scope = ((Q(conversation_id__in=conversations) | Q(conversation__client_id__in=client_ids))
+            & ~Q(pk__in=all_routed_messages)) | Q(pk__in=direct_messages.values("inbox__source_id"))
+        messages = ConversationMessage.objects.filter(message_scope,
             conversation__organization=organization, conversation__connection__is_active=True,
             conversation__connection__channel__organization=organization,
             conversation__connection__channel__is_active=True, direction__in=["in", "out"],
@@ -201,6 +208,8 @@ def activity_page(request, organization, subject):
         messages = messages.select_related("conversation__connection__channel", "sent_by").annotate(
             _activity_at=Coalesce("intake_occurred_at", "created_at"))
         candidates = _portion(messages, "_activity_at", RANK["message"], before)
+        route_ids = dict(direct_messages.filter(inbox__source_id__in=[m.pk for m in candidates])
+            .values_list("inbox__source_id", "pk"))
         linked_messages = set(sources.filter(inbox__source_type="message", inbox__source_id__in=[message.pk for message in candidates])
             .values_list("inbox__source_id", flat=True))
         for message in candidates:
@@ -210,17 +219,22 @@ def activity_page(request, organization, subject):
                 body=message.body[:10000], truncated=len(message.body) > 10000,
                 actor=message.sender_name or (_name(message.sent_by) if message.sent_by_id else ""),
                 status=message.get_delivery_status_display(),
-                relation="lead_source" if message.pk in linked_messages else "contact_history",
-                origin="Источник этого лида" if message.pk in linked_messages else "Общая история контакта / диалога",
+                relation="deal_source" if message.pk in route_ids else "lead_source" if message.pk in linked_messages else "contact_history",
+                origin="Обращение по сделке" if message.pk in route_ids else "Источник этого лида" if message.pk in linked_messages else "Общая история контакта / диалога",
+                route_url=_route_url(organization, route_ids.get(message.pk)),
                 url=reverse("communications_conversations") + "?" + urlencode({"org_id": organization.pk, "conversation": str(message.conversation.uuid)})))
     if kind in {"all", "call"} and (caps["can_view_all_calls"] or caps["can_view_own_calls"]):
         from .call_access import scope_calls
         from .crm_lead_access import _with_phone_key
         call_scope = Q(pk__in=sources.filter(inbox__source_type="call").values("inbox__source_id")) | Q(client_id__in=client_ids)
-        call_scope |= (Q(work_context__lead_id__in=family) if isinstance(subject, CrmLead)
+        explicit_context = (Q(work_context__lead_id__in=family) if isinstance(subject, CrmLead)
             else Q(work_context__deal_id=subject.pk))
         if phone_key:
             call_scope |= Q(client__isnull=True, _crm_phone_key=phone_key)
+        all_routed_calls = routed.filter(inbox__source_type="call").values("inbox__source_id")
+        direct_calls = direct.filter(inbox__source_type="call")
+        call_scope = (call_scope & ~Q(pk__in=all_routed_calls)) | explicit_context | Q(
+            pk__in=direct_calls.values("inbox__source_id"), work_context__isnull=True)
         calls = PhoneCall.objects.filter(
             organization=organization, source_kind=PhoneCall.SOURCE_TELEPHONY,
             direction__in=[PhoneCall.DIRECTION_IN, PhoneCall.DIRECTION_OUT],
@@ -231,6 +245,8 @@ def activity_page(request, organization, subject):
         calls = scope_calls(request.user, organization, calls)
         calls = _without_private_calls(calls).select_related("analysis", "employee", "employee_profile")
         candidates = _portion(calls, "started_at", RANK["call"], before)
+        route_ids = dict(direct_calls.filter(inbox__source_id__in=[c.pk for c in candidates])
+            .values_list("inbox__source_id", "pk"))
         contacts = {contact.pk: contact for contact in readable_clients(request.user).filter(
             organization=organization, pk__in={call.client_id for call in candidates})}
         employee_ids = set(OrganizationAccess.objects.filter(organization=organization,
@@ -271,8 +287,9 @@ def activity_page(request, organization, subject):
             rows.append(_entry("call", call, call.started_at, "call", title, body=call.phone_number,
                 details=[" → ".join(participants)],
                 status=call.get_result_display() + " · " + str(call.duration_seconds) + " сек", media=media,
-                relation="lead_source" if call.pk in linked_calls else "contact_history",
-                origin="Источник этого лида" if call.pk in linked_calls else "Общая история контакта",
+                relation="deal_source" if call.pk in route_ids else "lead_source" if call.pk in linked_calls else "contact_history",
+                origin="Обращение по сделке" if call.pk in route_ids else "Источник этого лида" if call.pk in linked_calls else "Общая история контакта",
+                route_url=_route_url(organization, route_ids.get(call.pk)),
                 url=reverse("communications_calls") + "?" + urlencode({"org_id": organization.pk, "call_id": call.pk})))
     if kind in {"all", "task"}:
         task_scope = Q(commercial_lead_link__lead_id__in=family, commercial_lead_link__organization=organization)
@@ -294,7 +311,11 @@ def activity_page(request, organization, subject):
         raise Http404
     # Client-linked calls need their own final check: they may have no lead
     # source whose authorization would detect a newly private phone number.
-    hidden_calls = {"call:" + str(pk) for pk in private_call_ids(returned_calls)}
+    from .call_access import scope_calls
+    visible_ids = set(scope_calls(request.user, organization, PhoneCall.objects.filter(
+        pk__in=[call.pk for call in returned_calls])).values_list("pk", flat=True)) if returned_calls else set()
+    hidden_calls = {"call:" + str(pk) for pk in private_call_ids(returned_calls)
+        | ({call.pk for call in returned_calls} - visible_ids)}
     rows = [row for row in rows if row["id"] not in hidden_calls]
     rows.sort(key=lambda row: row["_key"], reverse=True)
     selected = rows[:PAGE_SIZE]
@@ -306,3 +327,8 @@ def activity_page(request, organization, subject):
         row.pop("_key")
     return {"items": selected, "cursor": cursor, "type": kind,
         "scope_note": "События карточки и исходного лида; общение — из связанных диалогов и контактов. Показаны только доступные вам записи."}
+
+
+def _route_url(organization, route_id):
+    return (reverse("crm_communication_route", args=[route_id]) + "?" + urlencode({"org_id": organization.pk})
+        if route_id else "")

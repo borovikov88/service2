@@ -63,12 +63,12 @@ def _target_organization() -> Organization:
     return Organization.objects.get(pk=organization_id)
 
 
-def _buyer_rows(config, metadata_raw):
+def _buyer_rows(config, metadata_raw, *, selector="Покупатель"):
     cursor = ""
     while True:
         filters = [
             {"field": "DeletionMark", "op": "eq", "value": False},
-            {"field": "Покупатель", "op": "eq", "value": True},
+            {"field": selector, "op": "eq", "value": True},
         ]
         if cursor:
             filters.append({"field": "Code", "op": "gt", "value": cursor})
@@ -89,6 +89,7 @@ def _buyer_rows(config, metadata_raw):
                 "НомерТелефонаДляПоиска",
                 "АдресЭПДляПоиска",
                 "Покупатель",
+                "Поставщик",
                 "Недействителен",
             ],
             filters=filters,
@@ -111,6 +112,43 @@ def _buyer_rows(config, metadata_raw):
         if not next_cursor or next_cursor == cursor:
             raise RuntimeError("1C buyer pagination did not advance")
         cursor = next_cursor
+
+
+def _union_counterparties(buyers, suppliers):
+    """A dual-role reference is processed once. Conflicting observations abort the scan."""
+    from .services.contact_roles import source_roles
+    result = {}
+    for rows, role in ((buyers, "buyer"), (suppliers, "supplier")):
+        for row in rows:
+            ref = str(row.get("Ref_Key") or "")
+            flags = source_roles(row)
+            if role == "supplier" and flags.get(role) is not True:
+                continue
+            old = result.get(ref)
+            if old is not None:
+                previous = source_roles(old)
+                if any(previous[key] != flags[key] for key in previous.keys() & flags.keys()):
+                    raise RuntimeError("Counterparty roles changed during the scan; retry the complete read")
+                continue
+            result[ref] = row
+    return list(result.values())
+
+
+def _inactive_role_rows(config, metadata_raw, organization, observed):
+    """Verify loss of both roles by exact reference. Never infer it from absence."""
+    known = ClientImportCandidate.objects.filter(organization=organization, matched_client__organization=organization,
+        applied_at__isnull=False, matched_client__business_roles__onec_active=True).exclude(source_ref__in=observed)
+    refs = list(known.order_by("source_ref").values_list("source_ref", flat=True).distinct())
+    for start in range(0, len(refs), CONTACT_BATCH_SIZE):
+        batch = refs[start:start + CONTACT_BATCH_SIZE]
+        result = query_1c_rows(config, BUYER_ENTITY, fields=["Ref_Key", "Покупатель", "Поставщик"],
+            filters=[{"field": "Ref_Key", "op": "in", "value": batch}], limit=len(batch),
+            include_deleted=False, include_inactive=False, metadata_raw=metadata_raw)
+        rows = result.get("rows", [])
+        returned = [str(row.get("Ref_Key") or "") for row in rows]
+        if result.get("complete") is False or len(set(returned)) != len(returned) or not set(returned) <= set(batch):
+            raise RuntimeError("Incomplete exact counterparty role lookup")
+        yield from (row for row in rows if row.get("Покупатель") is False and row.get("Поставщик") is False)
 
 
 def _contact_rows(config, refs, metadata_raw):
@@ -342,7 +380,10 @@ def scan_onec_clients(run=None, *, return_seen_refs=False):
     # Metadata is large and relatively expensive. Reuse one snapshot for the
     # entire scan instead of downloading it again for every OData batch.
     metadata_raw = fetch_metadata(config)
-    rows = list(_buyer_rows(config, metadata_raw))
+    rows = _union_counterparties(_buyer_rows(config, metadata_raw),
+        _buyer_rows(config, metadata_raw, selector="Поставщик"))
+    observed = {str(row.get("Ref_Key") or "") for row in rows}
+    retired = list(_inactive_role_rows(config, metadata_raw, organization, observed))
     if run is not None:
         ClientImportRun.objects.filter(pk=run.pk).update(
             total_rows=len(rows),
@@ -363,6 +404,16 @@ def scan_onec_clients(run=None, *, return_seen_refs=False):
     # staging rules and organization lock as manual decisions and merges.
     with transaction.atomic():
         Organization.objects.select_for_update().get(pk=organization.pk)
+        from .services.contact_roles import reconcile_onec_roles, source_roles
+        for row in retired:
+            candidate = ClientImportCandidate.objects.select_for_update().filter(organization=organization,
+                source_ref=str(row["Ref_Key"]), matched_client__organization=organization,
+                matched_client__crm_profile__onec_ref=str(row["Ref_Key"]), matched_client__crm_profile__merged_into__isnull=True,
+                applied_at__isnull=False).first()
+            if candidate:
+                candidate.payload = {**candidate.payload, "business_roles": source_roles(row)}
+                candidate.save(update_fields=["payload", "updated_at"])
+                reconcile_onec_roles(candidate.matched_client, candidate)
         for row in rows:
             ref = str(row.get("Ref_Key") or "")
             if ref:
@@ -784,6 +835,8 @@ def apply_candidate(candidate):
     candidate.matched_client = client
     candidate.save(update_fields=["matched_client"])
     reconcile(candidate, client, profile, created=created)
+    from .services.contact_roles import reconcile_onec_roles
+    reconcile_onec_roles(client, candidate)
     if kind == ClientImportCandidate.KIND_IP:
         _find_or_create_ip_person(client, candidate, allow_create=created)
     else:

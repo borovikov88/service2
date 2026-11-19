@@ -76,6 +76,7 @@ test("closing a card clears its URL before queued native close and cannot clear 
   }
   const nodes=new Map(), queued=[];
   const get=(id)=>{if(!nodes.has(id))nodes.set(id,new Node());return nodes.get(id);};
+  get("lead-owner").options = [{value:"all"}];
   const lead={id:12, title:"Synthetic spam inquiry", status:"closed", result:"spam", column:"spam", can_move:true};
   get("lead-bootstrap").textContent=JSON.stringify({q:"", mode:"all", status:"", page:1, pages:1, total:0,
     leads:[], columns:[], organization_id:1, urls:{detail_prefix:"/leads/"}});

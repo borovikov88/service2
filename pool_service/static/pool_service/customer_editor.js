@@ -124,6 +124,18 @@
       value() { const value = {contact: fields.contact?.value() || null, company: fields.company?.value() || null}; if (!value.contact && !value.company) throw new Error("Выберите или создайте контакт либо компанию."); return value; },
       draft: () => Object.fromEntries(Object.entries(fields).map(([key, entry]) => [key, entry.getDraft()])),
       primarySelection,
+      setModes(rules) {
+        for (const [kind, entry] of Object.entries(fields)) {
+          const {allowed, fallback} = rules[kind];
+          for (const option of entry.mode.input.options) {
+            option.disabled = !allowed.includes(option.value);
+            option.hidden = option.disabled;
+          }
+          if (!allowed.includes(entry.mode.input.value)) entry.mode.input.value = fallback;
+          entry.toggle(true);
+        }
+        changed();
+      },
       setEnabled(enabled) { if (enabled) Object.values(fields).forEach(entry => entry.toggle(true)); else root.querySelectorAll("input,select,textarea").forEach(input => { input.disabled = true; }); },
       setKind(kind) { fields.contact.mode.input.value = kind === "company" ? "none" : "new"; fields.company.mode.input.value = kind === "company" ? "new" : "none"; root.append(fields[kind].box, fields[kind === "company" ? "contact" : "company"].box); Object.values(fields).forEach(entry => entry.toggle()); },
       destroy() { disposed = true; cleanups.forEach(fn => fn()); }

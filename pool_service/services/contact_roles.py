@@ -5,6 +5,8 @@ from pool_service.client_crm_models import ClientBusinessRole, ClientBusinessRol
 from pool_service.client_queries import active_clients
 from pool_service.models import Client, Organization, OrganizationAccess
 
+ONEC_ROLES = {"buyer": "Покупатель", "supplier": "Поставщик"}
+
 
 def _apply(client, actor, enabled, source_client=None, *, role_code="supplier", using=None):
     if not isinstance(role_code, str) or role_code not in ClientBusinessRole.ROLE_LABELS:
@@ -16,13 +18,50 @@ def _apply(client, actor, enabled, source_client=None, *, role_code="supplier", 
         return None
     if role is None:
         role = roles.create(client=client, role=role_code)
-    if role.active != enabled:
+    fields = ["active", "revision"]
+    changed = role.active != enabled
+    if role_code in ONEC_ROLES and role.manual_active is not enabled:
+        role.manual_active = enabled
+        fields.append("manual_active")
+        changed = True
+    if changed:
         role.active = enabled
         role.revision += 1
-        role.save(using=using, update_fields=["active", "revision"])
+        role.save(using=using, update_fields=fields)
         ClientBusinessRoleEvent.objects.using(using).create(client=client, actor=actor, role=role_code,
             active=enabled, revision=role.revision, source_client=source_client)
     return role
+
+
+def source_roles(row):
+    return {role: row[field] for role, field in ONEC_ROLES.items() if type(row.get(field)) is bool}
+
+
+def reconcile_onec_roles(client, candidate):
+    """Only observed flags on an already authorized imported candidate affect roles."""
+    observed = (candidate.payload or {}).get("business_roles", {})
+    for code in ONEC_ROLES:
+        value = observed.get(code)
+        if type(value) is not bool:
+            continue
+        roles = ClientBusinessRole.objects.select_for_update()
+        role = roles.filter(client=client, role=code).first()
+        if role is None and not value:
+            continue
+        existed = role is not None
+        if role is None:
+            role = ClientBusinessRole(client=client, role=code)
+        if role.onec_active == value:
+            continue
+        if existed and role.onec_active is None and role.manual_active is None:
+            # Pre-existing local roles were explicit manual decisions.
+            role.manual_active = role.active
+        role.onec_active = value
+        role.active = value if role.manual_active is None else role.manual_active
+        role.revision += 1
+        role.save()
+        ClientBusinessRoleEvent.objects.create(client=client, role=code, active=role.active,
+            revision=role.revision, onec_ref=candidate.source_ref)
 
 
 @transaction.atomic

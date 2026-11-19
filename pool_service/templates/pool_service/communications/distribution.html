@@ -1,0 +1,52 @@
+{% extends 'pool_service/base.html' %}
+{% block title %}Распределение обращений{% endblock %}
+{% block content %}
+{% include 'pool_service/communications/_section_nav.html' %}
+<section class="card"><div class="card-body">
+  <h2 class="h5">Указать сделку</h2>
+  {% if route %}
+    <p><a href="{{ queue_url }}">К нераспределённым обращениям</a></p>
+    {% if source %}
+      {% if is_call %}
+        <p>{{ source.get_direction_display }} звонок · {{ source.phone_number }} · {{ source.started_at|date:"d.m.Y H:i" }}</p>
+        <p><a href="{% url 'communications_calls' %}?org_id={{ communication_org_id }}&amp;call_id={{ source.pk }}">Открыть звонок</a></p>
+      {% else %}
+        <p>{{ source.conversation.display_name }} · {{ source.created_at|date:"d.m.Y H:i" }}</p>
+        <p class="text-break">{{ source.body|truncatechars:400 }}</p>
+        <p><a href="{% url 'communications_conversations' %}?org_id={{ communication_org_id }}&amp;conversation={{ source.conversation.uuid }}">Открыть диалог</a></p>
+      {% endif %}
+    {% endif %}
+    {% if can_assign %}
+      <form method="get" class="d-flex gap-2 mb-3" role="search">
+        <input type="hidden" name="org_id" value="{{ communication_org_id }}">
+        <input class="form-control" name="q" type="search" value="{{ q }}" placeholder="Название сделки или клиента" aria-label="Найти активную сделку">
+        <button class="btn btn-outline-primary">Найти сделку</button>
+      </form>
+      {% if targets %}
+        <form method="post" class="vstack gap-3">
+          {% csrf_token %}
+          <input type="hidden" name="revision" value="{{ route.revision }}">
+          <label>Активная сделка
+            <select name="deal" class="form-select" required>
+              <option value="">Выберите сделку</option>
+              {% for target in targets %}<option value="{{ target.pk }}"{% if route.deal_id == target.pk %} selected{% endif %}>{{ target.title }}</option>{% endfor %}
+            </select>
+          </label>
+          {% if not is_call %}<label><input type="checkbox" name="remember_dialog" value="1"> Направлять будущие сообщения этого диалога в выбранную сделку</label>{% endif %}
+          <div><button class="btn btn-primary">Сохранить связь</button></div>
+        </form>
+      {% else %}<p class="text-muted">Уточните поиск или передайте обращение для распределения владельцу.</p>{% endif %}
+    {% endif %}
+  {% else %}
+    <p class="text-muted">Здесь обращения, для которых нужно выбрать активную сделку.</p>
+    <ul class="list-group">
+      {% for row in rows %}
+        <li class="list-group-item"><a href="{% url 'crm_communication_route' row.pk %}?org_id={{ communication_org_id }}">
+          {% if row.inbox.source_type == "call" %}Звонок{% else %}Сообщение{% endif %}
+          · {% firstof row.inbox.occurred_at|date:"d.m.Y H:i" row.inbox.received_at|date:"d.m.Y H:i" %}</a></li>
+      {% empty %}<li class="list-group-item">Нет обращений для распределения.</li>{% endfor %}
+    </ul>
+    {% if next_page %}<a class="btn btn-outline-primary mt-3" href="{{ queue_url }}&amp;before={{ next_page }}">Следующие</a>{% endif %}
+  {% endif %}
+</div></section>
+{% endblock %}

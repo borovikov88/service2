@@ -41,12 +41,12 @@ class ContactsRolesTests(TestCase):
             self.assertEqual(self.post_role(enabled,rev).status_code,409)
         self.assertFalse(ClientBusinessRole.objects.exists())
 
-    def test_manager_read_only_role_and_no_lookup(self):
+    def test_manager_can_search_relationships_and_cannot_change_business_role(self):
         self.membership.role="manager";self.membership.save()
         self.assertEqual(self.post_role().status_code,403)
         response=self.client.get(reverse("client_detail",args=[self.company.pk]))
         self.assertNotContains(response,'data-supplier-form')
-        self.assertEqual(self.client.get(reverse("client_detail",args=[self.company.pk]),{"lookup":"relationships","q":"Person"}).status_code,403)
+        self.assertEqual(self.client.get(reverse("client_detail",args=[self.company.pk]),{"lookup":"relationships","q":"Person"}).status_code,200)
 
     def test_role_service_denies_foreign_inactive_revoked_and_merged(self):
         with self.assertRaises(PermissionDenied):set_supplier(self.owner,self.foreign.pk,"1",0)

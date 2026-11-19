@@ -717,9 +717,12 @@ class LeadDispositionTests(LeadFixture, TestCase):
         self.assertEqual(lead.follow_up_at, lead.next_task.due_at)
 
 class KanbanRepairTests(LeadFixture, TestCase):
-    def test_forward_completion_no_reason_backward_and_trash_require_reason(self):
+    def test_completion_backward_and_trash_require_reason(self):
         lead = self.create()
-        self.command('lead.disposition', {'column': 'history', 'expected_task_version': version_for(lead.next_task)}, lead)
+        changes = {'column': 'history', 'expected_task_version': version_for(lead.next_task)}
+        with self.assertRaises(ValidationError):
+            self.command('lead.disposition', changes, lead)
+        self.command('lead.disposition', {**changes, 'reason': 'Confirmed completion'}, lead)
         lead.refresh_from_db()
         self.assertEqual((lead.status, lead.result, lead.needs_review), ('closed', 'no_deal', False))
         self.assertFalse(CrmDeal.objects.exists())

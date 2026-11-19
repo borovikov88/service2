@@ -85,7 +85,8 @@
   }
   function moveTargets(lead) {
     if (!lead.can_move) return [];
-    if (lead.is_archived) return lead.status === "closed" ? (lead.result === "spam" ? ["restore", "spam"] : ["restore", "unparsed"]) : ["restore", "unparsed", "working"];
+    if (lead.is_archived) return lead.status === "closed" ? (lead.result === "spam" ? ["restore", "spam"] : ["restore"]) : ["restore", "unparsed", "working"];
+    if (lead.result === "spam") return ["restore", "deleted"];
     if (lead.status === "closed" && lead.result !== "spam") return lead.needs_review ? ["deleted"] : ["unparsed", "deleted"];
     return ["unparsed", "working", ...((lead.status !== "closed") ? ["history", "failed"] : []), "spam", "deleted"].filter((key) => key !== lead.column);
   }
@@ -95,7 +96,9 @@
     const initial = JSON.parse(doc.getElementById("lead-bootstrap").textContent);
     const byId = (id) => doc.getElementById(id);
     const dialog = byId("lead-dialog"), content = byId("lead-dialog-content");
-    const state = {data: initial, q: initial.q, mode: initial.mode, status: initial.status, page: initial.page, pages: Object.fromEntries((initial.columns || []).map((column) => [column.key, column.page])),
+    const legacyOwners = {mine: "me", unassigned: "unassigned"};
+    const state = {data: initial, q: initial.q, mode: initial.mode, status: initial.status,
+      owner: initial.owner || legacyOwners[initial.mode] || "all", page: initial.page, pages: Object.fromEntries((initial.columns || []).map((column) => [column.key, column.page])),
       selected: null, detail: null, loading: false, sequence: 0, detailSequence: 0, listController: null,
       showArchiveQueues: new URL(win.location.href).searchParams.get("queues") === "all"};
     const el = (tag, cls, text) => { const node = doc.createElement(tag); if (cls) node.className = cls; if (text != null) node.textContent = text; return node; };
@@ -122,7 +125,7 @@
     };
     function urlState() {
       const url = new URL(win.location.href);
-      for (const [key, value, base] of [["q", state.q, ""], ["mode", state.mode, "all"], ["status", state.status, ""], ["page", String(state.mode === "closed" ? state.page : 1), "1"]]) {
+      for (const [key, value, base] of [["q", state.q, ""], ["mode", state.mode, "all"], ["owner", state.owner, "all"], ["status", state.status, ""], ["page", String(state.mode === "closed" ? state.page : 1), "1"]]) {
         if (value && value !== base) url.searchParams.set(key, value); else url.searchParams.delete(key);
       }
       for (const key of ["unparsed", "working", "history", "spam", "deleted"]) url.searchParams.delete("page_" + key);
@@ -187,7 +190,27 @@
           clearSelection(); dialog.close(); operations.dismiss(item.payload.operation_key);
           notice("Ответственный назначен. Карточка передана сотруднику и больше недоступна в вашем списке."); loadList({keepNotice:true}); return item;
         }
-        if (state.selected === item.payload.subject_id || state.selected === null && item.payload.subject_id === null) {
+        const completed = ["lead.qualify", "lead.add_deal", "lead.complete_customer"].includes(item.payload.command_type)
+          || item.payload.command_type === "lead.disposition" && (["history", "failed"].includes(item.payload.changes.column) || item.payload.changes.target_deal_id)
+          || item.payload.command_type === "lead.transition" && item.payload.changes.status === "closed";
+        if (completed && state.selected === item.payload.subject_id) {
+          const dealId = item.response.result?.deal_ids?.[0];
+          const deal = item.response.deals?.find(row => row.id === dealId);
+          operations.dismiss(item.payload.operation_key);
+          clearSelection();
+          if (dialog.open) dialog.close();
+          if (deal?.url && !operations.pending().length) {
+            win.location.assign(deal.url);
+            return item;
+          }
+          notice(dealId && !deal ? "Сделка создана и передана ответственному." : "Изменения сохранены.");
+          if (deal?.url) {
+            const link = el("a", "", "Открыть сделку"); link.href = deal.url; byId("lead-notice").append(" ", link);
+          }
+          loadList({keepNotice: true});
+          return item;
+        }
+        if (state.selected === item.payload.subject_id) {
           state.selected = item.response.lead.id; state.detail = item.response; renderDetail(item.response); dialog.scrollTop = 0; urlState();
         }
         notice("Изменения сохранены."); operations.dismiss(item.payload.operation_key); loadList();
@@ -213,12 +236,13 @@
     const columnLabels = {unparsed: "Не разобраны", working: "В работе", history: "Завершённые", failed: "Лид провален", spam: "Спам", deleted: "Удалённые", restore: "Восстановить"};
     let dragged = null, suppressClickUntil = 0;
     const dragActions=el("div","crm-drag-actions");dragActions.hidden=true;root.append(dragActions);
-    const conversionDrop=el("div","lead-conversion-drop crm-drag-target","Создать сделку");
+    const conversionDrop=el("div","lead-conversion-drop crm-drag-target","Завершить лид");
     const failureDrop=el("div","crm-failure-drop crm-drag-target","Лид провален");
     dragActions.append(conversionDrop,failureDrop);
     function endDrag(){if(dragged)suppressClickUntil=Date.now()+250;dragged=null;dragActions.hidden=true;root.querySelectorAll(".is-drop-target,.is-dragging").forEach(node=>node.classList.remove("is-drop-target","is-dragging"));}
-    conversionDrop.addEventListener("dragover",e=>{if(dragged?.can_qualify){e.preventDefault();e.dataTransfer.dropEffect="move";}});
-    conversionDrop.addEventListener("drop",e=>{e.preventDefault();const lead=dragged;endDrag();if(lead?.can_qualify)conversionDialog(lead);});
+    const canComplete = lead => Boolean(lead && (lead.can_qualify || lead.can_complete_customer || moveTargets(lead).includes("history")));
+    conversionDrop.addEventListener("dragover",e=>{if(!state.loading&&canComplete(dragged)){e.preventDefault();e.dataTransfer.dropEffect="move";}});
+    conversionDrop.addEventListener("drop",e=>{e.preventDefault();const lead=dragged;endDrag();if(!state.loading&&canComplete(lead))conversionDialog(lead,false,null);});
     failureDrop.addEventListener("dragover",e=>{if(dragged&&!state.loading&&moveTargets(dragged).includes("failed")){e.preventDefault();e.dataTransfer.dropEffect="move";failureDrop.classList.add("is-drop-target");}});
     failureDrop.addEventListener("dragleave",()=>failureDrop.classList.remove("is-drop-target"));
     failureDrop.addEventListener("drop",e=>{e.preventDefault();const lead=dragged;endDrag();if(lead&&!state.loading&&moveTargets(lead).includes("failed"))moveLead(lead,"failed");});
@@ -253,6 +277,7 @@
       const received = lead.source?.occurred_at || lead.source?.received_at;
       if (received) { const stamp = el("span", "lead-card-received", lead.source.occurred_at ? dateText(received) : "Получено: " + dateText(received) + " · время события неизвестно"); meta.append(stamp); }
       title.append(meta);
+      if (lead.can_restore) title.append(button("Восстановить", () => moveLead(lead, "restore")));
       const avatar = el("span", "lead-card-avatar"); avatar.setAttribute("aria-hidden", "true");
       if (lead.assignee?.name) avatar.textContent = lead.assignee.name.trim().split(/\s+/).slice(0, 2).map(part => part[0]).join("").toLocaleUpperCase("ru-RU"); else avatar.append(icon("user"));
       middle.title = "Ответственный"; middle.append(avatar, el("span", "lead-card-owner-name", lead.assignee?.name || "Не назначен"));
@@ -269,7 +294,7 @@
         row.draggable = !state.loading && !operations.forSubject(lead.id);
         row.addEventListener("dragstart", (event) => {
           if (!row.draggable || bulk?.hasSelection() || operations.forSubject(lead.id)) { event.preventDefault(); return; }
-          dragged = lead; conversionDrop.hidden=!lead.can_qualify;failureDrop.hidden=!targets.includes("failed");dragActions.hidden=conversionDrop.hidden&&failureDrop.hidden; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", String(lead.id)); row.classList.add("is-dragging");
+          dragged = lead; conversionDrop.hidden=!canComplete(lead);failureDrop.hidden=!targets.includes("failed");dragActions.hidden=conversionDrop.hidden&&failureDrop.hidden; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", String(lead.id)); row.classList.add("is-dragging");
         });
         row.addEventListener("dragend", endDrag);
 
@@ -286,9 +311,12 @@
       byId("lead-prev").parentElement.hidden = state.mode !== "closed";
       byId("lead-prev").disabled = state.loading || data.page <= 1; byId("lead-next").disabled = state.loading || data.page >= data.pages;
       byId("lead-create").hidden = !data.can_create;
+      const statusFilter = byId("lead-legacy-status");
+      statusFilter.hidden = !state.status;
+      statusFilter.textContent = state.status ? (initial.states?.[state.status] || state.status) + " ×" : "";
       const intake = data.intake || {};
       byId("lead-intake-status").textContent = intakeStatusText(intake, dateText);
-      root.querySelectorAll("[data-mode]").forEach((node) => { if (node.dataset.mode === state.mode) node.setAttribute("aria-current", "page"); else node.removeAttribute("aria-current"); });
+      root.querySelectorAll("[data-mode]").forEach((node) => { if (node.dataset.mode === (legacyOwners[state.mode] ? "all" : state.mode)) node.setAttribute("aria-current", "page"); else node.removeAttribute("aria-current"); });
       if (state.mode === "closed") {
         list.append(el("h2", "", "История завершённых"));
         if (!data.leads.length) list.append(el("p", "lead-empty", "Завершённых лидов по этим условиям нет."));
@@ -300,7 +328,7 @@
         const heading = el("h2", "lead-column-heading"); heading.setAttribute("aria-label", column.label + " · " + column.total);
         heading.append(el("span", "lead-column-label", column.label), el("span", "lead-column-count", String(column.total))); section.append(heading);
         const cards = el("div", "lead-column-cards");
-        if (!column.leads.length) cards.append(el("p", "lead-empty", state.q || state.status ? "Нет совпадений" : "Пока пусто"));
+        if (!column.leads.length) cards.append(el("p", "lead-empty", state.q || state.status || state.owner !== "all" ? "Нет совпадений" : "Пока пусто"));
         for (const lead of column.leads) cards.append(card(lead));
         section.append(cards);
         section.addEventListener("dragover", (event) => { if (dragged && !state.loading && moveTargets(dragged).includes(column.key)) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; section.classList.add("is-drop-target"); } });
@@ -335,13 +363,16 @@
         const required=["failed","spam","deleted","restore"].includes(target)||ranks[target]<ranks[lead.column];
         const reason = required ? field(form, target === "failed" ? "Причина провала" : "Причина перемещения", "", "textarea") : null;
         if(reason){reason.required=true;reason.maxLength=500;}
+        const existingDeal = target === "restore" && (lead.result === "spam" || lead.status !== "closed")
+          ? picker(form, "Активная сделка клиента, если есть", initial.urls.targets, "targets", null, () => "deal") : null;
         if(target==="history")form.append(el("p","lead-form-note","Лид будет завершён без создания сделки. Открытый следующий шаг отменится; сделки, выполнение и оплата не изменятся."));
         let next = null;
         if (target === "working" && (!lead.next_action || lead.next_action.completed)) next = nextFields(form, null);
         if (["failed","spam","deleted"].includes(target)) form.append(el("p", "lead-form-note", "Текущий незавершённый шаг будет отменён с сохранением истории."));
         formSubmit(form, target === "failed" ? "Подтвердить провал" : free ? "Взять на себя и переместить" : "Подтвердить перемещение", () => {
           const changes = {column: target, reason: reason ? reason.value.trim() : ""}; if (next) changes.next_action = next();
-          if (["failed", "spam", "deleted", "history"].includes(target) && lead.next_action?.version && !lead.next_action.completed) changes.expected_task_version = lead.next_action.version;
+          if (existingDeal?.value()) changes.target_deal_id = existingDeal.value();
+          if ((changes.target_deal_id || ["failed", "spam", "deleted", "history"].includes(target)) && lead.next_action?.version && !lead.next_action.completed) changes.expected_task_version = lead.next_action.version;
           submit(form, "lead.disposition", lead, changes);
         });
         form.append(button("Отмена",()=>{clearSelection();dialog.close();}));
@@ -357,7 +388,7 @@
       if (state.listController) state.listController.abort();
       const controller = new AbortController(), sequence = ++state.sequence; state.listController = controller; state.loading = true; renderList(); urlState();
       const url = new URL(initial.urls.data, win.location.origin);
-      for (const [key, value] of Object.entries({q: state.q, mode: state.mode, status: state.status, page: state.mode === "closed" ? state.page : 1})) url.searchParams.set(key, value);
+      for (const [key, value] of Object.entries({q: state.q, mode: state.mode, owner: state.owner, status: state.status, page: state.mode === "closed" ? state.page : 1})) url.searchParams.set(key, value);
       if(state.mode!=="closed") url.searchParams.set("layout","board");
       if(more){url.searchParams.set("board_column",more.key);url.searchParams.set("cursor",more.cursor);}
       try {
@@ -540,8 +571,8 @@
       if (shared) shared.editor = editor;
       return editor;
     }
-    function qualificationForm(host, lead, additional = false, sharedCustomer = null) {
-      const form = makeForm(host, "Данные сделки", "Можно создать контакт, компанию или оба сразу. Они будут связаны между собой и со сделкой после подтверждения.");
+    function qualificationForm(host, lead, additional = false, sharedCustomer = null, mode = "deal") {
+      const form = makeForm(host, "Данные сделки");
       form.classList.add("lead-conversion-form");
       form.parentElement.classList.add("lead-conversion");
       const stepHeading=(number,label)=>{const heading=el("h3","lead-conversion-heading"),badge=el("span","lead-step-number",number);badge.setAttribute("aria-hidden","true");heading.append(badge,el("span","lead-step-label",label));return heading;};
@@ -552,10 +583,54 @@
       const title=field(fields,"Название сделки",lead.title,"text",true);title.required=true;title.maxLength=255;
       const pipeline=select(fields,"Воронка",initial.pipelines.map(p=>[String(p.id),p.name]),String(initial.pipelines.find(p=>p.code===lead.direction)?.id || initial.pipelines[0]?.id || ""));pipeline.required=true;
       const responsible = responsibleField(fields, {kind:"deal", leadId:lead.id});
+      const amount = field(fields, "Коммерческая сумма, ₽", lead.budget_kind === "exact" && lead.currency === "RUB" ? win.CrmCardActivity.formatMoney(lead.budget_min) : "");
+      amount.inputMode = "decimal"; amount.maxLength = 40;
+      const amountBasis = select(fields, "Основание суммы", [["indicative","Предварительная оценка"],["agreed","Согласовано с клиентом"]], "indicative");
+      const updateAmount = () => { amountBasis.parentElement.hidden = !amount.value.trim(); };
+      amount.addEventListener("input", updateAmount); updateAmount();
       const need=additional?null:field(fields,"Потребность",lead.need||"","textarea",true);if(need){need.required=true;need.maxLength=10000;need.readOnly=!lead.can_edit_conversion_need;if(!lead.can_edit_conversion_need&&!lead.need)form.append(el("p","lead-error","Для уточнения потребности требуется право редактирования лида."));}
       const customerSection=el("section","lead-conversion-section lead-conversion-customer");customerSection.append(stepHeading("2","Контакт и компания"));form.append(customerSection);
       const customerEditor=customerFields(customerSection, lead, false, sharedCustomer);
-      sharedCustomer?.hosts.set("deal", customerSection);
+      sharedCustomer?.hosts.set(mode, customerSection);
+      const extra = el("details", "lead-conversion-section");
+      extra.append(el("summary", "", "Объект и другие сведения")); form.append(extra);
+      const work = field(extra, "Предмет работ / товаров", (lead.need || "").slice(0, 2000), "textarea"); work.maxLength = 2000;
+      const specialization = field(extra, "Специализация", lead.specialization || ""); specialization.maxLength = 40;
+      const fulfillment = select(extra, "Направление исполнения", [["unknown","Не уточнено"],["construction","Строительство / монтаж"],["service","Обслуживание"],["retail","Поставка"],["mixed","Смешанное"]], ["construction","service","retail"].includes(lead.direction) ? lead.direction : "unknown");
+      const decision = field(extra, "Ожидаемое коммерческое решение · " + initial.timezone, "", "datetime-local");
+      const object = select(extra, "Объект сделки", [["none","Не выбран"],["planned","Планируемый объект"]], "none");
+      const objectName = field(extra, "Название объекта"); objectName.maxLength = 255;
+      const address = field(extra, "Адрес объекта", lead.location || ""); address.maxLength = 500;
+      const updateObject = () => {
+        const planned = object.value === "planned"; objectName.required = planned;
+        objectName.parentElement.hidden = address.parentElement.hidden = !planned;
+      };
+      object.addEventListener("change", updateObject); updateObject();
+      let objectClient, objectGeneration = 0;
+      if (initial.urls.objects) {
+        const query = field(extra, "Поиск существующего объекта", "", "search"); query.maxLength = 200;
+        const feedback = el("p", "crm-live-muted"); feedback.setAttribute("role", "status");
+        extra.append(button("Найти объекты клиента", async () => {
+          const selected = customerEditor.primarySelection();
+          const mine = ++objectGeneration;
+          for (const option of [...object.options].slice(2)) option.remove();
+          updateObject();
+          if (!selected) { feedback.textContent = "Сначала выберите существующего клиента."; return; }
+          const url = new URL(initial.urls.objects, win.location.origin);
+          url.searchParams.set("client_id", selected.id); url.searchParams.set("q", query.value.trim());
+          feedback.textContent = "Ищем объекты…";
+          try {
+            const data = await read(url);
+            if (mine !== objectGeneration || customerEditor.primarySelection()?.id !== selected.id || !extra.isConnected) return;
+            objectClient = selected.id;
+            for (const entry of data.objects) {
+              const option = el("option", "", [entry.name, entry.address].filter(Boolean).join(" · "));
+              option.value = entry.kind + ":" + entry.id; object.append(option);
+            }
+            feedback.textContent = data.objects.length ? "Выберите объект в списке." : "Объекты по запросу не найдены.";
+          } catch (error) { if (mine === objectGeneration) feedback.textContent = error.message; }
+        }), feedback);
+      }
       const toggleFields=(container,visible)=>{container.hidden=!visible;container.querySelectorAll("input,select,textarea").forEach(input=>{input.disabled=!visible;});};
       const transferable=!additional&&lead.next_action&&!lead.next_action.completed&&!lead.next_action.restricted&&!lead.next_action.waiting;
       const nextSection=el("section","lead-conversion-section lead-conversion-next");nextSection.append(stepHeading("3","Следующее действие"));form.append(nextSection);
@@ -568,6 +643,13 @@
         const row={title:title.value.trim(),pipeline_id:Number(pipeline.value),next_action:reuse?.checked?{title:lead.next_action.title,due_at:lead.next_action.due_at}:next()};
         if (responsible) { if (!responsible.value) throw new Error("Выберите ответственного."); row.responsible_id = Number(responsible.value); }
         row.customer=customerEditor.value();
+        const [objectKind, objectId] = object.value.split(":");
+        if (objectId && objectClient !== customerEditor.primarySelection()?.id) throw new Error("Клиент изменился. Выберите объект заново.");
+        row.card_fields = {work_subject:work.value.trim(), specialization:specialization.value.trim(), fulfillment_kind:fulfillment.value,
+          expected_decision_at:decision.value ? deadlineISO(decision.value, initial.utc_offset) : null, object_kind:objectKind};
+        if (objectKind === "planned") Object.assign(row.card_fields, {planned_object_name:objectName.value.trim(), planned_object_address:address.value.trim()});
+        if (objectId) row.card_fields[objectKind === "pool" ? "pool_id" : "client_object_id"] = Number(objectId);
+        if (amount.value.trim()) Object.assign(row.card_fields, {amount:win.CrmCardActivity.parseMoney(amount.value), currency:"RUB", amount_basis:amountBasis.value});
         const changes={deals:[row]};if(need)changes.need=need.value.trim();if(reuse?.checked){row.reuse_next_action=true;changes.expected_task_version=lead.next_action.version;}
         submit(form,additional?"lead.add_deal":"lead.qualify",lead,changes);
       });
@@ -595,9 +677,10 @@
     function completeEmptyForm(host, lead) {
       const form = makeForm(host, "Завершить без создания", "Новые записи не создаются. История и уже связанные контакты, компании и сделки сохранятся.");
       form.dataset.completionForm = "empty";
-      const reason = field(form, "Комментарий к завершению", "", "textarea", true); reason.maxLength = 500;
+      const reason = field(form, "Комментарий к завершению", "", "textarea", true); reason.maxLength = 500; reason.required = true;
       if (lead.next_action && !lead.next_action.completed) form.append(el("p", "lead-form-note", "Незавершённый шаг лида будет отменён с сохранением истории."));
       formSubmit(form, "Подтвердить завершение", () => {
+        if (!reason.value.trim()) throw new Error("Напишите комментарий к завершению.");
         const changes = {column:"history", reason:reason.value.trim()};
         if (lead.next_action?.version && !lead.next_action.completed) changes.expected_task_version = lead.next_action.version;
         submit(form, "lead.disposition", lead, changes);
@@ -608,8 +691,13 @@
       const choices = el("div", "lead-completion-options"); choices.setAttribute("role", "group"); choices.setAttribute("aria-label", "Результат завершения лида");
       host.append(el("p", "lead-completion-intro", "Выберите, что нужно сохранить по итогам обращения."), choices);
       const panels = new Map(), buttons = new Map(), customer = {editor:null, hosts:new Map()};
+      const dealModes = [
+        ["deal", "Создать сделку", "Сделка", "Использовать существующего клиента."],
+        ["deal_contact", "Создать сделку и контакт", "Сделка и контакт", "Добавить контакт к сделке."],
+        ["deal_contact_company", "Создать сделку, контакт и компанию", "Сделка, контакт и компания", "Добавить контакт и компанию к сделке."]
+      ];
       const definitions = [
-        ["deal", "Создать сделку", "Сделка", "Контакт, компания или оба — вместе со сделкой.", lead.can_qualify, () => qualificationForm(panels.get("deal"), lead, false, customer)],
+        ...dealModes.map(([key, name, label, description]) => [key, name, label, description, lead.can_qualify, () => qualificationForm(panels.get(key), lead, false, customer, key)]),
         ["customer", "Сохранить контакт/компанию", "Контакт / компания", "Сохранить в справочник и завершить лид без сделки.", lead.can_complete_customer, () => completeCustomerForm(panels.get("customer"), lead, customer)],
         ["empty", "Завершить без создания", "Без создания", "Завершить разбор обращения без новых записей.", moveTargets(lead).includes("history"), () => completeEmptyForm(panels.get("empty"), lead)]
       ];
@@ -618,15 +706,24 @@
         for (const [mode, panel] of panels) { panel.hidden = mode !== key; buttons.get(mode).setAttribute("aria-pressed", String(mode === key)); }
         const panel = panels.get(key); if (!panel.childNodes.length) build();
         // Keep entered identities when the user changes the completion result.
-        if (customer.hosts.has(key)) customer.hosts.get(key).append(customer.editor.element);
-        byId("lead-dialog-title").textContent = key === "deal" ? "Создать сделку" : key === "customer" ? "Сохранить контакт/компанию" : "Завершить лид";
+        if (customer.hosts.has(key)) {
+          customer.hosts.get(key).append(customer.editor.element);
+          const optional = {allowed:["existing","new","none"],fallback:"none"};
+          const existing = {allowed:["existing","none"],fallback:"none"};
+          const required = {allowed:["existing","new"],fallback:"new"};
+          customer.editor.setModes({
+            contact: key === "deal" ? existing : key === "customer" ? optional : required,
+            company: key === "deal" || key === "deal_contact" ? existing : key === "customer" ? optional : required,
+          });
+        }
+        byId("lead-dialog-title").textContent = definitions.find(([mode]) => mode === key)[1];
         renderOperations();
       };
       for (const [key, name, label, description, allowed, build] of definitions) {
         if (!allowed) continue;
         const option = button("", () => activate(key, build)); option.className = "lead-completion-option"; option.dataset.completionMode = key;
         option.setAttribute("aria-label", name); option.setAttribute("aria-pressed", "false");
-        const symbol = el("span", "lead-completion-symbol"); symbol.append(icon(key === "deal" ? "note" : key === "customer" ? "user" : "check"));
+        const symbol = el("span", "lead-completion-symbol"); symbol.append(icon(key.startsWith("deal") ? "note" : key === "customer" ? "user" : "check"));
         option.append(symbol, el("strong", "", label), el("span", "lead-completion-description", description)); choices.append(option); buttons.set(key, option);
         const panel = el("div", "lead-completion-panel"); panel.dataset.completionPanel = key; panel.hidden = true; panels.set(key, panel); host.append(panel);
       }
@@ -655,7 +752,7 @@
         });
         form.querySelector('button[type=submit]').remove();
         win.CrmInline.mount(box, {display:box.querySelector('.crm-card-money-value'), form,
-          editLabel:"Редактировать сумму", saveLabel:"Сохранить сумму", clearLabel:"Удалить сумму",
+          editLabel:"Редактировать сумму", editText:"Изменить сумму", saveLabel:"Сохранить сумму", clearLabel:"Удалить сумму",
           clearMessage:"Убрать бюджет лида? В карточке будет «Не указан». Изменение сохранится в истории.",
           onClear:lead.budget_kind === "unknown" ? null : () => {kind.value="unknown"; update(); form.requestSubmit();},
           onReset:update, busy:() => Boolean(operations.forSubject(lead.id))});
@@ -689,6 +786,7 @@
       const primaryActions=el("div","lead-primary-actions");content.append(primaryActions);
       if(lead.can_qualify)primaryActions.append(button("Создать сделку",()=>conversionDialog(lead),true));
       if(lead.can_complete_customer || moveTargets(lead).includes("history")) primaryActions.append(button("Завершить лид",()=>conversionDialog(lead,false,null),!lead.can_qualify));
+      if(lead.can_restore)primaryActions.append(button("Восстановить",()=>moveLead(lead,"restore")));
       if (lead.result === "customer_saved") {
         const result = el("div", "lead-completion-result");
         result.append(icon("check"), el("p", "", (lead.contact && lead.company ? "Контакт и компания сохранены." : lead.company ? "Компания сохранена." : "Контакт сохранён.") + " Сделка не создавалась."));
@@ -770,9 +868,17 @@
     dialog.addEventListener("close", () => { if (!dialog.open) clearSelection(); });
     byId("lead-refresh").addEventListener("click", loadList);
     let searchTimer;
-    byId("lead-search").value = state.q; byId("lead-status").value = state.status;
+    const ownerSelect = byId("lead-owner");
+    const renderOwner = () => {
+      if (![...ownerSelect.options].some(option => option.value === state.owner)) {
+        const option = el("option", "", "Ответственный из ссылки"); option.value = state.owner; ownerSelect.append(option);
+      }
+      ownerSelect.value = state.owner;
+    };
+    byId("lead-search").value = state.q; renderOwner();
     byId("lead-search").addEventListener("input", (event) => { state.q = event.target.value; state.page = 1; state.pages = {}; if(state.listController)state.listController.abort(); ++state.sequence; state.loading=true; renderList(); win.clearTimeout(searchTimer); searchTimer = win.setTimeout(loadList, 300); });
-    byId("lead-status").addEventListener("change", (event) => { state.status = event.target.value; state.page = 1; state.pages = {}; loadList(); });
+    ownerSelect.addEventListener("change", () => { state.owner = ownerSelect.value; if (legacyOwners[state.mode]) state.mode = "all"; state.page = 1; state.pages = {}; loadList(); });
+    byId("lead-legacy-status").addEventListener("click", () => { state.status = ""; state.page = 1; state.pages = {}; loadList(); });
     byId("lead-modes").addEventListener("click", (event) => { const target = event.target.closest("[data-mode]"); if (target) { state.mode = target.dataset.mode; state.page = 1; state.pages = {}; loadList(); } });
     byId("lead-archive-toggle")?.addEventListener("click",()=>{state.showArchiveQueues=!state.showArchiveQueues;urlState();renderList();});
     byId("lead-prev").addEventListener("click", () => { if (state.page > 1) { state.page -= 1; loadList(); } });
@@ -781,9 +887,10 @@
     win.addEventListener("popstate",()=>{
       const params=new URL(win.location.href).searchParams;
       state.q=params.get("q") || ""; state.mode=params.get("mode") || "all"; state.status=params.get("status") || "";
+      state.owner=params.get("owner") || legacyOwners[state.mode] || "all";
       state.showArchiveQueues=params.get("queues")==="all";
       state.page=Number(params.get("page")) || 1; state.pages={};
-      byId("lead-search").value=state.q; byId("lead-status").value=state.status;
+      byId("lead-search").value=state.q; renderOwner();
       const selected=params.get("lead"); state.selected=null;
       if(dialog.open) dialog.close(); loadList();
       if(selected && /^\d+$/.test(selected)) openLead(Number(selected));

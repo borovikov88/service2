@@ -3,12 +3,12 @@ from pool_service.services.crm_role_runtime import resolve_crm_capabilities
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
-from django.db.models import Count, Exists, OuterRef, Q, Subquery, IntegerField, Value
+from django.db.models import Count, Exists, F, OuterRef, Q, Subquery, IntegerField, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
-from pool_service.communication_models import CommunicationAccess, PhoneCall
-from pool_service.crm_commercial_models import CrmAccess, CrmLead, CrmDeal, CrmLeadSource, CrmLeadDealLink
+from pool_service.communication_models import ChannelConnection, CommunicationAccess, PhoneCall
+from pool_service.crm_commercial_models import CrmCommunicationRoute, CrmLead, CrmDeal, CrmLeadSource, CrmLeadDealLink
 from pool_service.models import Employee, Organization, OrganizationAccess, DataAuditLog
 from pool_service.staff_call_models import CallWorkContext, StaffAccount, CallPrivacyHold
 
@@ -89,6 +89,19 @@ def scope_calls(user, organization, queryset=None, *, media=False, assignment_su
         authority |= Q(_policy_deals=0, _policy_assigned_lead=True)
     if deal_allowed:
         authority |= Q(_policy_deals=1, _policy_assigned_conversion=True)
+        route = CrmCommunicationRoute.objects.filter(deal_assignee, organization=organization,
+            deal_id__in=deal_object_scope(organization).values("pk"), deal__is_archived=False,
+            inbox__organization=organization, inbox__scope_verified=True, inbox__source_type="call",
+            inbox__provider_kind="megafon", inbox__source_id=OuterRef("pk"),
+            inbox__connection_id_snapshot=OuterRef("connection_id"), inbox__external_id=OuterRef("external_id"),
+            inbox__account_id_snapshot=OuterRef("connection__external_id"),
+            inbox__namespace="", inbox__channel_id_snapshot=OuterRef("intake_scope__channel"),
+            inbox__account_id_snapshot__exact=OuterRef("intake_scope__account"),
+        ).filter(Exists(ChannelConnection.objects.filter(
+            pk=OuterRef("inbox__channel_id_snapshot"), external_id=OuterRef("inbox__account_id_snapshot"),
+            is_active=True, channel__is_active=True, channel__organization=organization, channel__kind="megafon",
+        )))
+        qs = qs.alias(_policy_assigned_route=Exists(route))
     explicit_ok = Q(_policy_has_context=True, _policy_context_org=organization.pk) & (
         Q(_policy_context_deal__isnull=False, _policy_assigned_deal=True) if deal_allowed else Q(pk__in=[]))
     if lead_allowed:
@@ -96,6 +109,12 @@ def scope_calls(user, organization, queryset=None, *, media=False, assignment_su
                          _policy_context_deal__isnull=True, _policy_assigned_lead=True)
     derived_ok = Q(_policy_has_context=False, _policy_source_count=1) & authority
     delegated = explicit_ok | derived_ok
+    if deal_allowed:
+        delegated |= Q(_policy_has_context=False, _policy_source_count=0, _policy_assigned_route=True,
+            connection__is_active=True, intake_received_at__isnull=False,
+            intake_scope__organization=organization.pk, intake_scope__provider="megafon",
+            intake_scope__connection=F("connection_id"), intake_scope__external=F("external_id"),
+            intake_scope__namespace="")
     owners = OrganizationAccess.objects.filter(organization=organization, role='owner').values('user_id')
     owner_call = Q(owner_user_snapshot__isnull=False) | Q(employee_id__in=owners) | Q(peer_employee_id__in=owners) | Q(employee_id__isnull=True)
     participants = Q(employee_id=user.pk) | Q(peer_employee_id=user.pk)

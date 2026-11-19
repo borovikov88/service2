@@ -36,6 +36,7 @@ const {readFileSync}=require('node:fs');
    await page.mouse.move(b.x+b.width/2,b.y+30);await page.mouse.down();await page.mouse.move(b.x+b.width/2+15,b.y+40,{steps:5});
    await zone.waitFor({state:'visible'});const z=await zone.boundingBox();assert.ok(z.y>=0&&z.y+z.height<=800);
    await page.mouse.move(z.x+z.width/2,z.y+z.height/2,{steps:10});await page.mouse.up();
+   await page.locator('#lead-dialog').getByRole('button',{name:'Создать сделку',exact:true}).click();
    await page.getByLabel('Название сделки',{exact:true}).waitFor();assert.equal(writes,0);
    await page.locator('#lead-close').click();await page.locator('#lead-dialog').waitFor({state:'hidden'});
  }

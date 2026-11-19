@@ -119,7 +119,7 @@ def _load_sources(organization, links):
     readable_call_ids = set(_without_private_calls(call_rows).values_list("pk", flat=True))
     messages = ConversationMessage.objects.select_related("conversation__connection__channel").filter(
         pk__in=[link.inbox.source_id for link in links if link.inbox.source_type == "message"],
-        direction="in", conversation__organization=organization, conversation__connection__channel__organization=organization,
+        conversation__organization=organization, conversation__connection__channel__organization=organization,
         conversation__connection__is_active=True, conversation__connection__channel__is_active=True,
         intake_received_at__isnull=False).filter(
             Q(conversation__client__isnull=True) | Q(conversation__client__organization=organization)).only(

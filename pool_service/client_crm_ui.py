@@ -15,7 +15,7 @@ from django.views.decorators.http import require_http_methods
 
 from .client_crm_models import ClientCompanyLink, ClientContact, ClientCRMProfile
 from .client_queries import active_clients
-from .models import Client, Organization
+from .models import Client, DataAuditLog, Organization
 from .phone_utils import canonical_phone_value, format_phone, normalize_phone
 from .services.permissions import is_org_access_blocked
 
@@ -103,7 +103,7 @@ class ClientEditorForm(forms.ModelForm):
             "inn": "ИНН", "contact_position": "Должность",
         }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, limited=False, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["name"].required = True
         self.fields["phone"].required = False
@@ -113,6 +113,8 @@ class ClientEditorForm(forms.ModelForm):
             self.fields["name"].label = "Краткое название компании"
             for name in ("last_name", "first_name", "contact_position"):
                 self.fields.pop(name)
+            if limited:
+                self.fields.pop("inn")
         else:
             self.fields.pop("inn")
             self.fields["name"].help_text = "Имя в CRM можно изменить вручную; 1С не перезапишет его."
@@ -137,7 +139,7 @@ class CRMProfileEditorForm(forms.ModelForm):
         model = ClientCRMProfile
         fields = (
             "middle_name", "birth_date", "legal_name", "kpp", "ogrn",
-            "manager", "responsible", "notes",
+            "manager", "responsible", "notes", "contact_address",
         )
         labels = {
             "middle_name": "Отчество", "birth_date": "Дата рождения",
@@ -150,7 +152,7 @@ class CRMProfileEditorForm(forms.ModelForm):
             "notes": forms.Textarea(attrs={"rows": 5}),
         }
 
-    def __init__(self, *args, client, **kwargs):
+    def __init__(self, *args, client, limited=False, **kwargs):
         from .client_crm_views import CLIENT_CARD_ROLES
         super().__init__(*args, **kwargs)
         self.fields["birth_date"].input_formats = ["%Y-%m-%d"]
@@ -169,16 +171,20 @@ class CRMProfileEditorForm(forms.ModelForm):
         for name in ("manager", "responsible"):
             self.fields[name].queryset = staff.order_by("last_name", "first_name", "username")
             self.fields[name].empty_label = "Не назначен"
+        if limited:
+            for name in ("manager", "responsible", "kpp", "ogrn", "birth_date"):
+                self.fields.pop(name, None)
         for field in self.fields.values():
             field.widget.attrs["class"] = "form-select" if isinstance(field.widget, forms.Select) else "form-control"
 
 
-def inline_editor_context(client, profile):
+def inline_editor_context(client, profile, *, limited=False):
     """Reuse the full editor's validation, field set and revision for small edits."""
     from .client_import_review import editor_revision
     profile = profile or ClientCRMProfile(client=client)
     basics, work = [], []
-    for form in (ClientEditorForm(instance=client), CRMProfileEditorForm(instance=profile, client=client, prefix="profile")):
+    for form in (ClientEditorForm(instance=client, limited=limited),
+            CRMProfileEditorForm(instance=profile, client=client, prefix="profile", limited=limited)):
         for field in form:
             if field.name == "phone":
                 continue
@@ -267,7 +273,7 @@ def sync_primary_contact(client, kind, previous, value):
 def client_edit(request, client_id):
     # Reuse the original superuser read-only rule; account/1C identities are not editable here.
     from .views import _deny_superuser_write, client_edit as legacy_client_edit
-    from .client_crm_views import _can_manage_import
+    from .services.contact_edit_access import contact_edit_roles
     readonly = _deny_superuser_write(request)
     if readonly:
         return readonly
@@ -283,8 +289,10 @@ def client_edit(request, client_id):
         if client.organization_id is None:
             return legacy_client_edit(request, client_id)
         # Check the target tenant, not the user's first membership.
-        if not _can_manage_import(request.user, client.organization_id):
+        roles = contact_edit_roles(request.user, client, lock=request.method == "POST")
+        if not roles:
             return HttpResponseForbidden()
+        limited = not roles.intersection({"owner", "admin"})
         if request.method == "POST" and is_org_access_blocked(request.user):
             return HttpResponseForbidden()
         profiles = ClientCRMProfile.objects.filter(client=client)
@@ -311,15 +319,18 @@ def client_edit(request, client_id):
                 messages.error(request, "Этот номер уже указан как основной.")
             else:
                 value = canonical_phone_value(raw_phone)
-                ClientContact.objects.get_or_create(
+                _, created = ClientContact.objects.get_or_create(
                     client=client, kind=ClientContact.KIND_PHONE, value=value,
                     defaults={"match_value": normalized, "label": (request.POST.get("label") or "Дополнительный")[:120], "sources": ["manual"]},
                 )
+                if created:
+                    DataAuditLog.objects.create(organization=client.organization, client=client, actor=request.user,
+                        entity_type="Client", entity_id=str(client.pk), action="update", changed_fields=["phone"])
                 messages.success(request, "Дополнительный телефон добавлен.")
             return redirect(card_url(client.pk, "contacts"))
         previous_phone, previous_email = client.phone, client.email
-        client_form = ClientEditorForm(instance=client)
-        profile_form = CRMProfileEditorForm(instance=profile, client=client, prefix="profile")
+        client_form = ClientEditorForm(instance=client, limited=limited)
+        profile_form = CRMProfileEditorForm(instance=profile, client=client, prefix="profile", limited=limited)
         if request.method == "POST":
             posted_data = request.POST.copy()
             if client.client_type == "legal" and "name" not in posted_data and "company_name" in posted_data:
@@ -327,11 +338,11 @@ def client_edit(request, client_id):
                 # An explicitly blank legacy value must still fail validation.
                 posted_data["name"] = posted_data["company_name"]
             client_form = ClientEditorForm(
-                complete_form_data(posted_data, client_form), instance=client,
+                complete_form_data(posted_data, client_form), instance=client, limited=limited,
             )
             profile_form = CRMProfileEditorForm(
                 complete_form_data(request.POST, profile_form),
-                instance=profile, client=client, prefix="profile",
+                instance=profile, client=client, prefix="profile", limited=limited,
             )
             client_valid = client_form.is_valid()
             profile_valid = profile_form.is_valid()
@@ -357,6 +368,11 @@ def client_edit(request, client_id):
                     profile_form.save()
                     sync_primary_contact(updated, ClientContact.KIND_PHONE, previous_phone, updated.phone)
                     sync_primary_contact(updated, ClientContact.KIND_EMAIL, previous_email, updated.email)
+                    changed = client_form.changed_data + ["profile." + field for field in profile_form.changed_data]
+                    if changed:
+                        DataAuditLog.objects.create(organization=client.organization, client=updated,
+                            actor=request.user, entity_type="Client", entity_id=str(updated.pk),
+                            action="update", changed_fields=changed)
                     messages.success(request, "Карточка клиента обновлена.")
                     if request.headers.get("Accept") == "application/json":
                         return JsonResponse({"url": card_url(updated.pk, tab)})

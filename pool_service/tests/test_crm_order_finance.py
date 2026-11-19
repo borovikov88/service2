@@ -426,8 +426,8 @@ class OrderRefreshTests(OrderFinanceFixture, TestCase):
         with patch(self.reader, return_value=self.lookup_snapshot((self.evidence(number='SYN-OLD'),), required=(ORDER,))):
             response = self.post_lookup(deal)
         self.assertEqual(response.status_code, 200, response.content)
-        self.assertEqual(response.json()['orders'], [])
-        self.assertTrue(response.json()['reason'])
+        self.assertEqual([row['number'] for row in response.json()['orders']], ['SYN-OLD'])
+        self.assertFalse(response.json()['orders'][0]['financially_current'])
         self.assertTrue(CrmOrderSyncState.objects.get(organization=self.org).failed)
 
     def test_source_failure_is_sanitized_and_retryable(self):
@@ -445,10 +445,14 @@ class OrderRefreshTests(OrderFinanceFixture, TestCase):
         with patch(self.reader, side_effect=RuntimeError('private source scope changed')):
             response = self.post_lookup(deal)
         self.assertEqual(response.status_code, 503)
-        order.refresh_from_db(); self.assertTrue(order.missing)
+        order.refresh_from_db()
+        self.assertFalse(order.missing)
+        self.assertTrue(order.lookup_failed)
         self.assertEqual(order.paid_amount, Decimal('1000'))
         self.assertEqual(CrmOrderEvidenceSnapshot.objects.count(), snapshots)
-        self.assertEqual(order_candidates(actor=self.user, organization=self.org, deal=deal, query='SYN-OLD')['orders'], [])
+        saved = order_candidates(actor=self.user, organization=self.org, deal=deal, query='SYN-OLD')['orders']
+        self.assertEqual([row['id'] for row in saved], [order.pk])
+        self.assertFalse(saved[0]['financially_current'])
         with self.assertRaises(CommercialConflict): self.bind(deal, order)
         deal.refresh_from_db(); self.assertEqual(deal.outcome, 'open')
 

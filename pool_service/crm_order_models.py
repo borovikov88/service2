@@ -32,6 +32,7 @@ class CrmOneCOrder(models.Model):
     order_valid = models.BooleanField(default=False)
     cancelled = models.BooleanField(default=False)
     missing = models.BooleanField(default=False)
+    lookup_failed = models.BooleanField(default=False)
     blockers = models.JSONField(default=list)
     documents = models.JSONField(default=list)
     fingerprint = models.CharField(max_length=64)
@@ -83,3 +84,52 @@ class CrmOrderLinkEvent(LeadEvidenceModel):
     object_scope = models.JSONField()
     scope_fingerprint = models.CharField(max_length=64)
     created_at = models.DateTimeField(default=timezone.now)
+
+
+class CrmOneCDocument(models.Model):
+    KINDS = (("realization", "Реализация"), ("check", "Чек ККМ"))
+
+    organization = models.ForeignKey("Organization", on_delete=models.PROTECT)
+    source_id = models.CharField(max_length=64)
+    external_organization = models.CharField(max_length=36)
+    kind = models.CharField(max_length=16, choices=KINDS)
+    guid = models.CharField(max_length=36)
+    customer_guid = models.CharField(max_length=36)
+    order_guid = models.CharField(max_length=36, blank=True)
+    currency_guid = models.CharField(max_length=36, blank=True)
+    currency = models.CharField(max_length=3, blank=True)
+    number = models.CharField(max_length=80)
+    document_date = models.DateTimeField()
+    amount = models.DecimalField(max_digits=18, decimal_places=2, null=True)
+    valid = models.BooleanField(default=False)
+    fetched_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [models.UniqueConstraint(
+            fields=["organization", "source_id", "external_organization", "kind", "guid"],
+            name="crm_onec_document_scope_uq")]
+        indexes = [models.Index(
+            fields=["organization", "kind", "customer_guid", "-document_date"], name="crm_doc_customer_date_idx")]
+
+
+class CrmDealDocumentLink(models.Model):
+    organization = models.ForeignKey("Organization", on_delete=models.PROTECT)
+    deal = models.ForeignKey("CrmDeal", on_delete=models.PROTECT, related_name="document_links")
+    order = models.OneToOneField(CrmOneCOrder, null=True, on_delete=models.PROTECT, related_name="document_claim")
+    document = models.ForeignKey(CrmOneCDocument, null=True, on_delete=models.PROTECT, related_name="deal_claims")
+    client = models.ForeignKey("Client", on_delete=models.PROTECT)
+    confirmed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    confirmed_at = models.DateTimeField(default=timezone.now)
+    suppressed = models.BooleanField(default=False)
+    scope_fingerprint = models.CharField(max_length=64)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=(
+                models.Q(order__isnull=False, document__isnull=True, suppressed=False)
+                | models.Q(order__isnull=True, document__isnull=False)
+            ), name="crm_link_one_document"),
+            models.UniqueConstraint(fields=["deal", "document"], name="crm_deal_document_uq"),
+            models.UniqueConstraint(fields=["document"], condition=models.Q(suppressed=False, document__isnull=False),
+                name="crm_active_document_claim_uq"),
+        ]

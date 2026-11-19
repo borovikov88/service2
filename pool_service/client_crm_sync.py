@@ -20,6 +20,7 @@ from .client_crm_import import (
     _match_clients,
     _parse_date,
     _source_kind,
+    _union_counterparties,
     _target_organization,
     apply_candidate,
     apply_ready_candidates,
@@ -51,11 +52,12 @@ def _buyer_fields():
         "НомерТелефонаДляПоиска",
         "АдресЭПДляПоиска",
         "Покупатель",
+        "Поставщик",
         "Недействителен",
     ]
 
 
-def _recent_buyer_rows(config, metadata_raw, *, lookback_hours):
+def _recent_buyer_rows(config, metadata_raw, *, lookback_hours, selector="Покупатель"):
     # 1C stores this field as Edm.DateTime without an offset.  A 48-hour
     # overlap deliberately makes the comparison tolerant to host/1C timezone
     # differences while keeping the query small.
@@ -66,7 +68,7 @@ def _recent_buyer_rows(config, metadata_raw, *, lookback_hours):
         fields=_buyer_fields(),
         filters=[
             {"field": "DeletionMark", "op": "eq", "value": False},
-            {"field": "Покупатель", "op": "eq", "value": True},
+            {"field": selector, "op": "eq", "value": True},
             {"field": "ДатаСоздания", "op": "ge", "value": cutoff},
         ],
         limit=PAGE_SIZE,
@@ -178,6 +180,8 @@ def _stage_recent_candidate(organization, row, extra_contacts):
         "fio": str(row.get("ФИО") or "").strip(),
         "onec_created_at": str(row.get("ДатаСоздания") or ""),
     }
+    from .services.contact_roles import source_roles
+    payload["business_roles"] = source_roles(row)
 
     candidate, _ = ClientImportCandidate.objects.update_or_create(
         organization=organization,
@@ -250,10 +254,9 @@ def sync_recent_onec_clients(*, lookback_hours=RECENT_LOOKBACK_HOURS):
     config = config_from_settings()
     metadata_raw = fetch_metadata(config)
 
-    rows = _recent_buyer_rows(
-        config,
-        metadata_raw,
-        lookback_hours=lookback_hours,
+    rows = _union_counterparties(
+        _recent_buyer_rows(config, metadata_raw, lookback_hours=lookback_hours),
+        _recent_buyer_rows(config, metadata_raw, lookback_hours=lookback_hours, selector="Поставщик"),
     )
     contacts_by_ref = _contact_rows(
         config,

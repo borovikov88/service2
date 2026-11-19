@@ -4,6 +4,7 @@ from . import crm_quote_views
 from . import crm_handoff_views
 from . import crm_service_binding_views
 from . import crm_order_views
+from . import crm_communication_views
 from . import crm_assignment_views
 from django.urls import path
 from . import staff_control_views
@@ -309,6 +310,8 @@ urlpatterns = [
     path("communications/", communication_conversations, name="communications_conversations"),
     path("communications/<uuid:conversation_uuid>/identity/", conversation_identity, name="communication_conversation_identity"),
     path("communications/calls/", communication_calls, name="communications_calls"),
+    path("communications/distribution/", crm_communication_views.distribution, name="crm_communication_queue"),
+    path("communications/distribution/<int:route_id>/", crm_communication_views.distribution, name="crm_communication_route"),
     path("communications/files/", communication_manual_recordings, name="communication_manual_recordings"),
     path("communications/clients/<str:source_kind>/lookup/", communication_client_lookup, name="communication_client_lookup"),
     path("communications/calls/<int:call_id>/client/create/", call_client_create, name="communication_call_client_create"),
@@ -440,6 +443,8 @@ urlpatterns = [
     path("crm/workspace/orders/", crm_order_views.candidates, name="crm_order_candidates"),
     path("crm/workspace/responsibles/", crm_assignment_views.candidates, name="crm_assignment_candidates"),
     path("crm/workspace/orders/refresh/", crm_order_views.refresh, name="crm_order_refresh"),
+    path("crm/workspace/documents/", crm_order_views.documents, name="crm_document_candidates"),
+    path("crm/workspace/documents/refresh/", crm_order_views.refresh_document, name="crm_document_refresh"),
     path("crm/workspace/commands/", crm_live_views.command, name="crm_live_command"),
     path("crm/workspace/commands/bulk/", crm_bulk_views.command, {"kind": "deal"}, name="crm_live_bulk_command"),
     path("crm/workspace/deals/<int:deal_id>/quotes/", crm_quote_views.workspace, name="crm_quotes"),

@@ -105,7 +105,10 @@ const {chromium} = require('playwright');
       expectedDealId = dealId;
       phase = 'commercial edit';
       assert.equal(await page.locator('#crm-live-dialog-caption .crm-live-copy-link').isVisible(), true);
-      assert.match(await page.locator('script[src*="crm_live/workspace.js"]').getAttribute('src'), /v=20261118-bulk-batch/);
+      const workspaceAsset = new URL(await page.locator('script[src*="crm_live/workspace.js"]').getAttribute('src'), fixture.base);
+      assert.ok(workspaceAsset.searchParams.get('v'), 'The workspace script must have a cache version');
+      assert.ok(assets.some(asset => asset.path === workspaceAsset.pathname && asset.status === 200),
+        'Chromium must load the workspace script referenced by the page');
       assert.equal(await page.locator('[data-command-form="edit"]').isVisible(), false);
       assert.equal(await page.getByRole('tab', {name:'Обзор',exact:true}).getAttribute('aria-selected'),'true');
       if(process.env.CRM_SYNTHETIC_SCREENSHOTS) await page.screenshot({path:process.env.CRM_SYNTHETIC_SCREENSHOTS+'/deal-overview-desktop.png'});
