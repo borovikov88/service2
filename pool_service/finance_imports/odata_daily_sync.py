@@ -303,9 +303,11 @@ def finalize_crm_orders_step(run, now=None):
     if run.status != OneCODataSyncRun.STATUS_COMPLETED or run.mode != OneCODataSyncRun.MODE_AUTO_APPLY:
         return progress.get("crm_orders_state")
     if progress.get("crm_orders_state") in {"completed", "failed", "disabled"}:
+        if progress.get("crm_orders_error_stage"):
+            _worker_note(run.pk, crm_orders_error_stage="")
         return progress["crm_orders_state"]
     if not run.organization.crm_v2_read:
-        _worker_note(run.pk, crm_orders_state="disabled")
+        _worker_note(run.pk, crm_orders_state="disabled", crm_orders_error_stage="")
         return "disabled"
     now = now or timezone.now()
     error = "Заказы, выполнение и оплаты CRM не обновлены; предыдущие данные требуют сверки."
@@ -313,18 +315,20 @@ def finalize_crm_orders_step(run, now=None):
         user = _actor(run.requested_by_id, run.organization, run.requested_report_types)
         result = sync_crm_orders(run.organization, user, now=now)
     except PermissionDenied:
-        _worker_note(run.pk, crm_orders_state="failed", crm_orders_error=error)
+        _worker_note(run.pk, crm_orders_state="failed", crm_orders_error=error, crm_orders_error_stage="")
         return "failed"
-    except (ValidationError, ODataPreviewError):
+    except (ValidationError, ODataPreviewError) as exc:
         from pool_service.services.crm_order_finance import mark_crm_order_sync_error
         try:
             mark_crm_order_sync_error(actor=user, organization=run.organization)
         except PermissionDenied:
-            _worker_note(run.pk, crm_orders_state="failed", crm_orders_error=error)
+            _worker_note(run.pk, crm_orders_state="failed", crm_orders_error=error, crm_orders_error_stage="")
             return "failed"
-        _worker_note(run.pk, crm_orders_state="retryable_error", crm_orders_error=error)
+        from .crm_orders import CrmOrderSyncStageError
+        stage = exc.stage if isinstance(exc, CrmOrderSyncStageError) and exc.stage in {'config', 'read', 'apply'} else 'unknown'
+        _worker_note(run.pk, crm_orders_state="retryable_error", crm_orders_error=error, crm_orders_error_stage=stage)
         return "retryable_error"
-    _worker_note(run.pk, crm_orders_state="completed", crm_orders_error="",
+    _worker_note(run.pk, crm_orders_state="completed", crm_orders_error="", crm_orders_error_stage="",
         crm_orders_updated_at=now.isoformat(),
         crm_orders_count=result.get("orders", 0),
         crm_orders_completed_count=result.get("completed", 0))
@@ -411,4 +415,8 @@ def worker_tick(*, max_steps=4, max_seconds=240, now=None):
         "finance_position_state": position_state,
         "money_forecast_state": forecast_state,
         "crm_orders_state": crm_state,
+        "crm_orders_error_stage": (
+            run.progress.get('crm_orders_error_stage', 'unknown')
+            if crm_state == 'retryable_error' and run.progress.get('crm_orders_error_stage') in {'config','read','apply','unknown'}
+            else 'unknown' if crm_state == 'retryable_error' else ''),
     }
