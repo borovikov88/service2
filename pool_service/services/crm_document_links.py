@@ -126,7 +126,10 @@ def document_projection(actor, organization, deal):
     elif not customers:
         result.update(reason="У клиента пока нет подтверждённой связи с 1С.", can_search=False)
     else:
-        result.update(reason="", can_search=writable)
+        result.update(
+            reason="" if writable else "Привязка доступна ответственному за открытую сделку с правом редактирования.",
+            can_search=writable,
+        )
     for link in links:
         row = link.order or link.document
         kind = "order" if link.order_id else row.kind

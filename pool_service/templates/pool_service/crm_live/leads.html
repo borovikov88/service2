@@ -4,16 +4,16 @@
 {% block extra_head %}
 <link rel="stylesheet" href="{% static 'pool_service/crm_inline.css' %}?v=20261116-inline1">
 <script src="{% static 'pool_service/crm_inline.js' %}?v=20261118-budget" defer></script>
-<link rel="stylesheet" href="{% static 'pool_service/crm_live/workspace.css' %}?v=20261115-simple">
-<link rel="stylesheet" href="{% static 'pool_service/crm_live/leads.css' %}?v=20261115-failure">
-<link rel="stylesheet" href="{% static 'pool_service/crm_live/design.css' %}?v=20261116-compact">
+<link rel="stylesheet" href="{% static 'pool_service/crm_live/workspace.css' %}?v=20261119-deal-controls">
+<link rel="stylesheet" href="{% static 'pool_service/crm_live/leads.css' %}?v=20261119-drag-actions">
+<link rel="stylesheet" href="{% static 'pool_service/crm_live/design.css' %}?v=20261119-completion-menu">
 <link rel="stylesheet" href="{% static 'pool_service/crm_live/bulk.css' %}?v=20261116-bulk">
 <link rel="stylesheet" href="{% static 'pool_service/customer_editor.css' %}?v=20261115-unified">
 <script src="{% static 'pool_service/customer_editor.js' %}?v=20261118-completion" defer></script>
 <link rel="stylesheet" href="{% static 'pool_service/crm_live/activity.css' %}?v=20261116-card-timeline">
 <script src="{% static 'pool_service/crm_live/activity.js' %}?v=20261118-distribution" defer></script>
 <script src="{% static 'pool_service/crm_live/bulk.js' %}?v=20261118-completion" defer></script>
-<script src="{% static 'pool_service/crm_live/leads.js' %}?v=20261118-completion" defer></script>
+<script src="{% static 'pool_service/crm_live/leads.js' %}?v=20261119-completion-menu" defer></script>
 {% endblock %}
 {% block content %}
 <section class="crm-live crm-leads" id="crm-leads" aria-label="Лиды">
@@ -25,7 +25,7 @@
   <div id="lead-notice" class="crm-live-notice" role="status" hidden></div>
   <div class="lead-toolbar">
     <label class="crm-live-search"><svg class="crm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true" focusable="false"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg><input type="search" id="lead-search" placeholder="Потребность, название или клиент" aria-label="Поиск лидов" autocomplete="off"></label>
-    <label class="crm-live-owner"><span>Ответственный</span><select id="lead-owner"><option value="all">Все лиды</option><option value="me">Мои лиды</option><option value="unassigned">Без ответственного</option>{% for employee in lead_bootstrap.responsible_options %}<option value="{{ employee.id }}">{{ employee.name }}</option>{% endfor %}</select></label>
+    <label class="crm-live-owner"><span>Ответственный</span><select id="lead-owner" aria-label="Ответственный"><option value="all">Все лиды</option><option value="me">Мои лиды</option><option value="unassigned">Без ответственного</option>{% for employee in lead_bootstrap.responsible_options %}<option value="{{ employee.id }}">{{ employee.name }}</option>{% endfor %}</select></label>
     <button type="button" class="crm-live-button" id="lead-legacy-status" hidden></button>
     <button type="button" class="crm-live-refresh" id="lead-refresh" aria-label="Обновить список"><svg class="crm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 7a9 9 0 1 0 1 9M20 3v5h-5"/></svg></button>
   </div>

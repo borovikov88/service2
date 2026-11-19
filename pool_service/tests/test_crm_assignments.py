@@ -180,7 +180,8 @@ class CrmAssignmentTests(PilotFixture, TestCase):
         with self.assertRaises(PermissionDenied): self.assign(lead)
 
     def test_conversion_selects_deal_manager_and_new_task_recipient(self):
-        lead = CrmLead.objects.get(pk=self.lead_create()['lead_id'])
+        lead = CrmLead.objects.create(organization=self.org, client=self.client_record,
+            title="Synthetic unassigned lead", need="Synthetic need")
         changes = {'deals': [{'pipeline_id': self.pipeline.pk, 'title': 'Synthetic converted',
             'responsible_id': self.recipient.pk,
             'next_action': {'title': 'Synthetic conversion step', 'due_at': self.due.isoformat()}}]}
@@ -191,7 +192,11 @@ class CrmAssignmentTests(PilotFixture, TestCase):
         self.assertEqual(deal.manager_id, self.recipient.pk)
         self.assertEqual(deal.next_action.task_link.task.primary_responsible_id, self.recipient.pk)
         self.assertEqual(execute_lead_command(**params), result)
-        self.assertEqual(self.notes(self.recipient).count(), 1)
+        self.assertFalse(self.notes().exists())
+        self.assertEqual(CrmEvent.objects.get(pk=result["event_id"]).safe_diff["assignee_id"],
+            {"before": None, "after": self.user.pk})
+        event = CrmEvent.objects.get(deal=deal, event_type="deal.create")
+        self.assertEqual(event.safe_diff["manager_id"]["after"], self.recipient.pk)
 
     def test_candidates_get_does_not_write_and_assignment_requires_csrf(self):
         deal = CrmDeal.objects.get(pk=self.create()['deal_id'])

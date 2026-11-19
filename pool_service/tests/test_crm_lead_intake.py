@@ -162,9 +162,9 @@ class LeadIntakeTests(LeadIntakeFixture, TestCase):
         self.assertTrue(lead.needs_review)
         self.assertIsNone(lead.next_task_id)
         self.assertIsNone(lead.follow_up_at)
-        notice = Notification.objects.get(kind='crm_assignment', user=self.user)
-        self.assertIn(f'lead={lead.pk}', notice.action_url)
-        self.assertEqual(Notification.objects.filter(kind='crm_assignment').count(), 1)
+        event = CrmEvent.objects.get(lead=lead, event_type="lead.incoming")
+        self.assertEqual(event.safe_diff["assignee_id"], {"before": None, "after": self.user.pk})
+        self.assertFalse(Notification.objects.filter(kind="crm_assignment").exists())
 
     def test_missed_or_unmapped_stays_free_and_late_answer_cannot_replace_owner(self):
         call = self.mapped_call(status="missed")
@@ -195,6 +195,10 @@ class LeadIntakeTests(LeadIntakeFixture, TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["lead"]["title"], "Пропущенный звонок · " + call.phone_number)
         self.assertEqual(response.json()["lead"]["source"]["label"], "Пропущенный звонок")
+        conversion = self.client.get(reverse("crm_live_lead_detail", args=[lead.pk]),
+            {"org_id": self.org.pk, "view": "conversion"}).json()
+        self.assertEqual(set(conversion), {"lead"})
+        self.assertEqual(conversion["lead"]["source"]["phone"], call.phone_number)
         lead.refresh_from_db()
         self.assertEqual(lead.title, "Входящий звонок — требуется уточнение", "Viewing does not mutate existing data")
         lead.title = "Synthetic custom call request"
@@ -253,6 +257,9 @@ class LeadIntakeTests(LeadIntakeFixture, TestCase):
         lead = CrmLead.objects.get()
         self.assertTrue(can_read_lead(self.user, self.org, lead))
         CallPrivateNumber.objects.create(organization=self.org, owner=self.user, phone_key="9001234567")
+        self.client.force_login(self.user)
+        self.assertEqual(self.client.get(reverse("crm_live_lead_detail", args=[lead.pk]),
+            {"org_id": self.org.pk, "view": "conversion"}).status_code, 404)
         for value in ("+7 900 123-45-67", "89001234567", "9001234567", "\u00a0+7 (900) 123-45-67\u00a0", "\v+79001234567\f"):
             with self.subTest(value=value):
                 call.phone_number = value

@@ -12,6 +12,7 @@ from pool_service.crm_commercial_bootstrap import bootstrap_commercial_settings
 from pool_service.reward_models import OneCCustomerIdentity
 from pool_service.crm_service_binding_models import ServiceContractBinding,ServiceBoundDocument,ServiceAllocationVersion,ServiceBindingEvent
 from pool_service.services.crm_service_bindings import save_allocations
+from pool_service.services.crm_commercial_commands import execute_commercial_command
 from pool_service.services.crm_document_allocations import Allocation
 from pool_service.tests import test_onec_service_document_preview as fixture
 
@@ -43,6 +44,21 @@ class BindingFixture:
 
 
 class ServiceBindingTests(BindingFixture,TestCase):
+    def test_deal_keeps_service_pipeline_after_contract_documents_are_bound(self):
+        self.grant.transition_own_deals = True
+        self.grant.save(update_fields=["transition_own_deals"])
+        self.save()
+        self.deal.refresh_from_db()
+        service_pipeline = self.deal.pipeline_id
+        destination = CrmPipeline.objects.get(organization=self.org, code="retail")
+        with self.assertRaisesMessage(ValidationError, "Воронка закреплена за договором обслуживания"):
+            execute_commercial_command(actor=self.actor, organization=self.org, operation_key="bound-pipeline",
+                command_type="deal.change_pipeline", subject_id=self.deal.pk, expected_revision=self.deal.revision,
+                changes={"pipeline_id": destination.pk, "stage_id": destination.stages.get(code="need").pk})
+        self.deal.refresh_from_db()
+        self.assertEqual(self.deal.pipeline_id, service_pipeline)
+        self.assertEqual(ServiceContractBinding.objects.get(deal=self.deal).client_object_id, self.obj.pk)
+
     def test_explicit_contract_object_and_partial_allocation_replay(self):
         first=self.save();second=self.save()
         self.assertEqual(first['document_id'],second['document_id']);self.assertTrue(second['replayed'])

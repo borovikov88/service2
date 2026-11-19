@@ -82,13 +82,16 @@ const {chromium} = require('playwright');
     await fillCustomer(form);
     if (!f.companyOnly) {
       phase = 'switch outcome without losing customer draft';
+      await button('К вариантам завершения').click();
       await button('Создать сделку, контакт и компанию').click();
       const dealForm = dialog.locator('[data-completion-panel="deal_contact_company"] form');
       await dealForm.getByLabel('Имя контакта', {exact: true}).waitFor({state: 'visible'});
       assert.equal(await dealForm.getByLabel('Имя контакта', {exact: true}).inputValue(), f.personName);
       assert.equal(await dealForm.getByLabel('Название компании', {exact: true}).inputValue(), f.companyName);
       assert.equal(await dealForm.getByRole('combobox', {name: 'Категория контакта', exact: true}).inputValue(), 'landlord');
+      await button('К вариантам завершения').click();
       await button('Сохранить контакт/компанию').click();
+      await form.waitFor();
       assert.equal(await form.getByLabel('Имя контакта', {exact: true}).inputValue(), f.personName);
       assert.equal(await form.getByLabel('Название компании', {exact: true}).inputValue(), f.companyName);
       assert.equal(await form.getByRole('combobox', {name: 'Категория контакта', exact: true}).inputValue(), 'landlord');

@@ -1036,3 +1036,97 @@ html[data-theme="dark"] .dosing-cell {
   background-color: #17263a !important;
   border-color: #304158 !important;
 }
+
+/* Themed menus for standard selects and the searchable choice control. */
+:is(select, .large-choice-search) {
+  --choice-line: var(--crm-line, var(--bs-border-color, #dce5f1));
+  --choice-panel: var(--crm-panel, var(--bs-body-bg, #fff));
+  --choice-text: var(--crm-text, var(--bs-body-color, #1f2d3d));
+  --choice-hover: var(--crm-soft, var(--bs-tertiary-bg, #edf2f8));
+  --choice-active: var(--crm-blue-soft, rgba(var(--bs-primary-rgb, 13, 110, 253), .14));
+  --choice-accent: var(--crm-blue, var(--bs-link-color, #0759c8));
+  --choice-radius: .65rem;
+  --choice-row-radius: .45rem;
+}
+
+html .large-choice-search [role="listbox"] {
+  padding: .25rem;
+  border: 1px solid var(--choice-line);
+  border-radius: var(--choice-radius);
+  background: var(--choice-panel);
+  box-shadow: 0 8px 24px rgb(15 35 65 / 16%);
+}
+
+html .large-choice-search [role="option"] {
+  margin: 0;
+  padding: .5rem .625rem;
+  border: 0;
+  border-radius: var(--choice-row-radius);
+  background: transparent;
+  color: var(--choice-text);
+  overflow-wrap: anywhere;
+}
+
+html .large-choice-search [role="option"]:is(:hover, :focus-visible) {
+  background: var(--choice-hover);
+}
+
+html .large-choice-search [role="option"]:is(.active, [aria-selected="true"]) {
+  background: var(--choice-active);
+  color: var(--choice-accent);
+  font-weight: 600;
+}
+
+@supports (appearance: base-select) {
+  html select:not([multiple]):is(:not([size]), [size="1"]) {
+    appearance: base-select;
+    background-image: none;
+    min-inline-size: 0;
+  }
+
+  html select.form-select:not([multiple]):is(:not([size]), [size="1"]) {
+    padding-inline-end: .75rem;
+  }
+
+  select:not([multiple]):is(:not([size]), [size="1"])::picker(select) {
+    appearance: base-select;
+    margin-block: .35rem;
+    padding: .25rem;
+    min-inline-size: anchor-size(width);
+    max-inline-size: calc(100vw - 1.5rem);
+    max-block-size: min(20rem, 60dvh);
+    overflow-y: auto;
+    border: 1px solid var(--choice-line);
+    border-radius: var(--choice-radius);
+    background: var(--choice-panel);
+    color: var(--choice-text);
+    box-shadow: 0 8px 24px rgb(15 35 65 / 16%);
+  }
+
+  select:not([multiple]):is(:not([size]), [size="1"])::picker-icon {
+    color: var(--crm-muted, var(--bs-secondary-color, #66758a));
+    margin-inline-end: .125rem;
+  }
+
+  select:not([multiple]):is(:not([size]), [size="1"]) option {
+    padding: .5rem .625rem;
+    border-radius: var(--choice-row-radius);
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  select:not([multiple]):is(:not([size]), [size="1"]) option:not(:disabled):is(:hover, :focus-visible) {
+    background: var(--choice-hover);
+  }
+
+  select:not([multiple]):is(:not([size]), [size="1"]) option:focus-visible {
+    outline: 2px solid var(--choice-accent);
+    outline-offset: -2px;
+  }
+
+  select:not([multiple]):is(:not([size]), [size="1"]) option:checked {
+    background: var(--choice-active);
+    color: var(--choice-accent);
+    font-weight: 600;
+  }
+}

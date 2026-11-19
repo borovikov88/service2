@@ -64,6 +64,42 @@ class PilotFixture:
 
 
 class LivePilotCommandTests(PilotFixture, TestCase):
+    def test_change_pipeline_keeps_the_deal_and_next_action_and_rechecks_access(self):
+        created = self.create()
+        deal = CrmDeal.objects.get(pk=created["deal_id"])
+        destination = CrmPipeline.objects.get(organization=self.org, code="retail")
+        target = destination.stages.get(code="need")
+        foreign = Organization.objects.create(name="Synthetic separate organization")
+        bootstrap_commercial_settings(foreign.pk)
+        foreign_pipeline = CrmPipeline.objects.get(organization=foreign, code="retail")
+        action = {
+            "actor": self.user, "organization": self.org, "operation_key": "synthetic-pipeline-change",
+            "command_type": "deal.change_pipeline", "subject_id": deal.pk, "expected_revision": deal.revision,
+        }
+        before = self.state()
+        for pipeline_id, stage_id in (
+            (foreign_pipeline.pk, foreign_pipeline.stages.get(code="need").pk),
+            (destination.pk, deal.stage_id),
+            (destination.pk, destination.stages.get(code="completed").pk),
+        ):
+            with self.subTest(pipeline_id=pipeline_id, stage_id=stage_id), self.assertRaises(ValidationError):
+                execute_commercial_command(**action, changes={"pipeline_id": pipeline_id, "stage_id": stage_id})
+            self.assertEqual(self.state(), before)
+
+        changes = {"pipeline_id": destination.pk, "stage_id": target.pk}
+        result = execute_commercial_command(**action, changes=changes)
+        self.assertEqual(execute_commercial_command(**action, changes=changes), result)
+        deal.refresh_from_db()
+        self.assertEqual((deal.pipeline_id, deal.stage_id, deal.outcome), (destination.pk, target.pk, "open"))
+        self.assertEqual(deal.next_action.task_link.task_id, created["task_id"])
+        self.assertEqual(deal.manager_id, self.user.pk)
+        event = CrmEvent.objects.get(deal=deal, event_type="deal.change_pipeline")
+        self.assertEqual(event.safe_diff["pipeline_id"], {"before": self.pipeline.pk, "after": destination.pk})
+        self.grant.transition_own_deals = False
+        self.grant.save(update_fields=["transition_own_deals"])
+        with self.assertRaises(PermissionDenied):
+            execute_commercial_command(**action, changes=changes)
+
     def test_create_has_one_real_next_task_and_safe_history_without_legacy_or_finance(self):
         result = self.create()
         deal = CrmDeal.objects.get(pk=result["deal_id"])

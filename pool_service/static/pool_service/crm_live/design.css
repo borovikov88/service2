@@ -1,11 +1,15 @@
 /* Leads and deals only. Shared Service2 colours, compact Bitrix-style workflow. */
-.crm-drag-actions { position: fixed; z-index: 1100; left: 50%; bottom: max(22px, env(safe-area-inset-bottom)); transform: translateX(-50%); display: flex; gap: 12px; width: min(720px, calc(100vw - 32px)); padding: 12px; border: 1px solid var(--crm-line); border-radius: 16px; background: var(--crm-panel); box-shadow: 0 12px 48px rgb(0 0 0 / 18%); }
+.crm-drag-actions { position: fixed; z-index: 1100; left: 50%; bottom: max(18px, env(safe-area-inset-bottom)); transform: translateX(-50%); display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; width: max-content; max-width: calc(100vw - 24px); padding: 7px; border: 1px solid var(--crm-line); border-radius: 15px; background: var(--crm-panel); box-shadow: 0 6px 24px rgb(0 0 0 / 16%); }
 .crm-drag-actions[hidden], .crm-drag-actions .crm-drag-target[hidden] { display: none; }
-.crm-drag-actions .crm-drag-target { position: static; transform: none; flex: 1; min-width: 0; display: grid; place-items: center; min-height: 76px; margin: 0; padding: 18px; border: 2px dashed var(--crm-blue); border-radius: 10px; background: var(--crm-blue-soft); color: var(--crm-text); font-size: 15px; font-weight: 650; text-align: center; box-shadow: none; }
-.crm-drag-actions .crm-failure-drop { border-color: var(--crm-red); background: var(--crm-red-soft); color: var(--crm-red); }
-.crm-drag-actions .crm-failure-drop.is-drop-target { border-style: solid; outline: 3px solid var(--crm-red); outline-offset: 3px; }
+.crm-drag-actions .crm-drag-target { position: static; transform: none; display: flex; align-items: center; gap: 7px; min-height: 42px; margin: 0; padding: 8px 12px; border: 1px solid var(--crm-line); border-radius: 9px; background: var(--crm-soft); color: var(--crm-text); font-size: 13px; font-weight: 600; text-align: center; box-shadow: none; }
+.crm-drag-actions .crm-drag-target .crm-icon { width: 16px; height: 16px; color: var(--crm-blue); }
+.crm-drag-actions .crm-drag-target.is-drop-target { border-color: var(--crm-blue); background: var(--crm-blue-soft); }
+.crm-drag-actions .crm-failure-drop .crm-icon { color: var(--crm-red); }
+.crm-drag-actions .crm-failure-drop.is-drop-target { border-color: var(--crm-red); background: var(--crm-red-soft); }
+.crm-drag-actions .lead-spam-drop .crm-icon { color: var(--crm-amber); }
+.crm-drag-actions .lead-spam-drop.is-drop-target { border-color: var(--crm-amber); background: var(--crm-amber-soft); }
 #crm-live .crm-live-lane[data-failure=true].is-drop-target, #crm-leads .lead-column[data-column=failed].is-drop-target { outline-color: var(--crm-red); background: var(--crm-red-soft); }
-@media(max-width:700px) { .crm-drag-actions { bottom: max(12px, env(safe-area-inset-bottom)); gap: 8px; padding: 8px; } .crm-drag-actions .crm-drag-target { min-height: 64px; padding: 12px 8px; font-size: 13px; white-space: normal; } }
+@media(max-width:700px) { .crm-drag-actions { bottom: max(12px, env(safe-area-inset-bottom)); } .crm-drag-actions .crm-drag-target { padding-inline: 8px; font-size: 12px; } }
 :is(#crm-live, #crm-leads) {
   --crm-bg: #f4f7fb;
   --crm-panel: #fff;
@@ -54,10 +58,16 @@ html[data-theme=dark] :is(#crm-live, #crm-leads) {
 :is(#crm-live, #crm-leads) :is(.crm-live-search,.crm-live-owner,.crm-live-views,.crm-live-refresh) { border-radius: 11px; box-shadow: 0 1px 2px rgb(15 35 65 / 2%); }
 :is(#crm-live, #crm-leads) .crm-live-search { padding: 0 14px; color: var(--crm-muted); }
 :is(#crm-live, #crm-leads) .crm-live-search:focus-within { border-color: var(--crm-blue); box-shadow: 0 0 0 3px var(--crm-blue-soft); }
+:is(#crm-live, #crm-leads) .crm-live-search input:focus { outline: none; box-shadow: none; }
 :is(#crm-live, #crm-leads) .crm-live-search input { min-height: 48px; font-size: 14px; color: var(--crm-text); }
 :is(#crm-live, #crm-leads) .crm-live-owner { padding: 6px 12px; }
+:is(#crm-live, #crm-leads) .crm-live-owner:focus-within { border-color: var(--crm-blue); box-shadow: 0 0 0 3px var(--crm-blue-soft); }
 :is(#crm-live, #crm-leads) .crm-live-owner > span { font-size: 11px; }
-:is(#crm-live, #crm-leads) .crm-live-owner select { font-size: 13px; }
+:is(#crm-live, #crm-leads) .crm-live-owner select { min-height: 24px; font-size: 13px; font-weight: 600; }
+:is(#crm-live, #crm-leads) .crm-live-owner select:focus { outline: none; box-shadow: none; }
+@media (forced-colors: active) {
+  :is(#crm-live, #crm-leads) :is(.crm-live-search,.crm-live-owner):focus-within { outline: 2px solid Highlight; outline-offset: 2px; }
+}
 #crm-live .crm-live-views button { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; padding: 9px 12px; border-radius: 7px; }
 :is(#crm-live, #crm-leads) .crm-live-refresh { display: grid; place-items: center; color: var(--crm-muted); }
 :is(#crm-live, #crm-leads) .crm-live-refresh:hover { color: var(--crm-blue); background: var(--crm-blue-soft); }
@@ -198,16 +208,20 @@ html[data-theme=dark] :is(#crm-live, #crm-leads) {
 #crm-leads .lead-conversion-details .lead-field:first-child { grid-column: auto; }
 #crm-leads .lead-conversion-heading { display: flex; align-items: center; gap: 9px; font-size: 15px; font-weight: 650; }
 #crm-leads .lead-step-number { display: inline-grid; place-items: center; width: 25px; height: 25px; border-radius: 8px; background: var(--crm-blue-soft); color: var(--crm-blue); font-size: 12px; }
-#crm-leads .lead-completion-intro { color: var(--crm-muted); font-size: 14px; margin: 0 0 20px; }
-#crm-leads .lead-completion-options { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; margin-bottom: 24px; }
-#crm-leads .lead-completion-option { display: grid; grid-template-columns: 34px minmax(0,1fr); gap: 7px 11px; align-content: start; text-align: left; border: 1px solid var(--crm-line); border-radius: 13px; padding: 18px; background: var(--crm-panel); color: var(--crm-text); min-width: 0; transition: border-color .15s, background .15s; }
+#crm-live-dialog .crm-live-pipeline-pill { background: var(--crm-blue-soft); color: var(--crm-blue); border: 1px solid var(--crm-line); }
+#crm-live-dialog .crm-live-pipeline-pill:hover { border-color: var(--crm-blue); }
+#crm-live-pipeline-editor { margin-bottom: 16px; padding: 14px; border: 1px solid var(--crm-line); border-radius: 10px; }
+#crm-leads .lead-dialog.lead-compact-dialog { width: min(420px,calc(100vw - 24px)); height: fit-content; max-height: calc(100dvh - 24px); margin: auto; border: 1px solid var(--crm-line); border-radius: 14px; }
+#crm-leads .lead-dialog.lead-compact-dialog .crm-live-dialog-header { position: absolute; inset: 8px 10px auto auto; padding: 0; border: 0; background: none; }
+#crm-leads .lead-compact-dialog .crm-live-dialog-header > span { display: none; }
+#crm-leads .lead-dialog.lead-compact-dialog .crm-live-dialog-inner { padding: 14px 18px 18px; }
+#crm-leads .lead-dialog.lead-compact-dialog h2 { font-size: 20px; margin-bottom: 14px; padding-inline-end: 40px; }
+#crm-leads .lead-completion-options { display: grid; gap: 7px; }
+#crm-leads .lead-completion-option { display: flex; align-items: center; gap: 10px; text-align: left; border: 1px solid var(--crm-line); border-radius: 9px; padding: 7px 10px; background: var(--crm-panel); color: var(--crm-text); min-height: 42px; font-size: 14px; line-height: 1.35; overflow-wrap: anywhere; }
 #crm-leads .lead-completion-option:hover, #crm-leads .lead-completion-option:focus-visible { border-color: var(--crm-blue); outline-color: var(--crm-blue); }
-#crm-leads .lead-completion-option[aria-pressed=true] { background: var(--crm-blue-soft); border-color: var(--crm-blue); box-shadow: inset 0 0 0 1px var(--crm-blue); }
-#crm-leads .lead-completion-option strong { align-self: center; font-size: 14px; line-height: 1.4; overflow-wrap: anywhere; }
-#crm-leads .lead-completion-symbol { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 9px; background: var(--crm-soft); color: var(--crm-blue); }
-#crm-leads .lead-completion-option[aria-pressed=true] .lead-completion-symbol { background: var(--crm-blue); color: #fff; }
-#crm-leads .lead-completion-symbol .crm-icon { width: 19px; height: 19px; }
-#crm-leads .lead-completion-description { grid-column: 2; font-size: 12px; line-height: 1.65; color: var(--crm-muted); }
+#crm-leads .lead-completion-symbol { display: grid; place-items: center; flex: none; width: 26px; height: 26px; border-radius: 7px; background: var(--crm-soft); color: var(--crm-blue); }
+#crm-leads .lead-completion-symbol .crm-icon { width: 16px; height: 16px; }
+#crm-leads .lead-completion-back { margin: 0 0 10px; }
 #crm-leads .lead-completion-panel > section { margin-top: 0; border-top: 0; padding-top: 0; }
 #crm-leads .lead-completion-panel > section > h3 { font-size: 16px; margin-bottom: 12px; }
 #crm-leads .lead-completion-summary { border: 1px solid var(--crm-line); border-radius: 12px; padding: 16px 18px; background: var(--crm-panel); margin: 20px 0 0; font-size: 13px; line-height: 1.6; }
@@ -254,10 +268,6 @@ html[data-theme=dark] :is(#crm-live, #crm-leads) {
   :is(#crm-live, #crm-leads) .crm-live-dialog .crm-live-button { min-height: 44px; font-size: 13px; }
   #crm-leads .lead-customer-box, #crm-leads .lead-dialog .lead-conversion-next, #crm-leads .lead-deal-form { padding: 16px; }
   #crm-leads .lead-conversion-details .lead-fields { grid-template-columns: minmax(0,1fr); }
-  #crm-leads .lead-completion-options { grid-template-columns: minmax(0,1fr); gap: 9px; }
-  #crm-leads .lead-completion-option { padding: 13px 14px; gap: 2px 11px; }
-  #crm-leads .lead-completion-symbol { grid-row: 1 / span 2; }
-  #crm-leads .lead-completion-description { line-height: 1.5; }
   #crm-live .crm-live-table .crm-live-card { border: 1px solid var(--crm-line); border-radius: 12px; margin-bottom: 12px; }
   #crm-live .crm-live-table .crm-live-next { border-top: 1px solid var(--crm-line); padding-top: 12px; }
 }
