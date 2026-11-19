@@ -788,11 +788,9 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
                     next_task.save(update_fields=["payload_json", "updated_at"])
                 CrmDealNextAction.objects.using(using).create(organization=organization, deal=deal, task_link=link)
 
-                deal_event = CrmEvent.objects.using(using).create(organization=organization, deal=deal, command=command,
+                CrmEvent.objects.using(using).create(organization=organization, deal=deal, command=command,
                     actor=actor, event_type="deal.create", safe_diff={"revision": {"before": 0, "after": 1},
                         "manager_id": {"before": None, "after": responsible.pk}})
-                from .crm_assignment_notifications import notify_assignment
-                notify_assignment(deal_event, responsible)
                 ids.append(deal.pk)
             # A single conversion keeps the exact confirmed customer on the lead
             # as well. Multi-deal conversion retains the original lead identity.
@@ -861,7 +859,7 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
             from pool_service.crm_commercial_models import CrmCardComment
             CrmCardComment.objects.using(using).create(event=event, body=values["body"])
         assigned = diff.get('assignee_id', {})
-        if assigned.get('after') is not None and assigned.get('after') != assigned.get('before'):
+        if command_type != "lead.qualify" and assigned.get('after') is not None and assigned.get('after') != assigned.get('before'):
             from .crm_assignment_notifications import notify_assignment
             notify_assignment(event, lead.assignee)
         result = {"lead_id": lead.pk, "event_id": event.pk, "revision": lead.revision, **additional}

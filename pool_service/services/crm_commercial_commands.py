@@ -34,6 +34,7 @@ COMMANDS = {
     "deal.edit": (CrmDeal, "manager_id", "edit_own_deals", {"title"} | CARD_FIELDS),
     "deal.comment": (CrmDeal, "manager_id", "edit_own_deals", {"body"}),
     "deal.transition": (CrmDeal, "manager_id", "transition_own_deals", {"stage_id", "reason", "confirm_manual_completion"}),
+    "deal.change_pipeline": (CrmDeal, "manager_id", "transition_own_deals", {"pipeline_id", "stage_id"}),
 }
 # Explicit technical bounds, independent of editable labels/positions. No tender
 # automation, contract, sending, execution, payments or closure in this release.
@@ -52,6 +53,18 @@ FINAL_STAGE_REASON = "Ручное завершение CRM не подтвер�
 LEAD_STATES = ("new", "working", "qualifying", "waiting", "deferred")
 
 
+def pipeline_change_block_reason(deal, pipeline, stage, *, using=None):
+    if stage.code in {"completed", "failed"}:
+        return "Сменить воронку можно у сделки на рабочем этапе."
+    if pipeline.code == "service":
+        from pool_service.crm_service_binding_models import ServiceContractBinding
+        if ServiceContractBinding.objects.using(using).filter(
+            organization_id=deal.organization_id, deal_id=deal.pk,
+        ).exists():
+            return "Воронка закреплена за договором обслуживания с привязанными документами."
+    return ""
+
+
 def _positive_id(value):
     if type(value) is not int or value <= 0:
         raise ValidationError("CRM identifiers must be positive integers.")
@@ -66,7 +79,7 @@ def _normalize(command_type, changes):
         raise ValidationError("Fields are unavailable for this CRM command.")
     normalized = dict(changes)
     for key, value in normalized.items():
-        if key == "stage_id":
+        if key in {"pipeline_id", "stage_id"}:
             _positive_id(value)
         elif key == "confirm_manual_completion":
             if type(value) is not bool: raise ValidationError("Подтверждение должно быть логическим значением.")
@@ -115,6 +128,8 @@ def _normalize(command_type, changes):
         raise ValidationError("A lead transition requires status.")
     if command_type == "deal.transition" and "stage_id" not in normalized:
         raise ValidationError("A deal transition requires stage_id.")
+    if command_type == "deal.change_pipeline" and set(normalized) != {"pipeline_id", "stage_id"}:
+        raise ValidationError("Выберите воронку и этап.")
     return normalized
 
 
@@ -226,6 +241,23 @@ def _apply(subject, command_type, changes, using, actor=None):
                 diff["manual_completion_exception"] = {"before": current.code == "completed", "after": target.code == "completed"}
             diff["stage_id"] = {"before": subject.stage_id, "after": target.pk}
             subject.stage = target
+        elif command_type == "deal.change_pipeline":
+            target_pipeline = CrmPipeline.objects.using(using).select_for_update().filter(
+                pk=changes["pipeline_id"], organization_id=subject.organization_id, is_active=True,
+            ).first()
+            target = stages.get(changes["stage_id"])
+            if not target_pipeline or target_pipeline.pk == pipeline.pk:
+                raise ValidationError("Выберите другую действующую воронку.")
+            if (not target or target.pipeline_id != target_pipeline.pk or not target.is_active
+                    or target.code not in MANUAL_STAGES.get(target_pipeline.code, ())
+                    or target.code == "completed"):
+                raise ValidationError("Выберите рабочий этап новой воронки.")
+            blocked = pipeline_change_block_reason(subject, pipeline, current, using=using)
+            if blocked:
+                raise ValidationError(blocked)
+            diff["pipeline_id"] = {"before": pipeline.pk, "after": target_pipeline.pk}
+            diff["stage_id"] = {"before": current.pk, "after": target.pk}
+            subject.pipeline, subject.stage = target_pipeline, target
     if command_type.endswith(".edit"):
         changed = _set_card_fields(subject, changes, diff) if isinstance(subject, CrmDeal) else False
         if isinstance(subject, CrmLead):

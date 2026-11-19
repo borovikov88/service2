@@ -191,11 +191,14 @@ const {chromium} = require('playwright');
     const leadResponse = responseFor(f.leadCommandPath);
     await leadForm.getByRole('button', {name: 'Подтвердить создание сделки', exact: true}).click();
     const converted = await leadResponse;
-    assert.equal(converted.status(), 200, await converted.text());
-    const leadResult = await converted.json();
-    assert.equal(leadResult.lead.contact.name, 'Synthetic Lead person');
-    assert.equal(leadResult.lead.company.name, 'Synthetic Lead company');
-    assert.equal(leadResult.lead.result, 'qualified');
+    assert.equal(converted.status(), 200);
+    const destination = new URL(f.deals, f.base);
+    await page.waitForURL(url => url.pathname === destination.pathname &&
+      url.searchParams.has('deal') && url.searchParams.get('org_id') === String(f.orgId));
+    const convertedDeal = page.locator('#crm-live-dialog');
+    await convertedDeal.locator('.crm-live-detail-client').getByText('Synthetic Lead company', {exact: true}).waitFor();
+    await convertedDeal.locator('.crm-live-detail-contact').getByText('Synthetic Lead person', {exact: true}).waitFor();
+    await page.locator('#crm-live-content[aria-busy="false"]').waitFor();
     assert.equal(writes.length, 5);
     assert.deepEqual(errors, []);
   } catch (error) {

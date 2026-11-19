@@ -75,6 +75,7 @@ class LeadKanbanBrowserTests(StaticLiveServerTestCase):
         self.client.force_login(user)
         fixture = {"base": self.live_server_url, "workspace": reverse("crm_live_leads") + "?org_id=" + str(org.pk),
             "command": reverse("crm_live_lead_command"), "leadId": lead.pk,
+            "contacts": reverse("clients_list"),
             "sessionCookie": self.client.cookies[settings.SESSION_COOKIE_NAME].value,
             "sessionCookieName": settings.SESSION_COOKIE_NAME}
         result = subprocess.run(["node", str(Path(__file__).with_name("crm_lead_kanban.browser.cjs"))],

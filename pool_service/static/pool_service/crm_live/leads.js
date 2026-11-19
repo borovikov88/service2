@@ -109,6 +109,8 @@
         message: ["M21 15a3 3 0 0 1-3 3H8l-5 4V6a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3Z", "M7 8h10M7 12h6"],
         clock: ["M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0", "M12 6v6l4 2"],
         check: ["M20 6 9 17l-5-5"],
+        close: ["M18 6 6 18M6 6l12 12"],
+        alert: ["M12 8v5m0 3h.01M11 3.5l-9 16A1 1 0 0 0 3 21h18a1 1 0 0 0 1-1.5l-9-16a1.1 1.1 0 0 0-2 0Z"],
         note: ["M8 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2h-3", "M8 2h8v4H8zM7 11h10M7 16h7"]
       };
       const svg = doc.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -151,7 +153,9 @@
       } finally { win.clearTimeout(timer); }
     }
     const operations = new LeadOperations(async (payload) => {
-        const body = await write(initial.urls.command, payload);
+        const url = new URL(initial.urls.command, win.location.origin);
+        if (["lead.qualify", "lead.add_deal"].includes(payload.command_type)) url.searchParams.set("view", "conversion");
+        const body = await write(url, payload);
         const transferred = body.result?.assignment_saved === true && body.result.can_open === false && Number.isInteger(body.result.lead_id);
         if (!transferred && (!body.result || !body.lead || body.result.lead_id !== body.lead.id || !Number.isInteger(body.lead.revision))) throw new Error("Сервер не подтвердил результат. Проверьте эту же операцию.");
         return body;
@@ -236,16 +240,29 @@
     const columnLabels = {unparsed: "Не разобраны", working: "В работе", history: "Завершённые", failed: "Лид провален", spam: "Спам", deleted: "Удалённые", restore: "Восстановить"};
     let dragged = null, suppressClickUntil = 0;
     const dragActions=el("div","crm-drag-actions");dragActions.hidden=true;root.append(dragActions);
-    const conversionDrop=el("div","lead-conversion-drop crm-drag-target","Завершить лид");
-    const failureDrop=el("div","crm-failure-drop crm-drag-target","Лид провален");
-    dragActions.append(conversionDrop,failureDrop);
     function endDrag(){if(dragged)suppressClickUntil=Date.now()+250;dragged=null;dragActions.hidden=true;root.querySelectorAll(".is-drop-target,.is-dragging").forEach(node=>node.classList.remove("is-drop-target","is-dragging"));}
     const canComplete = lead => Boolean(lead && (lead.can_qualify || lead.can_complete_customer || moveTargets(lead).includes("history")));
-    conversionDrop.addEventListener("dragover",e=>{if(!state.loading&&canComplete(dragged)){e.preventDefault();e.dataTransfer.dropEffect="move";}});
-    conversionDrop.addEventListener("drop",e=>{e.preventDefault();const lead=dragged;endDrag();if(!state.loading&&canComplete(lead))conversionDialog(lead,false,null);});
-    failureDrop.addEventListener("dragover",e=>{if(dragged&&!state.loading&&moveTargets(dragged).includes("failed")){e.preventDefault();e.dataTransfer.dropEffect="move";failureDrop.classList.add("is-drop-target");}});
-    failureDrop.addEventListener("dragleave",()=>failureDrop.classList.remove("is-drop-target"));
-    failureDrop.addEventListener("drop",e=>{e.preventDefault();const lead=dragged;endDrag();if(lead&&!state.loading&&moveTargets(lead).includes("failed"))moveLead(lead,"failed");});
+    const dropActions = [
+      ["lead-conversion-drop", "Завершить лид", "check", canComplete, lead => conversionDialog(lead, false, null)],
+      ["crm-failure-drop", "Лид провален", "close", lead => moveTargets(lead).includes("failed"), lead => moveLead(lead, "failed")],
+      ["lead-spam-drop", "Спам", "alert", lead => moveTargets(lead).includes("spam"), lead => moveLead(lead, "spam")],
+    ].map(([css, label, symbol, allowed, apply]) => {
+      const zone = el("div", css + " crm-drag-target");
+      zone.append(icon(symbol), el("span", "", label));
+      zone.addEventListener("dragover", event => {
+        if (dragged && !state.loading && allowed(dragged)) {
+          event.preventDefault(); event.dataTransfer.dropEffect = "move"; zone.classList.add("is-drop-target");
+        }
+      });
+      zone.addEventListener("dragleave", () => zone.classList.remove("is-drop-target"));
+      zone.addEventListener("drop", event => {
+        event.preventDefault();
+        const lead = dragged; endDrag();
+        if (lead && !state.loading && allowed(lead)) apply(lead);
+      });
+      dragActions.append(zone);
+      return {zone, allowed};
+    });
     win.addEventListener("keydown",e=>{if(e.key==="Escape")endDrag();});
     win.addEventListener("blur",endDrag);
     function sourceLine(host, source) {
@@ -294,7 +311,10 @@
         row.draggable = !state.loading && !operations.forSubject(lead.id);
         row.addEventListener("dragstart", (event) => {
           if (!row.draggable || bulk?.hasSelection() || operations.forSubject(lead.id)) { event.preventDefault(); return; }
-          dragged = lead; conversionDrop.hidden=!canComplete(lead);failureDrop.hidden=!targets.includes("failed");dragActions.hidden=conversionDrop.hidden&&failureDrop.hidden; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", String(lead.id)); row.classList.add("is-dragging");
+          dragged = lead;
+          for (const {zone, allowed} of dropActions) zone.hidden = !allowed(lead);
+          dragActions.hidden = dropActions.every(({zone}) => zone.hidden);
+          event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", String(lead.id)); row.classList.add("is-dragging");
         });
         row.addEventListener("dragend", endDrag);
 
@@ -348,8 +368,10 @@
     async function moveLead(snapshot, target) {
       if (target === "history") { conversionDialog(snapshot, false, null); return; }
       if (operations.forSubject(snapshot.id)) { notice("Сначала проверьте предыдущее сохранение этой карточки."); return; }
+      dialog.classList.toggle("lead-compact-dialog", ["failed", "spam"].includes(target));
       const sequence = ++state.detailSequence; state.selected = snapshot.id; urlState();
-      content.replaceChildren(el("h2", "", target === "failed" ? "Лид провален" : "Перемещение лида")); content.firstChild.id = "lead-dialog-title";
+      const moveTitle = {failed: "Лид провален", spam: "Переместить в спам"};
+      content.replaceChildren(el("h2", "", moveTitle[target] || "Перемещение лида")); content.firstChild.id = "lead-dialog-title";
       if (!dialog.open) dialog.showModal();
       try {
         const data = await read(initial.urls.detail_prefix + snapshot.id + "/?org_id=" + initial.organization_id);
@@ -358,10 +380,11 @@
         if (lead.revision !== snapshot.revision || !moveTargets(lead).includes(target)) throw new Error("Карточка уже изменена или действие недоступно. Обновите канбан.");
         const free = !lead.assignee;
         const form = makeForm(content, columnLabels[target], free ? "Первое успешное сохранение закрепит свободный лид за вами." : "Перемещение сохранится после подтверждения. История и связи останутся в карточке.");
-        if(target==="failed")form.parentElement.querySelector("h3").remove();
+        if (moveTitle[target]) form.parentElement.querySelector("h3").remove();
         const ranks={unparsed:0,working:1,history:2,failed:2,spam:3,deleted:4};
         const required=["failed","spam","deleted","restore"].includes(target)||ranks[target]<ranks[lead.column];
-        const reason = required ? field(form, target === "failed" ? "Причина провала" : "Причина перемещения", "", "textarea") : null;
+        const reasonLabel = {failed: "Причина провала", spam: "Почему это спам"};
+        const reason = required ? field(form, reasonLabel[target] || "Причина перемещения", "", "textarea") : null;
         if(reason){reason.required=true;reason.maxLength=500;}
         const existingDeal = target === "restore" && (lead.result === "spam" || lead.status !== "closed")
           ? picker(form, "Активная сделка клиента, если есть", initial.urls.targets, "targets", null, () => "deal") : null;
@@ -369,7 +392,8 @@
         let next = null;
         if (target === "working" && (!lead.next_action || lead.next_action.completed)) next = nextFields(form, null);
         if (["failed","spam","deleted"].includes(target)) form.append(el("p", "lead-form-note", "Текущий незавершённый шаг будет отменён с сохранением истории."));
-        formSubmit(form, target === "failed" ? "Подтвердить провал" : free ? "Взять на себя и переместить" : "Подтвердить перемещение", () => {
+        const confirmLabel = {failed: "Подтвердить провал", spam: "Отправить в спам"};
+        formSubmit(form, confirmLabel[target] || (free ? "Взять на себя и переместить" : "Подтвердить перемещение"), () => {
           const changes = {column: target, reason: reason ? reason.value.trim() : ""}; if (next) changes.next_action = next();
           if (existingDeal?.value()) changes.target_deal_id = existingDeal.value();
           if ((changes.target_deal_id || ["failed", "spam", "deleted", "history"].includes(target)) && lead.next_action?.version && !lead.next_action.completed) changes.expected_task_version = lead.next_action.version;
@@ -422,11 +446,12 @@
       for (const [id, text] of choices) { const option = el("option", "", text); option.value = id; input.append(option); } input.value = value;
       wrap.append(input); host.append(wrap); return input;
     }
-    function responsibleField(host, {kind="lead", subjectId=null, leadId=null, selectedId=null} = {}) {
+    function responsibleField(host, {kind="lead", subjectId=null, leadId=null, selectedId=null, notify=true} = {}) {
       if (!initial.urls.responsibles) return null;
       const input = select(host, "Ответственный", [["", "Загружаем сотрудников…"]]);
       input.name = "responsible_id"; input.required = true; input.setAttribute("aria-label", "Ответственный");
-      const message = el("small", "lead-form-note", "Выбранный сотрудник получит уведомление согласно своим настройкам."); input.parentElement.append(message);
+      const notification = notify ? "Выбранный сотрудник получит уведомление согласно своим настройкам." : "";
+      const message = el("small", "lead-form-note"); input.parentElement.append(message);
       const retry = button("Повторить загрузку сотрудников"), wrap = input.parentElement;
       retry.hidden = true; wrap.append(retry);
       const load = async () => {
@@ -438,7 +463,7 @@
           input.replaceChildren(); const placeholder = el("option", "", "Выберите сотрудника"); placeholder.value = ""; input.append(placeholder);
           for (const user of data.users || []) { const option = el("option", "", user.name); option.value = user.id; input.append(option); }
           input.value = String(selectedId ?? data.current_user_id ?? "");
-          message.textContent = data.users?.length ? "Выбранный сотрудник получит уведомление согласно своим настройкам." : "Нет сотрудников, которым доступна эта карточка.";
+          message.textContent = data.users?.length ? notification : "Нет сотрудников, которым доступна эта карточка.";
         } catch (error) { if (!wrap.isConnected) return; input.replaceChildren(); const empty = el("option", "", "Сотрудники не загружены"); empty.value = ""; input.append(empty); message.textContent = error.message; retry.hidden = false; }
       };
       retry.addEventListener("click", load); load(); return input;
@@ -582,7 +607,7 @@
       if(lead.is_archived)form.append(el("p","lead-form-note","При подтверждении лид будет восстановлен и конвертирован. История удаления сохранится."));
       const title=field(fields,"Название сделки",lead.title,"text",true);title.required=true;title.maxLength=255;
       const pipeline=select(fields,"Воронка",initial.pipelines.map(p=>[String(p.id),p.name]),String(initial.pipelines.find(p=>p.code===lead.direction)?.id || initial.pipelines[0]?.id || ""));pipeline.required=true;
-      const responsible = responsibleField(fields, {kind:"deal", leadId:lead.id});
+      const responsible = responsibleField(fields, {kind:"deal", leadId:lead.id, notify:false});
       const amount = field(fields, "Коммерческая сумма, ₽", lead.budget_kind === "exact" && lead.currency === "RUB" ? win.CrmCardActivity.formatMoney(lead.budget_min) : "");
       amount.inputMode = "decimal"; amount.maxLength = 40;
       const amountBasis = select(fields, "Основание суммы", [["indicative","Предварительная оценка"],["agreed","Согласовано с клиентом"]], "indicative");
@@ -687,49 +712,80 @@
       });
       const cancel = button("Отмена", () => openLead(lead.id)); cancel.classList.add("lead-cancel"); form.append(cancel);
     }
-    function completionOptions(host, lead, selectedMode) {
+    function completionOptions(host, snapshot, loadLead, isCurrent, selectedMode) {
       const choices = el("div", "lead-completion-options"); choices.setAttribute("role", "group"); choices.setAttribute("aria-label", "Результат завершения лида");
-      host.append(el("p", "lead-completion-intro", "Выберите, что нужно сохранить по итогам обращения."), choices);
-      const panels = new Map(), buttons = new Map(), customer = {editor:null, hosts:new Map()};
+      host.append(choices);
+      const panels = new Map(), rendered = new Set(), customer = {editor:null, hosts:new Map()};
       const dealModes = [
-        ["deal", "Создать сделку", "Сделка", "Использовать существующего клиента."],
-        ["deal_contact", "Создать сделку и контакт", "Сделка и контакт", "Добавить контакт к сделке."],
-        ["deal_contact_company", "Создать сделку, контакт и компанию", "Сделка, контакт и компания", "Добавить контакт и компанию к сделке."]
+        ["deal", "Создать сделку"],
+        ["deal_contact", "Создать сделку и контакт"],
+        ["deal_contact_company", "Создать сделку, контакт и компанию"]
       ];
       const definitions = [
-        ...dealModes.map(([key, name, label, description]) => [key, name, label, description, lead.can_qualify, () => qualificationForm(panels.get(key), lead, false, customer, key)]),
-        ["customer", "Сохранить контакт/компанию", "Контакт / компания", "Сохранить в справочник и завершить лид без сделки.", lead.can_complete_customer, () => completeCustomerForm(panels.get("customer"), lead, customer)],
-        ["empty", "Завершить без создания", "Без создания", "Завершить разбор обращения без новых записей.", moveTargets(lead).includes("history"), () => completeEmptyForm(panels.get("empty"), lead)]
+        ...dealModes.map(([key, name]) => [key, name, lead => lead.can_qualify,
+          lead => qualificationForm(panels.get(key), lead, false, customer, key)]),
+        ["customer", "Сохранить контакт/компанию", lead => lead.can_complete_customer,
+          lead => completeCustomerForm(panels.get("customer"), lead, customer)],
+        ["empty", "Завершить без создания", lead => moveTargets(lead).includes("history"),
+          lead => completeEmptyForm(panels.get("empty"), lead)]
       ];
-      const activate = (key, build) => {
-        if (operations.forSubject(lead.id)) return;
-        for (const [mode, panel] of panels) { panel.hidden = mode !== key; buttons.get(mode).setAttribute("aria-pressed", String(mode === key)); }
-        const panel = panels.get(key); if (!panel.childNodes.length) build();
-        // Keep entered identities when the user changes the completion result.
-        if (customer.hosts.has(key)) {
-          customer.hosts.get(key).append(customer.editor.element);
-          const optional = {allowed:["existing","new","none"],fallback:"none"};
-          const existing = {allowed:["existing","none"],fallback:"none"};
-          const required = {allowed:["existing","new"],fallback:"new"};
-          customer.editor.setModes({
-            contact: key === "deal" ? existing : key === "customer" ? optional : required,
-            company: key === "deal" || key === "deal_contact" ? existing : key === "customer" ? optional : required,
-          });
+      let selection = 0;
+      const back = button("К вариантам завершения", showChoices);
+      back.classList.add("lead-completion-back"); back.hidden = true; host.append(back);
+      function showChoices() {
+        if (operations.forSubject(snapshot.id)) return;
+        ++selection;
+        for (const panel of panels.values()) panel.hidden = true;
+        byId("lead-dialog-title").textContent = "Завершить лид";
+        dialog.classList.add("lead-compact-dialog");
+        choices.hidden = false; back.hidden = true;
+        choices.querySelector("button")?.focus();
+      }
+      const activate = async ([key, name, allowed, build]) => {
+        if (operations.forSubject(snapshot.id)) return;
+        const selected = ++selection;
+        choices.hidden = true; back.hidden = false;
+        for (const [mode, panel] of panels) panel.hidden = mode !== key;
+        const panel = panels.get(key);
+        if (!rendered.has(key)) panel.replaceChildren(el("p", "lead-form-note", "Загружаем данные лида…"));
+        byId("lead-dialog-title").textContent = name;
+        try {
+          const lead = await loadLead();
+          if (!isCurrent() || selected !== selection) return;
+          if (!allowed(lead)) throw new Error("Это действие сейчас недоступно.");
+          if (!rendered.has(key)) { panel.replaceChildren(); build(lead); rendered.add(key); }
+          // Preserve the shared contact editor when switching actions.
+          if (customer.hosts.has(key)) {
+            customer.hosts.get(key).append(customer.editor.element);
+            const optional = {allowed:["existing","new","none"],fallback:"none"};
+            const existing = {allowed:["existing","none"],fallback:"none"};
+            const required = {allowed:["existing","new"],fallback:"new"};
+            customer.editor.setModes({
+              contact: key === "deal" ? existing : key === "customer" ? optional : required,
+              company: key === "deal" || key === "deal_contact" ? existing : key === "customer" ? optional : required,
+            });
+          }
+          dialog.classList.toggle("lead-compact-dialog", key === "empty");
+          dialog.scrollTop = 0;
+          renderOperations();
+          (panel.querySelector("form input:not([type=hidden]), form textarea") || back).focus();
+        } catch (error) {
+          if (isCurrent() && selected === selection) panel.replaceChildren(el("p", "lead-error", error.message));
         }
-        byId("lead-dialog-title").textContent = definitions.find(([mode]) => mode === key)[1];
-        renderOperations();
       };
-      for (const [key, name, label, description, allowed, build] of definitions) {
-        if (!allowed) continue;
-        const option = button("", () => activate(key, build)); option.className = "lead-completion-option"; option.dataset.completionMode = key;
-        option.setAttribute("aria-label", name); option.setAttribute("aria-pressed", "false");
+      for (const definition of definitions) {
+        const [key, name, allowed] = definition;
+        if (!allowed(snapshot)) continue;
+        const option = button("", () => activate(definition)); option.className = "lead-completion-option"; option.dataset.completionMode = key;
         const symbol = el("span", "lead-completion-symbol"); symbol.append(icon(key.startsWith("deal") ? "note" : key === "customer" ? "user" : "check"));
-        option.append(symbol, el("strong", "", label), el("span", "lead-completion-description", description)); choices.append(option); buttons.set(key, option);
+        symbol.setAttribute("aria-hidden", "true");
+        option.append(symbol, el("span", "", name)); choices.append(option);
         const panel = el("div", "lead-completion-panel"); panel.dataset.completionPanel = key; panel.hidden = true; panels.set(key, panel); host.append(panel);
       }
-      const selected = definitions.find(([key,,,, allowed]) => key === selectedMode && allowed);
-      if (selected) activate(selected[0], selected[5]);
-      else if (!buttons.size) host.append(el("p", "lead-error", "Завершение этого лида сейчас недоступно."));
+      const selected = definitions.find(([key]) => key === selectedMode && panels.has(key));
+      if (selected) activate(selected);
+      else if (panels.size) showChoices();
+      else host.append(el("p", "lead-error", "Завершение этого лида сейчас недоступно."));
     }
     function budgetPanel(lead) {
       const box = el("section", "crm-card-money"), currency = lead.currency || "RUB";
@@ -780,6 +836,7 @@
       return row;
     }
     function renderDetail(data) {
+      dialog.classList.remove("lead-compact-dialog");
       const lead=data.lead;state.detail=data;content.replaceChildren();
       content.append(el("h2","",displayTitle(lead)));content.firstChild.id="lead-dialog-title";
       content.append(el("p","lead-summary",[lead.status_label,lead.source?.label,lead.assignee?.name || "Не назначен"].filter(Boolean).join(" · ")));
@@ -841,23 +898,65 @@
       renderOperations();
     }
     async function conversionDialog(snapshot, additional = false, selectedMode = "deal") {
-      if(operations.forSubject(snapshot.id))return;
-      const sequence=++state.detailSequence;state.selected=snapshot.id;urlState();content.replaceChildren(el("h2","",additional?"Дополнительная сделка":selectedMode==="deal"?"Создать сделку":"Завершить лид"));content.firstChild.id="lead-dialog-title";if(!dialog.open)dialog.showModal();
-      try{const data=await read(initial.urls.detail_prefix+snapshot.id+"/?org_id="+initial.organization_id);if(sequence!==state.detailSequence)return;if(additional&&!data.lead.can_add_deal)throw new Error("Создание сделки сейчас недоступно. Обновите карточку лида.");if(data.lead.revision!==snapshot.revision)throw new Error("Лид изменился. Откройте его повторно.");if(additional)qualificationForm(content,data.lead,true);else completionOptions(content,data.lead,selectedMode);renderOperations();}catch(error){if(sequence===state.detailSequence)errorNode(content,error);}
+      if (operations.forSubject(snapshot.id)) return;
+      const cached = dialog.open && state.detail?.lead === snapshot ? snapshot : null;
+      const sequence = ++state.detailSequence;
+      const isCurrent = () => sequence === state.detailSequence && dialog.open;
+      state.selected = snapshot.id;
+      urlState();
+      const title = el("h2", "", additional ? "Дополнительная сделка" : "Завершить лид");
+      title.id = "lead-dialog-title";
+      content.replaceChildren(title);
+      dialog.classList.toggle("lead-compact-dialog", !additional);
+      if (!dialog.open) dialog.showModal();
+      let conversionRead;
+      const loadLead = () => {
+        if (cached) return Promise.resolve(cached);
+        if (!conversionRead) {
+          const url = new URL(initial.urls.detail_prefix + snapshot.id + "/", win.location.origin);
+          url.searchParams.set("org_id", initial.organization_id);
+          url.searchParams.set("view", "conversion");
+          conversionRead = read(url).then(data => {
+            if (data.lead?.revision !== snapshot.revision) throw new Error("Лид изменился. Откройте его повторно.");
+            return data.lead;
+          }).catch(error => { conversionRead = null; throw error; });
+        }
+        return conversionRead;
+      };
+      if (!additional) {
+        completionOptions(content, snapshot, loadLead, isCurrent, selectedMode);
+        return;
+      }
+      const loading = el("p", "lead-form-note", "Загружаем данные лида…");
+      content.append(loading);
+      try {
+        const lead = await loadLead();
+        if (!isCurrent()) return;
+        if (!lead.can_add_deal) throw new Error("Создание сделки сейчас недоступно. Обновите карточку лида.");
+        loading.remove();
+        qualificationForm(content, lead, true);
+        renderOperations();
+      } catch (error) {
+        if (isCurrent()) { loading.remove(); errorNode(content, error); }
+      }
     }
     async function openLead(id) {
+      dialog.classList.remove("lead-compact-dialog");
+      state.detail = null;
       const sequence = ++state.detailSequence; state.selected = Number(id); urlState(); content.replaceChildren(el("p", "", "Загружаем карточку…")); if (!dialog.open) dialog.showModal();
       try { const data = await read(initial.urls.detail_prefix + id + "/?org_id=" + initial.organization_id); if (sequence === state.detailSequence) renderDetail(data); }
       catch (error) { if (sequence === state.detailSequence) content.replaceChildren(el("p", "lead-error", error.message)); }
     }
     function createLead() {
       if (operations.forSubject(null)) { notice("Сначала проверьте результат предыдущего создания лида."); return; }
+      dialog.classList.remove("lead-compact-dialog");
       ++state.detailSequence; state.selected = null; state.detail = null; urlState(); content.replaceChildren(el("h2", "", "Новое обращение")); content.firstChild.id = "lead-dialog-title";
       editForm(content, null, "lead.create"); if (!dialog.open) dialog.showModal();
     }
     byId("lead-create").addEventListener("click", createLead);
     function clearSelection() {
       if (state.selected !== null) { ++state.detailSequence; state.selected = null; }
+      dialog.classList.remove("lead-compact-dialog");
       urlState();
     }
     // close() hides synchronously; its native close event is queued. Clear the

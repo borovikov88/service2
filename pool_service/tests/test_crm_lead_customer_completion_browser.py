@@ -12,7 +12,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from pool_service.client_crm_models import ClientBusinessRole, ClientCompanyLink
-from pool_service.crm_commercial_models import CrmDeal, CrmLead, CrmLeadDealLink, CrmLeadTaskLink
+from pool_service.crm_commercial_models import CrmDeal, CrmLead, CrmLeadDealLink, CrmLeadTaskLink, CrmPipeline
 from pool_service.models import Client, Organization, OrganizationAccess, ServiceTask
 from pool_service.tests.test_crm_lead_commands import LeadFixture
 from pool_service.tests.test_crm_lead_kanban_browser import _bounded_browser_process
@@ -86,11 +86,16 @@ class LeadCustomerCompletionBrowserTests(LeadFixture, StaticLiveServerTestCase):
         self.org.paid_until = timezone.now() + timedelta(days=30)
         self.org.save(update_fields=["plan_type", "paid_until"])
         self.grant.view_team_deals = True
-        self.grant.save(update_fields=["view_team_deals"])
+        self.grant.transition_own_deals = True
+        self.grant.save(update_fields=["view_team_deals", "transition_own_deals"])
+        destination = CrmPipeline.objects.get(organization=self.org, code="retail")
+        target_stage = destination.stages.get(code="need")
         lead = self.create(client_id=self.client.pk)
         http = HttpClient(); http.force_login(self.user)
         fixture = {"base":self.live_server_url, "path":reverse("crm_live_leads") + "?org_id=" + str(self.org.pk),
             "leadId":lead.pk, "command":reverse("crm_live_lead_command"), "deals":reverse("crm_live_workspace"),
+            "leadDetail":reverse("crm_live_lead_detail", args=[lead.pk]), "dealData":reverse("crm_live_data"),
+            "dealCommand":reverse("crm_live_command"), "pipelineId":destination.pk, "stageId":target_stage.pk,
             "sessionCookie":http.cookies[settings.SESSION_COOKIE_NAME].value, "sessionCookieName":settings.SESSION_COOKIE_NAME,
             "orgId":self.org.pk, "userId":self.user.pk}
         code, output = _bounded_browser_process(
@@ -100,3 +105,4 @@ class LeadCustomerCompletionBrowserTests(LeadFixture, StaticLiveServerTestCase):
         self.assertEqual((lead.budget_min, lead.status, lead.result), (Decimal("62500.25"), "closed", "qualified"))
         deal = CrmDeal.objects.get()
         self.assertEqual((deal.amount, deal.manager_id, deal.work_subject), (Decimal("62500.25"), self.user.pk, "Pool construction"))
+        self.assertEqual((deal.pipeline_id, deal.stage_id), (destination.pk, target_stage.pk))

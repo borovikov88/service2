@@ -37,7 +37,7 @@ const {chromium} = require('playwright');
       const data = JSON.parse(await page.locator('#crm-live-bootstrap').textContent()); currentUrls = data.urls; return data;
     };
     const choose = async (row, refreshNeeded = false) => {
-      await finance().locator('.crm-onec-binding').filter({has:page.locator('summary',{hasText:'Привязать заказ'})}).locator('summary').click();
+      await finance().getByText('Выбрать заказ для расчётов',{exact:true}).click();
       const form = finance().locator('[data-command-form="bind_order"]');
       const beforeTyping = writes.length;
       const refresh = form.getByRole('button',{name:'Найти в 1С',exact:true});
@@ -79,6 +79,9 @@ const {chromium} = require('playwright');
       const before = writes.length;
       assert.equal(await finance().getAttribute('data-finance-state'),'unlinked');
       assert.equal(await finance().getByRole('progressbar').count(),0,'Unlinked must not display invented zero percent');
+      const documentPicker = dialog.locator('[data-command-form="documents"]');
+      const documentTypes = await documentPicker.locator('[name="kind"] option').evaluateAll(options => options.map(option => option.value));
+      assert.deepEqual(documentTypes, ['order','realization','check']);
       let form = await choose(row,Boolean(row.requiresRefresh));
       const readWrites = row.requiresRefresh ? 1 : 0;
       assert.equal(await form.getByLabel('Постоянное обслуживание',{exact:true}).isChecked(),row.recurring,'Service defaults must preserve a continuing deal');

@@ -165,6 +165,10 @@
       draft.formKind = "transition";
       draft.fields.stage_id = String(changes.stage_id);
       draft.fields.reason = changes.reason || "";
+    } else if (payload.command_type === "deal.change_pipeline") {
+      draft.formKind = "change_pipeline";
+      draft.fields.pipeline_id = String(changes.pipeline_id);
+      draft.fields.stage_id = String(changes.stage_id);
     } else throw new Error("Этот черновик нельзя восстановить в карточке.");
     return draft;
   }
@@ -716,7 +720,7 @@
       // The retained detail header must wait for the same refresh as its forms.
       // Otherwise a late response can replace a just-reopened editor.
       const detailBusy = state.drawer?.kind === "loading" || Boolean(state.drawer?.id && queue.forSubject(state.drawer.id));
-      for (const button of dialogContent.querySelectorAll(".crm-live-detail-meta .crm-live-inline-action,.crm-inline-view button")) button.disabled = detailBusy;
+      for (const button of dialogContent.querySelectorAll(".crm-live-detail-meta :is(.crm-live-inline-action,.crm-live-pipeline-pill),.crm-inline-view button")) button.disabled = detailBusy;
       for (const form of dialogContent.querySelectorAll("[data-command-form]")) {
         const subjectId = form.dataset.subjectId || null;
         const busy = Boolean(queue.forSubject(subjectId)) || form.dataset.orderRefreshing === "true" || (state.drawer?.kind === "loading" && sameId(state.drawer.id, subjectId));
@@ -869,7 +873,7 @@
       return [order.number ? "Заказ № " + order.number : "Заказ без номера", accountingDate(order.date)].filter(Boolean).join(" · ");
     }
     function orderBindingForm(host, deal, finance) {
-      const part = disclosure(finance.order ? "Параметры связи с заказом" : "Привязать заказ");
+      const part = disclosure(finance.order ? "Параметры заказа для расчётов" : "Выбрать заказ для расчётов");
       part.classList.add("crm-onec-binding"); host.append(part);
       const form = newForm("bind_order", deal.id); part.append(form);
       const search = field("Найти заказ клиента", "search", "order_search", "", false);
@@ -951,8 +955,12 @@
     }
     function documentSection(deal) {
       const details = deal.onec_documents;
-      if (!details?.visible || !bootstrap.urls.document_candidates) return null;
+      if (!bootstrap.urls.document_candidates) return null;
       const box = section("Документы 1С"), linked = element("div", "crm-onec-documents");
+      if (!details?.visible) {
+        box.append(element("p", "crm-live-muted", "Документы доступны ответственному за сделку и владельцу организации."));
+        return box;
+      }
       box.append(linked);
       if (details.reason) box.append(element("p", "crm-live-muted", details.reason));
       const part = disclosure("Найти и привязать документ"), form = newForm("documents", deal.id);
@@ -1086,8 +1094,8 @@
     function financeSection(deal) {
       const finance = deal.onec_finance;
       if (!finance) return null;
-      const box = section("Заказ и расчёты 1С"); box.classList.add("crm-onec-finance"); box.dataset.financeState = finance.state;
-      if (finance.state === "restricted" && deal.onec_documents?.visible) return null;
+      const box = section("Расчёты по заказу 1С"); box.classList.add("crm-onec-finance"); box.dataset.financeState = finance.state;
+      if (finance.state === "restricted" && bootstrap.urls.document_candidates) return null;
       if (finance.state === "restricted") {
         box.append(element("p", "crm-live-muted", "Данные 1С доступны сотрудникам с правом просмотра финансов.")); return box;
       }
@@ -1136,7 +1144,8 @@
         }
         box.append(documents);
       }
-      if (finance.can_bind && bootstrap.urls.order_candidates && (!finance.can_unbind || order)) orderBindingForm(box, deal, finance);
+      if (finance.can_bind && bootstrap.urls.order_candidates
+          && (order || deal.onec_documents?.can_search) && (!finance.can_unbind || order)) orderBindingForm(box, deal, finance);
       if (finance.can_unbind) {
         const part = disclosure("Отвязать заказ"), form = newForm("unbind_order", deal.id);
         part.classList.add("crm-onec-binding");
@@ -1147,6 +1156,57 @@
       return box;
     }
 
+    function pipelineEditor(meta, deal) {
+      const name = pipelineFor(deal.pipeline_id)?.name || "Воронка";
+      const stages = pipeline => pipeline.stages.filter(stage => stage.can_transition && stage.code !== "completed");
+      const destinations = (state.data.pipelines || []).filter(pipeline =>
+        !sameId(pipeline.id, deal.pipeline_id) && stages(pipeline).length);
+      if (!deal.can_change_pipeline || !destinations.length) {
+        const pill = element("span", "crm-live-pill", name);
+        if (deal.pipeline_change_block_reason) pill.title = deal.pipeline_change_block_reason;
+        meta.append(pill);
+        return null;
+      }
+      const trigger = makeButton(name, null, "crm-live-pill crm-live-pipeline-pill");
+      trigger.setAttribute("aria-label", "Сменить воронку. Текущая воронка — " + name);
+      trigger.setAttribute("aria-controls", "crm-live-pipeline-editor");
+      meta.append(trigger);
+      const form = newForm("change_pipeline", deal.id);
+      form.id = "crm-live-pipeline-editor";
+      const fields = element("div", "crm-live-fields"); form.append(fields);
+      const pipeline = selectField(fields, "Новая воронка", "pipeline_id", "", [
+        ["", "Выберите воронку"], ...destinations.map(item => [item.id, item.name]),
+      ]).input;
+      const stage = selectField(fields, "Этап в новой воронке", "stage_id", "", []).input;
+      pipeline.required = stage.required = true;
+      const updateStages = () => {
+        const choice = destinations.find(item => sameId(item.id, pipeline.value));
+        const options = choice ? stages(choice) : [];
+        stage.replaceChildren(...options.map(item => {
+          const option = element("option", "", item.name); option.value = item.id; return option;
+        }));
+        if (!options.length) {
+          const empty = element("option", "", "Сначала выберите воронку"); empty.value = ""; stage.append(empty);
+        }
+        const corresponding = options.find(item => item.code === stageFor(deal)?.code);
+        stage.value = corresponding?.id ?? options[0]?.id ?? "";
+      };
+      pipeline.addEventListener("change", updateStages);
+      updateStages();
+      formFooter(form, "Сменить воронку");
+      const cancel = makeButton("Отмена"); form.querySelector(".crm-live-form-footer").append(cancel);
+      form.showPipelineEditor = (open, focus = true) => {
+        if (open) selectDetailPanel("overview");
+        form.hidden = !open;
+        trigger.setAttribute("aria-expanded", String(open));
+        if (focus) (open ? pipeline : trigger).focus();
+      };
+      trigger.addEventListener("click", () => form.showPipelineEditor(form.hidden));
+      cancel.addEventListener("click", () => form.showPipelineEditor(false));
+      form.showPipelineEditor(false, false);
+      return form;
+    }
+
     function renderDetail(deal, events) {
       dialogContent.replaceChildren();
       state.drawer = {kind: "detail", id: deal.id, deal};
@@ -1154,30 +1214,7 @@
       dialogContent.append(titleNode(deal.title));
       dialogContent.append(amountPanel(deal));
       if(deal.unverified_completion_stage)dialogContent.append(element("p","crm-live-completion-warning",(deal.manual_completion ? "CRM завершена вручную. " : "Финальный этап без подтверждённого итога. ")+deal.completion_warning));
-      const identity = disclosure("Ссылка на сделку");
-      identity.append(element("p", "crm-live-deal-id", "ID сделки: " + deal.id));
-      // Share only the authorized entity locator, never search/filter contents.
-      const permalink = new URL(win.location.pathname, win.location.origin);
-      permalink.searchParams.set("org_id", String(bootstrap.organization_id));
-      permalink.searchParams.set("pipeline", String(deal.pipeline_id));
-      permalink.searchParams.set("deal", String(deal.id));
-      const link = field("Прямая ссылка", "text", "deal_permalink", permalink.href, false);
-      link.input.readOnly = true;
-      const copy = element("button", "crm-live-button crm-live-copy-link", "Скопировать ссылку");
-      copy.type = "button";
-      const feedback = element("small", "crm-live-muted"); feedback.setAttribute("role", "status");
-      copy.addEventListener("click", async () => {
-        try {
-          await win.navigator.clipboard.writeText(permalink.href);
-          if (feedback.isConnected) { selectDetailPanel("overview"); identity.open = true; feedback.textContent = "Ссылка скопирована."; }
-        } catch (_) {
-          if (!link.input.isConnected) return;
-          selectDetailPanel("overview"); identity.open = true; link.input.focus(); link.input.select();
-          feedback.textContent = "Не удалось скопировать автоматически. Скопируйте выделенную ссылку.";
-        }
-      });
-      byId("crm-live-dialog-caption").replaceChildren(element("span", "", "Сделка #" + deal.id), copy);
-      identity.append(link.wrapper, feedback); dialogContent.append(identity);
+      byId("crm-live-dialog-caption").textContent = "Сделка №" + deal.id;
       const client = element("p", "crm-live-detail-client");
       const href = safeLink(deal.client?.url);
       if (href) { const link = element("a", "", deal.client.name); link.href = href; client.append(link); }
@@ -1193,7 +1230,8 @@
       const serviceUrl = safeLink(deal.service_documents_url);
       if (serviceUrl) { const link = element("a", "crm-live-button crm-live-document-link", "Документы обслуживания и периоды"); link.href = serviceUrl; dialogContent.append(link); }
       const meta = element("div", "crm-live-detail-meta");
-      meta.append(element("span", "crm-live-pill", pipelineFor(deal.pipeline_id)?.name || ""), element("span", "crm-live-pill", stageFor(deal)?.name || ""), element("span", "crm-live-pill", deal.manager?.name || "Без ответственного"));
+      const movePipeline = pipelineEditor(meta, deal);
+      meta.append(element("span", "crm-live-pill", stageFor(deal)?.name || ""), element("span", "crm-live-pill", deal.manager?.name || "Без ответственного"));
       if (deal.can_assign && bootstrap.urls.responsibles) {
         const assign = makeButton(deal.manager ? "Сменить ответственного" : "Назначить ответственного", null, "crm-live-inline-action");
         assign.addEventListener("click", () => { selectDetailPanel("edit"); const form = dialogContent.querySelector('[data-command-form="assign"]'); form?.scrollIntoView({block:"nearest"}); form?.querySelector("select")?.focus(); }); meta.append(assign);
@@ -1206,6 +1244,7 @@
         }); meta.append(changeStage);
       }
       dialogContent.append(meta);
+      if (movePipeline) dialogContent.append(movePipeline);
       const documents = documentSection(deal); if (documents) dialogContent.append(documents);
       const finance = financeSection(deal); if (finance) dialogContent.append(finance);
       const overview = section("О сделке");
@@ -1323,8 +1362,6 @@
           body.input.placeholder = "Договорённости, результат разговора или заметка для коллег…";
           form.append(body.wrapper); formFooter(form, "Добавить комментарий"); return form;
         } : null});
-      // Keep the first screen focused on the customer and next action.
-      dialogContent.append(identity);
       detailTabs();
       updateFormLocks();
     }
@@ -1531,6 +1568,13 @@
           byId("crm-live-search").value = "";
           renderPipelines();
         }
+        if (entry.payload.command_type === "deal.change_pipeline") {
+          state.pipelineId = deal.pipeline_id;
+          state.page = 1;
+          state.filters.stage = "";
+          renderPipelines();
+          syncURL();
+        }
         const index = (state.data.deals || []).findIndex((item) => sameId(item.id, deal.id));
         if (index >= 0) state.data.deals[index] = deal;
         queue.dismiss(key);
@@ -1557,8 +1601,14 @@
           await form.responsiblesReady;
           if (!Array.from(form.elements.namedItem("responsible_id").options).some(option => option.value === draft.fields.responsible_id)) throw new Error("Ранее выбранный сотрудник больше недоступен для назначения. Выберите другого ответственного.");
         }
-        revealField(form);
-        if (draft.formKind === "transition") {
+        if (draft.formKind === "change_pipeline") {
+          const pipeline = form.elements.namedItem("pipeline_id");
+          if (!Array.from(pipeline.options).some(option => option.value === draft.fields.pipeline_id)) throw new Error("Выбранная воронка больше недоступна.");
+          form.showPipelineEditor(true);
+          pipeline.value = draft.fields.pipeline_id;
+          pipeline.dispatchEvent(new Event("change", {bubbles: true}));
+        } else revealField(form);
+        if (["transition", "change_pipeline"].includes(draft.formKind)) {
           const select = form.elements.namedItem("stage_id");
           if (!Array.from(select.options).some((option) => option.value === draft.fields.stage_id)) throw new Error("Выбранный ранее этап больше недоступен. Проверьте текущий этап; черновик сохранён в уведомлении.");
           select.value = draft.fields.stage_id;
@@ -1613,6 +1663,12 @@
           if (!changes.title || !changes.next_action.title) throw new Error("Заполните название сделки и следующий шаг.");
           await send("deal.create", null, null, changes, "Новая сделка «" + changes.title + "»");
         } else if (!deal) throw new Error("Обновите карточку перед сохранением.");
+        else if (kind === "change_pipeline") {
+          if (!deal.can_change_pipeline || !values.get("pipeline_id") || !values.get("stage_id")) throw new Error("Выберите воронку и этап.");
+          await send("deal.change_pipeline", deal.id, deal.revision,
+            {pipeline_id: Number(values.get("pipeline_id")), stage_id: Number(values.get("stage_id"))},
+            "Воронка сделки «" + deal.title + "»");
+        }
         else if (kind === "assign") {
           if (!deal.can_assign || !values.get("responsible_id")) throw new Error("Выберите доступного сотрудника.");
           const changes = {responsible_id:Number(values.get("responsible_id")), transfer_next_action:Boolean(form.elements.namedItem("transfer_next_action")?.checked)};
@@ -1835,6 +1891,7 @@
     if (bootstrap.initial_notice) notice(bootstrap.initial_notice, true);
     const linkedDeal = new URL(win.location.href).searchParams.get("deal");
     if (linkedDeal && /^[1-9][0-9]{0,17}$/.test(linkedDeal)) openDetail(linkedDeal, false, false);
+    if (bootstrap.deferred_list) loadData({keepNotice: true, keepSelection: true});
   }
 
   return {parseMoney, formatMoney, OperationQueue, transitionIntent, deadlineISO, localDateTime, attentionFor, editableDeadline, conflictDraft, mount};

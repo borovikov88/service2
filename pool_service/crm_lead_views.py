@@ -103,12 +103,13 @@ def _client_summary(client, *, details=False):
     return data
 
 
-def _serialize(lead, user, capabilities, *, detail=False, visible_tasks=None, client_cache=None, projection=None):
+def _serialize(lead, user, capabilities, *, detail=False, conversion=False, visible_tasks=None, client_cache=None, projection=None):
     from .services.crm_lead_identity import lead_identity
     identity = lead_identity(lead, user=user, client_cache=client_cache, projection=projection)
     client, contact = identity.client, identity.contact
     own = lead.assignee_id == user.pk
     opened = not lead.is_archived and lead.status != "closed"
+    form_fields = detail or conversion
     company = client if client and client.client_type == 'legal' else None
     row = {"id": lead.pk, "title": lead.title, "revision": lead.revision,
         "column": lead_column(lead), "is_archived": lead.is_archived,
@@ -116,9 +117,9 @@ def _serialize(lead, user, capabilities, *, detail=False, visible_tasks=None, cl
         "can_restore": capabilities["transition_own_leads"] and own and (lead.is_archived or lead.result == "spam"),
         "status": lead.status, "status_label": STATES.get(lead.status, lead.status),
         "result": lead.result, "result_label": RESULTS.get(lead.result, ""),
-        "client": _client_summary(client, details=detail),
-        "contact": _client_summary(contact, details=detail),
-        "company": _client_summary(company, details=detail),
+        "client": _client_summary(client, details=form_fields),
+        "contact": _client_summary(contact, details=form_fields),
+        "company": _client_summary(company, details=form_fields),
         "assignee": {"id": lead.assignee_id,
             "name": (lead.assignee.get_full_name() or lead.assignee.username)} if lead.assignee_id else None,
         "received_at": lead.received_at.isoformat(),
@@ -158,7 +159,7 @@ def _serialize(lead, user, capabilities, *, detail=False, visible_tasks=None, cl
                 "url": reverse("task_edit", args=[task.pk]),
                 "waiting": waiting_control(task)[0] or task.status == ServiceTask.STATUS_WAITING}
             row["next_action"]["version"] = version_for(task)
-    if detail:
+    if form_fields:
         row.update(need=lead.need, reason=lead.reason,
             acquisition_source=lead.acquisition_source, first_contact_channel=lead.first_contact_channel,
             budget_kind=lead.budget_kind,
@@ -171,7 +172,7 @@ def _serialize(lead, user, capabilities, *, detail=False, visible_tasks=None, cl
     return row
 
 
-def _serialize_many(leads, user, capabilities, *, detail=False):
+def _serialize_many(leads, user, capabilities, *, detail=False, conversion=False):
     leads = list(leads)
     ids = [lead.next_task_id for lead in leads if lead.next_task_id]
     visible = {task.pk: task for task in readable_tasks(ServiceTask.objects.filter(pk__in=ids).select_related("parent_task").prefetch_related("responsibles"), user)}
@@ -187,7 +188,7 @@ def _serialize_many(leads, user, capabilities, *, detail=False):
         safe_diff__title_changed__after=True).values_list("lead_id", flat=True))
     output = []
     for lead in leads:
-        row = _serialize(lead, user, capabilities, detail=detail,
+        row = _serialize(lead, user, capabilities, detail=detail, conversion=conversion,
             visible_tasks=visible if (lead.pk,lead.next_task_id) in links else {},
             client_cache=clients, projection=projection)
         row["source"] = next(iter(sources.get(lead.pk, [])), None)
@@ -398,14 +399,30 @@ def _saved_call_media(request, organization, sources):
         source["media"] = media
 
 
+def _readable_lead(user, organization, lead_id):
+    from .services.crm_lead_access import can_read_lead
+    lead = get_object_or_404(_queryset(user, organization), pk=lead_id)
+    if not can_read_lead(user, organization, lead):
+        raise Http404
+    return lead
+
+
+def _linked_deals(user, organization, lead, *, deal_ids=None):
+    from .services.crm_commercial_access import deals_for_user
+    deals = deals_for_user(user, organization).filter(lead_links__lead=lead, lead_links__organization=organization)
+    if deal_ids is not None:
+        deals = deals.filter(pk__in=deal_ids)
+    rows = deals.values("id", "title", "pipeline_id").distinct().order_by("id")[:50]
+    workspace = reverse("crm_live_workspace")
+    return [{**deal, "url": workspace + "?" + urlencode({
+        "org_id": organization.pk, "pipeline": deal["pipeline_id"], "deal": deal["id"],
+    })} for deal in rows]
+
+
 def _detail(request, organization, lead_id):
     from .services.crm_lead_access import can_read_lead, source_metadata
-    lead = get_object_or_404(_queryset(request.user, organization), pk=lead_id)
-    if not can_read_lead(request.user, organization, lead):
-        raise Http404
+    lead = _readable_lead(request.user, organization, lead_id)
     events = CrmEvent.objects.filter(organization=organization, lead=lead).select_related("actor").order_by("-pk")[:30]
-    from .services.crm_commercial_access import deals_for_user
-    deals = deals_for_user(request.user, organization).filter(lead_links__lead=lead, lead_links__organization=organization).distinct().order_by("pk")[:50]
     duplicate = None
     if lead.duplicate_of_id:
         target = _queryset(request.user, organization).filter(pk=lead.duplicate_of_id).first()
@@ -440,14 +457,18 @@ def _detail(request, organization, lead_id):
             "movement": (COLUMNS.get(event.safe_diff.get("column", {}).get("before"), "История завершённых") + " → " + COLUMNS.get(event.safe_diff.get("column", {}).get("after"), "История завершённых")) if "column" in event.safe_diff else "",
             "actor": (event.actor.get_full_name() or event.actor.username) if event.actor else "Система"} for event in events],
         "sources": sources, "source_cursor": source_cursor, "duplicate_of": duplicate,
-        "deals": [{"id": deal.pk, "title": deal.title, "pipeline_id": deal.pipeline_id,
-            "url": reverse("crm_live_workspace") + "?" + urlencode({"org_id": organization.pk, "pipeline": deal.pipeline_id, "deal": deal.pk})} for deal in deals]}
+        "deals": _linked_deals(request.user, organization, lead)}
 
 
 @_api
 @require_GET
 def detail(request, lead_id):
-    return JsonResponse(_detail(request, _organization(request), lead_id))
+    organization = _organization(request)
+    if request.GET.get("view") == "conversion":
+        lead = _readable_lead(request.user, organization, lead_id)
+        row = _serialize_many([lead], request.user, _capabilities(request.user, organization), conversion=True)[0]
+        return JsonResponse({"lead": row})
+    return JsonResponse(_detail(request, organization, lead_id))
 
 
 @_api
@@ -525,7 +546,14 @@ def command(request):
     # browser. It must keep the original immutable key/payload for verification.
     try:
         organization = _organization(request)
-        response = _detail(request, organization, result["lead_id"])
+        if request.GET.get("view") == "conversion" and payload["command_type"] in {"lead.qualify", "lead.add_deal"}:
+            lead = _readable_lead(request.user, organization, result["lead_id"])
+            response = {
+                "lead": {"id": lead.pk, "revision": lead.revision},
+                "deals": _linked_deals(request.user, organization, lead, deal_ids=result["deal_ids"]),
+            }
+        else:
+            response = _detail(request, organization, result["lead_id"])
     except (PermissionDenied, Http404):
         if result.get('assignment_saved'):
             return JsonResponse({'result': {**result, 'can_open': False}, 'lead': None})

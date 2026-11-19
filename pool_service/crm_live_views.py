@@ -8,6 +8,7 @@ from functools import wraps
 from datetime import datetime, time, timedelta
 from django.utils.dateparse import parse_date
 import json
+import re
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -31,7 +32,7 @@ from .models import Client, Organization, OrganizationAccess, ServiceTask
 from .services.crm_commercial_access import can_view_team_deals
 from .services.crm_commercial_commands import (
     CARD_FIELDS, MANUAL_STAGES, FINAL_STAGE_REASON, CommercialConflict, close_commercial_deal_negative, create_commercial_deal,
-    execute_commercial_command, set_deal_next_action,
+    execute_commercial_command, pipeline_change_block_reason, set_deal_next_action,
 )
 from .services.task_feedback import version_for, waiting_control
 from .services.task_read_permissions import readable_tasks
@@ -45,6 +46,7 @@ EVENT_LABELS = {
     "deal.comment": "Добавлен комментарий",
     "deal.close_negative": "Сделка завершена отказом или отменой",
     "deal.transition": "Этап сделки изменён",
+    "deal.change_pipeline": "Воронка сделки изменена",
     "deal.next_action": "Следующее действие изменено",
     "deal.bind_order": "Заказ 1С связан со сделкой",
     "deal.unbind_order": "Связь с заказом 1С снята",
@@ -292,6 +294,9 @@ def _serialize_deals(deals, user, organization, grant, *, detail=False):
             "next_action": next_action,
         })
         if detail:
+            if writable and _write_capability(grant, organization, "transition_own_deals"):
+                reason = pipeline_change_block_reason(deal, deal.pipeline, deal.stage)
+                rows[-1].update(can_change_pipeline=not reason, pipeline_change_block_reason=reason)
             from .services.crm_assignments import assignment_available, assignment_task_data, ASSIGNMENT_NOTE
             rows[-1]['can_assign'] = assignment_available(user, organization, deal)
             rows[-1]['assignment_note'] = ASSIGNMENT_NOTE
@@ -304,11 +309,12 @@ def _serialize_deals(deals, user, organization, grant, *, detail=False):
 
 
 @transaction.atomic
-def _workspace_data(request, organization, *, board=None):
+def _workspace_data(request, organization, *, board=None, defer_rows=False):
     board = request.GET.get("layout") == "board" if board is None else board
-    if board:
+    if board and not defer_rows:
         organization = Organization.objects.select_for_update().get(pk=organization.pk)
-        if not can_view_team_deals(request.user, organization): raise PermissionDenied
+    if board and not can_view_team_deals(request.user, organization):
+        raise PermissionDenied
     grant = _grant(request.user, organization)
     pipelines = list(CrmPipeline.objects.filter(organization=organization, is_active=True).prefetch_related("stages"))
     pipeline_id = _id(request.GET["pipeline"]) if request.GET.get("pipeline") else (pipelines[0].pk if pipelines else None)
@@ -375,7 +381,9 @@ def _workspace_data(request, organization, *, board=None):
         raise ValidationError("Некорректный фильтр следующего действия.")
     as_of = cursor_time(request.GET.get('cursor',''), timezone.now()) if board else None
     attention_total = None
-    if attention != "all":
+    if defer_rows:
+        queryset = queryset.none()
+    if attention != "all" and not defer_rows:
         matched_ids = _attention_ids(queryset, request.user, organization, attention, as_of=as_of)
         attention_total = len(matched_ids)
         queryset = queryset.filter(pk__in=matched_ids)
@@ -385,7 +393,7 @@ def _workspace_data(request, organization, *, board=None):
         for row in queryset.order_by().values("board_stage_id", "currency").annotate(
             amount_total=Sum("amount"), count=Count("pk"), known_count=Count("amount"))]
     column_windows = []
-    if board:
+    if board and not defer_rows:
         revision=epoch(organization.pk)
         stage_ids=[item.pk for pipeline in pipelines if pipeline.pk==pipeline_id for item in pipeline.stages.all()]
         requested=request.GET.get('board_column','')
@@ -477,8 +485,9 @@ def workspace(request):
     blocked = _crm_redirect_if_access_blocked(request, organization)
     if blocked:
         return blocked
+    defer_rows = bool(re.fullmatch(r"[1-9][0-9]{0,17}", request.GET.get("deal", "")))
     try:
-        data = _workspace_data(request, organization, board=request.GET.get("view") != "table")
+        data = _workspace_data(request, organization, board=request.GET.get("view") != "table", defer_rows=defer_rows)
     except ValidationError as exc:
         # A saved invalid/too-wide filter must still open a usable filter shell.
         # Access errors and unavailable pipeline/card 404s remain unchanged.
@@ -487,14 +496,14 @@ def workspace(request):
             request.GET = original.copy()
             request.GET["attention"], request.GET["page"] = "all", "1"
             try:
-                data = _workspace_data(request, organization, board=request.GET.get("view") != "table")
+                data = _workspace_data(request, organization, board=request.GET.get("view") != "table", defer_rows=defer_rows)
             except ValidationError:
                 from django.http import QueryDict
                 request.GET = QueryDict(mutable=True)
                 request.GET["org_id"] = str(organization.pk)
                 # Even a configured pipeline with too many stages must open a
                 # usable bounded table, not fail its board budget repeatedly.
-                data = _workspace_data(request, organization, board=False)
+                data = _workspace_data(request, organization, board=False, defer_rows=defer_rows)
                 data["initial_view"] = "table"
         finally:
             request.GET = original
@@ -507,6 +516,7 @@ def workspace(request):
     offset = timezone.now().astimezone(zone).strftime("%z")
     scope = "?" + urlencode({"org_id": organization.pk})
     data.update({
+        "deferred_list": defer_rows,
         "timezone": str(zone), "utc_offset": offset[:3] + ":" + offset[3:],
         "responsible_options": _responsible_options(organization),
         "urls": {"data": reverse("crm_live_data") + scope,
@@ -649,7 +659,7 @@ def command(request):
             raise ValidationError("Укажите исход, причину и текущую версию следующего шага.")
         result = close_commercial_deal_negative(**common, subject_id=payload.get("subject_id"),
             expected_revision=payload.get("expected_revision"), **changes)
-    elif kind in ("deal.edit", "deal.transition", "deal.comment"):
+    elif kind in ("deal.edit", "deal.transition", "deal.change_pipeline", "deal.comment"):
         result = execute_commercial_command(**common, command_type=kind, subject_id=payload.get("subject_id"),
             expected_revision=payload.get("expected_revision"), changes=changes)
     elif kind in ("deal.bind_order", "deal.unbind_order"):

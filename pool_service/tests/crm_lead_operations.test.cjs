@@ -64,7 +64,7 @@ test("closing a card clears its URL before queued native close and cannot clear 
   // A native dialog hides synchronously but dispatches close in a later task.
   // Mount the actual app with that ordering; no browser behavior is claimed here.
   class Node {
-    constructor() { this.children=[]; this.listeners=new Map(); this.dataset={}; this.parentElement={}; this.open=false; }
+    constructor() { this.children=[]; this.listeners=new Map(); this.dataset={}; this.parentElement={}; this.open=false; this.classList=new Set(); this.classList.remove=this.classList.delete; }
     append(...nodes) { this.children.push(...nodes); }
     replaceChildren(...nodes) { this.children=[...nodes]; }
     get firstChild() { return this.children[0]; }
@@ -85,7 +85,7 @@ test("closing a card clears its URL before queued native close and cannot clear 
     fetch:async()=>({ok:true,json:async()=>({lead})})};
   const dialog=get("lead-dialog");
   dialog.close=()=>{dialog.open=false;queued.push(()=>dialog.emit("close"));};
-  const doc={defaultView:win,getElementById:get,createElement:()=>new Node()};
+  const doc={defaultView:win,getElementById:get,createElement:()=>new Node(),createElementNS:()=>new Node()};
   const {mount}=require("../static/pool_service/crm_live/leads.js");
   const app=mount(doc);
   await app.openLead(12);

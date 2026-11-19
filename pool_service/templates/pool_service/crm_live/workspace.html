@@ -6,15 +6,15 @@
 {% block extra_head %}
 <link rel="stylesheet" href="{% static 'pool_service/crm_inline.css' %}?v=20261116-inline1">
 <script src="{% static 'pool_service/crm_inline.js' %}?v=20261116-inline1" defer></script>
-  <link rel="stylesheet" href="{% static 'pool_service/crm_live/workspace.css' %}?v=20261115-simple">
-  <link rel="stylesheet" href="{% static 'pool_service/crm_live/design.css' %}?v=20261116-compact">
+  <link rel="stylesheet" href="{% static 'pool_service/crm_live/workspace.css' %}?v=20261119-deal-controls">
+  <link rel="stylesheet" href="{% static 'pool_service/crm_live/design.css' %}?v=20261119-completion-menu">
   <link rel="stylesheet" href="{% static 'pool_service/crm_live/bulk.css' %}?v=20261116-bulk">
   <link rel="stylesheet" href="{% static 'pool_service/customer_editor.css' %}?v=20261115-unified">
   <script src="{% static 'pool_service/customer_editor.js' %}?v=20261118-completion" defer></script>
   <link rel="stylesheet" href="{% static 'pool_service/crm_live/activity.css' %}?v=20261116-card-timeline">
   <script src="{% static 'pool_service/crm_live/activity.js' %}?v=20261118-distribution" defer></script>
   <script src="{% static 'pool_service/crm_live/bulk.js' %}?v=20261118-completion" defer></script>
-  <script src="{% static 'pool_service/crm_live/workspace.js' %}?v=20261118-documents" defer></script>
+  <script src="{% static 'pool_service/crm_live/workspace.js' %}?v=20261119-deal-controls" defer></script>
 {% endblock %}
 
 {% block content %}
@@ -30,7 +30,7 @@
 
   <div class="crm-live-toolbar">
     <label class="crm-live-search"><svg class="crm-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg><input id="crm-live-search" type="search" placeholder="Сделка, клиент, предмет или объект" aria-label="Поиск сделки, клиента, предмета или объекта" autocomplete="off"></label>
-    <label class="crm-live-owner"><span>Ответственный</span><select id="crm-live-owner"><option value="all">Все сделки</option><option value="me">Мои сделки</option><option value="unassigned">Без ответственного</option>{% for employee in crm_bootstrap.responsible_options %}<option value="{{ employee.id }}">{{ employee.name }}</option>{% endfor %}</select></label>
+    <label class="crm-live-owner"><span>Ответственный</span><select id="crm-live-owner" aria-label="Ответственный"><option value="all">Все сделки</option><option value="me">Мои сделки</option><option value="unassigned">Без ответственного</option>{% for employee in crm_bootstrap.responsible_options %}<option value="{{ employee.id }}">{{ employee.name }}</option>{% endfor %}</select></label>
     <div class="crm-live-views" role="group" aria-label="Вид сделок">
       <button type="button" data-view="kanban" aria-pressed="true"><svg class="crm-icon" aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="11" rx="1"/><rect x="17" y="4" width="4" height="14" rx="1"/></svg> Канбан</button>
       <button type="button" data-view="table" aria-pressed="false"><svg class="crm-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M8 5h13M8 12h13M8 19h13M3 5h.01M3 12h.01M3 19h.01"/></svg> Список</button>

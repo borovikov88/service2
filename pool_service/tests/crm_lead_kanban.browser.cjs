@@ -9,7 +9,7 @@ const {chromium} = require('playwright');
   const bootstrap=readFileSync(require.resolve('bootstrap/dist/js/bootstrap.bundle.min.js'),'utf8');
   const browser=await chromium.launch({headless:true});
   try {
-    // Show all six archive queues for cross-column native drag; the failure dock is tested at 1440px separately.
+    // Show all six queues for native drag and archive recovery.
     const context=await browser.newContext({viewport:{width:1760,height:1000},hasTouch:true,serviceWorkers:'block'});
     await context.addCookies([{name:f.sessionCookieName,value:f.sessionCookie,url:f.base}]);
     await context.route('**/*',route=>{
@@ -27,7 +27,8 @@ const {chromium} = require('playwright');
       catch(error){throw new Error(error.message+'\nSynthetic command results: '+JSON.stringify(commandResults)+'\nSynthetic navigation: '+JSON.stringify({url:page.url(),title:await page.title(),text:(await page.locator('body').innerText()).slice(0,1800),errors}));}};
     const confirm=async(next=false)=>{
       await page.locator('#lead-dialog button[type=submit]').waitFor();
-      if(await page.getByLabel('Причина перемещения',{exact:true}).count()) await page.getByLabel('Причина перемещения',{exact:true}).fill('Synthetic explicit manager decision');
+      const reason=page.getByLabel(/^(Причина перемещения|Почему это спам)$/);
+      if (await reason.count()) await reason.fill('Synthetic explicit manager decision');
       if(next){await page.getByLabel('Следующий шаг',{exact:true}).fill('Synthetic actual next step');await page.locator('#lead-dialog input[type=datetime-local]').fill('2026-11-20T12:00');}
       await page.locator('#lead-dialog button[type=submit]').click();
     };
@@ -38,6 +39,31 @@ const {chromium} = require('playwright');
     };
     const noModal=async()=>assert.equal(await page.locator('#lead-dialog').evaluate(node=>node.open),false,'Reload must keep the closed card closed');
     await page.goto(f.base+f.workspace);await inColumn('unparsed');
+    await page.emulateMedia({colorScheme:'dark'});
+    const search=page.locator('#lead-search');
+    await search.focus();
+    const focus=await search.evaluate(node=>({
+      outline:getComputedStyle(node).outlineStyle,
+      radius:parseFloat(getComputedStyle(node.parentElement).borderRadius),
+      ring:getComputedStyle(node.parentElement).boxShadow,
+    }));
+    assert.equal(focus.outline,'none');
+    assert.ok(focus.radius>0 && focus.ring!=='none');
+    const owner=page.locator('#lead-owner');
+    await owner.focus();
+    await page.keyboard.press('Space');
+    await page.waitForFunction(()=>document.querySelector('#lead-owner').matches(':open'));
+    const pickerRadius=control=>control.evaluate(node=>getComputedStyle(node,'::picker(select)').borderRadius);
+    const ownerRadius=await pickerRadius(owner);
+    assert.ok(parseFloat(ownerRadius)>0);
+    if(process.env.CRM_SYNTHETIC_SCREENSHOTS){
+      await page.screenshot({path:process.env.CRM_SYNTHETIC_SCREENSHOTS+'/crm-leads-owner-picker-dark.png'});
+    }
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('Enter');
+    await page.waitForURL(url=>url.searchParams.get('owner')==='me');
+    await owner.selectOption('all');
+    await inColumn('unparsed');
     const columnHeadings=()=>page.locator('.lead-column h2').evaluateAll(nodes=>nodes.map(node=>node.getAttribute('aria-label')));
     assert.deepEqual(await columnHeadings(),['Не разобраны · 1','В работе · 0','Завершённые · 0','Лид провален · 0']);
     await page.getByRole('button',{name:'Спам и удалённые',exact:true}).click();
@@ -54,7 +80,22 @@ const {chromium} = require('playwright');
     await page.getByRole('button',{name:'Проверить результат',exact:true}).click();
     await inColumn('working');assert.equal(sent[0],sent[1]);
     await page.reload();await inColumn('working');await noModal();
-    await card().dragTo(page.locator('[data-column=spam] h2'));await confirm();await inColumn('spam');await close();
+    const transfer=await page.evaluateHandle(()=>new DataTransfer());
+    await card().dispatchEvent('dragstart',{dataTransfer:transfer});
+    const bar=page.locator('.crm-drag-actions');
+    const spam=bar.locator('.lead-spam-drop');
+    await spam.waitFor();
+    assert.deepEqual(await bar.locator('.crm-drag-target:visible').allTextContents(),['Завершить лид','Лид провален','Спам']);
+    assert.ok((await bar.boundingBox()).height<=60);
+    await spam.dispatchEvent('dragover',{dataTransfer:transfer});
+    if(process.env.CRM_SYNTHETIC_SCREENSHOTS){
+      await page.screenshot({path:process.env.CRM_SYNTHETIC_SCREENSHOTS+'/crm-leads-drag-actions-dark.png'});
+    }
+    await spam.dispatchEvent('drop',{dataTransfer:transfer});
+    const reason=page.getByLabel('Почему это спам',{exact:true});
+    await reason.waitFor();
+    assert.ok(await reason.evaluate(node=>node.required));
+    await confirm();await inColumn('spam');await close();
     await page.reload();await inColumn('spam');await noModal();
     // Keyboard/touch movement lives in the opened card, not an ellipsis menu.
     assert.equal(await card().locator('summary').count(),0);
@@ -81,6 +122,8 @@ const {chromium} = require('playwright');
     assert.equal(await page.getByLabel('Причина перемещения',{exact:true}).count(),0);
     await page.getByLabel('Комментарий к завершению',{exact:true}).fill('Synthetic explicit completion');
     await confirm();await inColumn('history');await noModal();assert.deepEqual(errors,[]);
+    await page.goto(f.base+f.contacts);
+    assert.equal(await pickerRadius(page.locator('#contact-category')),ownerRadius);
     console.log('Lead kanban: real drag, immutable replay, reload, spam/trash restore, live search, keyboard, 390px and dark passed');
   } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
