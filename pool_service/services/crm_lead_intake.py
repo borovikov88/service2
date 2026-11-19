@@ -8,7 +8,7 @@ from django.contrib.auth import get_user_model
 from django.db import transaction
 from pool_service.communication_models import PhoneCall, TelephonyEmployeeIdentity
 from pool_service.crm_commercial_models import (
-    CrmCommunicationRoute, CrmEvent, CrmIntakeActivation, CrmLead, CrmLeadSource, CrmLeadThread,
+    CrmEvent, CrmIntakeActivation, CrmLead, CrmLeadSource, CrmLeadThread,
 )
 from pool_service.models import Employee, Organization, OrganizationAccess
 from pool_service.services.crm_lead_access import can_read_lead
@@ -115,8 +115,8 @@ def consume_incoming(event, source, operation_identity):
             return disposition
         matches = [explicit_lead] if explicit_lead else matching_active_leads(organization, identity)
         if len(matches) > 1:
-            CrmCommunicationRoute.objects.create(organization=organization, inbox=event, source_key=event.source_key)
-            return "needs_distribution"
+            # Preserve retry until the conflicting leads can be resolved.
+            raise ValueError("crm_active_lead_ambiguous")
         lead = matches[0] if matches else None
         thread = CrmLeadThread.objects.select_for_update().filter(
             organization=organization, context_key=_context_key(event)).first()

@@ -37,10 +37,17 @@ def route_to_deal(event, organization, identity, context_key, work_context=None)
         return "deal_linked" if old.deal_id else "needs_distribution"
     if work_context and work_context.lead_id:
         return None
+    active = active_deals(deal_object_scope(organization))
     if identity.ambiguous:
+        # Without a known deal context, the lead inbox handles uncertain callers.
+        if not work_context:
+            if not identity.client:
+                return None
+            company_deals = active.filter(client_id=identity.client.pk)
+            if not exclude_private_only_cards(company_deals, organization, kind="deal").exists():
+                return None
         CrmCommunicationRoute.objects.create(organization=organization, inbox=event, source_key=event.source_key)
         return "needs_distribution"
-    active = active_deals(deal_object_scope(organization))
     candidates = customer_deals(active, identity)
     if identity.client:
         candidates = exclude_private_only_cards(candidates, organization, kind="deal")

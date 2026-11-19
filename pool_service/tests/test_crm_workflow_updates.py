@@ -16,7 +16,7 @@ from pool_service.communication_models import CallAnalysis, CommunicationAccess,
 from pool_service.crm_commercial_bootstrap import bootstrap_commercial_settings
 from pool_service.crm_commercial_models import CrmAccess, CrmCommunicationRoute, CrmDeal, CrmLead, CrmLeadDealLink, CrmLeadSource, CrmPipeline
 from pool_service.crm_order_models import CrmDealDocumentLink, CrmOneCDocument
-from pool_service.models import Employee, OrganizationAccess
+from pool_service.models import Client, Employee, OrganizationAccess
 from pool_service.services.contact_roles import reconcile_onec_roles
 from pool_service.services.crm_commercial_commands import CommercialConflict
 from pool_service.services.crm_communication_routing import assign_route
@@ -81,6 +81,18 @@ class DealRoutingTests(EpisodeFixture, TestCase):
         self.assertEqual(CrmCommunicationRoute.objects.get(inbox=future).deal_id, chosen.pk)
         self.assertEqual(CrmCommunicationRoute.objects.count(), 2)
         self.assertFalse(CrmLeadSource.objects.exists())
+
+    def test_shared_phone_with_known_company_requires_a_deal_decision(self):
+        company = Client.objects.create(organization=self.org, name="Synthetic company", client_type="legal")
+        Client.objects.create(organization=self.org, name="Synthetic coworker", phone=self.person.phone)
+        deal = self.deal()
+        deal.client = company
+        deal.save(update_fields=["client"])
+        self.call(person=company)
+        event = self.deliver("call")
+        self.assertEqual(event.error_code, "needs_distribution")
+        self.assertIsNone(CrmCommunicationRoute.objects.get(inbox=event).deal_id)
+        self.assertFalse(CrmLead.objects.exists())
 
     def test_staff_reply_is_captured_once_and_appears_in_deal_activity(self):
         deal = self.deal()
