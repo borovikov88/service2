@@ -1,4 +1,5 @@
 """Synthetic 1C order evidence; no business source values or network calls."""
+from collections import Counter
 from copy import deepcopy
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, localcontext
@@ -160,6 +161,42 @@ class CrmOrderReaderTests(SimpleTestCase):
         self.assertEqual(row.realized_amount, Decimal("100"))
         self.assertEqual(row.paid_amount, Decimal("0"))
         self.assertTrue(row.payment_complete)
+
+    def test_full_settlement_read_uses_filters_accepted_by_1c(self):
+        customers = [str(UUID(int=index)) for index in range(1, 26)]
+        orders = [
+            header(ORDER, ref=str(UUID(int=index)), Контрагент_Key=customer)
+            for index, customer in enumerate(customers, start=101)
+        ]
+        customer, order_ref = customers[-1], orders[-1]["Ref_Key"]
+        queried = Counter()
+
+        def filter_settlements(entity, rows, calls):
+            if entity != SETTLEMENTS:
+                return rows
+            query = calls[-1][2]
+            parties = set(re.findall(r"Контрагент_Key eq guid'([^']+)'", query))
+            self.assertTrue(0 < len(parties) <= 15, "1C rejects long counterparty filters")
+            self.assertIn(f"Организация_Key eq guid'{ORG}'", query)
+            self.assertIn("Active eq true", query)
+            self.assertNotIn("Period ge", query)
+            queried.update(parties)
+            return [row for row in rows if row["Контрагент_Key"] in parties]
+
+        source = Source(
+            orders=orders,
+            invoices=[header(INVOICE, Контрагент_Key=customer, Заказ=order_ref)],
+            payments=[header(PAYMENT, Контрагент_Key=customer)],
+            movements=[
+                movement(Контрагент_Key=customer, Заказ=order_ref),
+                movement(payment=True, Контрагент_Key=customer, Заказ=order_ref),
+            ],
+            mutate=filter_settlements,
+        )
+        snapshot = self.read(source)
+        last_order = next(row for row in snapshot.rows if row.order_guid == order_ref)
+        self.assertEqual((last_order.realized_amount, last_order.paid_amount), (Decimal("100"),) * 2)
+        self.assertEqual(queried, Counter({customer: 2 for customer in customers}))
 
     def test_partial_order_allocation_uses_movement_not_whole_invoice(self):
         row, = self.read(Source(movements=[movement(amount="40.00"), movement(payment=True, amount="20.00")])).rows
