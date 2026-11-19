@@ -37,6 +37,8 @@ MOVEMENT_FIELDS = ("Recorder", "Recorder_Type", "LineNumber", "Period", "Active"
 MAX_ORDERS = 500
 DISCOVERY_LIMIT = 200
 CHUNK = 30
+# The published settlements register rejects longer counterparty filters.
+SETTLEMENT_PARTY_CHUNK = 12
 
 
 class CrmOrdersReadError(ODataPreviewError):
@@ -289,8 +291,8 @@ def _collect(config, selected, now, opener, budget, *, expected_number=None, exp
     if len(orders) > MAX_ORDERS + DISCOVERY_LIMIT:
         raise CrmOrdersReadError("CRM order scope exceeds supported limit")
     parties = sorted({row["customer"] for row in orders.values() if row["customer"]})
-    for start in range(0, len(parties), CHUNK):
-        chunk = parties[start:start + CHUNK]
+    for start in range(0, len(parties), SETTLEMENT_PARTY_CHUNK):
+        chunk = parties[start:start + SETTLEMENT_PARTY_CHUNK]
         # The published polymorphic Заказ filter has returned incomplete data.
         # Read the complete party scope and select exact orders locally instead.
         filters = _org_filter(config) + " and " + _refs_filter("Контрагент_Key", chunk)
