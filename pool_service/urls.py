@@ -7,7 +7,7 @@ from . import crm_order_views
 from . import crm_communication_views
 from . import crm_assignment_views
 from django.urls import path
-from . import department_views, staff_control_views
+from . import call_access_review_views, department_views, staff_control_views
 from .views import (
     home,
     pool_list,
@@ -392,6 +392,7 @@ urlpatterns = [
     path("users/", staff_control_views.users_directory, name="users"),
     path('users/employees/<int:employee_id>/', staff_control_views.employee_control, name='staff_employee_control'),
     path('users/accounts/<int:org_id>/<int:user_id>/', staff_control_views.account_kind, name='staff_account_kind'),
+    path('communications/calls/access-review/<int:organization_id>/', call_access_review_views.review_call_access, name='communication_call_access_review'),
     path('communications/calls/<int:call_id>/context/', staff_control_views.call_context, name='communication_call_context'),
     path('communications/personal-history/', staff_control_views.personal_history, name='communication_personal_history'),
     path("notifications/", notifications_list, name="notifications"),

@@ -3,7 +3,7 @@
 {% block content %}
 <div class="card card-soft p-3 mb-3">
   <div class="d-flex flex-wrap justify-content-between gap-2 mb-3"><h1 class="h4 mb-0">Сотрудники и доступ</h1>{% if can_manage %}<a class="btn btn-primary btn-sm" href="{% url 'invite_create' %}">Пригласить</a>{% endif %}</div>
-  {% for org in structure_orgs %}<a class="mb-2" href="{% url 'staff_departments' org.pk %}">Отделы и руководители · {{ org.name }}</a>{% endfor %}
+  {% for org in structure_orgs %}<a class="mb-2" href="{% url 'staff_departments' org.pk %}">Отделы и руководители · {{ org.name }}</a> <a class="mb-2" href="{% url 'communication_call_access_review' org.pk %}">Проверка доступа к звонку · {{ org.name }}</a>{% endfor %}
   <label class="form-label" for="staff-search">Поиск по сотрудникам, организации, роли или номеру</label><input id="staff-search" type="search" class="form-control mb-3" autocomplete="off">
   <div class="table-responsive"><table class="table align-middle"><thead><tr><th>Сотрудник / учётная запись</th><th>Организация</th><th>Роли</th><th>Состояние</th><th>Номера и АТС</th><th></th></tr></thead><tbody>
   {% for row in rows %}<tr data-staff-row>
