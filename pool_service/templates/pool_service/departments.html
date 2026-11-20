@@ -3,6 +3,7 @@
 {% block content %}
 <a href="{% url 'users' %}">Сотрудники и доступ</a>
 <h1 class="h3 mt-3">Отделы и руководители · {{ org.name }}</h1>
+<a href="{% url 'staff_role_catalog' org.pk %}">Матрица ролей Service2</a>
 <p>Назначения фиксируют подчинённость и период работы в отделе. Для клиентских звонков назначенного РОПа применяется защита разговоров руководителя. Остальные права выдаются действующими настройками модулей.</p>
 {% if error %}<div role="alert" class="alert alert-warning">{{ error }}</div>{% endif %}
 <div class="card p-3 mb-3"><h2 class="h5">Структура организации</h2>

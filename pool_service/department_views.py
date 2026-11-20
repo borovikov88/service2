@@ -7,6 +7,7 @@ from django.views.decorators.http import require_http_methods
 
 from pool_service.models import Organization
 from pool_service.services.call_processing_settings import settings_allowed
+from pool_service.services.access_catalog import ROLES, role_rows
 from pool_service.services.department_structure import assign_employee, create_department, eligible_employees, end_assignment
 from pool_service.staff_structure_models import DepartmentAssignment, StaffDepartment
 
@@ -55,3 +56,16 @@ def departments(request, organization_id):
         'people': eligible_employees(org).exclude(pk__in=[a.employee_id for a in active]).order_by('display_name'),
         'positions': DepartmentAssignment.POSITIONS, 'history': Paginator(history, 35).get_page(request.GET.get('page')),
         'error': error}, status=409 if error else 200)
+
+@login_required
+@never_cache
+@require_http_methods(['GET'])
+def role_catalog(request, organization_id):
+    org = get_object_or_404(Organization, pk=organization_id)
+    if not settings_allowed(request.user, org):
+        raise PermissionDenied
+    selected = request.GET.get('role', 'manager')
+    if selected not in ROLES:
+        selected = 'manager'
+    return render(request, 'pool_service/role_catalog.html', {'active_tab':'users','org':org,'roles':ROLES,
+        'selected':selected,'rows':role_rows(selected)})

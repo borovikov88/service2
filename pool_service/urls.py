@@ -388,6 +388,7 @@ urlpatterns = [
     path("security/passkeys/authenticate/verify/", webauthn_authentication_verify, name="webauthn_authentication_verify"),
     path("security/passkeys/prompt/dismiss/", webauthn_prompt_dismiss, name="webauthn_prompt_dismiss"),
     path("security/passkeys/<int:credential_id>/delete/", webauthn_credential_delete, name="webauthn_credential_delete"),
+    path("users/organization/<int:organization_id>/role-catalog/", department_views.role_catalog, name="staff_role_catalog"),
     path("users/organization/<int:organization_id>/departments/", department_views.departments, name="staff_departments"),
     path("users/", staff_control_views.users_directory, name="users"),
     path('users/employees/<int:employee_id>/', staff_control_views.employee_control, name='staff_employee_control'),

@@ -1,0 +1,13 @@
+{% extends 'pool_service/base.html' %}
+{% block title %}Матрица ролей Service2{% endblock %}
+{% block content %}
+<a href="{% url 'staff_departments' org.pk %}">Отделы и руководители</a>
+<h1 class="h3 mt-3">Матрица ролей Service2 · {{ org.name }}</h1>
+<p>Здесь показана целевая область каждой роли по модулям. Действующие права сотрудника на звонок и его карточки можно проверить по номеру.</p>
+<p><a href="{% url 'communication_call_access_review' org.pk %}">Проверить действующий доступ к звонку</a></p>
+<form method="get" class="mb-3"><label>Роль <select name="role" class="form-select">{% for key,name in roles.items %}<option value="{{ key }}"{% if key == selected %} selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
+<button class="btn btn-primary">Показать</button></form>
+<div class="table-responsive card p-3"><table class="table align-middle"><thead><tr><th>Раздел</th><th>Действие</th><th>Область</th><th>Условие</th></tr></thead><tbody>
+{% for row in rows %}<tr><td>{{ row.module }}</td><td>{{ row.operation }}</td><td>{{ row.scope }}</td><td>{{ row.condition }}</td></tr>{% endfor %}
+</tbody></table></div>
+{% endblock %}
