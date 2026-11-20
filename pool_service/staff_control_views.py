@@ -219,7 +219,15 @@ def call_context(request, call_id):
             return redirect('communication_call_context', call_id=call.pk)
         except (ValueError, ValidationError) as exc:
             messages.error(request, ' '.join(exc.messages) if isinstance(exc, ValidationError) else 'Выберите одну карточку.')
-    return _response(request, 'pool_service/call_work_context.html', {'call': call, 'context': context,
+    listeners = None
+    if request.method == "GET" and request.GET.get("access") == "1":
+        from .services.call_access import can_access_call_content
+        members = User.objects.filter(is_active=True, organizationaccess__organization=call.organization,
+            communication_accesses__organization=call.organization, communication_accesses__can_listen_calls=True
+        ).distinct().order_by("last_name", "first_name", "pk")
+        listeners = [member.get_full_name() or member.username for member in members
+            if can_access_call_content(member, call)]
+    return _response(request, 'pool_service/call_work_context.html', {'call': call, 'context': context, 'listeners': listeners,
         'leads': leads_for_user(request.user, call.organization).filter(is_archived=False).order_by('-pk'),
         'deals': deals_for_user(request.user, call.organization).filter(is_archived=False).order_by('-pk')})
 

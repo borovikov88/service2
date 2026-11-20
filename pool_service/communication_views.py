@@ -107,22 +107,13 @@ def _is_manual_recording_call(call):
 
 
 def _authorize_call_access(request, call):
-    from .services.call_access import can_read_call
     access = organization_access(request.user, call.organization)
     if not access:
         raise PermissionDenied
     if is_private_call(call):
         raise Http404
-    if not can_read_call(request.user, call, media=True):
-        raise PermissionDenied
-    if _is_manual_recording_call(call):
-        if not (
-            access.role in {"owner", "admin"}
-            or request.user.is_superuser
-        ):
-            raise PermissionDenied
-        return access.organization
-    if not conversation_capability(request.user, "can_listen_calls", access.organization):
+    from .services.call_access import can_access_call_content
+    if not can_access_call_content(request.user, call):
         raise PermissionDenied
     return access.organization
 

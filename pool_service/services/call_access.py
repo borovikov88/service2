@@ -133,6 +133,17 @@ def can_read_call(user, call, *, media=False, assignment_subject=None):
                             assignment_subject=assignment_subject).exists())
 
 
+def can_access_call_content(user, call):
+    """Effective content permission shared by the file endpoint and owner preview."""
+    from pool_service.communication_services import conversation_capability, organization_access
+    if not can_read_call(user, call, media=True):
+        return False
+    if call.source_kind == PhoneCall.SOURCE_UPLOADED:
+        access = organization_access(user, call.organization)
+        return bool(access and (access.role in {"owner", "admin"} or user.is_superuser))
+    return conversation_capability(user, "can_listen_calls", call.organization)
+
+
 @transaction.atomic
 def set_work_context(*, actor, call_id, lead_id=None, deal_id=None, revision=0):
     peek = PhoneCall.objects.get(pk=call_id)
