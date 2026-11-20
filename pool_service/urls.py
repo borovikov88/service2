@@ -7,7 +7,7 @@ from . import crm_order_views
 from . import crm_communication_views
 from . import crm_assignment_views
 from django.urls import path
-from . import staff_control_views
+from . import department_views, staff_control_views
 from .views import (
     home,
     pool_list,
@@ -388,6 +388,7 @@ urlpatterns = [
     path("security/passkeys/authenticate/verify/", webauthn_authentication_verify, name="webauthn_authentication_verify"),
     path("security/passkeys/prompt/dismiss/", webauthn_prompt_dismiss, name="webauthn_prompt_dismiss"),
     path("security/passkeys/<int:credential_id>/delete/", webauthn_credential_delete, name="webauthn_credential_delete"),
+    path("users/organization/<int:organization_id>/departments/", department_views.departments, name="staff_departments"),
     path("users/", staff_control_views.users_directory, name="users"),
     path('users/employees/<int:employee_id>/', staff_control_views.employee_control, name='staff_employee_control'),
     path('users/accounts/<int:org_id>/<int:user_id>/', staff_control_views.account_kind, name='staff_account_kind'),

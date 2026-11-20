@@ -65,7 +65,9 @@ def users_directory(request):
         row['can_manage_roles'] = bool(row.get('access_id') and user and user.pk != request.user.pk
             and 'owner' not in row.get('role_codes', []) and not request.user.is_superuser
             and manages_staff(request.user, row['organization']) and (not employee or employee.is_active))
+    from .services.call_processing_settings import settings_allowed
     return _response(request, 'pool_service/staff_directory.html', {
+        'structure_orgs': [org for org in orgs if settings_allowed(request.user, org)],
         'rows': sorted(rows.values(), key=lambda r: (r['organization'].name, r['name'])),
         'invites': OrganizationInvite.objects.filter(organization__in=orgs, accepted_at__isnull=True).select_related('organization'),
         'pool_staff': PoolAccess.objects.filter(pool__organization__in=orgs).select_related('user', 'pool'),

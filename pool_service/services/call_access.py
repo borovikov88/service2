@@ -117,14 +117,22 @@ def scope_calls(user, organization, queryset=None, *, media=False, assignment_su
             intake_scope__namespace="")
     owners = OrganizationAccess.objects.filter(organization=organization, role='owner').values('user_id')
     owner_call = Q(owner_user_snapshot__isnull=False) | Q(employee_id__in=owners) | Q(peer_employee_id__in=owners) | Q(employee_id__isnull=True)
+    from pool_service.staff_structure_models import DepartmentAssignment
+    historical_heads = DepartmentAssignment.objects.filter(department__organization=organization,
+        employee__organization=organization, position='sales_head', valid_from__lte=OuterRef('intake_received_at')).filter(
+        Q(user_at_assignment_id=OuterRef('employee_id')) | Q(user_at_assignment_id=OuterRef('peer_employee_id')))
+    qs = qs.alias(_possible_undated_head=Exists(historical_heads))
+    head_call = Q(sales_head_user_snapshot__isnull=False) | Q(intake_scope__isnull=False,
+        intake_occurred_at__isnull=True) & (Q(_possible_undated_head=True) | Q(undated_sales_head__isnull=False))
     participants = Q(employee_id=user.pk) | Q(peer_employee_id=user.pk)
     base = Q() if grant.can_view_all_calls else participants
-    # Owner conversations require responsibility even when the caller has all-calls.
+    ordinary = ~owner_call & (~head_call | (Q(sales_head_user_snapshot=user.pk) & participants)) & base
+    # Conversations of a director or head of sales require a primary assignment.
     internal = Q(direction=PhoneCall.DIRECTION_INTERNAL) & (
         Q(classification_evidence={}) | Q(classification_evidence__kind='internal'))
     confirmed_primary = Q(employee_id=user.pk, employee_profile__user_id=user.pk,
         classification_evidence__primary_assignment__isnull=False)
-    return qs.filter((Q(internal_contact_number__isnull=True) & ~Q(direction=PhoneCall.DIRECTION_INTERNAL) & ((~owner_call & base) | delegated))
+    return qs.filter((Q(internal_contact_number__isnull=True) & ~Q(direction=PhoneCall.DIRECTION_INTERNAL) & (ordinary | delegated))
                      | (Q(internal_contact_number__isnull=False, internal_number_pending=False) & confirmed_primary)
                      | (internal & participants & Q(internal_number_pending=False)))
 

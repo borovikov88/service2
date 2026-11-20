@@ -6,7 +6,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
-from django.db.models import Q
+from django.db.models import Case, OuterRef, PositiveBigIntegerField, Q, Subquery, When
 from django.db.models.functions import Coalesce
 from django.db.models import Value
 from django.utils import timezone
@@ -247,6 +247,9 @@ def map_employee_service2_user(employee, user, actor):
                 f"Этот аккаунт Service2 уже связан с сотрудником «{conflict.display_name}»."
             )
         locked = Employee.objects.select_for_update().get(pk=employee.pk)
+        from pool_service.staff_structure_models import DepartmentAssignment
+        if locked.user_id != user.pk and DepartmentAssignment.objects.filter(employee=locked, valid_to__isnull=True).exists():
+            raise EmployeeIdentitySyncError("Для смены учётной записи сначала завершите назначение сотрудника в отдел.")
         before = {"user_id": locked.user_id}
         locked.user = user
         locked.save(update_fields=["user", "updated_at"])
@@ -550,11 +553,29 @@ def _read_megafon_accounts(telephony):
     return provider, accounts
 
 
-def _call_owner_snapshot(employee):
+def _call_leadership_snapshots(employee):
+    from pool_service.staff_structure_models import DepartmentAssignment
+    periods = DepartmentAssignment.objects.filter(department__organization_id=employee.organization_id,
+        employee=employee, position='sales_head')
+    snapshots = {}
+    if periods.exists():
+        dated = periods.filter(valid_from__lte=OuterRef('started_at')).filter(
+            Q(valid_to__isnull=True) | Q(valid_to__gt=OuterRef('started_at')))
+        # Indeterminate provider time stays protected through later remapping.
+        unknown = periods.filter(valid_from__lte=OuterRef('intake_received_at'))
+        unknown_time = Q(intake_scope__isnull=False, intake_occurred_at__isnull=True)
+        head = Case(When(unknown_time, then=Value(None)),
+            default=Subquery(dated.order_by('-valid_from').values('user_at_assignment_id')[:1]),
+            output_field=PositiveBigIntegerField())
+        candidate = Case(When(unknown_time, then=Subquery(unknown.order_by('-valid_from').values('user_at_assignment_id')[:1])),
+            output_field=PositiveBigIntegerField())
+        snapshots['sales_head_user_snapshot'] = Coalesce('sales_head_user_snapshot', head)
+        snapshots['undated_sales_head'] = Coalesce('undated_sales_head', candidate)
+
     if employee.user_id and OrganizationAccess.objects.filter(
             organization=employee.organization, user_id=employee.user_id, role='owner').exists():
-        return {'owner_user_snapshot': Coalesce('owner_user_snapshot', Value(employee.user_id))}
-    return {}
+        snapshots['owner_user_snapshot'] = Coalesce('owner_user_snapshot', Value(employee.user_id))
+    return snapshots
 
 
 def apply_telephony_identity_to_calls(
@@ -566,7 +587,7 @@ def apply_telephony_identity_to_calls(
     if not identity.employee_id or identity.requires_manual_confirmation:
         return 0
     employee = identity.employee
-    owner_snapshot = _call_owner_snapshot(employee)
+    owner_snapshot = _call_leadership_snapshots(employee)
     # Current ATS identity is not historical proof for an internal party.
     # New internal ingestion uses dated assignments; legacy parties stay fixed.
     base = PhoneCall.objects.filter(
@@ -646,7 +667,7 @@ def backfill_employee_calls(
     exclude_telephony_identity_id=None,
 ):
     total = 0
-    owner_snapshot = _call_owner_snapshot(employee)
+    owner_snapshot = _call_leadership_snapshots(employee)
     if previous_user_id and previous_user_id != employee.user_id:
         total += PhoneCall.objects.filter(
             organization=employee.organization,

@@ -116,6 +116,10 @@ def dismiss_employee(*, actor, employee_id, expected_updated_at, dismissed_at=No
     ended_at = timezone.now()
     if dismissed_at:
         ended_at = min(ended_at, timezone.make_aware(datetime.combine(dismissed_at + timedelta(days=1), time.min)))
+    from pool_service.staff_structure_models import DepartmentAssignment
+    from django.db.models.functions import Greatest
+    DepartmentAssignment.objects.filter(employee=employee, department__organization=org, valid_to__isnull=True).update(
+        valid_to=Greatest('valid_from', ended_at), ended_by=actor)
     EmployeeTelephoneAssignment.objects.filter(employee=employee, revoked_at__isnull=True).update(revoked_at=ended_at)
     EmployeeTelephoneAssignment.objects.filter(employee=employee, valid_from__lt=ended_at).filter(
         Q(valid_to__isnull=True) | Q(valid_to__gt=ended_at)).update(valid_to=ended_at)

@@ -1,0 +1,31 @@
+{% extends 'pool_service/base.html' %}
+{% block title %}Отделы и руководители{% endblock %}
+{% block content %}
+<a href="{% url 'users' %}">Сотрудники и доступ</a>
+<h1 class="h3 mt-3">Отделы и руководители · {{ org.name }}</h1>
+<p>Назначения фиксируют подчинённость и период работы в отделе. Для клиентских звонков назначенного РОПа применяется защита разговоров руководителя. Остальные права выдаются действующими настройками модулей.</p>
+{% if error %}<div role="alert" class="alert alert-warning">{{ error }}</div>{% endif %}
+<div class="card p-3 mb-3"><h2 class="h5">Структура организации</h2>
+<div class="table-responsive"><table class="table"><thead><tr><th>Отдел</th><th>Вышестоящий отдел</th><th>Руководитель отдела продаж</th></tr></thead>
+<tbody>{% for unit in units %}<tr><td>{{ unit.name }}</td><td>{{ unit.parent.name|default:"—" }}</td><td>{{ unit.head.display_name|default:"Вакантно" }}</td></tr>{% empty %}<tr><td colspan="3">Отделы пока не созданы. РОП не назначен.</td></tr>{% endfor %}</tbody></table></div>
+<form method="post" class="d-flex flex-wrap gap-2 align-items-end">{% csrf_token %}<input type="hidden" name="action" value="create">
+<label>Новый отдел<input class="form-control" name="name" maxlength="100" required></label>
+<label>Вышестоящий отдел<select class="form-select" name="parent"><option value="">Уровень организации</option>{% for unit in units %}<option value="{{ unit.pk }}">{{ unit.name }}</option>{% endfor %}</select></label>
+<button class="btn btn-primary">Создать отдел</button></form></div>
+{% if units %}<div class="card p-3 mb-3"><h2 class="h5">Назначить в отдел</h2>
+{% if people %}<form method="post" class="d-flex flex-wrap gap-2 align-items-end">{% csrf_token %}<input type="hidden" name="action" value="assign">
+<label>Сотрудник<select class="form-select" name="employee" required>{% for person in people %}<option value="{{ person.pk }}">{{ person.display_name }}</option>{% endfor %}</select></label>
+<label>Отдел<select class="form-select" name="department" required>{% for unit in units %}<option value="{{ unit.pk }}">{{ unit.name }}</option>{% endfor %}</select></label>
+<label>Должность<select class="form-select" name="position">{% for value, label in positions %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></label>
+<label><input type="checkbox" name="children" value="1"> Включить подотделы в область РОПа</label>
+<button class="btn btn-primary">Назначить с текущего момента</button></form>
+{% else %}<p>Нет свободных сотрудников с подтверждённой учётной записью и доступом в эту организацию.</p>{% endif %}</div>{% endif %}
+<div class="card p-3"><h2 class="h5">История назначений</h2>
+<div class="table-responsive"><table class="table"><thead><tr><th>Сотрудник</th><th>Отдел и должность</th><th>Период</th><th>Действие</th></tr></thead>
+<tbody>{% for item in history %}<tr><td>{{ item.employee.display_name }}</td><td>{{ item.department.name }} · {{ item.get_position_display }}{% if item.includes_children %} с подотделами{% endif %}</td>
+<td>{{ item.valid_from|date:"d.m.Y H:i" }} — {{ item.valid_to|date:"d.m.Y H:i"|default:"сейчас" }}</td><td>{% if not item.valid_to %}
+<form method="post">{% csrf_token %}<input type="hidden" name="action" value="end"><input type="hidden" name="assignment" value="{{ item.pk }}">
+<label><input type="checkbox" name="keep_cards" value="1" required> Оставить карточки у текущих ответственных</label>
+<button class="btn btn-sm btn-outline-secondary">Завершить назначение</button></form>{% endif %}</td></tr>{% empty %}<tr><td colspan="4">Назначений нет.</td></tr>{% endfor %}</tbody></table></div>
+<nav>{% if history.has_previous %}<a href="?page={{ history.previous_page_number }}">Предыдущая страница</a>{% endif %} {% if history.has_next %}<a href="?page={{ history.next_page_number }}">Следующая страница</a>{% endif %}</nav></div>
+{% endblock %}
