@@ -501,6 +501,9 @@ class TelephonyEmployeeIdentity(models.Model):
 
 
 class PhoneCall(models.Model):
+    internal_number_pending = models.BooleanField(default=False, editable=False)
+    internal_contact_number = models.ForeignKey('pool_service.InternalContactNumber', on_delete=models.PROTECT,
+        null=True, blank=True, editable=False)
     privacy_phone_key = models.CharField(max_length=16, blank=True, editable=False, db_index=True)
     privacy_phone_source = models.CharField(max_length=40, blank=True, editable=False)
     owner_user_snapshot = models.PositiveBigIntegerField(null=True, blank=True, editable=False)
@@ -628,10 +631,12 @@ class PhoneCall(models.Model):
             from .services.staff_call_identity import initialize_call_identity
             initialize_call_identity(self)
         elif self.pk and self.source_kind == self.SOURCE_TELEPHONY:
-            old = type(self).objects.filter(pk=self.pk).only('owner_user_snapshot', 'classification_evidence',
+            old = type(self).objects.filter(pk=self.pk).only('owner_user_snapshot', 'classification_evidence', 'internal_contact_number_id', 'internal_number_pending',
                 'direction', 'phone_number', 'provider_user', 'provider_extension', 'peer_provider_user', 'peer_provider_extension',
                 'employee_id', 'employee_profile_id', 'peer_employee_id', 'peer_employee_profile_id').first()
             if old:
+                self.internal_contact_number_id = old.internal_contact_number_id
+                self.internal_number_pending = old.internal_number_pending
                 self.owner_user_snapshot = old.owner_user_snapshot or self.owner_user_snapshot
                 evidence = old.classification_evidence if isinstance(old.classification_evidence, dict) else {}
                 if evidence.get('primary_assignment') or evidence.get('assignments'):

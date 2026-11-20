@@ -458,7 +458,7 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
     # Re-check privacy after the queue claim and immediately before any
     # external AI request. A number may have been marked personal after the
     # job was queued.
-    if is_private_call(call):
+    if call.internal_contact_number_id or is_private_call(call):
         CallAnalysis.objects.filter(
             pk=analysis.pk,
             status=CallAnalysis.STATUS_PROCESSING,
@@ -507,7 +507,7 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
                 _setting("OPENAI_CALL_TRANSCRIPTION_TIMEOUT_SECONDS", 300)
             )
             with locked_call_for_privacy(call.id) as current_call:
-                if current_call is None or is_private_call(current_call):
+                if current_call is None or current_call.internal_contact_number_id or is_private_call(current_call):
                     release_stage(active_usage_id, error_code="private_call")
                     active_usage_id = None
                     _pause_for_budget(analysis, token, "")
@@ -539,7 +539,7 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
 
         # Recheck privacy after transcription too: an owner can add a personal
         # number while the first external request is in flight.
-        if is_private_call(call):
+        if call.internal_contact_number_id or is_private_call(call):
             _pause_for_budget(analysis, token, "")
             return False
 
@@ -567,7 +567,7 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
         active_stage = CallProcessingUsage.STAGE_ANALYSIS
 
         with locked_call_for_privacy(call.id) as current_call:
-            if current_call is None or is_private_call(current_call):
+            if current_call is None or current_call.internal_contact_number_id or is_private_call(current_call):
                 release_stage(active_usage_id, error_code="private_call")
                 active_usage_id = None
                 _pause_for_budget(analysis, token, "")
@@ -735,7 +735,7 @@ def request_call_analysis(call_id, *, allow_reanalysis=True):
         )
         if call is None:
             return False
-        if is_private_call(call):
+        if call.internal_contact_number_id or is_private_call(call):
             return False
 
         analysis, _ = CallAnalysis.objects.select_for_update().get_or_create(call=call)

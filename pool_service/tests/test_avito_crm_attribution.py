@@ -168,6 +168,19 @@ class CrmAttributionTests(TestCase):
             self.save(ad_mode="manual", manual_ad_id="foreign-ad", expected_revision=1)
         self.assertEqual(CrmSourceLink.objects.get().revision, 1)
 
+    def test_confirmed_internal_number_is_not_a_commercial_call_source(self):
+        from pool_service.models import Client
+        from pool_service.staff_call_models import InternalContactNumber
+        internal = Client.objects.create(organization=self.org, name="Internal directory person")
+        rule = InternalContactNumber.objects.create(organization=self.org, contact=internal,
+            confirmed_by=self.manager, phone_key="9001112222")
+        call = self.make_call()
+        PhoneCall.objects.filter(pk=call.pk).update(internal_contact_number=rule)
+        with self.assertRaises(PermissionDenied):
+            links.save_link(self.manager, 4, "call", call.pk, item_id=self.item.pk,
+                operation=uuid.uuid4(), call_origin="manual")
+        self.assertFalse(CrmSourceLink.objects.exists())
+
     @patch("pool_service.services.call_privacy.is_private_call")
     def test_call_quality_does_not_silently_become_an_avito_inquiry_and_privacy_is_current(self, private):
         private.return_value = False

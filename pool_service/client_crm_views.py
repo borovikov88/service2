@@ -180,6 +180,19 @@ def client_detail(request, client_id):
                 return HttpResponse("Проверьте данные и обновите карточку перед повтором.", status=409)
             return redirect(card_url(client.pk, "contacts"))
 
+        if action == "set_internal_call_numbers":
+            from .services.internal_contact_numbers import confirm_internal_numbers
+            from django.core.exceptions import PermissionDenied, ValidationError
+            from django.http import HttpResponse
+            try:
+                confirm_internal_numbers(request.user, client.pk, enabled=request.POST.get("enabled"),
+                    revision=request.POST.get("internal_revision"))
+            except PermissionDenied:
+                return HttpResponseForbidden()
+            except ValidationError as error:
+                return HttpResponse(" ".join(error.messages), status=409, content_type="text/plain")
+            return redirect(card_url(client.pk, "contacts"))
+
         if action == "set_personal_call_peer":
             from .services.owner_call_privacy import set_personal_peer
             from django.core.exceptions import PermissionDenied, ValidationError
@@ -543,6 +556,8 @@ def client_detail(request, client_id):
     from .services.crm_recurring_effective import attach_terms
     attach_terms(pools, timezone.localdate(), timezone.localdate())
     personal_call_state = contact_state(request.user, client) if client.client_type == "private" and settings_allowed(request.user, client.organization) else None
+    from .services.internal_contact_numbers import internal_state
+    internal_numbers = internal_state(client) if settings_allowed(request.user, client.organization) else None
     roles_by_code = {role.role: role for role in ClientBusinessRole.objects.filter(client=client)}
     contact_roles = [{"code": code, "label": label,
         "active": bool(roles_by_code.get(code) and roles_by_code[code].active),
@@ -565,6 +580,7 @@ def client_detail(request, client_id):
             "merge_history": client.merge_records.select_related("actor").order_by("-created_at")[:10] if can_manage else [],
             "person_user_link": OrganizationPersonLink.objects.filter(person=client, organization_id=client.organization_id).select_related("user", "employee").first() if can_manage else None,
             "personal_call_state": personal_call_state,
+            "internal_numbers": internal_numbers,
             "emails": emails,
             "relationship_links": relationship_links,
             "relationship_mode": relationship_mode,

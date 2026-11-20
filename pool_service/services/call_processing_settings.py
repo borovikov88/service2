@@ -25,6 +25,7 @@ STAFF_ROLES = frozenset({"owner", "admin", "manager", "service", "installer"})
 PREVIEW_LIMIT = 500
 REASONS = {
     "personal": "Личное — исключено",
+    "internal_contact": "Подтверждённый внутренний номер — исключено",
     "manual_upload": "Загруженный файл — только вручную",
     "direction_unknown": "Не определено направление",
     "mapping_required": "Требуется сопоставление сотрудника и линии",
@@ -45,10 +46,12 @@ REASONS = {
 
 
 def settings_allowed(user, organization):
+    from pool_service.staff_call_models import StaffAccount
     return bool(
         user and user.is_authenticated
         and User.objects.filter(pk=user.pk, is_active=True, is_superuser=False).exists()
-        and organization and OrganizationAccess.objects.filter(
+        and organization and not StaffAccount.objects.filter(user_id=user.pk, organization=organization, kind__in=("service", "system")).exists()
+        and OrganizationAccess.objects.filter(
             organization=organization, user=user, role="owner",
         ).exists()
         and not Employee.objects.filter(organization=organization, user_id=user.pk).filter(
@@ -66,6 +69,9 @@ def _lock_owner(user, organization):
         organization=organization, user_id=user.pk,
     ).order_by("pk").values_list("role", flat=True))
     if not actor or not actor.is_active or actor.is_superuser or "owner" not in roles:
+        raise PermissionDenied
+    from pool_service.staff_call_models import StaffAccount
+    if StaffAccount.objects.select_for_update().filter(organization=organization, user=actor, kind__in=("service", "system")).exists():
         raise PermissionDenied
     if Employee.objects.select_for_update().filter(organization=organization, user_id=actor.pk).filter(
             Q(is_active=False) | Q(employment_status='dismissed')).exists():
@@ -200,6 +206,8 @@ def runtime_decision_for_call(call):
     from .call_privacy import is_private_call
     if is_private_call(call):
         return Decision('exclude', 'personal')
+    if call.internal_contact_number_id:
+        return Decision('exclude', 'internal_contact')
     participants = tuple(
         dict.fromkeys(
             uid for uid in (call.employee_id, call.peer_employee_id) if uid
@@ -474,7 +482,7 @@ This simulates future rules against history; it does not request processing.
     calls = list(queryset.values(
         "id", "organization_id", "connection_id", "employee_id", "peer_employee_id", "owner_user_snapshot",
         "provider_extension", "provider_user", "peer_provider_extension", "peer_provider_user",
-        "phone_number", "direction", "started_at", "duration_seconds", "result",
+        "phone_number", "direction", "internal_contact_number_id", "started_at", "duration_seconds", "result",
         "recording_status", "recording_file", "analysis__status", "saved_text",
     )[:PREVIEW_LIMIT + 1])
     from .call_privacy import private_call_owner_pairs
@@ -518,7 +526,8 @@ This simulates future rules against history; it does not request processing.
             audio_ready=row["recording_status"] == PhoneCall.RECORDING_STORED and bool(row["recording_file"]),
             analysis_status=row["analysis__status"] or "", saved_transcript=row["saved_text"],
         )
-        decision = decide_call(facts, rules, {}, simulation=True)
+        decision = (Decision("exclude", "internal_contact") if row["internal_contact_number_id"]
+            else decide_call(facts, rules, {}, simulation=True))
         if decision.selected:
             selected_count += 1
             selected_seconds += row["duration_seconds"]

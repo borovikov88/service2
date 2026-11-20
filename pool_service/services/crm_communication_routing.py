@@ -116,7 +116,7 @@ def assign_route(*, user, organization, route_id, deal_id, revision, remember_di
         raise PermissionDenied
     proof = peek.inbox
     org, source, error = _locked_source(proof.source_type, proof.source_id, proof.channel_id_snapshot, organization.pk)
-    if error or not source or not org:
+    if error or not source or not org or (proof.source_type == 'call' and source.internal_contact_number_id):
         raise PermissionDenied
     user = _authorize("default", user.pk, org, "edit_own_deals")
     route = readable_routes(user, org).select_for_update().filter(pk=route_id).first()

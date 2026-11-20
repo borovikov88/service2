@@ -84,7 +84,7 @@ def resolved_calls_for_client(queryset, client):
     Call rows are not updated by a GET request. Internal calls remain employee
     conversations, not CRM history, even if their number resembles a client.
     """
-    queryset = queryset.filter(organization_id=client.organization_id).exclude(
+    queryset = queryset.filter(organization_id=client.organization_id, internal_contact_number__isnull=True).exclude(
         direction=PhoneCall.DIRECTION_INTERNAL,
     )
     keys = {normalize_phone(client.phone)}
@@ -188,15 +188,15 @@ def _decorate_calls(rows, request, organization, source_kind):
     owner_controls = settings_allowed(request.user, organization)
     phone_matches = clients_by_phones(organization, [
         call.phone_number for call in rows
-        if not call.client_id and call.direction != PhoneCall.DIRECTION_INTERNAL
+        if not call.client_id and not call.internal_contact_number_id and call.direction != PhoneCall.DIRECTION_INTERNAL
     ])
     create_allowed = _can_create(request.user, organization)
     token = _return_token(request, organization, source_kind) if create_allowed else ""
     for call in rows:
-        call.primary_context_url = reverse('communication_call_context', args=[call.pk]) if owner_controls and call.direction != 'internal' else ''
+        call.primary_context_url = reverse('communication_call_context', args=[call.pk]) if owner_controls and not call.internal_contact_number_id and call.direction != 'internal' else ''
         call.phone_display = format_phone(call.phone_number)
         call.create_client_url = ""
-        if call.direction == PhoneCall.DIRECTION_INTERNAL:
+        if call.internal_contact_number_id or call.direction == PhoneCall.DIRECTION_INTERNAL:
             call.resolved_client = None
             call.ambiguous_clients = []
             continue
@@ -320,7 +320,7 @@ def _visible_call(request, call_id, *, lock=False):
     if not can_read_call(request.user, call):
         raise PermissionDenied
     organization, view_all = _scope(request.user, call.source_kind, call.organization)
-    if call.direction == PhoneCall.DIRECTION_INTERNAL:
+    if call.internal_contact_number_id or call.direction == PhoneCall.DIRECTION_INTERNAL:
         raise PermissionDenied
     if not _can_create(request.user, organization):
         raise PermissionDenied

@@ -3,12 +3,16 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.core.paginator import Paginator
 from django.shortcuts import redirect, render
 from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_http_methods
 
-from pool_service.models import OrganizationAccess
+from pool_service.client_crm_models import ClientBusinessRole
+from pool_service.client_queries import active_clients
+from pool_service.models import Client, OrganizationAccess
+from pool_service.staff_call_models import InternalContactNumber
 from pool_service.call_processing_models import (
     CallProcessingBudget,
     CallProcessingRule,
@@ -169,6 +173,14 @@ def call_processing_settings(request):
                     messages.success(request, "Личный номер сохранён. Совпадающие ваши звонки скрываются из рабочих разделов сразу; авторасшифровка по общим правилам всё ещё выключена.")
                     return redirect("call_processing_settings")
                 status = 400
+            elif action == "end_internal_rule":
+                from pool_service.services.internal_contact_numbers import end_internal_rule
+                try:
+                    number_id = int(request.POST.get("number_id", ""))
+                except (TypeError, ValueError):
+                    raise ValidationError("Обновите список номеров.")
+                end_internal_rule(request.user, organization, number_id)
+                return redirect("call_processing_settings")
             elif action == "remove_private":
                 try:
                     number_id = int(request.POST.get("number_id", ""))
@@ -187,6 +199,11 @@ def call_processing_settings(request):
         "page_title": "Автообработка звонков", "active_tab": "communications",
         "can_manage_communication_channels": True,
         "rule_rows": _rule_rows(organization, request.user, bound_rule),
+        "directory_review": Paginator(ClientBusinessRole.objects.filter(client__in=active_clients(
+            Client.objects.filter(organization=organization)), role__in=("personal", "internal"), active=True
+            ).select_related("client").order_by("client__name", "client_id", "role"), 25).get_page(request.GET.get("directory_page")),
+        "internal_rules": Paginator(InternalContactNumber.objects.filter(organization=organization,
+            valid_to__isnull=True).select_related("contact").order_by("contact__name", "pk"), 25).get_page(request.GET.get("rules_page")),
         "private_form": private_form, "budget_form": budget_form,
         "usage": usage_summary(organization),
         "errors": errors, "preview": preview,

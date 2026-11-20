@@ -85,9 +85,9 @@ def consume_incoming(event, source, operation_identity):
         return "private_ignored"
     if event.source_type == "call":
         classification = source.classification_evidence if isinstance(source.classification_evidence, dict) else {}
-        if classification.get("kind") == "review":
+        if source.internal_number_pending or classification.get("kind") == "review":
             return "classification_pending"
-        if source.direction == PhoneCall.DIRECTION_INTERNAL or classification.get("kind") == "internal":
+        if source.internal_contact_number_id or source.direction == PhoneCall.DIRECTION_INTERNAL or classification.get("kind") == "internal":
             return "internal_ignored"
     existing = CrmLeadSource.objects.select_for_update().filter(inbox=event).first()
     if existing:
