@@ -129,3 +129,13 @@ class InternalContactNumbersTests(LeadIntakeFixture, TestCase):
         self.assertIsNone(call.internal_contact_number_id)
         self.assertFalse(call.internal_number_pending)
         self.assertIn(self.deliver('call').error_code, ('lead_created', 'needs_distribution'))
+
+    def test_replay_of_a_legacy_provider_call_without_intake_receipt(self):
+        self.megafon()
+        call = PhoneCall.objects.create(organization=self.org, connection=self.telephony,
+            external_id=self.call_data['callid'], direction='in', phone_number=self.call_data['phone'],
+            employee=self.user, employee_profile=self.employee, started_at=self.now)
+        self.assertEqual(self.history(user='synthetic-provider', ext='101').status_code, 200)
+        call.refresh_from_db()
+        self.assertIsNone(call.intake_received_at)
+        self.assertIsNone(call.undated_sales_head)

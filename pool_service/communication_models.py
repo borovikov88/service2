@@ -506,6 +506,8 @@ class PhoneCall(models.Model):
         null=True, blank=True, editable=False)
     privacy_phone_key = models.CharField(max_length=16, blank=True, editable=False, db_index=True)
     privacy_phone_source = models.CharField(max_length=40, blank=True, editable=False)
+    undated_sales_head = models.PositiveBigIntegerField(null=True, blank=True, editable=False)
+    sales_head_user_snapshot = models.PositiveBigIntegerField(null=True, blank=True, editable=False)
     owner_user_snapshot = models.PositiveBigIntegerField(null=True, blank=True, editable=False)
     classification_evidence = models.JSONField(default=dict, blank=True, editable=False)
     intake_revision_historical = models.BooleanField(default=True, editable=False)
@@ -631,12 +633,14 @@ class PhoneCall(models.Model):
             from .services.staff_call_identity import initialize_call_identity
             initialize_call_identity(self)
         elif self.pk and self.source_kind == self.SOURCE_TELEPHONY:
-            old = type(self).objects.filter(pk=self.pk).only('owner_user_snapshot', 'classification_evidence', 'internal_contact_number_id', 'internal_number_pending',
+            old = type(self).objects.filter(pk=self.pk).only('owner_user_snapshot', 'sales_head_user_snapshot', 'undated_sales_head', 'classification_evidence', 'internal_contact_number_id', 'internal_number_pending',
                 'direction', 'phone_number', 'provider_user', 'provider_extension', 'peer_provider_user', 'peer_provider_extension',
                 'employee_id', 'employee_profile_id', 'peer_employee_id', 'peer_employee_profile_id').first()
             if old:
                 self.internal_contact_number_id = old.internal_contact_number_id
                 self.internal_number_pending = old.internal_number_pending
+                self.undated_sales_head = old.undated_sales_head
+                self.sales_head_user_snapshot = old.sales_head_user_snapshot
                 self.owner_user_snapshot = old.owner_user_snapshot or self.owner_user_snapshot
                 evidence = old.classification_evidence if isinstance(old.classification_evidence, dict) else {}
                 if evidence.get('primary_assignment') or evidence.get('assignments'):
@@ -659,6 +663,11 @@ class PhoneCall(models.Model):
                         role='owner', user_id__in=[self.employee_id, self.peer_employee_id]).values_list('user_id', flat=True).first()
                 if kwargs.get('update_fields'):
                     kwargs['update_fields'] = set(kwargs['update_fields']) | {'owner_user_snapshot', 'classification_evidence', 'direction', 'client'}
+        if self.source_kind == self.SOURCE_TELEPHONY and self.sales_head_user_snapshot is None:
+            from .services.department_structure import sales_head_at
+            self.sales_head_user_snapshot = sales_head_at(self)
+            if self.sales_head_user_snapshot and kwargs.get('update_fields'):
+                kwargs['update_fields'] = set(kwargs['update_fields']) | {'sales_head_user_snapshot'}
         from .services.call_processing_policy import phone_key
         self.privacy_phone_source = self.phone_number or ''
         self.privacy_phone_key = phone_key(self.privacy_phone_source)

@@ -1,0 +1,27 @@
+{% extends 'pool_service/base.html' %}
+{% block title %}Проверка доступа к звонку{% endblock %}
+{% block content %}
+<h1 class="h3">Проверка доступа к звонку · {{ org.name }}</h1>
+<p>Укажите внешний номер АТС и сотрудника, чтобы проверить доступ к связанным рабочим карточкам и содержанию входящих и исходящих звонков. Проверка не запускает воспроизведение.</p>
+<form method="post" class="card p-3 mb-3">{% csrf_token %}
+  {{ form.non_field_errors }}
+  <div class="d-flex flex-wrap align-items-end gap-3"><label>{{ form.phone.label }} {{ form.phone }} {{ form.phone.errors }}</label>
+  <label>{{ form.employee.label }} {{ form.employee }} {{ form.employee.errors }}</label>
+  <button class="btn btn-primary">Проверить</button></div></form>
+{% if checked %}
+<div class="card p-3 mb-3"><h2 class="h5">Совпадения в справочнике</h2>
+<ul>{% for contact in contacts %}<li><a href="{% url 'client_detail' contact.id %}?tab=contacts">{{ contact.name }}</a> · {{ contact.roles|default:"Категория не указана" }}</li>
+{% empty %}<li>Совпадений среди доступных контактов нет.</li>{% endfor %}</ul>
+{% if contacts_limited %}<small>Показаны первые 25 совпадений.</small>{% endif %}</div>
+<div class="card p-3"><h2 class="h5">Доступ сотрудника · {{ subject.get_full_name|default:subject.username }}</h2>
+<p class="small text-muted">Для каждого разговора показаны до восьми лидов и восьми сделок из доступных директору связей. Время указано по записи телефонии.</p>
+<div class="table-responsive"><table class="table"><thead><tr><th>Звонок</th><th>Классификация</th><th>Право на содержание</th><th>Аудиофайл в Service2</th><th>Связанные карточки</th></tr></thead><tbody>
+{% for row in results %}<tr><td>#{{ row.id }} · {{ row.date|date:"d.m.Y H:i" }}</td><td>{{ row.reason }}</td>
+<td>{{ row.audio_allowed|yesno:"Есть,Закрыто" }}</td><td>{{ row.file_exists|yesno:"Зарегистрирован,Нет" }}</td>
+<td>{% for card in row.cards %}<div>{{ card.kind }} #{{ card.id }} · чтение {{ card.read|yesno:"доступно,закрыто" }}{% if card.assigned %} · ответственный{% endif %}</div>
+{% empty %}Доступных для проверки связей нет.{% endfor %}</td></tr>
+{% empty %}<tr><td colspan="5">Доступных рабочих звонков в этой выборке нет.</td></tr>{% endfor %}</tbody></table></div>
+{% if next_id %}<form method="post">{% csrf_token %}<input type="hidden" name="phone" value="{{ key }}"><input type="hidden" name="employee" value="{{ subject.pk }}">
+<input type="hidden" name="before" value="{{ next_id }}"><button class="btn btn-outline-secondary">Более ранние звонки</button></form>{% endif %}
+</div>{% endif %}
+{% endblock %}

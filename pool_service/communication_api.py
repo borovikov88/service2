@@ -765,6 +765,11 @@ def megafon_webhook(request, public_id):
                 ),
             },
         )
+        if created and not has_provider_start and phone_call.sales_head_user_snapshot is not None:
+            # Until the provider supplies a timestamp, authorization consults all
+            # possible leadership periods prior to the first receipt.
+            PhoneCall.objects.filter(pk=phone_call.pk).update(sales_head_user_snapshot=None)
+            phone_call.sales_head_user_snapshot = None
         if (phone_call.internal_contact_number_id, phone_call.internal_number_pending) != (internal_rule, internal_pending):
             PhoneCall.objects.filter(pk=phone_call.pk).update(internal_contact_number_id=internal_rule,
                 internal_number_pending=internal_pending)
@@ -779,6 +784,11 @@ def megafon_webhook(request, public_id):
                 raise ValueError("inbox_source_binding_changed")
             if has_provider_start:
                 phone_call.intake_occurred_at = started_at
+        if not phone_call.intake_occurred_at and not phone_call.undated_sales_head:
+            from .services.department_structure import possible_sales_head
+            phone_call.undated_sales_head = possible_sales_head(phone_call)
+            if phone_call.undated_sales_head:
+                PhoneCall.objects.filter(pk=phone_call.pk).update(undated_sales_head=phone_call.undated_sales_head)
         phone_call.save(update_fields=["intake_scope", "intake_cutover_at", "intake_occurred_at", "intake_received_at", "intake_origin", "intake_historical", "intake_revision_historical"])
         capture_source("call", phone_call)
         _remember_megafon_recording_host(telephony, recording_ref)
