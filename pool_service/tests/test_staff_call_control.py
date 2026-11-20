@@ -50,6 +50,20 @@ class StaffCallControlTests(LeadFixture, TestCase):
         self.assertTrue(can_read_call(self.owner, call))
         self.assertEqual(scope_calls(self.user, self.org).count(), 0)
 
+    def test_owner_previews_effective_listeners_after_assignment(self):
+        call, lead = self.call(), self.create()
+        url = reverse("communication_call_context", args=[call.pk])
+        self.assertEqual(self.http.get(url, {"access": "1"}).status_code, 403)
+        self.http.force_login(self.owner)
+        set_work_context(actor=self.owner, call_id=call.pk, lead_id=lead.pk)
+        response = self.http.get(url, {"access": "1"})
+        self.assertEqual(response.status_code, 200)
+        self.assertCountEqual(response.context["listeners"], [self.owner.username, self.user.username])
+        CommunicationAccess.objects.filter(user=self.user, organization=self.org).update(can_listen_calls=False)
+        response = self.http.get(url, {"access": "1"})
+        self.assertEqual(response.context["listeners"], [self.owner.username])
+        self.assertIn("no-store", response["Cache-Control"])
+
     def test_primary_context_assignment_changes_without_stale_user_cache(self):
         call, lead = self.call(), self.create()
         set_work_context(actor=self.owner, call_id=call.pk, lead_id=lead.pk)
