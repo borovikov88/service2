@@ -112,6 +112,23 @@
   {% endif %}
   <p class="small text-muted mb-0 mt-2">Автоматический платный запуск пока выключен. Лимит уже хранится и будет проверяться атомарно перед внешним запросом после подключения запуска.</p>
 </div>
+<section class="card p-3 mb-3" id="directory">
+  <h2 class="h5">Сверка категорий справочника</h2>
+  <p>Откройте контакт, сверьте номера и подтвердите, какие разговоры следует исключать. Личную отметку устанавливает участник разговора со своей учётной записи директора.</p>
+  <ul>{% for row in directory_review %}<li><a href="{% url 'client_detail' row.client_id %}?tab=contacts">{{ row.client.name }}</a> · {{ row.get_role_display }}</li>{% empty %}<li>Контактов с личной или внутренней категорией нет.</li>{% endfor %}</ul>
+  <nav>{% if directory_review.has_previous %}<a href="?directory_page={{ directory_review.previous_page_number }}#directory">Предыдущие контакты</a>{% endif %}
+  {% if directory_review.has_next %}<a href="?directory_page={{ directory_review.next_page_number }}#directory">Следующие контакты</a>{% endif %}</nav>
+</section>
+<section class="card p-3 mb-3" id="internal">
+  <h2 class="h5">Подтверждённые внутренние номера</h2>
+  {% for rule in internal_rules %}<div class="mb-2">{{ rule.contact.name }} · {{ rule.phone_key }} · с {{ rule.valid_from|date:"d.m.Y H:i" }}
+  <form method="post" class="d-inline">{% csrf_token %}
+  <input type="hidden" name="action" value="end_internal_rule"><input type="hidden" name="number_id" value="{{ rule.pk }}">
+  <button class="btn btn-sm btn-outline-secondary">Снять для будущих звонков</button></form></div>
+  {% empty %}<p>Подтверждённых номеров нет.</p>{% endfor %}
+  <nav>{% if internal_rules.has_previous %}<a href="?rules_page={{ internal_rules.previous_page_number }}#internal">Предыдущие номера</a>{% endif %}
+  {% if internal_rules.has_next %}<a href="?rules_page={{ internal_rules.next_page_number }}#internal">Следующие номера</a>{% endif %}</nav>
+</section>
 <script>
 (() => {
   const input = document.getElementById('rule-filter');

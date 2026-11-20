@@ -662,6 +662,9 @@ def megafon_webhook(request, public_id):
             )
             .first()
         )
+        from .services.internal_contact_numbers import conflicts_with_confirmed_peer
+        if conflicts_with_confirmed_peer(connection.channel.organization, phone, existing_call):
+            return JsonResponse({"accepted": True, "ignored": True, "reason": "peer_identity_conflict"})
         from .services.owner_call_privacy import exclude_before_save
         if exclude_before_save(connection=telephony, provider_user=provider_user, extension=extension,
                 peer_phone=phone, occurred_at=started_at if has_provider_start else None, existing=existing_call):
@@ -737,6 +740,9 @@ def megafon_webhook(request, public_id):
                 or (existing_call.client.name if existing_call.client else "")
             )
 
+        from .services.internal_contact_numbers import classify_external_receipt
+        internal_rule, internal_pending = classify_external_receipt(connection.channel.organization,
+            phone, started_at if has_provider_start else None, existing_call)
         phone_call, created = PhoneCall.objects.update_or_create(
             connection=telephony,
             external_id=call_id,
@@ -759,6 +765,11 @@ def megafon_webhook(request, public_id):
                 ),
             },
         )
+        if (phone_call.internal_contact_number_id, phone_call.internal_number_pending) != (internal_rule, internal_pending):
+            PhoneCall.objects.filter(pk=phone_call.pk).update(internal_contact_number_id=internal_rule,
+                internal_number_pending=internal_pending)
+            phone_call.internal_contact_number_id = internal_rule
+            phone_call.internal_number_pending = internal_pending
         from .services.crm_inbox import capture_source, initialize_source, source_scope
         if created:
             initialize_source(phone_call, source_scope("call", phone_call, connection, telephony),

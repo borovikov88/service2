@@ -20,7 +20,7 @@ def card_origins(queryset, organization, *, kind):
     annotated = _private_call_annotations(calls)
     nonprivate = annotated.filter(_crm_private=False, _crm_held=False)
     private = annotated.filter(Q(_crm_private=True) | Q(_crm_held=True))
-    work = nonprivate.filter(_crm_key_current=True).filter(
+    work = nonprivate.filter(internal_contact_number__isnull=True, _crm_key_current=True).filter(
         Q(source_kind='uploaded') | ~Q(privacy_phone_key='')).exclude(direction='internal')
     messages = ConversationMessage.objects.filter(conversation__organization=organization)
     sources = CrmLeadSource.objects.filter(organization=organization,

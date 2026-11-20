@@ -81,3 +81,17 @@ class CallWorkContext(models.Model):
             pk = getattr(self, field.attname)
             if pk and not field.remote_field.model.objects.filter(pk=pk, organization_id=self.organization_id).exists():
                 raise ValidationError('Связь относится к другой организации.')
+
+
+class InternalContactNumber(models.Model):
+    """Confirmed peer number for commercial exclusions, independent of PBX identity."""
+    organization = models.ForeignKey('pool_service.Organization', on_delete=models.PROTECT)
+    contact = models.ForeignKey('pool_service.Client', on_delete=models.PROTECT)
+    phone_key = models.CharField(max_length=16)
+    confirmed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='+')
+    valid_from = models.DateTimeField(default=timezone.now)
+    valid_to = models.DateTimeField(null=True, blank=True)
+    ended_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, related_name='+')
+
+    class Meta:
+        indexes = [models.Index(fields=['organization', 'phone_key', 'valid_from'], name='internal_peer_at_idx')]

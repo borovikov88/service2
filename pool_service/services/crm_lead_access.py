@@ -99,7 +99,7 @@ def _private_call_annotations(queryset):
 
 def _without_private_calls(queryset):
     """Bounded source-read predicate; malformed legacy identities fail closed."""
-    return _private_call_annotations(queryset).filter(
+    return _private_call_annotations(queryset.filter(internal_contact_number__isnull=True)).filter(
         _crm_private=False, _crm_held=False, _crm_key_current=True).filter(
         Q(phone_number__regex=r'^\s*$') | ~Q(privacy_phone_key=''))
 

@@ -205,7 +205,7 @@ def call_context(request, call_id):
     from .services.crm_lead_access import leads_for_user
     from .services.crm_commercial_access import deals_for_user
     call = get_object_or_404(PhoneCall.objects.select_related('organization'), pk=call_id)
-    if not settings_allowed(request.user, call.organization) or not can_read_call(request.user, call) or call.direction == 'internal':
+    if not settings_allowed(request.user, call.organization) or not can_read_call(request.user, call) or call.internal_contact_number_id or call.direction == 'internal':
         raise PermissionDenied
     context = CallWorkContext.objects.filter(call=call).first()
     if request.method == 'POST':

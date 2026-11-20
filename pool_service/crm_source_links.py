@@ -70,7 +70,7 @@ def source_for(actor, connection, kind, identifier, *, edit=False, lock=False):
     if lock:
         query = query.select_for_update()
     source = query.filter(pk=int(identifier), organization=organization,
-        source_kind=PhoneCall.SOURCE_TELEPHONY).exclude(direction=PhoneCall.DIRECTION_INTERNAL).first()
+        source_kind=PhoneCall.SOURCE_TELEPHONY, internal_contact_number__isnull=True).exclude(direction=PhoneCall.DIRECTION_INTERNAL).first()
     all_calls = conversation_capability(actor, "can_view_all_calls", organization)
     own_calls = conversation_capability(actor, "can_view_own_calls", organization)
     from .services.call_access import can_read_call
@@ -128,7 +128,7 @@ def task_allowed(actor, task, item, organization_id):
             if type(raw) is bool or not re.fullmatch(r"[1-9][0-9]{0,17}", str(raw)):
                 return False
             call = PhoneCall.objects.select_related("connection").filter(pk=int(raw), organization_id=organization_id).first()
-            if (call is None or call.direction == PhoneCall.DIRECTION_INTERNAL
+            if (call is None or call.internal_contact_number_id or call.direction == PhoneCall.DIRECTION_INTERNAL
                     or call.source_kind == PhoneCall.SOURCE_TELEPHONY
                     and (call.connection is None or call.connection.organization_id != organization_id)):
                 return False

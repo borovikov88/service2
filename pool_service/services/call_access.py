@@ -122,8 +122,11 @@ def scope_calls(user, organization, queryset=None, *, media=False, assignment_su
     # Owner conversations require responsibility even when the caller has all-calls.
     internal = Q(direction=PhoneCall.DIRECTION_INTERNAL) & (
         Q(classification_evidence={}) | Q(classification_evidence__kind='internal'))
-    return qs.filter((~Q(direction=PhoneCall.DIRECTION_INTERNAL) & ((~owner_call & base) | delegated))
-                     | (internal & participants))
+    confirmed_primary = Q(employee_id=user.pk, employee_profile__user_id=user.pk,
+        classification_evidence__primary_assignment__isnull=False)
+    return qs.filter((Q(internal_contact_number__isnull=True) & ~Q(direction=PhoneCall.DIRECTION_INTERNAL) & ((~owner_call & base) | delegated))
+                     | (Q(internal_contact_number__isnull=False, internal_number_pending=False) & confirmed_primary)
+                     | (internal & participants & Q(internal_number_pending=False)))
 
 
 def can_read_call(user, call, *, media=False, assignment_subject=None):
@@ -154,7 +157,7 @@ def set_work_context(*, actor, call_id, lead_id=None, deal_id=None, revision=0):
     call = PhoneCall.objects.select_for_update().get(pk=call_id)
     if not can_read_call(actor, call):
         raise PermissionDenied
-    if is_private_call(call) or call.direction == 'internal' or bool(lead_id) == bool(deal_id):
+    if is_private_call(call) or call.internal_contact_number_id or call.direction == 'internal' or bool(lead_id) == bool(deal_id):
         raise ValidationError('Выберите одну рабочую карточку для внешнего рабочего звонка.')
     from .crm_lead_access import can_read_lead
     from .crm_commercial_access import deals_for_user
