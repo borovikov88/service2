@@ -1,5 +1,8 @@
 """Check configured hosting access without deploying or loading Django settings."""
 
+import argparse
+import importlib.util
+import json
 import os
 from pathlib import Path
 import re
@@ -64,7 +67,30 @@ def validate_config(environ):
     return config
 
 
-def run_check(environ):
+def incident_helper():
+    path = Path(__file__).with_name("avito_refresh_incident.py")
+    spec = importlib.util.spec_from_file_location("avito_refresh_incident", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return path, module
+
+
+def incident_output(stdout, helper):
+    # Never echo raw remote output in incident mode, even if it is unexpected.
+    if len(stdout) > 32768:
+        raise ValueError("Invalid incident output")
+    lines = [line for line in stdout.splitlines() if line.startswith(helper.MARKER)]
+    if len(lines) != 1:
+        raise ValueError("Missing incident output")
+    try:
+        value = json.loads(lines[0][len(helper.MARKER):])
+        clean = helper.public_summary(value)
+    except (ValueError, TypeError, KeyError):
+        raise ValueError("Invalid incident output") from None
+    return helper.MARKER + json.dumps(clean, ensure_ascii=True, separators=(",", ":"))
+
+
+def run_check(environ, *, avito_incident=False):
     config = validate_config(environ)  # Reject all bad configuration before networking.
     host, port = config["DEPLOY_HOST"], config["DEPLOY_PORT"]
     with tempfile.TemporaryDirectory(prefix="hosting-check-") as temporary:
@@ -104,6 +130,10 @@ def run_check(environ):
             "DEPLOY_USER", "DEPLOY_APP_PATH",
         ))
         print("Checking SSH authentication and hosting layout", flush=True)
+        remote_check = REMOTE_CHECK
+        if avito_incident:
+            path, helper = incident_helper()
+            remote_check += "\n../venv/bin/python -B -I - <<'AVITO_FIXED_INCIDENT'\n" + path.read_text(encoding="utf-8") + "\nAVITO_FIXED_INCIDENT\n"
         result = subprocess.run(
             ["ssh", "-F", "/dev/null", "-T", "-p", port, "-i", str(key),
              "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
@@ -111,9 +141,12 @@ def run_check(environ):
              "-o", f"UserKnownHostsFile={hosts}", "-o", "GlobalKnownHostsFile=/dev/null",
              "-o", "ConnectTimeout=10", "-o", "ConnectionAttempts=1",
              f"{config['DEPLOY_USER']}@{host}", remote_command],
-            input=REMOTE_CHECK, text=True, capture_output=True, check=True, timeout=45,
+            input=remote_check, text=True, capture_output=True, check=True, timeout=45,
         )
-        print(result.stdout, end="")
+        if avito_incident:
+            print(incident_output(result.stdout, helper))
+        else:
+            print(result.stdout, end="")
         print("Checking HTTPS response", flush=True)
         response = subprocess.run(
             ["curl", "-q", "--silent", "--show-error", "--proto", "=https",
@@ -129,8 +162,12 @@ def run_check(environ):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--avito-refresh-incident", action="store_true",
+                        help="Read only the fixed 2026-10-08 Avito error summary")
+    args = parser.parse_args()
     try:
-        run_check(os.environ)
+        run_check(os.environ, avito_incident=args.avito_refresh_incident)
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         # CalledProcessError contains command arguments, so never print it.
         message = str(error) if isinstance(error, ValueError) else type(error).__name__

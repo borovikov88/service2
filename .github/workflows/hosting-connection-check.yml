@@ -2,11 +2,18 @@ name: Check hosting connection (no deploy)
 
 on:
   workflow_dispatch:
+    inputs:
+      avito_refresh_incident:
+        description: "Read sanitized Avito refresh errors for 2026-10-08 13:08–13:11 UTC"
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [main]
     paths:
       - .github/workflows/hosting-connection-check.yml
       - .github/scripts/check_hosting_connection.py
+      - .github/scripts/avito_refresh_incident.py
 
 permissions:
   contents: read
@@ -33,4 +40,10 @@ jobs:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
           DEPLOY_HEALTH_URL: ${{ secrets.DEPLOY_HEALTH_URL }}
-        run: python3 .github/scripts/check_hosting_connection.py
+          AVITO_REFRESH_INCIDENT: ${{ github.event_name == 'workflow_dispatch' && inputs.avito_refresh_incident }}
+        run: |
+          if [[ "$AVITO_REFRESH_INCIDENT" == "true" ]]; then
+            python3 .github/scripts/check_hosting_connection.py --avito-refresh-incident
+          else
+            python3 .github/scripts/check_hosting_connection.py
+          fi
