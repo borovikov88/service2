@@ -1,0 +1,6 @@
+<article class="acrm-card" data-deal="{{ deal.id }}" data-pipeline="{{ deal.pipeline }}" data-stage="{{ deal.pipeline }}:{{ deal.stage }}" data-owner="{{ deal.owner }}" data-source="{{ deal.source }}" data-status="{{ deal.status }}" data-search="{{ deal.title }} {{ deal.client }} {{ deal.object_name }}">
+<div class="acrm-card-main"><span class="acrm-source">{{ deal.source_name }}</span><h3><button type="button" data-open="{{ deal.id }}">{{ deal.title }}</button></h3><p class="acrm-client">{{ deal.client }}</p></div>
+<div class="acrm-card-value"><strong{% if deal.amount == 'Не указана' %} class="acrm-unknown"{% endif %}>{{ deal.amount }}</strong><span class="acrm-card-stage">{{ deal.stage_name }}</span></div>
+<div class="acrm-card-owner"><span class="acrm-avatar{% if deal.owner == 'none' %} acrm-avatar-empty{% endif %}" aria-hidden="true">{% if deal.owner == 'anna' %}А{% elif deal.owner == 'max' %}М{% else %}—{% endif %}</span><span>{{ deal.owner_name }}<small>{{ deal.age }}</small></span></div>
+<div class="acrm-next acrm-next-{{ deal.status }}"><span class="acrm-next-label">{% if deal.status == 'missing' %}○ Нет следующего шага{% elif deal.status == 'waiting' %}◷ Ожидаем клиента{% else %}↗ Следующий шаг{% endif %}</span><strong>{{ deal.step }}</strong><span>{{ deal.due }}</span></div>
+</article>
