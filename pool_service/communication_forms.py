@@ -49,9 +49,17 @@ class CommunicationConnectionForm(forms.Form):
         if kind != "avito":
             self.fields.pop("client_id")
             self.fields.pop("client_secret")
+        if kind == "max":
+            self.fields["external_id"].help_text = "Числовой user_id бота из MAX API."
 
     def clean(self):
         cleaned = super().clean()
+        if self.kind == "max":
+            value = cleaned.get("external_id", "")
+            if value and (not value.isascii() or not value.isdecimal()
+                    or len(value) > 19 or value.startswith("0") or int(value) >= 2**63):
+                self.add_error("external_id", "Укажите числовой user_id бота из MAX API.")
+            return cleaned
         if self.kind != "avito":
             return cleaned
         external_id = cleaned.get("external_id", "")

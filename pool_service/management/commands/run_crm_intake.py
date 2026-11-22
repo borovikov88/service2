@@ -7,7 +7,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from pool_service.communication_models import ChannelConnection, TelephonyConnection
+from pool_service.communication_models import ChannelConnection, CommunicationChannel, TelephonyConnection
 from pool_service.crm_commercial_models import CrmIntakeActivation
 from pool_service.crm_inbox_models import CrmInboxEvent
 from pool_service.models import Organization
@@ -55,7 +55,7 @@ class Command(BaseCommand):
             # Repair a bounded missing-capture window from locally saved sources.
             # No provider history/API and no legacy-import mode.
             sources = [("message", pk) for pk in ChannelConnection.objects.filter(
-                channel__organization=org, channel__kind__in=("website", "avito"),
+                channel__organization=org, channel__kind__in=CommunicationChannel.MESSAGE_KINDS,
                 channel__is_active=True, is_active=True).order_by("pk").values_list("pk", flat=True)[:20]]
             sources += [("call", pk) for pk in TelephonyConnection.objects.filter(
                 organization=org, is_active=True).order_by("pk").values_list("pk", flat=True)[:20]]

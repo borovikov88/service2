@@ -239,6 +239,9 @@ def conversation_reply(request, conversation_uuid):
     if not connection.is_active or not channel.is_active:
         messages.error(request, "Канал или подключение отключено. Отправка ответа недоступна.")
         return redirect(_conversation_location(request, conversation))
+    if channel.kind == CommunicationChannel.KIND_MAX:
+        messages.error(request, "Канал MAX подключён для входящих сообщений.")
+        return redirect(_conversation_location(request, conversation))
     body = request.POST.get("body", "").strip()
     files = request.FILES.getlist("attachments")
     if len(body) > 10000:
@@ -1262,6 +1265,15 @@ def _connection_setup_result(request, connection, secret_value, *, secret_kind):
             "конфигурации сайта. Service2 больше его не покажет."
         )
         callback_url = ""
+    elif secret_kind == "max":
+        endpoint = ""
+        callback_url = request.build_absolute_uri(reverse("max_webhook", args=[connection.public_id]))
+        title = "Подключение MAX создано"
+        secret_label = "Секрет вебхука MAX"
+        instructions = (
+            "Передайте адрес и этот секрет при регистрации подписки MAX на message_created. "
+            "Секрет хранится только в виде хеша и повторно не показывается."
+        )
     else:
         endpoint = ""
         title = "Подключение Авито настроено"
@@ -1378,8 +1390,8 @@ def channels(request):
             connection__channel__organization=organization
         ).values_list("connection_id", flat=True)
     )
-    provider_connections = {"website": [], "avito": []}
-    provider_channels = {"website": [], "avito": []}
+    provider_connections = {kind: [] for kind in CommunicationChannel.MESSAGE_KINDS}
+    provider_channels = {kind: [] for kind in CommunicationChannel.MESSAGE_KINDS}
     for channel in communication_channels:
         if channel.kind not in provider_connections:
             continue
@@ -1431,6 +1443,13 @@ def channels(request):
             "description": "Входящие сообщения и ответы менеджеров через Avito API.",
             "channels": provider_channels["avito"],
             "connections": provider_connections["avito"],
+        },
+        {
+            "kind": "max",
+            "title": "MAX",
+            "description": "Входящие сообщения от бота MAX.",
+            "channels": provider_channels["max"],
+            "connections": provider_connections["max"],
         },
     ]
     telephony_connections = list(
@@ -1522,7 +1541,7 @@ def channels(request):
 @transaction.atomic
 def communication_connection_create(request, kind):
     organization = _context(request, "can_manage_channels")
-    if kind not in {CommunicationChannel.KIND_WEBSITE, CommunicationChannel.KIND_AVITO}:
+    if kind not in CommunicationChannel.MESSAGE_KINDS:
         raise Http404
 
     form = CommunicationConnectionForm(
@@ -1559,7 +1578,7 @@ def communication_connection_create(request, kind):
             connection.set_api_token(token)
             connection.save(update_fields=["api_token_hash"])
             return _connection_setup_result(
-                request, connection, token, secret_kind="website"
+                request, connection, token, secret_kind=kind
             )
 
     return render(
@@ -1586,10 +1605,7 @@ def communication_connection_edit(request, connection_id):
         ChannelConnection.objects.select_for_update().select_related("channel"),
         pk=connection_id,
         channel__organization=organization,
-        channel__kind__in=(
-            CommunicationChannel.KIND_WEBSITE,
-            CommunicationChannel.KIND_AVITO,
-        ),
+        channel__kind__in=CommunicationChannel.MESSAGE_KINDS,
     )
     kind = connection.channel.kind
     initial = {
@@ -1603,6 +1619,8 @@ def communication_connection_edit(request, connection_id):
         require_avito_credentials=False,
         initial=initial,
     )
+    if kind == CommunicationChannel.KIND_MAX:
+        form.fields["external_id"].disabled = True
     if request.method == "POST" and form.is_valid():
         external_id = form.cleaned_data["external_id"].strip()
         duplicate = ChannelConnection.objects.filter(
@@ -1682,10 +1700,7 @@ def communication_connection_rotate_token(request, connection_id):
         ChannelConnection.objects.select_for_update().select_related("channel"),
         pk=connection_id,
         channel__organization=organization,
-        channel__kind__in=(
-            CommunicationChannel.KIND_WEBSITE,
-            CommunicationChannel.KIND_AVITO,
-        ),
+        channel__kind__in=CommunicationChannel.MESSAGE_KINDS,
     )
     if connection.channel.kind == CommunicationChannel.KIND_AVITO:
         messages.info(

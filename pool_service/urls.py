@@ -259,6 +259,7 @@ from .avito_crm_attribution_views import attribution as avito_crm_attribution, r
 from .avito_management import avito_dashboard, avito_check_api, avito_refresh_data, avito_configure_monitor, avito_download_report, avito_configure_autoload_auto
 from .communication_api import (
     avito_webhook,
+    max_webhook,
     megafon_webhook,
     website_chat_attachment,
     website_chat_message,
@@ -300,6 +301,7 @@ urlpatterns = [
     path("avito/<int:connection_id>/monitor/", avito_configure_monitor, name="avito_configure_monitor"),
     path("avito/<int:connection_id>/refresh/", avito_refresh_data, name="avito_refresh_data"),
     path("avito/<int:connection_id>/check-api/", avito_check_api, name="avito_check_api"),
+    path("api/communications/max/<uuid:public_id>/webhook/", max_webhook, name="max_webhook"),
     path("api/communications/avito/<uuid:public_id>/<str:webhook_token>/webhook/", avito_webhook, name="avito_webhook"),
     path("api/communications/megafon/<uuid:public_id>/webhook/", megafon_webhook, name="megafon_webhook"),
     path("api/communications/website/<uuid:public_id>/chat/messages/", website_chat_message, name="website_chat_message"),

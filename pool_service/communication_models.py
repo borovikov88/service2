@@ -17,7 +17,9 @@ class CommunicationChannel(models.Model):
     KIND_AVITO = "avito"
     KIND_WEBSITE = "website"
     KIND_MEGAFON = "megafon"
-    KIND_CHOICES = [(KIND_AVITO, "Авито"), (KIND_WEBSITE, "Сайт"), (KIND_MEGAFON, "Мегафон")]
+    KIND_MAX = "max"
+    MESSAGE_KINDS = (KIND_AVITO, KIND_WEBSITE, KIND_MAX)
+    KIND_CHOICES = [(KIND_AVITO, "Авито"), (KIND_WEBSITE, "Сайт"), (KIND_MEGAFON, "Мегафон"), (KIND_MAX, "MAX")]
     organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="communication_channels")
     kind = models.CharField(max_length=24, choices=KIND_CHOICES)
     name = models.CharField(max_length=120)
