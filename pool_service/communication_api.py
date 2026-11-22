@@ -42,12 +42,14 @@ def _error(message, status=400):
     return JsonResponse({"error": message}, status=status)
 
 
+@sensitive_variables("authorization", "token")
 def _connection(request, public_id):
     authorization = request.headers.get("Authorization", "")
     token = authorization[7:] if authorization.startswith("Bearer ") else ""
     return _authenticated_message_connection(request, public_id, CommunicationChannel.KIND_WEBSITE, token)
 
 
+@sensitive_variables("token")
 def _authenticated_message_connection(request, public_id, kind, token):
     remote_address = request.META.get("REMOTE_ADDR", "unknown")
     throttle_key = f"{kind}-communications:{public_id}:{remote_address}"
