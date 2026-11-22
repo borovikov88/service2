@@ -8,7 +8,7 @@ from django.utils import timezone
 
 
 class CrmReleaseMigrationTests(TransactionTestCase):
-    release = [('pool_service', '0200_staff_departments')]
+    release = [('pool_service', '0201_max_communication_channel')]
     production = [('pool_service', '0182_merge_onec_review_crm_contact')]
     prepared = [('pool_service', '0185_crm_failure_stage')]
 
