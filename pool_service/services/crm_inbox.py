@@ -14,7 +14,7 @@ from django.db import transaction
 from django.db.models import Count, Max, Min, Q
 from django.utils import timezone
 
-from pool_service.communication_models import ChannelConnection, Conversation, ConversationMessage, PhoneCall, TelephonyConnection
+from pool_service.communication_models import ChannelConnection, CommunicationChannel, Conversation, ConversationMessage, PhoneCall, TelephonyConnection
 from pool_service.crm_inbox_models import CrmInboxBoundary, CrmInboxCursor, CrmInboxEvent
 from pool_service.models import Organization
 
@@ -80,7 +80,7 @@ def capture_source(source_type, source):
     if not transaction.get_connection().in_atomic_block:
         raise RuntimeError("inbox_capture_requires_transaction")
     if source_type == "message":
-        if not _message_eligible(source) or source.conversation.connection.channel.kind not in {"avito", "website"}:
+        if not _message_eligible(source) or source.conversation.connection.channel.kind not in CommunicationChannel.MESSAGE_KINDS:
             return None
         org_id, connection_id = source.conversation.organization_id, source.conversation.connection_id
         provider = source.conversation.connection.channel.kind
@@ -156,7 +156,7 @@ def _locked_source(source_type, source_id, channel_id, organization_id):
             return org, None, "source_missing"
         conv = Conversation.objects.select_for_update().select_related("connection__channel", "client").filter(pk=peek["conversation_id"]).first()
         source = ConversationMessage.objects.select_for_update().filter(pk=source_id).first()
-        if not source or not conv or conv.organization_id != organization_id or conv.connection_id != connection.pk or not _message_eligible(source) or connection.channel.kind not in {"website", "avito"}:
+        if not source or not conv or conv.organization_id != organization_id or conv.connection_id != connection.pk or not _message_eligible(source) or connection.channel.kind not in CommunicationChannel.MESSAGE_KINDS:
             return org, None, "source_scope_changed"
         if conv.client_id and conv.client.organization_id != organization_id:
             return org, None, "source_scope_changed"
@@ -324,7 +324,7 @@ def _bounds(limit, seconds):
 def _connection(organization_id, source_type, connection_id):
     if source_type == "message":
         row = ChannelConnection.objects.select_related("channel").filter(pk=connection_id,
-            channel__organization_id=organization_id, channel__kind__in=["website", "avito"], is_active=True,
+            channel__organization_id=organization_id, channel__kind__in=CommunicationChannel.MESSAGE_KINDS, is_active=True,
             channel__is_active=True).first()
     elif source_type == "call":
         telephony = TelephonyConnection.objects.filter(pk=connection_id, organization_id=organization_id, is_active=True).first()

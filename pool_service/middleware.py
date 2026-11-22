@@ -67,6 +67,7 @@ class AuthRedirectMiddleware:
             "/api/communications/website/",
             "/api/communications/avito/",
             "/api/communications/megafon/",
+            "/api/communications/max/",
             "/static/",
             "/health/",
             "/consent/",

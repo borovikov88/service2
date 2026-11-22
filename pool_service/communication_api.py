@@ -12,11 +12,12 @@ from django.shortcuts import get_object_or_404
 from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.debug import sensitive_post_parameters
+from django.views.decorators.debug import sensitive_post_parameters, sensitive_variables
 from django.views.decorators.http import require_http_methods, require_POST
 
 from pool_service.communication_models import (
     ChannelConnection,
+    CommunicationChannel,
     Conversation,
     ConversationMessage,
     MessageAttachment,
@@ -41,9 +42,17 @@ def _error(message, status=400):
     return JsonResponse({"error": message}, status=status)
 
 
+@sensitive_variables("authorization", "token")
 def _connection(request, public_id):
+    authorization = request.headers.get("Authorization", "")
+    token = authorization[7:] if authorization.startswith("Bearer ") else ""
+    return _authenticated_message_connection(request, public_id, CommunicationChannel.KIND_WEBSITE, token)
+
+
+@sensitive_variables("token")
+def _authenticated_message_connection(request, public_id, kind, token):
     remote_address = request.META.get("REMOTE_ADDR", "unknown")
-    throttle_key = f"website-communications:{public_id}:{remote_address}"
+    throttle_key = f"{kind}-communications:{public_id}:{remote_address}"
     if cache.add(throttle_key, 1, timeout=60):
         request_count = 1
     else:
@@ -59,10 +68,8 @@ def _connection(request, public_id):
         public_id=public_id,
         is_active=True,
         channel__is_active=True,
-        channel__kind="website",
+        channel__kind=kind,
     )
-    authorization = request.headers.get("Authorization", "")
-    token = authorization[7:] if authorization.startswith("Bearer ") else ""
     if not connection.check_api_token(token):
         return None
     return connection
@@ -298,6 +305,31 @@ def website_chat_attachment(request, public_id, session_id, attachment_id):
     )
     response["X-Content-Type-Options"] = "nosniff"
     return response
+
+
+@csrf_exempt
+@require_POST
+@sensitive_variables("secret")
+def max_webhook(request, public_id):
+    from pool_service.communication_max import parse_message
+
+    secret = request.headers.get("X-Max-Bot-Api-Secret", "")
+    if not 5 <= len(secret) <= 256:
+        return _error("forbidden", 403)
+    connection = _authenticated_message_connection(request, public_id, CommunicationChannel.KIND_MAX, secret)
+    if not connection:
+        return _error("forbidden", 403)
+
+    try:
+        incoming = parse_message(_payload(request), connection.external_id)
+    except ValueError:
+        return _error("invalid_max_update")
+    if incoming is not None:
+        try:
+            receive_message(connection=connection, **incoming)
+        except ValueError:
+            return _error("max_connection_or_dialog_changed", 409)
+    return JsonResponse({"ok": True})
 
 
 @csrf_exempt

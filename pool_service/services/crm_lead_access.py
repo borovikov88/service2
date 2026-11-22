@@ -9,7 +9,7 @@ from django.db.models.functions import Cast, Coalesce, Concat, Length, Replace, 
 from django.urls import reverse
 
 from pool_service.call_processing_models import CallPrivateNumber
-from pool_service.communication_models import ChannelConnection, CommunicationAccess, ConversationMessage, PhoneCall
+from pool_service.communication_models import ChannelConnection, CommunicationAccess, CommunicationChannel, ConversationMessage, PhoneCall
 from pool_service.crm_commercial_models import CrmAccess, CrmLead, CrmLeadSource
 from pool_service.models import Employee, Organization, OrganizationAccess
 from pool_service.client_queries import readable_clients
@@ -122,7 +122,7 @@ def _source_access_annotations(user, organization, *, assignment_subject=None, s
         conversation__organization_id=org_id,
         conversation__connection_id=OuterRef("inbox__connection_id_snapshot"),
         conversation__external_id=OuterRef("inbox__namespace"),
-        conversation__connection__channel__kind__in=("avito", "website"),
+        conversation__connection__channel__kind__in=CommunicationChannel.MESSAGE_KINDS,
         intake_received_at__isnull=False,
         intake_scope__organization=org_id,
         intake_scope__account=OuterRef("inbox__account_id_snapshot"),
@@ -325,7 +325,7 @@ def source_metadata_many(*, user, organization, leads, limit=1, before=None):
                 continue
             contact = contacts.get(message.conversation.client_id)
             metadata.update(phone=message.conversation.provider_phone or message.conversation.participant_phone or "", url=reverse("communications_conversations") + "?" + urlencode({"conversation": str(message.conversation.uuid), "org_id": organization.pk}),
-                label="Сообщение Авито" if event.provider_kind == "avito" else "Обращение с сайта",
+                label={"avito": "Сообщение Авито", "max": "Сообщение MAX"}.get(event.provider_kind, "Обращение с сайта"),
                 contact_name=message.sender_name or "", direction=message.direction, message_id=message.pk)
         else:
             call = calls.get(event.source_id)
