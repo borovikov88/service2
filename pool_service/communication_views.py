@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 from urllib.parse import urlsplit
+from uuid import UUID, uuid4
 
 from django.contrib import messages
 from django.contrib.auth.models import User
@@ -23,7 +24,7 @@ from django.utils import timezone
 from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_GET, require_POST
 from django.views.decorators.csrf import ensure_csrf_cookie
-from django.views.decorators.debug import sensitive_post_parameters
+from django.views.decorators.debug import sensitive_post_parameters, sensitive_variables
 from docx import Document
 
 from pool_service.client_crm_models import ClientContact
@@ -42,6 +43,10 @@ from pool_service.communication_avito import (
 from pool_service.avito_outbox import dispatch_committed_reply, register_reply_intent
 from pool_service.avito_outbox_display import conversation_context
 from pool_service.communication_forms import CommunicationConnectionForm, TelephonyConnectionForm
+from pool_service.communication_max_outbound import (
+    MAX_REPLY_ERRORS, MAX_TEXT_LENGTH, MaxApiError, dispatch_reply as dispatch_max_reply,
+    reply_recipient as max_reply_recipient, verify_bot_token as verify_max_bot_token,
+)
 from pool_service.communication_models import (
     AvitoCredential, ChannelConnection, CommunicationChannel, Conversation,
     ConversationAssignment, ConversationMessage, ConversationReadState,
@@ -183,9 +188,32 @@ def conversations(request):
     from .services.crm_commercial_access import can_view_team_deals
     requested = ([selected.pk] if selected else []) + [item.pk for item in items if not item.client_id][:19]
     transaction.on_commit(lambda: start_client_enrichment_worker(requested))
+    max_reply_id = None
+    max_settings_url = ""
+    context = conversation_context(selected, organization, request.user, include_outbox=False)
+    if selected and selected.connection.channel.kind == CommunicationChannel.KIND_MAX:
+        connection = selected.connection
+        if connection.channel.is_active and connection.is_active:
+            if connection.max_bot_token_encrypted and max_reply_recipient(selected):
+                max_reply_id = uuid4().hex
+            elif not connection.max_bot_token_encrypted and conversation_capability(
+                request.user, "can_manage_channels", organization,
+            ):
+                max_settings_url = reverse("communication_connection_edit", args=[connection.pk])
+        stale_before = timezone.now() - timedelta(minutes=1)
+        for message in context["selected_messages"]:
+            error = message.delivery_error
+            if (
+                message.delivery_status in {ConversationMessage.DELIVERY_PENDING, ConversationMessage.DELIVERY_SENDING}
+                and message.created_at < stale_before
+            ):
+                error = "max_delivery_unknown"
+            message.max_delivery_note = MAX_REPLY_ERRORS.get(error, "")
     return render(request, "pool_service/communications/conversations.html", {
         "active_tab": "communications", "conversations": items, "selected": selected, "communication_org_id": organization.pk,
-        **conversation_context(selected, organization, request.user, include_outbox=False),
+        **context,
+        "max_reply_id": max_reply_id,
+        "max_settings_url": max_settings_url,
         "avito_crm_url": crm_source_navigation(request.user, organization),
         "show_distribution": can_view_team_deals(request.user, organization),
         "can_reply": conversation_capability(request.user, "can_reply_conversations", organization),
@@ -239,11 +267,25 @@ def conversation_reply(request, conversation_uuid):
     if not connection.is_active or not channel.is_active:
         messages.error(request, "Канал или подключение отключено. Отправка ответа недоступна.")
         return redirect(_conversation_location(request, conversation))
-    if channel.kind == CommunicationChannel.KIND_MAX:
-        messages.error(request, "Канал MAX подключён для входящих сообщений.")
-        return redirect(_conversation_location(request, conversation))
     body = request.POST.get("body", "").strip()
     files = request.FILES.getlist("attachments")
+    max_reply_id = None
+    if channel.kind == CommunicationChannel.KIND_MAX:
+        error = ""
+        if not connection.max_bot_token_encrypted:
+            error = "Токен бота MAX ещё не настроен."
+        elif not max_reply_recipient(conversation):
+            error = "Не удалось подтвердить получателя в MAX."
+        elif files or not body or len(body) > MAX_TEXT_LENGTH or "\x00" in body:
+            error = "В MAX можно отправить текст длиной от 1 до 4000 символов."
+        else:
+            try:
+                max_reply_id = UUID(request.POST.get("max_reply_id", ""))
+            except ValueError:
+                error = "Обновите диалог и повторите отправку."
+        if error:
+            messages.error(request, error)
+            return redirect(_conversation_location(request, conversation))
     if len(body) > 10000:
         messages.error(request, "Сообщение не должно превышать 10 000 символов.")
         return redirect(_conversation_location(request, conversation))
@@ -274,14 +316,21 @@ def conversation_reply(request, conversation_uuid):
             except Exception:
                 messages.error(request, f"Файл {uploaded.name} не является корректным изображением.")
                 return redirect(_conversation_location(request, conversation))
-    message = ConversationMessage.objects.create(
-        conversation=conversation,
-        direction="out",
-        body=body,
-        sender_name=request.user.get_full_name() or request.user.username,
-        sent_by=request.user,
-        delivery_status=ConversationMessage.DELIVERY_PENDING,
-    )
+    fields = {
+        "direction": ConversationMessage.DIRECTION_OUT,
+        "body": body,
+        "sender_name": request.user.get_full_name() or request.user.username,
+        "sent_by": request.user,
+        "delivery_status": ConversationMessage.DELIVERY_PENDING,
+    }
+    if max_reply_id is not None:
+        message, created = ConversationMessage.objects.get_or_create(
+            conversation=conversation, max_reply_id=max_reply_id, defaults=fields,
+        )
+        if not created:
+            return redirect(_conversation_location(request, conversation))
+    else:
+        message = ConversationMessage.objects.create(conversation=conversation, **fields)
     if channel.kind in {"avito", "website"}:
         from .models import Organization
         from .services.crm_inbox import capture_source, initialize_source, source_scope
@@ -304,7 +353,9 @@ def conversation_reply(request, conversation_uuid):
     conversation.save(update_fields=["last_message_at", "updated_at"])
     # Register only the new manager action, under the existing reply transaction.
     # The callback executes after the outermost commit, never under row locks.
-    if register_reply_intent(message):
+    if max_reply_id is not None:
+        transaction.on_commit(lambda: dispatch_max_reply(connection.pk, message.pk), robust=True)
+    elif register_reply_intent(message):
         transaction.on_commit(lambda: dispatch_committed_reply(connection.pk, message.pk))
     return redirect(_conversation_location(request, conversation))
 
@@ -1595,6 +1646,47 @@ def communication_connection_create(request, kind):
 
 
 @login_required
+@require_POST
+@never_cache
+@sensitive_post_parameters("max_bot_token")
+@sensitive_variables("token", "encrypted_token")
+def communication_max_configure(request, connection_id):
+    organization = _context(request, "can_manage_channels")
+    connections = ChannelConnection.objects.filter(
+        channel__organization=organization, channel__kind=CommunicationChannel.KIND_MAX,
+    )
+    connection = get_object_or_404(connections, pk=connection_id)
+    location = reverse("communication_connection_edit", args=[connection.pk]) + f"?org_id={organization.pk}"
+    token = request.POST.get("max_bot_token", "").strip()
+    if not 5 <= len(token) <= 512 or any(not 33 <= ord(char) <= 126 for char in token):
+        messages.error(request, "Вставьте токен из настроек бота в кабинете MAX.")
+        return redirect(location)
+
+    try:
+        verify_max_bot_token(token, connection.external_id)
+    except MaxApiError as exc:
+        if str(exc) == "max_bot_mismatch":
+            messages.error(request, "Токен принадлежит другому боту MAX.")
+        elif str(exc) == "max_rejected":
+            messages.error(request, "MAX отклонил токен. Проверьте токен в кабинете MAX.")
+        else:
+            messages.error(request, "MAX не подтвердил токен. Попробуйте позже.")
+        return redirect(location)
+
+    _context(request, "can_manage_channels")
+    encrypted_token = encrypt_secret(token)
+    updated = connections.filter(
+        pk=connection.pk, external_id=connection.external_id,
+        max_bot_token_encrypted=connection.max_bot_token_encrypted,
+    ).update(max_bot_token_encrypted=encrypted_token)
+    if updated:
+        messages.success(request, "Токен проверен. Ответы через MAX подключены.")
+    else:
+        messages.error(request, "Подключение MAX изменилось. Обновите страницу и повторите.")
+    return redirect(location)
+
+
+@login_required
 @sensitive_post_parameters("client_id", "client_secret")
 @never_cache
 @transaction.atomic
@@ -1685,6 +1777,8 @@ def communication_connection_edit(request, connection_id):
             "connection": connection,
             "avito_credentials_configured": avito_credentials_configured,
             "avito_diagnostic_accounts": avito_diagnostic_accounts,
+            "max_token_configured": bool(connection.max_bot_token_encrypted),
+            "communication_org_id": organization.pk,
             "avito_timezone": getattr(settings, "COMMUNICATION_TIME_ZONE", "UTC"),
             "status_monitor_state": display_state(connection, request.user) if kind == CommunicationChannel.KIND_AVITO else {},
         },

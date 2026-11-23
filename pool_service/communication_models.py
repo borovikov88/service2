@@ -157,6 +157,7 @@ class ChannelConnection(models.Model):
     is_active = models.BooleanField(default=True)
     settings = models.JSONField(default=dict, blank=True, help_text="Non-secret connection metadata only")
     api_token_hash = models.CharField(max_length=128, blank=True, editable=False)
+    max_bot_token_encrypted = models.TextField(blank=True, default="", editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -336,6 +337,7 @@ class ConversationMessage(models.Model):
     delivered_at = models.DateTimeField(null=True, blank=True)
     delivery_error = models.CharField(max_length=500, blank=True)
     delivery_attempts = models.PositiveSmallIntegerField(default=0)
+    max_reply_id = models.UUIDField(null=True, blank=True, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -344,7 +346,11 @@ class ConversationMessage(models.Model):
             models.UniqueConstraint(
                 fields=["conversation", "external_id"],
                 name="comm_message_external_uniq",
-            )
+            ),
+            models.UniqueConstraint(
+                fields=["conversation", "max_reply_id"],
+                name="comm_message_max_reply_uniq",
+            ),
         ]
 
 

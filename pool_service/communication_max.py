@@ -34,6 +34,8 @@ def parse_message(payload, bot_id):
     if sender.get("is_bot") is True:
         return None
     sender_id = _identifier(sender.get("user_id"))
+    if sender_id == bot_id:
+        return None
     body = _object(message.get("body"))
     message_id = body.get("mid")
     if not isinstance(message_id, str) or not message_id.strip() or len(message_id) > 255 or "\x00" in message_id:
