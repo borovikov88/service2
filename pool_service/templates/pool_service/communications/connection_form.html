@@ -72,6 +72,13 @@
         <label class="form-check-label" for="{{ form.is_active.id_for_label }}">{{ form.is_active.label }}</label>
       </div>
 
+      {% if kind == 'max' %}
+      <div class="form-check mb-3">
+        {{ form.max_auto_request_phone }}
+        <label class="form-check-label" for="{{ form.max_auto_request_phone.id_for_label }}">{{ form.max_auto_request_phone.label }}</label>
+        <div class="form-text">После нового сообщения бот один раз предложит клиенту поделиться своим номером.</div>
+      </div>
+      {% endif %}
       <div class="d-flex flex-wrap gap-2">
         <button class="btn btn-primary" type="submit">{% if editing %}Сохранить{% else %}Создать подключение{% endif %}</button>
         <a class="btn btn-outline-secondary" href="{% url 'communications_channels' %}">Отмена</a>

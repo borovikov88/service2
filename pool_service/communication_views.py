@@ -158,24 +158,28 @@ def _wake_uploaded_audio_worker_if_needed(organization, *, include_fresh_pending
 def conversations(request):
     organization = _context(request, "can_view_conversations")
     latest_message = ConversationMessage.objects.filter(conversation=OuterRef("pk")).order_by("-created_at", "-pk")
-    items = list(
-        Conversation.objects.filter(organization=organization)
-        .select_related("connection__channel", "assignee", "website_request", "client")
-        .annotate(last_message_preview=Subquery(latest_message.values("body")[:1]))
-    )
+    scoped = Conversation.objects.filter(
+        organization=organization, connection__channel__organization=organization,
+    ).select_related("connection__channel", "assignee", "website_request", "client")
+    selected = None
+    selected_id = request.GET.get("conversation")
+    show_closed = request.GET.get("dialogs") == "closed"
+    if selected_id:
+        try:
+            selected_uuid = UUID(selected_id)
+        except ValueError:
+            raise Http404 from None
+        selected = get_object_or_404(scoped, uuid=selected_uuid)
+        show_closed = selected.status == Conversation.STATUS_DONE
+    listed = scoped.filter(status=Conversation.STATUS_DONE) if show_closed else scoped.exclude(status=Conversation.STATUS_DONE)
+    items = list(listed.annotate(last_message_preview=Subquery(latest_message.values("body")[:1])))
+    if selected is None and items:
+        selected = items[0]
     states = {state.conversation_id: state.last_read_at for state in ConversationReadState.objects.filter(user=request.user, conversation__organization=organization)}
     for item in items:
         incoming = item.messages.filter(direction=ConversationMessage.DIRECTION_IN)
         last_read = states.get(item.pk)
         item.unread_count = incoming.filter(created_at__gt=last_read).count() if last_read else incoming.count()
-    selected = None
-    selected_id = request.GET.get("conversation")
-    if selected_id:
-        selected = next((item for item in items if str(item.uuid) == selected_id), None)
-        if selected is None:
-            raise Http404
-    elif items:
-        selected = items[0]
     if selected:
         state, _ = ConversationReadState.objects.get_or_create(conversation=selected, user=request.user)
         state.last_read_at = timezone.now()
@@ -216,7 +220,12 @@ def conversations(request):
                 error = "max_delivery_unknown"
             message.max_delivery_note = MAX_REPLY_ERRORS.get(error, "")
     return render(request, "pool_service/communications/conversations.html", {
-        "active_tab": "communications", "conversations": items, "selected": selected, "communication_org_id": organization.pk,
+        "active_tab": "communications", "conversations": items, "selected": selected,
+        "communication_org_id": organization.pk, "show_closed_dialogs": show_closed,
+        "can_finish": bool(selected and selected.status != Conversation.STATUS_DONE
+            and conversation_capability(request.user, "can_take_conversation", organization)
+            and (selected.assignee_id in (None, request.user.pk)
+                 or conversation_capability(request.user, "can_assign_conversation", organization))),
         **context,
         "max_reply_id": max_reply_id,
         "max_contact_request_id": max_contact_request_id,
@@ -432,8 +441,11 @@ def conversation_update(request, conversation_uuid):
             raise PermissionDenied
         if conversation.assignee_id not in (None, request.user.id) and not conversation_capability(request.user, "can_assign_conversation", organization):
             raise PermissionDenied
+        finished = status == Conversation.STATUS_DONE and conversation.status != Conversation.STATUS_DONE
         conversation.status = status
         conversation.save(update_fields=["status", "updated_at"])
+        if finished:
+            return redirect(reverse("communications_conversations") + f"?org_id={organization.pk}")
     return redirect(_conversation_location(request, conversation))
 
 
@@ -462,12 +474,22 @@ def attachment_download(request, attachment_id):
     )
     if not attachment.original:
         raise Http404
-    response = FileResponse(
-        attachment.original.open("rb"),
-        as_attachment=not inline,
-        filename=attachment.original_name,
-        content_type=attachment.content_type if inline else "application/octet-stream",
-    )
+    stream_media = inline and attachment.max_media_kind in {"audio", "video"}
+    range_header = request.headers.get("Range", "").strip()
+    if stream_media and range_header and not request.headers.get("If-Range"):
+        response = _byte_range_response(
+            attachment.original.size, range_header, lambda: attachment.original.open("rb"),
+            attachment.content_type,
+        )
+    else:
+        response = FileResponse(
+            attachment.original.open("rb"),
+            as_attachment=not inline,
+            filename=attachment.original_name,
+            content_type=attachment.content_type if inline else "application/octet-stream",
+        )
+    if stream_media:
+        response["Accept-Ranges"] = "bytes"
     response["X-Content-Type-Options"] = "nosniff"
     if is_max:
         response["Cache-Control"] = "private, no-store"
@@ -1276,6 +1298,33 @@ def _recording_range_iterator(file_handle, start, length, chunk_size=64 * 1024):
         file_handle.close()
 
 
+def _byte_range_response(file_size, range_header, open_file, content_type):
+    match = re.fullmatch(r"bytes=([0-9]{0,19})-([0-9]{0,19})", range_header)
+    start_raw, end_raw = match.groups() if match else ("", "")
+    if start_raw:
+        start = int(start_raw)
+        end = min(int(end_raw), file_size - 1) if end_raw else file_size - 1
+    elif end_raw and int(end_raw) > 0:
+        start = max(file_size - int(end_raw), 0)
+        end = file_size - 1
+    else:
+        start, end = 0, -1
+
+    if start >= file_size or start > end:
+        response = HttpResponse(status=416)
+        response["Content-Range"] = f"bytes */{file_size}"
+        return response
+
+    length = end - start + 1
+    response = StreamingHttpResponse(
+        _recording_range_iterator(open_file(), start, length), status=206, content_type=content_type,
+    )
+    response["Content-Length"] = str(length)
+    response["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+    response["Accept-Ranges"] = "bytes"
+    return response
+
+
 @login_required
 def call_recording(request, call_id):
     access = _selected_access(request)
@@ -1313,47 +1362,13 @@ def call_recording(request, call_id):
         response["X-Content-Type-Options"] = "nosniff"
         return response
 
-    match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header)
-    if not match:
-        response = HttpResponse(status=416)
-        response["Content-Range"] = f"bytes */{file_size}"
-        return response
-
-    start_raw, end_raw = match.groups()
-    if not start_raw and not end_raw:
-        response = HttpResponse(status=416)
-        response["Content-Range"] = f"bytes */{file_size}"
-        return response
-
-    if start_raw:
-        start = int(start_raw)
-        end = int(end_raw) if end_raw else file_size - 1
-    else:
-        suffix_length = int(end_raw)
-        if suffix_length <= 0:
-            response = HttpResponse(status=416)
-            response["Content-Range"] = f"bytes */{file_size}"
-            return response
-        start = max(file_size - suffix_length, 0)
-        end = file_size - 1
-
-    if start >= file_size or start > end:
-        response = HttpResponse(status=416)
-        response["Content-Range"] = f"bytes */{file_size}"
-        return response
-
-    end = min(end, file_size - 1)
-    length = end - start + 1
-    response = StreamingHttpResponse(
-        _recording_range_iterator(open(file_path, "rb"), start, length),
-        status=206,
-        content_type=mimetypes.guess_type(file_path)[0] or "application/octet-stream",
+    response = _byte_range_response(
+        file_size, range_header, lambda: open(file_path, "rb"),
+        mimetypes.guess_type(file_path)[0] or "application/octet-stream",
     )
-    response["Content-Length"] = str(length)
-    response["Content-Range"] = f"bytes {start}-{end}/{file_size}"
-    response["Accept-Ranges"] = "bytes"
-    response["Cache-Control"] = "private, no-store"
-    response["X-Content-Type-Options"] = "nosniff"
+    if response.status_code == 206:
+        response["Cache-Control"] = "private, no-store"
+        response["X-Content-Type-Options"] = "nosniff"
     return response
 
 
@@ -1664,6 +1679,8 @@ def communication_connection_create(request, kind):
                 name=form.cleaned_data["name"].strip(),
                 external_id=external_id,
                 is_active=form.cleaned_data["is_active"],
+                settings={"max_auto_request_phone": form.cleaned_data["max_auto_request_phone"]}
+                if kind == CommunicationChannel.KIND_MAX else {},
             )
             if kind == CommunicationChannel.KIND_AVITO:
                 AvitoCredential.objects.create(
@@ -1757,6 +1774,7 @@ def communication_connection_edit(request, connection_id):
         "name": connection.name,
         "external_id": connection.external_id,
         "is_active": connection.is_active,
+        "max_auto_request_phone": (connection.settings or {}).get("max_auto_request_phone") is True,
     }
     form = CommunicationConnectionForm(
         request.POST or None,
@@ -1779,7 +1797,14 @@ def communication_connection_edit(request, connection_id):
             connection.name = form.cleaned_data["name"].strip()
             connection.external_id = external_id
             connection.is_active = form.cleaned_data["is_active"]
-            connection.save(update_fields=["name", "external_id", "is_active"])
+            fields = ["name", "external_id", "is_active"]
+            if kind == CommunicationChannel.KIND_MAX:
+                connection.settings = {
+                    **(connection.settings or {}),
+                    "max_auto_request_phone": form.cleaned_data["max_auto_request_phone"],
+                }
+                fields.append("settings")
+            connection.save(update_fields=fields)
             avito_credentials_changed = False
             if kind == CommunicationChannel.KIND_AVITO and form.cleaned_data.get("client_id"):
                 credential, _ = AvitoCredential.objects.get_or_create(

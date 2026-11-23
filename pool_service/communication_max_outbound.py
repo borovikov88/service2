@@ -6,13 +6,14 @@ from functools import lru_cache
 from http.client import HTTPException, HTTPSConnection
 from pathlib import Path
 from time import sleep
+from uuid import uuid5
 
 from django.db import IntegrityError, transaction
 from django.db.models import F
 from django.utils import timezone
 from django.views.decorators.debug import sensitive_variables
 
-from pool_service.communication_max_contact import CONTACT_REQUEST_ATTACHMENT
+from pool_service.communication_max_contact import CONTACT_REQUEST_ATTACHMENT, CONTACT_REQUEST_TEXT
 from pool_service.communication_max_media import MaxMediaError, upload_attachment
 from pool_service.communication_models import ChannelConnection, CommunicationChannel, ConversationMessage
 from pool_service.communication_secrets import CommunicationSecretError, decrypt_secret
@@ -131,6 +132,37 @@ def _fail(message_id, error):
     ).update(delivery_status=ConversationMessage.DELIVERY_FAILED, delivery_error=error)
 
 
+def _automatic_request_id(conversation):
+    return uuid5(conversation.uuid, "max-automatic-phone-request")
+
+
+def queue_phone_request(conversation):
+    """Queue exactly one automatic request under the inbound conversation lock."""
+    connection = conversation.connection
+    if not (
+        (connection.settings or {}).get("max_auto_request_phone") is True
+        and connection.max_bot_token_encrypted and reply_recipient(conversation)
+    ):
+        return
+    history = conversation.messages
+    if history.filter(max_details__shared_phone__isnull=False).exists() or history.filter(
+        max_details__contact_request=True,
+    ).exists():
+        return
+    message, created = history.get_or_create(
+        max_reply_id=_automatic_request_id(conversation),
+        defaults={
+            "direction": ConversationMessage.DIRECTION_OUT,
+            "body": CONTACT_REQUEST_TEXT,
+            "sender_name": "Бот MAX",
+            "delivery_status": ConversationMessage.DELIVERY_PENDING,
+            "max_details": {"contact_request": True, "automatic": True},
+        },
+    )
+    if created:
+        transaction.on_commit(lambda: dispatch_reply(connection.pk, message.pk), robust=True)
+
+
 @sensitive_variables("token", "message")
 def dispatch_reply(connection_id, message_id):
     """Claim one committed reply. Do not retry an uncertain provider send."""
@@ -160,7 +192,20 @@ def dispatch_reply(connection_id, message_id):
     ):
         _fail(message_id, "max_account_unavailable")
         return
-    if not message.sent_by or not conversation_capability(
+    automatic = (
+        not message.sent_by_id and message.max_reply_id == _automatic_request_id(conversation)
+        and message.max_details.get("automatic") is True
+        and message.max_details.get("contact_request") is True
+        and message.body == CONTACT_REQUEST_TEXT
+    )
+    if automatic:
+        if (
+            (connection.settings or {}).get("max_auto_request_phone") is not True
+            or conversation.messages.filter(max_details__shared_phone__isnull=False).exists()
+        ):
+            _fail(message_id, "max_reply_forbidden")
+            return
+    elif not message.sent_by or not conversation_capability(
         message.sent_by, "can_reply_conversations", conversation.organization,
     ):
         _fail(message_id, "max_reply_forbidden")

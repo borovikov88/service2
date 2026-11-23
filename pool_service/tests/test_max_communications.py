@@ -176,7 +176,7 @@ class MaxWebhookTests(LeadIntakeFixture, TestCase):
     def test_max_voice_is_cached_privately_and_webhook_redelivery_is_idempotent(self):
         body = self.payload["message"]["body"]
         body["attachments"] = [{
-            "type": "audio", "payload": {"url": "https://cdn.max.ru/temporary", "token": "synthetic-voice"},
+            "type": "audio", "payload": {"url": "https://cdn.max.ru/temporary", "token": "synthetic-voice", "id": 901},
         }]
         body["mid"] = "mid.synthetic-audio"
         self.connection.max_bot_token_encrypted = encrypt_secret("synthetic-token")
@@ -190,13 +190,13 @@ class MaxWebhookTests(LeadIntakeFixture, TestCase):
         url = reverse("communication_attachment", args=[attachment.pk]) + f"?org_id={self.org.pk}&inline=1"
         audio = b"synthetic-audio-bytes"
 
-        body["attachments"][0]["payload"].update(url="https://cdn.max.ru/temporary", token="replaced-voice")
+        body["attachments"][0]["payload"].update(url="https://cdn.max.ru/temporary", token="replaced-voice", id=902)
         with patch("pool_service.communication_max_outbound._request", return_value=self.payload["message"]), patch(
             "pool_service.communication_max_media._download",
         ) as transfer:
             self.assertEqual(self.client.get(url).status_code, 502)
             transfer.assert_not_called()
-        body["attachments"][0]["payload"].update(url="https://cdn.max.ru/temporary?fresh=signature", token="synthetic-voice")
+        body["attachments"][0]["payload"].update(url="https://cdn.max.ru/temporary?fresh=signature", token="different-signed-token", id=901)
 
         def download(remote, destination, kind):
             self.assertEqual((remote, kind), ("https://cdn.max.ru/temporary?fresh=signature", "audio"))
@@ -215,6 +215,19 @@ class MaxWebhookTests(LeadIntakeFixture, TestCase):
                     self.assertEqual(response["Cache-Control"], "private, no-store")
                     self.assertEqual(b"".join(response.streaming_content), audio)
                     response.close()
+                ranged = self.client.get(url, HTTP_RANGE="bytes=0-1")
+                self.assertEqual(ranged.status_code, 206)
+                self.assertEqual(ranged["Accept-Ranges"], "bytes")
+                self.assertEqual(ranged["Content-Range"], f"bytes 0-1/{len(audio)}")
+                self.assertEqual(b"".join(ranged.streaming_content), audio[:2])
+                ranged.close()
+                suffix = self.client.get(url, HTTP_RANGE="bytes=-2")
+                self.assertEqual(suffix.status_code, 206)
+                self.assertEqual(b"".join(suffix.streaming_content), audio[-2:])
+                suffix.close()
+                invalid = self.client.get(url, HTTP_RANGE="bytes=100-")
+                self.assertEqual(invalid.status_code, 416)
+                self.assertEqual(invalid["Content-Range"], f"bytes */{len(audio)}")
                 api.assert_called_once_with("GET", "/messages/mid.synthetic-audio", "synthetic-token")
                 transfer.assert_called_once()
 
@@ -274,6 +287,11 @@ class MaxWebhookTests(LeadIntakeFixture, TestCase):
         self.assertNotIn("+79990000000", shared.body)
         conversation.refresh_from_db()
         self.assertFalse(conversation.provider_phone)
+        card_url = reverse("client_detail", args=[conversation.client_id])
+        self.assertContains(self.client.get(card_url), "Телефон из MAX")
+        self.assertContains(self.client.get(card_url), "+79990000000")
+        CommunicationAccess.objects.filter(user=self.user, organization=self.org).update(can_view_conversations=False)
+        self.assertNotContains(self.client.get(card_url), "+79990000000")
         body["mid"] = "mid.invalid-card"
         body["attachments"][0]["payload"]["max_info"]["user_id"] = 501
         self.assertEqual(self.post_update().status_code, 200)
@@ -295,3 +313,41 @@ class MaxWebhookTests(LeadIntakeFixture, TestCase):
                     "https://cdn.max.ru.foreign.example/file", "https://someone@max.ru/file"):
             with self.subTest(url=url), self.assertRaises(MaxMediaError):
                 media_url(url)
+
+
+    def test_auto_contact_request_is_queued_once_per_dialog_even_on_webhook_replay(self):
+        self.connection.max_bot_token_encrypted = encrypt_secret("synthetic-token")
+        self.connection.settings = {"max_auto_request_phone": True}
+        self.connection.save(update_fields=["max_bot_token_encrypted", "settings"])
+        with patch("pool_service.communication_max_outbound._request", return_value={
+            "message": {"body": {"mid": "mid.auto-phone"}},
+        }) as api, self.captureOnCommitCallbacks(execute=True):
+            self.assertEqual(self.post_update().status_code, 200)
+            self.assertEqual(self.post_update().status_code, 200)
+            self.payload["message"]["body"]["mid"] = "mid.another-incoming"
+            self.assertEqual(self.post_update().status_code, 200)
+        self.assertEqual(api.call_count, 1)
+        self.assertEqual(api.call_args.args[:3], ("POST", "/messages?user_id=500", "synthetic-token"))
+        keyboard = json.loads(api.call_args.args[3])["attachments"][0]
+        self.assertEqual(keyboard["payload"]["buttons"][0][0]["type"], "request_contact")
+        request = ConversationMessage.objects.get(direction=ConversationMessage.DIRECTION_OUT)
+        self.assertTrue(request.max_details["automatic"])
+        self.assertIsNone(request.sent_by_id)
+        self.assertEqual(request.delivery_status, ConversationMessage.DELIVERY_DELIVERED)
+
+    def test_completion_separates_lists_and_new_incoming_reopens_the_dialog(self):
+        conversation, _ = self._reply_form()
+        index = reverse("communications_conversations")
+        finish = reverse("communication_update", args=[conversation.uuid])
+        self.assertContains(self.client.get(index), "Завершить диалог")
+        self.assertRedirects(self.client.post(finish, {"status": "done"}), index + f"?org_id={self.org.pk}")
+        self.assertNotContains(self.client.get(index), str(conversation.uuid))
+        self.assertContains(self.client.get(index + "?dialogs=closed"), str(conversation.uuid))
+        direct = self.client.get(index + f"?conversation={conversation.uuid}")
+        self.assertTrue(direct.context["show_closed_dialogs"])
+        self.assertNotContains(direct, "Завершить диалог")
+        self.payload["message"]["body"]["mid"] = "mid.reopened"
+        self.assertEqual(self.post_update().status_code, 200)
+        conversation.refresh_from_db()
+        self.assertEqual(conversation.status, Conversation.STATUS_NEW)
+        self.assertContains(self.client.get(index), str(conversation.uuid))

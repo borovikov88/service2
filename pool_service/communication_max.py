@@ -7,6 +7,7 @@ from django.views.decorators.debug import sensitive_variables
 
 from pool_service.communication_max_contact import shared_phone
 from pool_service.communication_max_media import MEDIA_NAMES, media_fingerprints, media_name
+from pool_service.communication_max_outbound import queue_phone_request
 from pool_service.communication_models import MessageAttachment
 from pool_service.communication_secrets import CommunicationSecretError, decrypt_secret
 from pool_service.communication_services import receive_message
@@ -136,3 +137,6 @@ def ingest_update(connection, parsed):
         MessageAttachment.objects.bulk_create([
             MessageAttachment(message=message, **fields) for fields in media
         ])
+
+    if not message.intake_historical and not phone:
+        queue_phone_request(message.conversation)

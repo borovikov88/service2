@@ -62,6 +62,10 @@ def media_fingerprints(kind, payload):
     if not isinstance(payload, dict):
         return ()
     identifiers = []
+    # MAX audio download tokens can change across reads. The audio ID is stable.
+    audio_id = payload.get("id")
+    if kind == "audio" and type(audio_id) is int and audio_id > 0:
+        identifiers.append(("audio_id", str(audio_id)))
     photo_id = payload.get("photo_id")
     if kind == "image" and type(photo_id) is int and photo_id > 0:
         identifiers.append(("photo_id", str(photo_id)))
@@ -176,7 +180,7 @@ def upload_attachment(token, attachment):
 
 
 @sensitive_variables("token", "source", "payload", "video_info", "video_urls")
-def _remote_url(attachment, token):
+def _remote_url(attachment, token, *, recover_current_audio=False):
     from pool_service.communication_max_outbound import _request
 
     message = attachment.message
@@ -203,11 +207,17 @@ def _remote_url(attachment, token):
     if not isinstance(entry, dict) or entry.get("type") != attachment.max_media_kind:
         raise MaxMediaError("max_media_unavailable")
     payload = entry.get("payload")
-    if (
-        not attachment.max_media_fingerprint
-        or attachment.max_media_fingerprint not in media_fingerprints(attachment.max_media_kind, payload)
-    ):
-        raise MaxMediaError("max_media_unavailable")
+    fingerprints = media_fingerprints(attachment.max_media_kind, payload)
+    if not attachment.max_media_fingerprint or attachment.max_media_fingerprint not in fingerprints:
+        # Explicit operational recovery is limited to the same original audio
+        # message. Normal downloads still require the original fingerprint.
+        occurred_at = message.intake_occurred_at
+        if (
+            not recover_current_audio or attachment.max_media_kind != "audio"
+            or not isinstance(payload, dict) or type(payload.get("id")) is not int or payload["id"] <= 0
+            or occurred_at is None or source.get("timestamp") != round(occurred_at.timestamp() * 1000)
+        ):
+            raise MaxMediaError("max_media_unavailable")
     video_token = payload.get("token")
     if attachment.max_media_kind == "video" and isinstance(video_token, str) and MEDIA_KEY.fullmatch(video_token):
         video_info = _request("GET", "/videos/" + quote(video_token, safe=""), token)
@@ -263,7 +273,7 @@ def _download(url, destination, kind):
 
 
 @sensitive_variables("token", "url")
-def cache_incoming_media(attachment):
+def cache_incoming_media(attachment, *, recover_current_audio=False):
     """Retrieve a fresh link on first open and retain the file in private storage."""
     message = attachment.message
     conversation = message.conversation
@@ -278,7 +288,7 @@ def cache_incoming_media(attachment):
         token = decrypt_secret(connection.max_bot_token_encrypted)
     except CommunicationSecretError:
         raise MaxMediaError("max_media_unavailable") from None
-    url = _remote_url(attachment, token)
+    url = _remote_url(attachment, token, recover_current_audio=recover_current_audio)
     with SpooledTemporaryFile(max_size=1024 * 1024) as buffer:
         size, content_type = _download(url, buffer, attachment.max_media_kind)
         buffer.seek(0)
