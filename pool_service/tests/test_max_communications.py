@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 import ssl
+from datetime import timedelta
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 from uuid import uuid4
@@ -12,6 +13,7 @@ from django.core.files.storage import FileSystemStorage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from pool_service.communication_max_media import MaxMediaError, media_fingerprints, media_url
 from pool_service.communication_max_outbound import MAX_CA, MaxApiError, dispatch_reply, max_api_ssl_context
@@ -110,7 +112,7 @@ class MaxWebhookTests(LeadIntakeFixture, TestCase):
         feed = reverse("communication_notification_feed")
         self.assertEqual(self.client.get(feed).json()["unread_dialogs"], 1)
         chat = reverse("communications_conversations")
-        self.assertContains(self.client.get(f"{chat}?conversation={conversation.uuid}"), 'data-communication-unread>')
+        self.assertContains(self.client.get(f"{chat}?conversation={conversation.uuid}"), 'data-communication-unanswered>')
         self.assertEqual(self.client.get(feed).json()["unread_dialogs"], 0)
 
         other = Organization.objects.create(name="Synthetic second communications organization")
@@ -126,9 +128,13 @@ class MaxWebhookTests(LeadIntakeFixture, TestCase):
         ConversationMessage.objects.create(conversation=other_conversation, direction="in", body="Другая организация")
         self.assertEqual(self.client.get(feed, {"org_id": self.org.pk}).json()["unread_dialogs"], 0)
         self.assertEqual(self.client.get(feed, {"org_id": other.pk}).json()["unread_dialogs"], 1)
+        self.assertEqual(self.client.get(feed, {"org_id": other.pk}).json()["unanswered_dialogs"], 1)
         scoped = self.client.get(f"{chat}?conversation={other_conversation.uuid}&org_id={other.pk}")
         self.assertContains(scoped, f'href="{chat}?org_id={other.pk}"')
         self.assertContains(scoped, f'{feed}?org_id={other.pk}')
+        scoped_feed = self.client.get(feed, {"org_id": other.pk}).json()
+        self.assertEqual(scoped_feed["unread_dialogs"], 0)
+        self.assertEqual(scoped_feed["unanswered_dialogs"], 1)
 
         manager = get_user_model().objects.create_user("second-synthetic-dialog-reader")
         OrganizationAccess.objects.create(organization=self.org, user=manager, role="manager")
@@ -136,10 +142,76 @@ class MaxWebhookTests(LeadIntakeFixture, TestCase):
             organization=self.org, user=manager, defaults={"can_view_conversations": True},
         )
         self.client.force_login(manager)
-        self.assertEqual(self.client.get(feed).json()["unread_dialogs"], 1)
+        manager_feed = self.client.get(feed).json()
+        self.assertEqual(manager_feed["unread_dialogs"], 1)
+        self.assertEqual(manager_feed["unanswered_dialogs"], 1)
         self.assertEqual(self.client.get(feed, {"org_id": other.pk}).status_code, 403)
         CommunicationAccess.objects.filter(organization=self.org, user=manager).update(can_view_conversations=False)
         self.assertEqual(self.client.get(feed).status_code, 403)
+
+    def test_unanswered_queue_only_clears_after_a_reply_or_completion(self):
+        conversation, _ = self._reply_form()
+        index = reverse("communications_conversations")
+        unanswered = {"dialogs": "unanswered", "org_id": self.org.pk}
+        feed = reverse("communication_notification_feed")
+
+        def count():
+            return self.client.get(feed).json()["unanswered_dialogs"]
+
+        def listed():
+            page = self.client.get(index, unanswered)
+            self.assertTrue(page.context["show_unanswered_dialogs"])
+            return [item.pk for item in page.context["conversations"]]
+
+        self.assertContains(self.client.get(index), "Без ответа")
+        self.assertEqual(listed(), [conversation.pk])
+        self.assertEqual(self.client.get(feed).json()["unread_dialogs"], 0)
+        self.assertEqual(count(), 1)
+
+        ConversationMessage.objects.create(
+            conversation=conversation, direction=ConversationMessage.DIRECTION_OUT,
+            delivery_status=ConversationMessage.DELIVERY_DELIVERED, max_details={"contact_request": True},
+        )
+        reply = ConversationMessage.objects.create(
+            conversation=conversation, direction=ConversationMessage.DIRECTION_OUT,
+            delivery_status=ConversationMessage.DELIVERY_PENDING,
+        )
+        for status in (
+            ConversationMessage.DELIVERY_PENDING, ConversationMessage.DELIVERY_SENDING,
+            ConversationMessage.DELIVERY_FAILED,
+        ):
+            ConversationMessage.objects.filter(pk=reply.pk).update(delivery_status=status)
+            self.assertEqual(count(), 1)
+
+        # A reply that leaves the filter is still visible in the active list.
+        answered_at = timezone.now()
+        ConversationMessage.objects.filter(pk=reply.pk).update(
+            delivery_status=ConversationMessage.DELIVERY_DELIVERED, intake_occurred_at=answered_at,
+        )
+        self.assertEqual(count(), 0)
+        self.assertEqual(listed(), [])
+        self.assertContains(self.client.get(index), str(conversation.uuid))
+        self.assertIsNone(self.client.get(index, {**unanswered, "conversation": conversation.uuid}).context["selected"])
+
+        # A delayed, older incoming event does not create a fresh obligation.
+        ConversationMessage.objects.create(
+            conversation=conversation, direction=ConversationMessage.DIRECTION_IN,
+            intake_occurred_at=answered_at - timedelta(minutes=2),
+        )
+        self.assertEqual(count(), 0)
+        ConversationMessage.objects.create(
+            conversation=conversation, direction=ConversationMessage.DIRECTION_IN,
+            intake_occurred_at=answered_at + timedelta(seconds=1),
+        )
+        self.assertEqual(count(), 1)
+        finish = reverse("communication_update", args=[conversation.uuid])
+        destination = index + f"?org_id={self.org.pk}&dialogs=unanswered"
+        self.assertRedirects(
+            self.client.post(finish + f"?org_id={self.org.pk}&dialogs=unanswered", {"status": "done"}),
+            destination,
+        )
+        self.assertEqual(count(), 0)
+        self.assertEqual(listed(), [])
 
     def test_replies_to_existing_dialog_once_and_shows_max_icon(self):
         conversation, url = self._reply_form()

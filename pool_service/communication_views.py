@@ -16,7 +16,7 @@ from django.core.exceptions import PermissionDenied
 from django.core.files.images import get_image_dimensions
 from django.db import transaction
 from django.db.models import F, OuterRef, Q, Subquery, Value
-from django.db.models.functions import Replace
+from django.db.models.functions import Coalesce, Replace
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseBadRequest, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -72,6 +72,8 @@ def _conversation_location(request, conversation):
     url = f"/communications/?conversation={conversation.uuid}"
     if request.GET.get("org_id"):
         url += f"&org_id={conversation.organization_id}"
+    if request.GET.get("dialogs") == "unanswered":
+        url += "&dialogs=unanswered"
     return url
 
 
@@ -142,6 +144,20 @@ def _wake_uploaded_audio_worker_if_needed(organization, *, include_fresh_pending
     return needs_worker
 
 
+def _with_reply_state(conversations):
+    replies = Q(
+        direction=ConversationMessage.DIRECTION_OUT,
+        delivery_status=ConversationMessage.DELIVERY_DELIVERED,
+    ) & (
+        Q(max_details__contact_request__isnull=True) | Q(max_details__contact_request=False)
+    )
+    latest_exchange = ConversationMessage.objects.filter(
+        Q(direction=ConversationMessage.DIRECTION_IN) | replies,
+        conversation=OuterRef("pk"),
+    ).order_by(Coalesce("intake_occurred_at", "created_at").desc(), "-pk")
+    return conversations.annotate(last_exchange_direction=Subquery(latest_exchange.values("direction")[:1]))
+
+
 @login_required
 def conversations(request):
     organization = _context(request, "can_view_conversations")
@@ -151,7 +167,8 @@ def conversations(request):
     ).select_related("connection__channel", "assignee", "website_request", "client")
     selected = None
     selected_id = request.GET.get("conversation")
-    show_closed = request.GET.get("dialogs") == "closed"
+    requested_tab = request.GET.get("dialogs")
+    show_closed = requested_tab == "closed"
     if selected_id:
         try:
             selected_uuid = UUID(selected_id)
@@ -159,8 +176,17 @@ def conversations(request):
             raise Http404 from None
         selected = get_object_or_404(scoped, uuid=selected_uuid)
         show_closed = selected.status == Conversation.STATUS_DONE
-    listed = scoped.filter(status=Conversation.STATUS_DONE) if show_closed else scoped.exclude(status=Conversation.STATUS_DONE)
+
+    show_unanswered = not show_closed and requested_tab == "unanswered"
+    if show_closed:
+        listed = scoped.filter(status=Conversation.STATUS_DONE)
+    else:
+        listed = _with_reply_state(scoped.exclude(status=Conversation.STATUS_DONE))
+        if show_unanswered:
+            listed = listed.filter(last_exchange_direction=ConversationMessage.DIRECTION_IN)
     items = list(listed.annotate(last_message_preview=Subquery(latest_message.values("body")[:1])))
+    if show_unanswered and selected and all(item.pk != selected.pk for item in items):
+        selected = None
     if selected is None and items:
         selected = items[0]
     states = {state.conversation_id: state.last_read_at for state in ConversationReadState.objects.filter(user=request.user, conversation__organization=organization)}
@@ -214,6 +240,7 @@ def conversations(request):
     return render(request, "pool_service/communications/conversations.html", {
         "active_tab": "communications", "conversations": items, "selected": selected,
         "communication_org_id": organization.pk, "show_closed_dialogs": show_closed,
+        "show_unanswered_dialogs": show_unanswered,
         "can_finish": bool(selected and selected.status != Conversation.STATUS_DONE
             and conversation_capability(request.user, "can_take_conversation", organization)
             and (selected.assignee_id in (None, request.user.pk)
@@ -437,7 +464,10 @@ def conversation_update(request, conversation_uuid):
         conversation.status = status
         conversation.save(update_fields=["status", "updated_at"])
         if finished:
-            return redirect(reverse("communications_conversations") + f"?org_id={organization.pk}")
+            url = reverse("communications_conversations") + f"?org_id={organization.pk}"
+            if request.GET.get("dialogs") == "unanswered":
+                url += "&dialogs=unanswered"
+            return redirect(url)
     return redirect(_conversation_location(request, conversation))
 
 
@@ -2464,6 +2494,11 @@ def communication_notification_feed(request):
         "notifications": result,
         "resolved_ids": resolved_ids,
         "unread_dialogs": _unread_dialog_count(request.user, organization),
+        "unanswered_dialogs": _with_reply_state(Conversation.objects.filter(
+            organization=organization, connection__channel__organization=organization,
+        ).exclude(status=Conversation.STATUS_DONE)).filter(
+            last_exchange_direction=ConversationMessage.DIRECTION_IN,
+        ).count(),
     })
 
 

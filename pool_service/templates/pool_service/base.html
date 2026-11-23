@@ -174,7 +174,7 @@
 
       {% if show_communications_menu %}
       <a href="{% url 'communications_conversations' %}{% if communication_menu_org_id %}?org_id={{ communication_menu_org_id }}{% endif %}" class="desktop-sidebar__link {% if active_tab == 'communications' %}is-active{% endif %}">
-        <i class="bi bi-chat-dots"></i><span>Связь</span>{% include "pool_service/communications/_unread_badge.html" %}
+        <i class="bi bi-chat-dots"></i><span>Связь</span>{% include "pool_service/communications/_unanswered_badge.html" %}
       </a>
       {% endif %}
 
@@ -378,7 +378,7 @@
                   <i class="bi bi-people"></i>
                   <span>Контакты</span>
                 </a>
-                {% if show_communications_menu %}<a href="{% url 'communications_conversations' %}{% if communication_menu_org_id %}?org_id={{ communication_menu_org_id }}{% endif %}" class="ui-dropdown__item {% if active_tab == 'communications' %}is-active{% endif %}"><i class="bi bi-chat-dots"></i><span>Связь</span>{% include "pool_service/communications/_unread_badge.html" %}</a>{% endif %}
+                {% if show_communications_menu %}<a href="{% url 'communications_conversations' %}{% if communication_menu_org_id %}?org_id={{ communication_menu_org_id }}{% endif %}" class="ui-dropdown__item {% if active_tab == 'communications' %}is-active{% endif %}"><i class="bi bi-chat-dots"></i><span>Связь</span>{% include "pool_service/communications/_unanswered_badge.html" %}</a>{% endif %}
                 {% if can_manage_communication_channels %}<a href="{% url 'avito_dashboard' %}" class="ui-dropdown__item {% if active_tab == 'avito' %}is-active{% endif %}"><i class="bi bi-shop"></i><span>Авито</span></a>{% endif %}
                 {% endif %}
                 {% endif %}
@@ -400,7 +400,7 @@
           {% if is_org_staff %}
             <a class="text-decoration-none {% if active_tab == 'clients' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'clients_list' %}">Контакты</a>
           {% endif %}
-          {% if show_communications_menu %}<a class="text-decoration-none {% if active_tab == 'communications' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'communications_conversations' %}{% if communication_menu_org_id %}?org_id={{ communication_menu_org_id }}{% endif %}">Связь{% include "pool_service/communications/_unread_badge.html" %}</a>{% endif %}
+          {% if show_communications_menu %}<a class="text-decoration-none {% if active_tab == 'communications' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'communications_conversations' %}{% if communication_menu_org_id %}?org_id={{ communication_menu_org_id }}{% endif %}">Связь{% include "pool_service/communications/_unanswered_badge.html" %}</a>{% endif %}
           {% if can_manage_communication_channels %}<a class="text-decoration-none {% if active_tab == 'avito' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'avito_dashboard' %}">Авито</a>{% endif %}
           {% if can_access_management_finance %}
             <div class="crm-nav">
@@ -612,7 +612,7 @@
           {% endif %}
           {% if show_communications_menu %}
           <a href="{% url 'communications_conversations' %}{% if communication_menu_org_id %}?org_id={{ communication_menu_org_id }}{% endif %}" class="list-group-item list-group-item-action {% if active_tab == 'communications' %}active{% endif %}">
-            <i class="bi bi-chat-dots me-2"></i>Связь{% include "pool_service/communications/_unread_badge.html" %}
+            <i class="bi bi-chat-dots me-2"></i>Связь{% include "pool_service/communications/_unanswered_badge.html" %}
           </a>
           {% endif %}
           {% if can_manage_communication_channels %}
@@ -925,11 +925,11 @@
         const feedUrl = "{% url 'communication_notification_feed' %}{% if communication_menu_org_id %}?org_id={{ communication_menu_org_id }}{% endif %}";
         const resolveTemplate = "{% url 'communication_notification_resolve' 0 %}{% if communication_menu_org_id %}?org_id={{ communication_menu_org_id }}{% endif %}";
         let communicationPollRunning = false;
-        const communicationBadges = document.querySelectorAll("[data-communication-unread]");
+        const communicationBadges = document.querySelectorAll("[data-communication-unanswered]");
         const updateCommunicationBadges = (count) => {
           if (!Number.isSafeInteger(count) || count < 0) return;
           communicationBadges.forEach((badge) => {
-            badge.querySelector("[data-communication-unread-value]").textContent = count || "";
+            badge.querySelector("[data-communication-unanswered-value]").textContent = count || "";
             badge.classList.toggle("d-none", count === 0);
           });
         };
@@ -1006,7 +1006,7 @@
                 document.getElementById(`communication-alert-${id}`)?.remove();
               });
               (payload.notifications || []).forEach(renderCommunicationAlert);
-              updateCommunicationBadges(payload.unread_dialogs);
+              updateCommunicationBadges(payload.unanswered_dialogs);
             }
           } catch (_error) {
             // Notifications are best-effort; regular pages must remain usable.
