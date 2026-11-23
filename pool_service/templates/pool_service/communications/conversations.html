@@ -29,15 +29,16 @@ html[data-theme="dark"] .composer-note{color:#d7c38e;background:#2a291f;border:1
 <div class="card communications-grid overflow-hidden">
  <aside class="conversation-list">
    {% now "Y-m-d" as dialog_today %}
-   <nav class="d-flex gap-2 px-2 py-2 border-bottom" aria-label="Состояние диалогов">
-     <a href="{% url 'communications_conversations' %}?org_id={{ communication_org_id }}" class="btn btn-sm {% if not show_closed_dialogs %}btn-primary{% else %}btn-outline-secondary{% endif %}"{% if not show_closed_dialogs %} aria-current="page"{% endif %}>Активные</a>
+   <nav class="d-flex flex-wrap gap-2 px-2 py-2 border-bottom" aria-label="Состояние диалогов">
+     <a href="{% url 'communications_conversations' %}?org_id={{ communication_org_id }}" class="btn btn-sm {% if not show_closed_dialogs and not show_unanswered_dialogs %}btn-primary{% else %}btn-outline-secondary{% endif %}"{% if not show_closed_dialogs and not show_unanswered_dialogs %} aria-current="page"{% endif %}>Активные</a>
+     <a href="{% url 'communications_conversations' %}?org_id={{ communication_org_id }}&amp;dialogs=unanswered" class="btn btn-sm {% if show_unanswered_dialogs %}btn-primary{% else %}btn-outline-secondary{% endif %}"{% if show_unanswered_dialogs %} aria-current="page"{% endif %}>Без ответа</a>
      <a href="{% url 'communications_conversations' %}?org_id={{ communication_org_id }}&amp;dialogs=closed" class="btn btn-sm {% if show_closed_dialogs %}btn-primary{% else %}btn-outline-secondary{% endif %}"{% if show_closed_dialogs %} aria-current="page"{% endif %}>Завершённые</a>
    </nav>
    {% for conversation in conversations %}
      <div class="conversation-row{% if selected.pk == conversation.pk %} active{% endif %}">
        <div class="conversation-row-header">
          <div class="conversation-title">
-           <a class="conversation-row-name" href="?conversation={{ conversation.uuid }}&amp;org_id={{ communication_org_id }}">
+           <a class="conversation-row-name" href="?conversation={{ conversation.uuid }}&amp;org_id={{ communication_org_id }}{% if show_unanswered_dialogs %}&amp;dialogs=unanswered{% endif %}">
              {% include "pool_service/communications/_channel_icon.html" with channel=conversation.connection.channel only %}
              <strong title="{{ conversation.display_name }}"{% if selected.pk == conversation.pk %} data-selected-conversation-name{% endif %}>{{ conversation.display_name }}</strong>
            </a>
@@ -52,11 +53,12 @@ html[data-theme="dark"] .composer-note{color:#d7c38e;background:#2a291f;border:1
          {% endif %}
        </div>
        <div class="d-flex align-items-end gap-2">
-         <a class="conversation-select flex-grow-1" href="?conversation={{ conversation.uuid }}&amp;org_id={{ communication_org_id }}" tabindex="-1">
+         <a class="conversation-select flex-grow-1" href="?conversation={{ conversation.uuid }}&amp;org_id={{ communication_org_id }}{% if show_unanswered_dialogs %}&amp;dialogs=unanswered{% endif %}" tabindex="-1">
            <div class="text-muted text-truncate">{{ conversation.last_message_preview|default:"Вложение" }}</div>
-           <div class="d-flex gap-2 mt-1">
+           <div class="d-flex flex-wrap gap-2 mt-1">
              <span class="badge bg-secondary">{{ conversation.get_status_display }}</span>
-             {% if conversation.unread_count %}<span class="badge bg-danger">{{ conversation.unread_count }}</span>{% endif %}
+             {% if conversation.last_exchange_direction == 'in' %}<span class="badge text-bg-warning">Ждёт ответа</span>{% endif %}
+             {% if conversation.unread_count %}<span class="badge bg-danger" title="Непрочитанные сообщения">{{ conversation.unread_count }}</span>{% endif %}
              <small>{% if conversation.assignee %}{{ conversation.assignee.get_full_name|default:conversation.assignee.username }}{% else %}Свободен{% endif %}</small>
            </div>
          </a>
@@ -64,12 +66,12 @@ html[data-theme="dark"] .composer-note{color:#d7c38e;background:#2a291f;border:1
        </div>
      </div>
    {% empty %}
-     <div class="p-4 text-muted">{% if show_closed_dialogs %}Завершённых диалогов пока нет.{% else %}Активных диалогов пока нет.{% endif %}</div>
+     <div class="p-4 text-muted">{% if show_closed_dialogs %}Завершённых диалогов пока нет.{% elif show_unanswered_dialogs %}Диалогов без ответа нет.{% else %}Активных диалогов пока нет.{% endif %}</div>
    {% endfor %}
  </aside>
- <section>{% if selected %}<header class="conversation-header border-bottom d-flex flex-wrap justify-content-between align-items-center gap-2"><div><div data-conversation-identity data-identity-url="{% url 'communication_conversation_identity' selected.uuid %}?org_id={{ communication_org_id }}">{% include "pool_service/communications/_conversation_identity.html" with conversation=selected only %}</div><div class="small text-muted">{{ selected.get_status_display }}{% if selected.assignee %} · {{ selected.assignee.get_full_name|default:selected.assignee.username }}{% endif %}</div></div><div class="d-flex gap-2 conversation-actions">{% if can_take and not selected.assignee %}<form method="post" action="{% url 'communication_take' selected.uuid %}?org_id={{ communication_org_id }}">{% csrf_token %}<button class="btn btn-primary">Взять в работу</button></form>{% endif %}{% if can_assign %}<form method="post" action="{% url 'communication_update' selected.uuid %}?org_id={{ communication_org_id }}" class="d-flex">{% csrf_token %}<select class="form-select" name="assignee" aria-label="Ответственный" onchange="this.form.submit()"><option value="">Без ответственного</option>{% for access in staff %}<option value="{{ access.user_id }}" {% if selected.assignee_id == access.user_id %}selected{% endif %}>{{ access.user.get_full_name|default:access.user.username }}</option>{% endfor %}</select></form>{% endif %}{% if can_take or can_assign %}<form method="post" action="{% url 'communication_update' selected.uuid %}?org_id={{ communication_org_id }}" class="d-flex">{% csrf_token %}<select class="form-select" name="status" aria-label="Статус диалога" onchange="this.form.submit()"><option value="new" {% if selected.status == 'new' %}selected{% endif %}>Новое</option><option value="active" {% if selected.status == 'active' %}selected{% endif %}>В работе</option><option value="waiting" {% if selected.status == 'waiting' %}selected{% endif %}>Ожидаем клиента</option><option value="done" {% if selected.status == 'done' %}selected{% endif %}>Завершено</option><option value="spam" {% if selected.status == 'spam' %}selected{% endif %}>Спам / Нецелевое</option></select></form>{% endif %}
+ <section>{% if selected %}<header class="conversation-header border-bottom d-flex flex-wrap justify-content-between align-items-center gap-2"><div><div data-conversation-identity data-identity-url="{% url 'communication_conversation_identity' selected.uuid %}?org_id={{ communication_org_id }}">{% include "pool_service/communications/_conversation_identity.html" with conversation=selected only %}</div><div class="small text-muted">{{ selected.get_status_display }}{% if selected.assignee %} · {{ selected.assignee.get_full_name|default:selected.assignee.username }}{% endif %}</div></div><div class="d-flex gap-2 conversation-actions">{% if can_take and not selected.assignee %}<form method="post" action="{% url 'communication_take' selected.uuid %}?org_id={{ communication_org_id }}{% if show_unanswered_dialogs %}&amp;dialogs=unanswered{% endif %}">{% csrf_token %}<button class="btn btn-primary">Взять в работу</button></form>{% endif %}{% if can_assign %}<form method="post" action="{% url 'communication_update' selected.uuid %}?org_id={{ communication_org_id }}{% if show_unanswered_dialogs %}&amp;dialogs=unanswered{% endif %}" class="d-flex">{% csrf_token %}<select class="form-select" name="assignee" aria-label="Ответственный" onchange="this.form.submit()"><option value="">Без ответственного</option>{% for access in staff %}<option value="{{ access.user_id }}" {% if selected.assignee_id == access.user_id %}selected{% endif %}>{{ access.user.get_full_name|default:access.user.username }}</option>{% endfor %}</select></form>{% endif %}{% if can_take or can_assign %}<form method="post" action="{% url 'communication_update' selected.uuid %}?org_id={{ communication_org_id }}{% if show_unanswered_dialogs %}&amp;dialogs=unanswered{% endif %}" class="d-flex">{% csrf_token %}<select class="form-select" name="status" aria-label="Статус диалога" onchange="this.form.submit()"><option value="new" {% if selected.status == 'new' %}selected{% endif %}>Новое</option><option value="active" {% if selected.status == 'active' %}selected{% endif %}>В работе</option><option value="waiting" {% if selected.status == 'waiting' %}selected{% endif %}>Ожидаем клиента</option><option value="done" {% if selected.status == 'done' %}selected{% endif %}>Завершено</option><option value="spam" {% if selected.status == 'spam' %}selected{% endif %}>Спам / Нецелевое</option></select></form>{% endif %}
      {% if can_finish %}
-       <form method="post" action="{% url 'communication_update' selected.uuid %}?org_id={{ communication_org_id }}">
+       <form method="post" action="{% url 'communication_update' selected.uuid %}?org_id={{ communication_org_id }}{% if show_unanswered_dialogs %}&amp;dialogs=unanswered{% endif %}">
          {% csrf_token %}
          <button class="btn btn-outline-secondary" name="status" value="done">Завершить диалог</button>
        </form>
@@ -87,7 +89,7 @@ html[data-theme="dark"] .composer-note{color:#d7c38e;background:#2a291f;border:1
         {% endif %}
       </div>
     {% else %}
-      <form class="conversation-composer border-top" method="post" enctype="multipart/form-data" action="{% url 'communication_reply' selected.uuid %}?org_id={{ communication_org_id }}">
+      <form class="conversation-composer border-top" method="post" enctype="multipart/form-data" action="{% url 'communication_reply' selected.uuid %}?org_id={{ communication_org_id }}{% if show_unanswered_dialogs %}&amp;dialogs=unanswered{% endif %}">
         {% csrf_token %}
         {% if max_reply_id %}<input type="hidden" name="max_reply_id" value="{{ max_reply_id }}">{% endif %}
         <textarea class="form-control mb-2" name="body" rows="2" placeholder="Напишите ответ..."{% if max_reply_id %} maxlength="4000"{% endif %}></textarea>
@@ -100,7 +102,7 @@ html[data-theme="dark"] .composer-note{color:#d7c38e;background:#2a291f;border:1
         </div>
       </form>
       {% if max_contact_request_id %}
-        <form class="px-2 pb-2" method="post" action="{% url 'communication_reply' selected.uuid %}?org_id={{ communication_org_id }}">
+        <form class="px-2 pb-2" method="post" action="{% url 'communication_reply' selected.uuid %}?org_id={{ communication_org_id }}{% if show_unanswered_dialogs %}&amp;dialogs=unanswered{% endif %}">
           {% csrf_token %}
           <input type="hidden" name="max_reply_id" value="{{ max_contact_request_id }}">
           <button class="btn btn-sm btn-outline-secondary" type="submit" name="request_phone" value="1">Запросить телефон</button>
