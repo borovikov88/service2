@@ -12,7 +12,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from pool_service.communication_max_media import MaxMediaError, media_url
+from pool_service.communication_max_media import MaxMediaError, media_fingerprint, media_url
 from pool_service.communication_max_outbound import MAX_CA, MaxApiError, dispatch_reply, max_api_ssl_context
 from pool_service.communication_secrets import decrypt_secret, encrypt_secret
 from pool_service.models import OrganizationAccess
@@ -188,8 +188,16 @@ class MaxWebhookTests(LeadIntakeFixture, TestCase):
         url = reverse("communication_attachment", args=[attachment.pk]) + f"?org_id={self.org.pk}&inline=1"
         audio = b"synthetic-audio-bytes"
 
+        body["attachments"][0]["payload"]["url"] = "https://cdn.max.ru/replaced"
+        with patch("pool_service.communication_max_outbound._request", return_value=self.payload["message"]), patch(
+            "pool_service.communication_max_media._download",
+        ) as transfer:
+            self.assertEqual(self.client.get(url).status_code, 502)
+            transfer.assert_not_called()
+        body["attachments"][0]["payload"]["url"] = "https://cdn.max.ru/temporary?fresh=signature"
+
         def download(remote, destination, kind):
-            self.assertEqual((remote, kind), ("https://cdn.max.ru/temporary", "audio"))
+            self.assertEqual((remote, kind), ("https://cdn.max.ru/temporary?fresh=signature", "audio"))
             destination.write(audio)
             return len(audio), "audio/ogg"
 
@@ -271,6 +279,10 @@ class MaxWebhookTests(LeadIntakeFixture, TestCase):
 
     def test_max_media_only_accepts_https_from_provider_domains(self):
         self.assertEqual(media_url("https://cdn.max.ru/file?a=1"), ("cdn.max.ru", "/file?a=1"))
+        self.assertEqual(
+            media_fingerprint("image", {"photo_id": 42, "url": "https://cdn.max.ru/one"}),
+            media_fingerprint("image", {"photo_id": 42, "url": "https://cdn.max.ru/renewed"}),
+        )
         for url in ("http://cdn.max.ru/file", "https://foreign.example/file",
                     "https://cdn.max.ru.foreign.example/file", "https://someone@max.ru/file"):
             with self.subTest(url=url), self.assertRaises(MaxMediaError):

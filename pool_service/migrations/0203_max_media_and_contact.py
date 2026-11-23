@@ -20,6 +20,11 @@ class Migration(migrations.Migration):
             name="max_media_kind",
             field=models.CharField(blank=True, default="", editable=False, max_length=8),
         ),
+        migrations.AddField(
+            model_name="messageattachment",
+            name="max_media_fingerprint",
+            field=models.CharField(blank=True, default="", editable=False, max_length=64),
+        ),
         migrations.AddConstraint(
             model_name="messageattachment",
             constraint=models.UniqueConstraint(

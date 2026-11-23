@@ -1,5 +1,6 @@
 """Bounded transfers between private storage and MAX's signed media URLs."""
 
+import hashlib
 import json
 import re
 from http.client import HTTPException, HTTPSConnection
@@ -54,6 +55,31 @@ def media_name(value, kind):
         if filename.strip(" ."):
             return filename[-200:]
     return MEDIA_NAMES[kind]
+
+
+def media_fingerprint(kind, payload):
+    """Bind a stored placeholder to the original provider attachment."""
+    if not isinstance(payload, dict):
+        return ""
+    value = None
+    key = "token"
+    if kind == "image" and type(payload.get("photo_id")) is int and payload["photo_id"] > 0:
+        key, value = "photo_id", str(payload["photo_id"])
+    elif kind == "sticker" and isinstance(payload.get("code"), str):
+        key, value = "code", payload["code"]
+    else:
+        value = payload.get("token")
+    if not isinstance(value, str) or not 1 <= len(value) <= 4096:
+        try:
+            host, target = media_url(payload.get("url"))
+        except MaxMediaError:
+            return ""
+        key, value = "url_path", host + target.partition("?")[0]
+    try:
+        encoded = (kind + ":" + key + ":" + value).encode("utf-8")
+    except UnicodeError:
+        return ""
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def media_url(url):
@@ -171,7 +197,10 @@ def _remote_url(attachment, token):
     if not isinstance(entry, dict) or entry.get("type") != attachment.max_media_kind:
         raise MaxMediaError("max_media_unavailable")
     payload = entry.get("payload")
-    if not isinstance(payload, dict):
+    if (
+        not attachment.max_media_fingerprint
+        or media_fingerprint(attachment.max_media_kind, payload) != attachment.max_media_fingerprint
+    ):
         raise MaxMediaError("max_media_unavailable")
     video_token = payload.get("token")
     if attachment.max_media_kind == "video" and isinstance(video_token, str) and MEDIA_KEY.fullmatch(video_token):

@@ -366,6 +366,7 @@ class MessageAttachment(models.Model):
     height = models.PositiveIntegerField(null=True, blank=True)
     max_media_position = models.PositiveSmallIntegerField(null=True, blank=True, editable=False)
     max_media_kind = models.CharField(max_length=8, blank=True, default="", editable=False)
+    max_media_fingerprint = models.CharField(max_length=64, blank=True, default="", editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
