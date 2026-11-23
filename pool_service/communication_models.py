@@ -338,6 +338,7 @@ class ConversationMessage(models.Model):
     delivery_error = models.CharField(max_length=500, blank=True)
     delivery_attempts = models.PositiveSmallIntegerField(default=0)
     max_reply_id = models.UUIDField(null=True, blank=True, editable=False)
+    max_details = models.JSONField(default=dict, blank=True, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -363,7 +364,17 @@ class MessageAttachment(models.Model):
     original_size = models.PositiveBigIntegerField(default=0)
     width = models.PositiveIntegerField(null=True, blank=True)
     height = models.PositiveIntegerField(null=True, blank=True)
+    max_media_position = models.PositiveSmallIntegerField(null=True, blank=True, editable=False)
+    max_media_kind = models.CharField(max_length=8, blank=True, default="", editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["message", "max_media_position"],
+                name="comm_attachment_max_pos_uniq",
+            ),
+        ]
 
 
 class ConversationAssignment(models.Model):

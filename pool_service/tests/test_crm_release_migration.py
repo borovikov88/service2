@@ -8,7 +8,7 @@ from django.utils import timezone
 
 
 class CrmReleaseMigrationTests(TransactionTestCase):
-    release = [('pool_service', '0202_max_text_replies')]
+    release = [('pool_service', '0203_max_media_and_contact')]
     production = [('pool_service', '0182_merge_onec_review_crm_contact')]
     prepared = [('pool_service', '0185_crm_failure_stage')]
 
@@ -63,7 +63,7 @@ class CrmReleaseMigrationTests(TransactionTestCase):
                 '0192_call_privacy_phone_index', '0193_call_privacy_owner_holds', '0194_call_private_number_removal_boundary',
                 '0195_crm_lead_identity_origin', '0196_crm_outbound_intake_boundary', '0197_crm_role_policy',
                 '0198_crm_workflow_documents_and_routing', '0199_confirmed_internal_contact_numbers', '0200_staff_departments',
-                '0201_max_communication_channel', '0202_max_text_replies'])
+                '0201_max_communication_channel', '0202_max_text_replies', '0203_max_media_and_contact'])
         else:
             self.assertEqual(plan, ['0172_clientimportcandidate_review_state_and_more',
                 '0182_merge_onec_review_crm_contact', '0186_merge_crm_release', '0187_enable_aqualine_crm_close', '0188_crm_card_comments', '0189_contact_management',
@@ -71,7 +71,7 @@ class CrmReleaseMigrationTests(TransactionTestCase):
                 '0192_call_privacy_phone_index', '0193_call_privacy_owner_holds', '0194_call_private_number_removal_boundary',
                 '0195_crm_lead_identity_origin', '0196_crm_outbound_intake_boundary', '0197_crm_role_policy',
                 '0198_crm_workflow_documents_and_routing', '0199_confirmed_internal_contact_numbers', '0200_staff_departments',
-                '0201_max_communication_channel', '0202_max_text_replies'])
+                '0201_max_communication_channel', '0202_max_text_replies', '0203_max_media_and_contact'])
         executor.migrate(self.release)
         new = executor.loader.project_state(self.release).apps
         for name, pk, snapshot in snapshots:

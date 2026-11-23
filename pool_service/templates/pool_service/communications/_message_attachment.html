@@ -1,0 +1,9 @@
+{% url 'communication_attachment' attachment.pk as attachment_url %}
+{% if attachment.max_media_kind == "image" or attachment.max_media_kind == "sticker" %}
+  <img class="rounded max-attachment-preview" loading="lazy" src="{{ attachment_url }}?org_id={{ org_id }}&amp;inline=1" alt="{{ attachment.original_name }}">
+{% elif attachment.max_media_kind == "audio" %}
+  <audio class="max-attachment-audio" controls preload="none" src="{{ attachment_url }}?org_id={{ org_id }}&amp;inline=1"></audio>
+{% elif attachment.max_media_kind == "video" %}
+  <video class="max-attachment-preview" controls preload="none" src="{{ attachment_url }}?org_id={{ org_id }}&amp;inline=1"></video>
+{% endif %}
+<a href="{{ attachment_url }}?org_id={{ org_id }}"><i class="bi bi-paperclip" aria-hidden="true"></i>{{ attachment.original_name }}</a>
