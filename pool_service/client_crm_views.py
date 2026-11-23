@@ -530,14 +530,29 @@ def client_detail(request, client_id):
         {"client": client.id, "next": next_url}
     )
     from .communication_services import conversation_capability
-    from .communication_models import Conversation
+    from .communication_models import CommunicationChannel, Conversation, ConversationMessage
     client_conversations = []
+    max_phone_contacts = []
     if conversation_capability(request.user, "can_view_conversations", client.organization):
         client_conversations = list(Conversation.objects.filter(client=client, organization_id=client.organization_id,
             connection__channel__organization_id=client.organization_id).select_related("connection__channel").order_by("-last_message_at")[:30])
+        seen_connections = set()
+        shared = ConversationMessage.objects.filter(
+            conversation__client=client, conversation__organization_id=client.organization_id,
+            conversation__connection__channel__organization_id=client.organization_id,
+            conversation__connection__channel__kind=CommunicationChannel.KIND_MAX,
+            direction=ConversationMessage.DIRECTION_IN, max_details__shared_phone__isnull=False,
+        ).order_by("-created_at", "-pk").values_list(
+            "conversation__connection_id", "conversation__uuid", "max_details",
+        )[:30]
+        for connection_id, conversation_uuid, details in shared:
+            number = details.get("shared_phone")
+            if not number or connection_id in seen_connections:
+                continue
+            seen_connections.add(connection_id)
+            max_phone_contacts.append((conversation_uuid, number))
     pending_communications = []
     if calls or client_conversations:
-        from .communication_models import ConversationMessage
         from .services.crm_commercial_access import can_view_team_deals
         from .services.crm_communication_routing import pending_routes, readable_routes
         if can_view_team_deals(request.user, client.organization):
@@ -570,6 +585,7 @@ def client_detail(request, client_id):
             "client": client,
             **(inline_editor_context(client, profile, limited=limited_editor) if can_edit_contacts else {}),
             "client_conversations": client_conversations,
+            "max_phone_contacts": max_phone_contacts,
             "pending_communications": pending_communications,
             "profile": profile,
             "client_kind_label": client_kind_label,

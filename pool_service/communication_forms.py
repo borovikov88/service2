@@ -23,6 +23,11 @@ class CommunicationConnectionForm(forms.Form):
         initial=True,
         widget=forms.CheckboxInput(attrs={"class": "form-check-input"}),
     )
+    max_auto_request_phone = forms.BooleanField(
+        label="Автоматически запрашивать телефон",
+        required=False,
+        widget=forms.CheckboxInput(attrs={"class": "form-check-input"}),
+    )
     client_id = forms.CharField(
         label="Avito client_id",
         max_length=500,
@@ -51,6 +56,8 @@ class CommunicationConnectionForm(forms.Form):
             self.fields.pop("client_secret")
         if kind == "max":
             self.fields["external_id"].help_text = "Числовой user_id бота из MAX API."
+        else:
+            self.fields.pop("max_auto_request_phone")
 
     def clean(self):
         cleaned = super().clean()
