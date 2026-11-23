@@ -474,12 +474,22 @@ def attachment_download(request, attachment_id):
     )
     if not attachment.original:
         raise Http404
-    response = FileResponse(
-        attachment.original.open("rb"),
-        as_attachment=not inline,
-        filename=attachment.original_name,
-        content_type=attachment.content_type if inline else "application/octet-stream",
-    )
+    stream_media = inline and attachment.max_media_kind in {"audio", "video"}
+    range_header = request.headers.get("Range", "").strip()
+    if stream_media and range_header and not request.headers.get("If-Range"):
+        response = _byte_range_response(
+            attachment.original.size, range_header, lambda: attachment.original.open("rb"),
+            attachment.content_type,
+        )
+    else:
+        response = FileResponse(
+            attachment.original.open("rb"),
+            as_attachment=not inline,
+            filename=attachment.original_name,
+            content_type=attachment.content_type if inline else "application/octet-stream",
+        )
+    if stream_media:
+        response["Accept-Ranges"] = "bytes"
     response["X-Content-Type-Options"] = "nosniff"
     if is_max:
         response["Cache-Control"] = "private, no-store"
@@ -1288,6 +1298,33 @@ def _recording_range_iterator(file_handle, start, length, chunk_size=64 * 1024):
         file_handle.close()
 
 
+def _byte_range_response(file_size, range_header, open_file, content_type):
+    match = re.fullmatch(r"bytes=([0-9]{0,19})-([0-9]{0,19})", range_header)
+    start_raw, end_raw = match.groups() if match else ("", "")
+    if start_raw:
+        start = int(start_raw)
+        end = min(int(end_raw), file_size - 1) if end_raw else file_size - 1
+    elif end_raw and int(end_raw) > 0:
+        start = max(file_size - int(end_raw), 0)
+        end = file_size - 1
+    else:
+        start, end = 0, -1
+
+    if start >= file_size or start > end:
+        response = HttpResponse(status=416)
+        response["Content-Range"] = f"bytes */{file_size}"
+        return response
+
+    length = end - start + 1
+    response = StreamingHttpResponse(
+        _recording_range_iterator(open_file(), start, length), status=206, content_type=content_type,
+    )
+    response["Content-Length"] = str(length)
+    response["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+    response["Accept-Ranges"] = "bytes"
+    return response
+
+
 @login_required
 def call_recording(request, call_id):
     access = _selected_access(request)
@@ -1325,47 +1362,13 @@ def call_recording(request, call_id):
         response["X-Content-Type-Options"] = "nosniff"
         return response
 
-    match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header)
-    if not match:
-        response = HttpResponse(status=416)
-        response["Content-Range"] = f"bytes */{file_size}"
-        return response
-
-    start_raw, end_raw = match.groups()
-    if not start_raw and not end_raw:
-        response = HttpResponse(status=416)
-        response["Content-Range"] = f"bytes */{file_size}"
-        return response
-
-    if start_raw:
-        start = int(start_raw)
-        end = int(end_raw) if end_raw else file_size - 1
-    else:
-        suffix_length = int(end_raw)
-        if suffix_length <= 0:
-            response = HttpResponse(status=416)
-            response["Content-Range"] = f"bytes */{file_size}"
-            return response
-        start = max(file_size - suffix_length, 0)
-        end = file_size - 1
-
-    if start >= file_size or start > end:
-        response = HttpResponse(status=416)
-        response["Content-Range"] = f"bytes */{file_size}"
-        return response
-
-    end = min(end, file_size - 1)
-    length = end - start + 1
-    response = StreamingHttpResponse(
-        _recording_range_iterator(open(file_path, "rb"), start, length),
-        status=206,
-        content_type=mimetypes.guess_type(file_path)[0] or "application/octet-stream",
+    response = _byte_range_response(
+        file_size, range_header, lambda: open(file_path, "rb"),
+        mimetypes.guess_type(file_path)[0] or "application/octet-stream",
     )
-    response["Content-Length"] = str(length)
-    response["Content-Range"] = f"bytes {start}-{end}/{file_size}"
-    response["Accept-Ranges"] = "bytes"
-    response["Cache-Control"] = "private, no-store"
-    response["X-Content-Type-Options"] = "nosniff"
+    if response.status_code == 206:
+        response["Cache-Control"] = "private, no-store"
+        response["X-Content-Type-Options"] = "nosniff"
     return response
 
 

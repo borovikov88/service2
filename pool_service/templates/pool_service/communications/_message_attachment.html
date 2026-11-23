@@ -4,7 +4,7 @@
     <img class="rounded max-attachment-preview" loading="lazy" src="{{ attachment_url }}?org_id={{ org_id }}&amp;inline=1" alt="{{ attachment.original_name }}">
   </button>
 {% elif attachment.max_media_kind == "audio" %}
-  <audio class="max-attachment-audio" controls preload="metadata" src="{{ attachment_url }}?org_id={{ org_id }}&amp;inline=1"></audio>
+  <audio class="max-attachment-audio" controls preload="{% if attachment.original %}metadata{% else %}none{% endif %}" src="{{ attachment_url }}?org_id={{ org_id }}&amp;inline=1"></audio>
 {% elif attachment.max_media_kind == "video" %}
   <video class="max-attachment-preview" controls preload="none" src="{{ attachment_url }}?org_id={{ org_id }}&amp;inline=1"></video>
 {% endif %}
