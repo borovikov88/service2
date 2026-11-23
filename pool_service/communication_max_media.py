@@ -57,29 +57,35 @@ def media_name(value, kind):
     return MEDIA_NAMES[kind]
 
 
-def media_fingerprint(kind, payload):
-    """Bind a stored placeholder to the original provider attachment."""
+def media_fingerprints(kind, payload):
+    """A stable provider ID is preferred over an exact signed URL."""
     if not isinstance(payload, dict):
-        return ""
-    value = None
-    key = "token"
-    if kind == "image" and type(payload.get("photo_id")) is int and payload["photo_id"] > 0:
-        key, value = "photo_id", str(payload["photo_id"])
-    elif kind == "sticker" and isinstance(payload.get("code"), str):
-        key, value = "code", payload["code"]
-    else:
-        value = payload.get("token")
-    if not isinstance(value, str) or not 1 <= len(value) <= 4096:
-        try:
-            host, target = media_url(payload.get("url"))
-        except MaxMediaError:
-            return ""
-        key, value = "url_path", host + target.partition("?")[0]
+        return ()
+    identifiers = []
+    photo_id = payload.get("photo_id")
+    if kind == "image" and type(photo_id) is int and photo_id > 0:
+        identifiers.append(("photo_id", str(photo_id)))
+    sticker = payload.get("code")
+    if kind == "sticker" and isinstance(sticker, str) and 1 <= len(sticker) <= 4096:
+        identifiers.append(("code", sticker))
+    token = payload.get("token")
+    if isinstance(token, str) and 1 <= len(token) <= 4096:
+        identifiers.append(("token", token))
     try:
-        encoded = (kind + ":" + key + ":" + value).encode("utf-8")
-    except UnicodeError:
-        return ""
-    return hashlib.sha256(encoded).hexdigest()
+        host, target = media_url(payload.get("url"))
+    except MaxMediaError:
+        pass
+    else:
+        # Some CDN paths are shared, with the asset ID present only in the query.
+        identifiers.append(("url", host + target))
+    hashes = []
+    for key, value in identifiers:
+        try:
+            encoded = (kind + ":" + key + ":" + value).encode("utf-8")
+        except UnicodeError:
+            continue
+        hashes.append(hashlib.sha256(encoded).hexdigest())
+    return tuple(hashes)
 
 
 def media_url(url):
@@ -199,7 +205,7 @@ def _remote_url(attachment, token):
     payload = entry.get("payload")
     if (
         not attachment.max_media_fingerprint
-        or media_fingerprint(attachment.max_media_kind, payload) != attachment.max_media_fingerprint
+        or attachment.max_media_fingerprint not in media_fingerprints(attachment.max_media_kind, payload)
     ):
         raise MaxMediaError("max_media_unavailable")
     video_token = payload.get("token")

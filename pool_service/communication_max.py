@@ -6,7 +6,7 @@ from django.db import transaction
 from django.views.decorators.debug import sensitive_variables
 
 from pool_service.communication_max_contact import shared_phone
-from pool_service.communication_max_media import MEDIA_NAMES, media_fingerprint, media_name
+from pool_service.communication_max_media import MEDIA_NAMES, media_fingerprints, media_name
 from pool_service.communication_models import MessageAttachment
 from pool_service.communication_secrets import CommunicationSecretError, decrypt_secret
 from pool_service.communication_services import receive_message
@@ -107,7 +107,7 @@ def ingest_update(connection, parsed):
             media.append({
                 "max_media_position": position,
                 "max_media_kind": kind,
-                "max_media_fingerprint": media_fingerprint(kind, attachment_data),
+                "max_media_fingerprint": next(iter(media_fingerprints(kind, attachment_data)), ""),
                 "original_name": media_name(filename, kind),
                 "content_type": "application/octet-stream",
             })

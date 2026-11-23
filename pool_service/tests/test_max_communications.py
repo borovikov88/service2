@@ -12,7 +12,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from pool_service.communication_max_media import MaxMediaError, media_fingerprint, media_url
+from pool_service.communication_max_media import MaxMediaError, media_fingerprints, media_url
 from pool_service.communication_max_outbound import MAX_CA, MaxApiError, dispatch_reply, max_api_ssl_context
 from pool_service.communication_secrets import decrypt_secret, encrypt_secret
 from pool_service.models import OrganizationAccess
@@ -175,7 +175,9 @@ class MaxWebhookTests(LeadIntakeFixture, TestCase):
 
     def test_max_voice_is_cached_privately_and_webhook_redelivery_is_idempotent(self):
         body = self.payload["message"]["body"]
-        body["attachments"] = [{"type": "audio", "payload": {"url": "https://cdn.max.ru/temporary"}}]
+        body["attachments"] = [{
+            "type": "audio", "payload": {"url": "https://cdn.max.ru/temporary", "token": "synthetic-voice"},
+        }]
         body["mid"] = "mid.synthetic-audio"
         self.connection.max_bot_token_encrypted = encrypt_secret("synthetic-token")
         self.connection.save(update_fields=["max_bot_token_encrypted"])
@@ -188,13 +190,13 @@ class MaxWebhookTests(LeadIntakeFixture, TestCase):
         url = reverse("communication_attachment", args=[attachment.pk]) + f"?org_id={self.org.pk}&inline=1"
         audio = b"synthetic-audio-bytes"
 
-        body["attachments"][0]["payload"]["url"] = "https://cdn.max.ru/replaced"
+        body["attachments"][0]["payload"].update(url="https://cdn.max.ru/temporary", token="replaced-voice")
         with patch("pool_service.communication_max_outbound._request", return_value=self.payload["message"]), patch(
             "pool_service.communication_max_media._download",
         ) as transfer:
             self.assertEqual(self.client.get(url).status_code, 502)
             transfer.assert_not_called()
-        body["attachments"][0]["payload"]["url"] = "https://cdn.max.ru/temporary?fresh=signature"
+        body["attachments"][0]["payload"].update(url="https://cdn.max.ru/temporary?fresh=signature", token="synthetic-voice")
 
         def download(remote, destination, kind):
             self.assertEqual((remote, kind), ("https://cdn.max.ru/temporary?fresh=signature", "audio"))
@@ -279,9 +281,15 @@ class MaxWebhookTests(LeadIntakeFixture, TestCase):
 
     def test_max_media_only_accepts_https_from_provider_domains(self):
         self.assertEqual(media_url("https://cdn.max.ru/file?a=1"), ("cdn.max.ru", "/file?a=1"))
-        self.assertEqual(
-            media_fingerprint("image", {"photo_id": 42, "url": "https://cdn.max.ru/one"}),
-            media_fingerprint("image", {"photo_id": 42, "url": "https://cdn.max.ru/renewed"}),
+        original = {"photo_id": 42, "url": "https://cdn.max.ru/one"}
+        renewed = {"photo_id": 42, "url": "https://cdn.max.ru/renewed"}
+        self.assertIn(media_fingerprints("image", original)[0], media_fingerprints("image", renewed))
+        first = {"url": "https://cdn.max.ru/download?id=111"}
+        second = {"url": "https://cdn.max.ru/download?id=222"}
+        self.assertNotEqual(media_fingerprints("audio", first), media_fingerprints("audio", second))
+        self.assertIn(
+            media_fingerprints("audio", first)[0],
+            media_fingerprints("audio", {**first, "token": "included-only-on-refresh"}),
         )
         for url in ("http://cdn.max.ru/file", "https://foreign.example/file",
                     "https://cdn.max.ru.foreign.example/file", "https://someone@max.ru/file"):
