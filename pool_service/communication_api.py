@@ -309,9 +309,9 @@ def website_chat_attachment(request, public_id, session_id, attachment_id):
 
 @csrf_exempt
 @require_POST
-@sensitive_variables("secret")
+@sensitive_variables("secret", "parsed")
 def max_webhook(request, public_id):
-    from pool_service.communication_max import parse_message
+    from pool_service.communication_max import ingest_update, parse_message
 
     secret = request.headers.get("X-Max-Bot-Api-Secret", "")
     if not 5 <= len(secret) <= 256:
@@ -321,12 +321,12 @@ def max_webhook(request, public_id):
         return _error("forbidden", 403)
 
     try:
-        incoming = parse_message(_payload(request), connection.external_id)
+        parsed = parse_message(_payload(request), connection.external_id)
     except ValueError:
         return _error("invalid_max_update")
-    if incoming is not None:
+    if parsed is not None:
         try:
-            receive_message(connection=connection, **incoming)
+            ingest_update(connection, parsed)
         except ValueError:
             return _error("max_connection_or_dialog_changed", 409)
     return JsonResponse({"ok": True})

@@ -43,6 +43,10 @@ from pool_service.communication_avito import (
 from pool_service.avito_outbox import dispatch_committed_reply, register_reply_intent
 from pool_service.avito_outbox_display import conversation_context
 from pool_service.communication_forms import CommunicationConnectionForm, TelephonyConnectionForm
+from pool_service.communication_max_contact import CONTACT_REQUEST_TEXT
+from pool_service.communication_max_media import (
+    INLINE_TYPES, MAX_UPLOAD_BYTES, MaxMediaError, cache_incoming_media, media_kind,
+)
 from pool_service.communication_max_outbound import (
     MAX_REPLY_ERRORS, MAX_TEXT_LENGTH, MaxApiError, dispatch_reply as dispatch_max_reply,
     reply_recipient as max_reply_recipient, verify_bot_token as verify_max_bot_token,
@@ -189,6 +193,7 @@ def conversations(request):
     requested = ([selected.pk] if selected else []) + [item.pk for item in items if not item.client_id][:19]
     transaction.on_commit(lambda: start_client_enrichment_worker(requested))
     max_reply_id = None
+    max_contact_request_id = None
     max_settings_url = ""
     context = conversation_context(selected, organization, request.user, include_outbox=False)
     if selected and selected.connection.channel.kind == CommunicationChannel.KIND_MAX:
@@ -196,6 +201,7 @@ def conversations(request):
         if connection.channel.is_active and connection.is_active:
             if connection.max_bot_token_encrypted and max_reply_recipient(selected):
                 max_reply_id = uuid4().hex
+                max_contact_request_id = uuid4().hex
             elif not connection.max_bot_token_encrypted and conversation_capability(
                 request.user, "can_manage_channels", organization,
             ):
@@ -213,6 +219,7 @@ def conversations(request):
         "active_tab": "communications", "conversations": items, "selected": selected, "communication_org_id": organization.pk,
         **context,
         "max_reply_id": max_reply_id,
+        "max_contact_request_id": max_contact_request_id,
         "max_settings_url": max_settings_url,
         "avito_crm_url": crm_source_navigation(request.user, organization),
         "show_distribution": can_view_team_deals(request.user, organization),
@@ -270,14 +277,23 @@ def conversation_reply(request, conversation_uuid):
     body = request.POST.get("body", "").strip()
     files = request.FILES.getlist("attachments")
     max_reply_id = None
+    request_max_phone = channel.kind == CommunicationChannel.KIND_MAX and request.POST.get("request_phone") == "1"
     if channel.kind == CommunicationChannel.KIND_MAX:
         error = ""
         if not connection.max_bot_token_encrypted:
             error = "Токен бота MAX ещё не настроен."
         elif not max_reply_recipient(conversation):
             error = "Не удалось подтвердить получателя в MAX."
-        elif files or not body or len(body) > MAX_TEXT_LENGTH or "\x00" in body:
-            error = "В MAX можно отправить текст длиной от 1 до 4000 символов."
+        elif request_max_phone and (files or body):
+            error = "Запрос телефона отправляется отдельным сообщением."
+        elif len(files) > 1:
+            error = "Добавьте один файл к сообщению MAX."
+        elif files and not 1 <= files[0].size <= MAX_UPLOAD_BYTES:
+            error = "В MAX через «Ровик» можно отправить файл размером до 10 МБ."
+        elif len(body) > MAX_TEXT_LENGTH or "\x00" in body:
+            error = "В MAX можно отправить текст длиной до 4000 символов."
+        elif not body and not files and not request_max_phone:
+            error = "Введите сообщение или добавьте файл."
         else:
             try:
                 max_reply_id = UUID(request.POST.get("max_reply_id", ""))
@@ -286,6 +302,8 @@ def conversation_reply(request, conversation_uuid):
         if error:
             messages.error(request, error)
             return redirect(_conversation_location(request, conversation))
+    if request_max_phone:
+        body = CONTACT_REQUEST_TEXT
     if len(body) > 10000:
         messages.error(request, "Сообщение не должно превышать 10 000 символов.")
         return redirect(_conversation_location(request, conversation))
@@ -324,6 +342,8 @@ def conversation_reply(request, conversation_uuid):
         "delivery_status": ConversationMessage.DELIVERY_PENDING,
     }
     if max_reply_id is not None:
+        if request_max_phone:
+            fields["max_details"] = {"contact_request": True}
         message, created = ConversationMessage.objects.get_or_create(
             conversation=conversation, max_reply_id=max_reply_id, defaults=fields,
         )
@@ -343,7 +363,16 @@ def conversation_reply(request, conversation_uuid):
             capture_source("message", message)
     for uploaded in files:
         content_type = uploaded.content_type or "application/octet-stream"
-        attachment = MessageAttachment.objects.create(message=message, original=uploaded, original_name=uploaded.name[:255], content_type=content_type, original_size=uploaded.size)
+        kind = ""
+        if max_reply_id is not None:
+            content_type = content_type[:120]
+            if content_type == "application/octet-stream":
+                content_type = mimetypes.guess_type(uploaded.name)[0] or content_type
+            kind = media_kind(content_type)
+        attachment = MessageAttachment.objects.create(
+            message=message, original=uploaded, original_name=uploaded.name[:255],
+            content_type=content_type, original_size=uploaded.size, max_media_kind=kind,
+        )
         try:
             optimize_message_image(attachment)
         except Exception:
@@ -411,14 +440,38 @@ def conversation_update(request, conversation_uuid):
 @login_required
 def attachment_download(request, attachment_id):
     organization = _context(request, "can_view_conversations")
-    attachment = get_object_or_404(MessageAttachment, pk=attachment_id, message__conversation__organization=organization)
+    attachment = get_object_or_404(
+        MessageAttachment.objects.select_related("message__conversation__connection__channel"),
+        pk=attachment_id,
+        message__conversation__organization=organization,
+        message__conversation__connection__channel__organization=organization,
+    )
+    is_max = attachment.message.conversation.connection.channel.kind == CommunicationChannel.KIND_MAX
+    if is_max and attachment.max_media_position is not None and not attachment.original:
+        try:
+            attachment = cache_incoming_media(attachment)
+        except MaxMediaError as exc:
+            if str(exc) == "max_media_size":
+                return HttpResponse("Вложение превышает 25 МБ.", status=413, content_type="text/plain; charset=utf-8")
+            return HttpResponse("Вложение MAX пока недоступно.", status=502, content_type="text/plain; charset=utf-8")
+        except (MaxApiError, OSError):
+            return HttpResponse("Не удалось получить вложение MAX.", status=502, content_type="text/plain; charset=utf-8")
+    inline = (
+        is_max and request.GET.get("inline") == "1"
+        and attachment.content_type in INLINE_TYPES.get(attachment.max_media_kind, ())
+    )
+    if not attachment.original:
+        raise Http404
     response = FileResponse(
         attachment.original.open("rb"),
-        as_attachment=True,
+        as_attachment=not inline,
         filename=attachment.original_name,
-        content_type="application/octet-stream",
+        content_type=attachment.content_type if inline else "application/octet-stream",
     )
     response["X-Content-Type-Options"] = "nosniff"
+    if is_max:
+        response["Cache-Control"] = "private, no-store"
+        response["Content-Security-Policy"] = "sandbox; default-src 'none'"
     return response
 
 

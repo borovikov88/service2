@@ -1,17 +1,20 @@
-"""Send a manager's text reply to an existing private MAX dialog."""
+"""Send a manager's reply to an existing private MAX dialog."""
 
 import json
 import ssl
 from functools import lru_cache
 from http.client import HTTPException, HTTPSConnection
 from pathlib import Path
+from time import sleep
 
 from django.db import IntegrityError, transaction
 from django.db.models import F
 from django.utils import timezone
 from django.views.decorators.debug import sensitive_variables
 
-from pool_service.communication_models import CommunicationChannel, ConversationMessage
+from pool_service.communication_max_contact import CONTACT_REQUEST_ATTACHMENT
+from pool_service.communication_max_media import MaxMediaError, upload_attachment
+from pool_service.communication_models import ChannelConnection, CommunicationChannel, ConversationMessage
 from pool_service.communication_secrets import CommunicationSecretError, decrypt_secret
 from pool_service.communication_services import conversation_capability
 
@@ -26,6 +29,8 @@ MAX_REPLY_ERRORS = {
     "max_rejected": "MAX отклонил сообщение.",
     "max_rate_limited": "MAX ограничил частоту отправки. Повторите позже.",
     "max_delivery_unknown": "MAX не подтвердил отправку. Проверьте чат перед повтором.",
+    "max_upload_failed": "Не удалось загрузить вложение в MAX. Повторите отправку файла.",
+    "max_attachment_processing": "MAX ещё обрабатывает файл. Повторите отправку позже.",
 }
 
 
@@ -49,16 +54,27 @@ def _request(method, path, token, body=None):
     try:
         connection.request(method, path, body=body, headers=headers)
         with connection.getresponse() as response:
-            if response.status == 429:
+            status = response.status
+            if status == 429:
                 raise MaxApiError("max_rate_limited")
-            if 400 <= response.status < 500:
-                raise MaxApiError("max_rejected")
-            if response.status != 200:
+            if status != 200 and not 400 <= status < 500:
                 raise MaxApiError("max_delivery_unknown")
             raw = response.read(65537)
         if len(raw) > 65536:
             raise MaxApiError("max_delivery_unknown")
-        return json.loads(raw)
+        try:
+            data = json.loads(raw)
+        except (ValueError, UnicodeError):
+            if 400 <= status < 500:
+                raise MaxApiError("max_rejected") from None
+            raise
+        if isinstance(data, dict) and (status >= 400 or data.get("success") is False):
+            if data.get("code") == "attachment.not.ready":
+                raise MaxApiError("max_attachment_processing")
+            raise MaxApiError("max_rejected")
+        if status != 200:
+            raise MaxApiError("max_rejected")
+        return data
     except (OSError, HTTPException, ValueError):
         raise MaxApiError("max_delivery_unknown") from None
     finally:
@@ -88,9 +104,19 @@ def reply_recipient(conversation):
     return ""
 
 
-@sensitive_variables("token", "text", "result")
-def send_text(token, user_id, text):
-    result = _request("POST", f"/messages?user_id={user_id}", token, json.dumps({"text": text}))
+@sensitive_variables("token", "text", "result", "attachments", "payload")
+def send_text(token, user_id, text, attachments=None):
+    payload = {"text": text} if text else {}
+    if attachments:
+        payload["attachments"] = attachments
+    for delay in (0.5, 1, None):
+        try:
+            result = _request("POST", f"/messages?user_id={user_id}", token, json.dumps(payload))
+            break
+        except MaxApiError as exc:
+            if str(exc) != "max_attachment_processing" or delay is None or not attachments:
+                raise
+            sleep(delay)
     message = result.get("message") if isinstance(result, dict) else None
     body = message.get("body") if isinstance(message, dict) else None
     message_id = body.get("mid") if isinstance(body, dict) else None
@@ -146,7 +172,26 @@ def dispatch_reply(connection_id, message_id):
 
     try:
         token = decrypt_secret(connection.max_bot_token_encrypted)
-        provider_id = send_text(token, recipient_id, message.body)
+        if message.max_details.get("contact_request"):
+            attachments = [CONTACT_REQUEST_ATTACHMENT]
+        else:
+            attachment = message.attachments.order_by("pk").first()
+            attachments = [upload_attachment(token, attachment)] if attachment else None
+            if attachment:
+                if not ChannelConnection.objects.filter(
+                    pk=connection.pk, channel_id=channel.pk, channel__organization_id=conversation.organization_id,
+                    channel__is_active=True, channel__kind=CommunicationChannel.KIND_MAX, is_active=True,
+                    external_id=connection.external_id, max_bot_token_encrypted=connection.max_bot_token_encrypted,
+                ).exists():
+                    _fail(message_id, "max_account_unavailable")
+                    return
+                if not conversation_capability(message.sent_by, "can_reply_conversations", conversation.organization):
+                    _fail(message_id, "max_reply_forbidden")
+                    return
+        provider_id = send_text(token, recipient_id, message.body, attachments)
+    except MaxMediaError:
+        _fail(message_id, "max_upload_failed")
+        return
     except CommunicationSecretError:
         _fail(message_id, "max_account_unavailable")
         return
