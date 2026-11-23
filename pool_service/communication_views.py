@@ -59,7 +59,8 @@ from pool_service.communication_models import (
 from pool_service.communication_recordings import looks_like_audio_file
 from pool_service.communication_secrets import encrypt_secret
 from pool_service.communication_services import (
-    conversation_capability, optimize_message_image, organization_access, selected_communication_access,
+    conversation_capability, optimize_message_image, organization_access,
+    selected_communication_access as _selected_access,
 )
 from pool_service.services.call_ai import PROCESSING_STALE_MINUTES, request_call_analysis, start_requested_call_analysis_worker
 from pool_service.services.call_privacy import is_private_call, private_call_ids, visible_calls
@@ -75,7 +76,7 @@ def _conversation_location(request, conversation):
 
 
 def _context(request, capability):
-    access = selected_communication_access(request)
+    access = _selected_access(request)
     if not access or not conversation_capability(request.user, capability, access.organization):
         raise PermissionDenied
     return access.organization
@@ -1318,7 +1319,7 @@ def _byte_range_response(file_size, range_header, open_file, content_type):
 
 @login_required
 def call_recording(request, call_id):
-    access = selected_communication_access(request)
+    access = _selected_access(request)
     if not access:
         raise PermissionDenied
     call = get_object_or_404(
