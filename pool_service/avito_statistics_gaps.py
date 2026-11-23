@@ -104,7 +104,7 @@ def evidence(connection, now=None):
     """Caller has established UI permission or protected receipt scope; binding is rechecked."""
     from . import avito_daily_statistics as daily
     state = daily._state(connection)
-    if not daily._scope(connection) or not daily._allowed(connection, state):
+    if connection.pk != 4 or not daily._scope(connection) or not daily._allowed(connection, state):
         return {'schema_version': 1, 'state': 'blocked', 'code': 'statistics_binding_changed'}
     cutoff = daily.collection_cutoff(now)
     start = cutoff - timedelta(days=daily.BACKFILL_DAYS-1)
