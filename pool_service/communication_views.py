@@ -15,7 +15,7 @@ from django.conf import settings
 from django.core.exceptions import PermissionDenied
 from django.core.files.images import get_image_dimensions
 from django.db import transaction
-from django.db.models import OuterRef, Q, Subquery, Value
+from django.db.models import F, OuterRef, Q, Subquery, Value
 from django.db.models.functions import Replace
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseBadRequest, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -184,6 +184,10 @@ def conversations(request):
         state, _ = ConversationReadState.objects.get_or_create(conversation=selected, user=request.user)
         state.last_read_at = timezone.now()
         state.save(update_fields=["last_read_at"])
+        for item in items:
+            if item.pk == selected.pk:
+                item.unread_count = 0
+                break
         Notification.objects.filter(
             user=request.user,
             organization=selected.organization,
@@ -2409,7 +2413,24 @@ def communication_connection_set_active(request, connection_id):
     return redirect("communications_channels")
 
 
+def _unread_dialog_count(user, organization):
+    last_incoming = ConversationMessage.objects.filter(
+        conversation=OuterRef("pk"), direction=ConversationMessage.DIRECTION_IN,
+    ).order_by("-created_at", "-pk").values("created_at")[:1]
+    last_read = ConversationReadState.objects.filter(
+        conversation=OuterRef("pk"), user=user,
+    ).values("last_read_at")[:1]
+    return Conversation.objects.filter(
+        organization=organization, connection__channel__organization=organization,
+    ).exclude(status=Conversation.STATUS_DONE).alias(
+        last_incoming_at=Subquery(last_incoming), read_at=Subquery(last_read),
+    ).filter(last_incoming_at__isnull=False).filter(
+        Q(read_at__isnull=True) | Q(last_incoming_at__gt=F("read_at")),
+    ).count()
+
+
 @login_required
+@never_cache
 @ensure_csrf_cookie
 def communication_notification_feed(request):
     organization = _context(request, "can_view_conversations")
@@ -2451,7 +2472,11 @@ def communication_notification_feed(request):
         is_resolved=True,
         pk__in=visible_ids,
     ).values_list("pk", flat=True))
-    return JsonResponse({"notifications": result, "resolved_ids": resolved_ids})
+    return JsonResponse({
+        "notifications": result,
+        "resolved_ids": resolved_ids,
+        "unread_dialogs": _unread_dialog_count(request.user, organization),
+    })
 
 
 @login_required
