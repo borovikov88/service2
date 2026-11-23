@@ -92,11 +92,23 @@
       </section>
     {% endif %}
 
+    {% if editing and kind == 'max' %}
+    <form method="post" action="{% url 'communication_max_configure' connection.pk %}?org_id={{ communication_org_id }}" class="card card-body mt-3" autocomplete="off">
+      {% csrf_token %}
+      <h2 class="h5">Ответы через MAX</h2>
+      {% if max_token_configured %}<div class="text-success mb-2">Токен бота сохранён.</div>{% endif %}
+      <label class="form-label" for="max-bot-token">Токен бота MAX</label>
+      <input class="form-control" type="password" id="max-bot-token" name="max_bot_token" autocomplete="new-password" maxlength="512" aria-describedby="max-token-help" required>
+      <div class="form-text" id="max-token-help">Возьмите токен в настройках бота в кабинете MAX. «Ровик» проверит его и сохранит в зашифрованном виде.</div>
+      <div class="mt-3"><button class="btn btn-primary" type="submit">Проверить и сохранить токен</button></div>
+    </form>
+    {% endif %}
+
     {% if editing and kind != 'avito' %}
     <div class="card card-body mt-3">
-      <h2 class="h5">Токен подключения</h2>
+      <h2 class="h5">{% if kind == "max" %}Секрет вебхука для входящих сообщений{% else %}Токен подключения{% endif %}</h2>
       <p class="text-muted mb-3">
-        Ротация немедленно делает старый токен недействительным. Новый токен будет показан только один раз.
+        {% if kind == 'max' %}Если заменить секрет, укажите новый секрет в подписке MAX. Он будет показан один раз.{% else %}Ротация немедленно делает старый токен недействительным. Новый токен будет показан только один раз.{% endif %}
       </p>
       <form method="post" action="{% url 'communication_connection_rotate_token' connection.pk %}">
         {% csrf_token %}
