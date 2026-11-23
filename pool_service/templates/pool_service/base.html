@@ -173,7 +173,7 @@
       {% endif %}
 
       {% if show_communications_menu %}
-      <a href="{% url 'communications_conversations' %}" class="desktop-sidebar__link {% if active_tab == 'communications' %}is-active{% endif %}">
+      <a href="{% url 'communications_conversations' %}{% if communication_menu_org_id %}?org_id={{ communication_menu_org_id }}{% endif %}" class="desktop-sidebar__link {% if active_tab == 'communications' %}is-active{% endif %}">
         <i class="bi bi-chat-dots"></i><span>Связь</span>{% include "pool_service/communications/_unread_badge.html" %}
       </a>
       {% endif %}
@@ -378,7 +378,7 @@
                   <i class="bi bi-people"></i>
                   <span>Контакты</span>
                 </a>
-                {% if show_communications_menu %}<a href="{% url 'communications_conversations' %}" class="ui-dropdown__item {% if active_tab == 'communications' %}is-active{% endif %}"><i class="bi bi-chat-dots"></i><span>Связь</span>{% include "pool_service/communications/_unread_badge.html" %}</a>{% endif %}
+                {% if show_communications_menu %}<a href="{% url 'communications_conversations' %}{% if communication_menu_org_id %}?org_id={{ communication_menu_org_id }}{% endif %}" class="ui-dropdown__item {% if active_tab == 'communications' %}is-active{% endif %}"><i class="bi bi-chat-dots"></i><span>Связь</span>{% include "pool_service/communications/_unread_badge.html" %}</a>{% endif %}
                 {% if can_manage_communication_channels %}<a href="{% url 'avito_dashboard' %}" class="ui-dropdown__item {% if active_tab == 'avito' %}is-active{% endif %}"><i class="bi bi-shop"></i><span>Авито</span></a>{% endif %}
                 {% endif %}
                 {% endif %}
@@ -400,7 +400,7 @@
           {% if is_org_staff %}
             <a class="text-decoration-none {% if active_tab == 'clients' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'clients_list' %}">Контакты</a>
           {% endif %}
-          {% if show_communications_menu %}<a class="text-decoration-none {% if active_tab == 'communications' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'communications_conversations' %}">Связь{% include "pool_service/communications/_unread_badge.html" %}</a>{% endif %}
+          {% if show_communications_menu %}<a class="text-decoration-none {% if active_tab == 'communications' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'communications_conversations' %}{% if communication_menu_org_id %}?org_id={{ communication_menu_org_id }}{% endif %}">Связь{% include "pool_service/communications/_unread_badge.html" %}</a>{% endif %}
           {% if can_manage_communication_channels %}<a class="text-decoration-none {% if active_tab == 'avito' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'avito_dashboard' %}">Авито</a>{% endif %}
           {% if can_access_management_finance %}
             <div class="crm-nav">
@@ -611,7 +611,7 @@
           <a href="{% url 'clients_list' %}" class="list-group-item list-group-item-action">Контакты</a>
           {% endif %}
           {% if show_communications_menu %}
-          <a href="{% url 'communications_conversations' %}" class="list-group-item list-group-item-action {% if active_tab == 'communications' %}active{% endif %}">
+          <a href="{% url 'communications_conversations' %}{% if communication_menu_org_id %}?org_id={{ communication_menu_org_id }}{% endif %}" class="list-group-item list-group-item-action {% if active_tab == 'communications' %}active{% endif %}">
             <i class="bi bi-chat-dots me-2"></i>Связь{% include "pool_service/communications/_unread_badge.html" %}
           </a>
           {% endif %}
@@ -922,8 +922,8 @@
 
       const communicationAlerts = document.getElementById("communication-alerts");
       if (communicationAlerts) {
-        const feedUrl = "{% url 'communication_notification_feed' %}";
-        const resolveTemplate = "{% url 'communication_notification_resolve' 0 %}";
+        const feedUrl = "{% url 'communication_notification_feed' %}{% if communication_menu_org_id %}?org_id={{ communication_menu_org_id }}{% endif %}";
+        const resolveTemplate = "{% url 'communication_notification_resolve' 0 %}{% if communication_menu_org_id %}?org_id={{ communication_menu_org_id }}{% endif %}";
         let communicationPollRunning = false;
         const communicationBadges = document.querySelectorAll("[data-communication-unread]");
         const updateCommunicationBadges = (count) => {
@@ -962,7 +962,10 @@
           message.textContent = notification.message;
           const open = document.createElement("a");
           open.className = "btn btn-sm btn-primary mt-1 py-0";
-          open.href = notification.action_url;
+          const destination = new URL(notification.action_url, window.location.origin);
+          const organization = new URL(feedUrl, window.location.origin).searchParams.get("org_id");
+          if (organization) destination.searchParams.set("org_id", organization);
+          open.href = destination.href;
           open.textContent = "Открыть диалог";
           open.addEventListener("click", () => resolveNotification(notification.id).catch(() => {}));
           const close = document.createElement("button");

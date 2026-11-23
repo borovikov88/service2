@@ -1,4 +1,5 @@
 from django.contrib.auth.models import User
+from django.core.exceptions import PermissionDenied
 from django.core.files.base import ContentFile
 from django.db import IntegrityError, transaction
 from django.urls import reverse
@@ -28,6 +29,20 @@ def organization_access(user, organization=None):
         queryset = queryset.filter(organization=organization)
     return queryset.first()
 
+
+def selected_communication_access(request):
+    """Preserve an explicit CRM source organization without changing memberships."""
+    selected = request.GET.getlist("org_id")
+    if not selected:
+        return organization_access(request.user)
+    if len(selected) != 1 or not selected[0].isascii() or not selected[0].isdigit() or len(selected[0]) > 18:
+        raise PermissionDenied
+    access = OrganizationAccess.objects.select_related("organization").filter(
+        user=request.user, organization_id=int(selected[0]),
+    ).first()
+    if not access:
+        raise PermissionDenied
+    return access
 
 def conversation_capability(user, capability, organization=None):
     if not user or not user.is_authenticated or not user.is_active:

@@ -58,26 +58,13 @@ from pool_service.communication_models import (
 )
 from pool_service.communication_recordings import looks_like_audio_file
 from pool_service.communication_secrets import encrypt_secret
-from pool_service.communication_services import conversation_capability, optimize_message_image, organization_access
+from pool_service.communication_services import (
+    conversation_capability, optimize_message_image, organization_access, selected_communication_access,
+)
 from pool_service.services.call_ai import PROCESSING_STALE_MINUTES, request_call_analysis, start_requested_call_analysis_worker
 from pool_service.services.call_privacy import is_private_call, private_call_ids, visible_calls
 from pool_service.models import Client, Notification, OrganizationAccess
 
-
-
-def _selected_access(request):
-    """Preserve an explicit CRM source organization without changing memberships."""
-    selected = request.GET.getlist("org_id")
-    if not selected:
-        return organization_access(request.user)
-    if len(selected) != 1 or not selected[0].isascii() or not selected[0].isdigit() or len(selected[0]) > 18:
-        raise PermissionDenied
-    access = OrganizationAccess.objects.select_related("organization").filter(
-        user=request.user, organization_id=int(selected[0]),
-    ).first()
-    if not access:
-        raise PermissionDenied
-    return access
 
 
 def _conversation_location(request, conversation):
@@ -88,7 +75,7 @@ def _conversation_location(request, conversation):
 
 
 def _context(request, capability):
-    access = _selected_access(request)
+    access = selected_communication_access(request)
     if not access or not conversation_capability(request.user, capability, access.organization):
         raise PermissionDenied
     return access.organization
@@ -1331,7 +1318,7 @@ def _byte_range_response(file_size, range_header, open_file, content_type):
 
 @login_required
 def call_recording(request, call_id):
-    access = _selected_access(request)
+    access = selected_communication_access(request)
     if not access:
         raise PermissionDenied
     call = get_object_or_404(

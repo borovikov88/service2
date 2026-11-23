@@ -16,7 +16,7 @@ from django.urls import reverse
 from pool_service.communication_max_media import MaxMediaError, media_fingerprints, media_url
 from pool_service.communication_max_outbound import MAX_CA, MaxApiError, dispatch_reply, max_api_ssl_context
 from pool_service.communication_secrets import decrypt_secret, encrypt_secret
-from pool_service.models import OrganizationAccess
+from pool_service.models import Organization, OrganizationAccess
 from pool_service.communication_models import ChannelConnection, CommunicationAccess, CommunicationChannel, Conversation, ConversationMessage, MessageAttachment
 from pool_service.crm_commercial_models import CrmLead
 from pool_service.crm_inbox_models import CrmInboxEvent
@@ -113,6 +113,23 @@ class MaxWebhookTests(LeadIntakeFixture, TestCase):
         self.assertContains(self.client.get(f"{chat}?conversation={conversation.uuid}"), 'data-communication-unread>')
         self.assertEqual(self.client.get(feed).json()["unread_dialogs"], 0)
 
+        other = Organization.objects.create(name="Synthetic second communications organization")
+        OrganizationAccess.objects.create(organization=other, user=self.user, role="manager")
+        CommunicationAccess.objects.update_or_create(
+            organization=other, user=self.user, defaults={"can_view_conversations": True},
+        )
+        other_channel = CommunicationChannel.objects.create(organization=other, kind="max", name="MAX")
+        other_connection = ChannelConnection.objects.create(channel=other_channel, external_id="999", name="Second MAX")
+        other_conversation = Conversation.objects.create(
+            organization=other, connection=other_connection, external_id="other",
+        )
+        ConversationMessage.objects.create(conversation=other_conversation, direction="in", body="Другая организация")
+        self.assertEqual(self.client.get(feed, {"org_id": self.org.pk}).json()["unread_dialogs"], 0)
+        self.assertEqual(self.client.get(feed, {"org_id": other.pk}).json()["unread_dialogs"], 1)
+        scoped = self.client.get(f"{chat}?conversation={other_conversation.uuid}&org_id={other.pk}")
+        self.assertContains(scoped, f'href="{chat}?org_id={other.pk}"')
+        self.assertContains(scoped, f'{feed}?org_id={other.pk}')
+
         manager = get_user_model().objects.create_user("second-synthetic-dialog-reader")
         OrganizationAccess.objects.create(organization=self.org, user=manager, role="manager")
         CommunicationAccess.objects.update_or_create(
@@ -120,6 +137,7 @@ class MaxWebhookTests(LeadIntakeFixture, TestCase):
         )
         self.client.force_login(manager)
         self.assertEqual(self.client.get(feed).json()["unread_dialogs"], 1)
+        self.assertEqual(self.client.get(feed, {"org_id": other.pk}).status_code, 403)
         CommunicationAccess.objects.filter(organization=self.org, user=manager).update(can_view_conversations=False)
         self.assertEqual(self.client.get(feed).status_code, 403)
 
