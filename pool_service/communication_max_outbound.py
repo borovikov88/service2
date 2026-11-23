@@ -1,7 +1,10 @@
 """Send a manager's text reply to an existing private MAX dialog."""
 
 import json
+import ssl
+from functools import lru_cache
 from http.client import HTTPException, HTTPSConnection
+from pathlib import Path
 
 from django.db import IntegrityError, transaction
 from django.db.models import F
@@ -13,6 +16,8 @@ from pool_service.communication_secrets import CommunicationSecretError, decrypt
 from pool_service.communication_services import conversation_capability
 
 
+MAX_API_HOST = "platform-api2.max.ru"
+MAX_CA = Path(__file__).with_name("provider_certificates") / "max-ministry-root.pem"
 MAX_TEXT_LENGTH = 4000
 MAX_REPLY_ERRORS = {
     "max_account_unavailable": "Подключение MAX отключено или токен не настроен.",
@@ -28,9 +33,16 @@ class MaxApiError(Exception):
     """Provider failures without response content, credentials or message text."""
 
 
-@sensitive_variables("token", "connection", "headers", "raw")
+@lru_cache(maxsize=1)
+def max_api_ssl_context():
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile=str(MAX_CA))
+    return context
+
+
+@sensitive_variables("token", "connection", "headers", "raw", "body", "response")
 def _request(method, path, token, body=None):
-    connection = HTTPSConnection("platform-api2.max.ru", timeout=8)
+    connection = HTTPSConnection(MAX_API_HOST, timeout=8, context=max_api_ssl_context())
     headers = {"Authorization": token, "Accept": "application/json"}
     if body is not None:
         headers["Content-Type"] = "application/json"

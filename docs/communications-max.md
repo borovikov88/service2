@@ -33,4 +33,12 @@
 Если MAX не подтвердил отправку, проверьте диалог в MAX, прежде чем писать
 повторно. Вложения в исходящих сообщениях не поддерживаются.
 
+## TLS для API MAX
+
+Для HTTPS-соединений с `platform-api2.max.ru` клиент MAX добавляет
+[корневой сертификат Минцифры](https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt)
+в собственный контекст TLS. Проверка цепочки и имени хоста обязательна.
+Отпечаток SHA-256 корневого сертификата
+`d26d2d0231b7c39f92cc738512ba54103519e4405d68b5bd703e9788ca8ecf31`.
+
 Знак MAX взят из [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Логотип_MAX.svg).

@@ -1,4 +1,6 @@
+import hashlib
 import json
+import ssl
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -6,7 +8,7 @@ from django.core.cache import cache
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from pool_service.communication_max_outbound import MaxApiError, dispatch_reply
+from pool_service.communication_max_outbound import MAX_CA, MaxApiError, dispatch_reply, max_api_ssl_context
 from pool_service.communication_secrets import decrypt_secret, encrypt_secret
 from pool_service.models import OrganizationAccess
 from pool_service.communication_models import ChannelConnection, CommunicationAccess, CommunicationChannel, Conversation, ConversationMessage
@@ -153,3 +155,14 @@ class MaxWebhookTests(LeadIntakeFixture, TestCase):
         self.assertEqual(decrypt_secret(self.connection.max_bot_token_encrypted), token)
         self.assertEqual(self.connection.api_token_hash, webhook_hash)
         self.assertEqual(self.post_update().status_code, 200)
+
+    def test_max_tls_uses_verified_provider_root_and_checks_hostname(self):
+        der = ssl.PEM_cert_to_DER_cert(MAX_CA.read_text(encoding="ascii"))
+        self.assertEqual(
+            hashlib.sha256(der).hexdigest(),
+            "d26d2d0231b7c39f92cc738512ba54103519e4405d68b5bd703e9788ca8ecf31",
+        )
+        context = max_api_ssl_context()
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(context.check_hostname)
+        self.assertIn(der, context.get_ca_certs(binary_form=True))
