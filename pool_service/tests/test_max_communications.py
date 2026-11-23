@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 from uuid import uuid4
 
+from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.core.files.storage import FileSystemStorage
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -15,7 +16,7 @@ from django.urls import reverse
 from pool_service.communication_max_media import MaxMediaError, media_fingerprints, media_url
 from pool_service.communication_max_outbound import MAX_CA, MaxApiError, dispatch_reply, max_api_ssl_context
 from pool_service.communication_secrets import decrypt_secret, encrypt_secret
-from pool_service.models import OrganizationAccess
+from pool_service.models import Organization, OrganizationAccess
 from pool_service.communication_models import ChannelConnection, CommunicationAccess, CommunicationChannel, Conversation, ConversationMessage, MessageAttachment
 from pool_service.crm_commercial_models import CrmLead
 from pool_service.crm_inbox_models import CrmInboxEvent
@@ -93,6 +94,52 @@ class MaxWebhookTests(LeadIntakeFixture, TestCase):
         conversation = Conversation.objects.get(connection=self.connection)
         self.client.force_login(self.user)
         return conversation, reverse("communication_reply", args=[conversation.uuid])
+
+    def test_navigation_counts_unread_active_dialogs_per_user(self):
+        conversation, _ = self._reply_form()
+        ConversationMessage.objects.create(conversation=conversation, direction="in", body="Ещё один вопрос")
+        closed = Conversation.objects.create(
+            organization=self.org, connection=self.connection, external_id="closed",
+            status=Conversation.STATUS_DONE,
+        )
+        ConversationMessage.objects.create(conversation=closed, direction="in", body="Из архива")
+        outbound_only = Conversation.objects.create(
+            organization=self.org, connection=self.connection, external_id="outbound-only",
+        )
+        ConversationMessage.objects.create(conversation=outbound_only, direction="out", body="Ответ")
+        feed = reverse("communication_notification_feed")
+        self.assertEqual(self.client.get(feed).json()["unread_dialogs"], 1)
+        chat = reverse("communications_conversations")
+        self.assertContains(self.client.get(f"{chat}?conversation={conversation.uuid}"), 'data-communication-unread>')
+        self.assertEqual(self.client.get(feed).json()["unread_dialogs"], 0)
+
+        other = Organization.objects.create(name="Synthetic second communications organization")
+        OrganizationAccess.objects.create(organization=other, user=self.user, role="manager")
+        CommunicationAccess.objects.update_or_create(
+            organization=other, user=self.user, defaults={"can_view_conversations": True},
+        )
+        other_channel = CommunicationChannel.objects.create(organization=other, kind="max", name="MAX")
+        other_connection = ChannelConnection.objects.create(channel=other_channel, external_id="999", name="Second MAX")
+        other_conversation = Conversation.objects.create(
+            organization=other, connection=other_connection, external_id="other",
+        )
+        ConversationMessage.objects.create(conversation=other_conversation, direction="in", body="Другая организация")
+        self.assertEqual(self.client.get(feed, {"org_id": self.org.pk}).json()["unread_dialogs"], 0)
+        self.assertEqual(self.client.get(feed, {"org_id": other.pk}).json()["unread_dialogs"], 1)
+        scoped = self.client.get(f"{chat}?conversation={other_conversation.uuid}&org_id={other.pk}")
+        self.assertContains(scoped, f'href="{chat}?org_id={other.pk}"')
+        self.assertContains(scoped, f'{feed}?org_id={other.pk}')
+
+        manager = get_user_model().objects.create_user("second-synthetic-dialog-reader")
+        OrganizationAccess.objects.create(organization=self.org, user=manager, role="manager")
+        CommunicationAccess.objects.update_or_create(
+            organization=self.org, user=manager, defaults={"can_view_conversations": True},
+        )
+        self.client.force_login(manager)
+        self.assertEqual(self.client.get(feed).json()["unread_dialogs"], 1)
+        self.assertEqual(self.client.get(feed, {"org_id": other.pk}).status_code, 403)
+        CommunicationAccess.objects.filter(organization=self.org, user=manager).update(can_view_conversations=False)
+        self.assertEqual(self.client.get(feed).status_code, 403)
 
     def test_replies_to_existing_dialog_once_and_shows_max_icon(self):
         conversation, url = self._reply_form()

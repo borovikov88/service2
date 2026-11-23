@@ -15,7 +15,7 @@ from django.conf import settings
 from django.core.exceptions import PermissionDenied
 from django.core.files.images import get_image_dimensions
 from django.db import transaction
-from django.db.models import OuterRef, Q, Subquery, Value
+from django.db.models import F, OuterRef, Q, Subquery, Value
 from django.db.models.functions import Replace
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseBadRequest, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -58,26 +58,14 @@ from pool_service.communication_models import (
 )
 from pool_service.communication_recordings import looks_like_audio_file
 from pool_service.communication_secrets import encrypt_secret
-from pool_service.communication_services import conversation_capability, optimize_message_image, organization_access
+from pool_service.communication_services import (
+    conversation_capability, optimize_message_image, organization_access,
+    selected_communication_access as _selected_access,
+)
 from pool_service.services.call_ai import PROCESSING_STALE_MINUTES, request_call_analysis, start_requested_call_analysis_worker
 from pool_service.services.call_privacy import is_private_call, private_call_ids, visible_calls
 from pool_service.models import Client, Notification, OrganizationAccess
 
-
-
-def _selected_access(request):
-    """Preserve an explicit CRM source organization without changing memberships."""
-    selected = request.GET.getlist("org_id")
-    if not selected:
-        return organization_access(request.user)
-    if len(selected) != 1 or not selected[0].isascii() or not selected[0].isdigit() or len(selected[0]) > 18:
-        raise PermissionDenied
-    access = OrganizationAccess.objects.select_related("organization").filter(
-        user=request.user, organization_id=int(selected[0]),
-    ).first()
-    if not access:
-        raise PermissionDenied
-    return access
 
 
 def _conversation_location(request, conversation):
@@ -184,6 +172,10 @@ def conversations(request):
         state, _ = ConversationReadState.objects.get_or_create(conversation=selected, user=request.user)
         state.last_read_at = timezone.now()
         state.save(update_fields=["last_read_at"])
+        for item in items:
+            if item.pk == selected.pk:
+                item.unread_count = 0
+                break
         Notification.objects.filter(
             user=request.user,
             organization=selected.organization,
@@ -2409,7 +2401,24 @@ def communication_connection_set_active(request, connection_id):
     return redirect("communications_channels")
 
 
+def _unread_dialog_count(user, organization):
+    last_incoming = ConversationMessage.objects.filter(
+        conversation=OuterRef("pk"), direction=ConversationMessage.DIRECTION_IN,
+    ).order_by("-created_at", "-pk").values("created_at")[:1]
+    last_read = ConversationReadState.objects.filter(
+        conversation=OuterRef("pk"), user=user,
+    ).values("last_read_at")[:1]
+    return Conversation.objects.filter(
+        organization=organization, connection__channel__organization=organization,
+    ).exclude(status=Conversation.STATUS_DONE).alias(
+        last_incoming_at=Subquery(last_incoming), read_at=Subquery(last_read),
+    ).filter(last_incoming_at__isnull=False).filter(
+        Q(read_at__isnull=True) | Q(last_incoming_at__gt=F("read_at")),
+    ).count()
+
+
 @login_required
+@never_cache
 @ensure_csrf_cookie
 def communication_notification_feed(request):
     organization = _context(request, "can_view_conversations")
@@ -2451,7 +2460,11 @@ def communication_notification_feed(request):
         is_resolved=True,
         pk__in=visible_ids,
     ).values_list("pk", flat=True))
-    return JsonResponse({"notifications": result, "resolved_ids": resolved_ids})
+    return JsonResponse({
+        "notifications": result,
+        "resolved_ids": resolved_ids,
+        "unread_dialogs": _unread_dialog_count(request.user, organization),
+    })
 
 
 @login_required

@@ -154,6 +154,7 @@ def plan_status_context(request):
     if not user or not user.is_authenticated:
         return {}
 
+    from django.core.exceptions import PermissionDenied
     from django.utils import timezone
     from pool_service.models import OrganizationAccess, WebAuthnCredential
     from pool_service.security import (
@@ -176,6 +177,7 @@ def plan_status_context(request):
 
     accesses = organization_accesses_for_user(user)
     from pool_service.communication_models import CommunicationAccess
+    from pool_service.communication_services import conversation_capability, selected_communication_access
     communication_access = CommunicationAccess.objects.filter(user=user)
     personal_user = is_personal_user(user)
     org_roles = [access.role for access in accesses]
@@ -216,6 +218,15 @@ def plan_status_context(request):
     # Navigation follows the same capability gate as the server views.
     # Managers can enter Communications and will still see only their own calls.
     show_communications_menu = can_access_communications
+    communication_menu_org_id = None
+    if show_communications_menu and request.GET.getlist("org_id"):
+        try:
+            selected_communication = selected_communication_access(request)
+        except PermissionDenied:
+            pass
+        else:
+            if conversation_capability(user, "can_view_conversations", selected_communication.organization):
+                communication_menu_org_id = selected_communication.organization_id
 
     from pool_service.services.pool_estimates import allowed_organizations as estimate_organizations
 
@@ -228,6 +239,7 @@ def plan_status_context(request):
         "can_access_crm": can_access_crm,
         "can_access_communications": can_access_communications,
         "show_communications_menu": show_communications_menu,
+        "communication_menu_org_id": communication_menu_org_id,
         "can_manage_communication_channels": user.is_superuser or communication_access.filter(can_manage_channels=True).exists(),
         "can_access_finance": can_access_finance,
         "can_manage_company_cash": can_manage_company_cash,
