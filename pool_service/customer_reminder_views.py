@@ -8,6 +8,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
+from django.http import Http404
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.cache import never_cache
@@ -171,8 +172,10 @@ def record_callback(request, call_id):
         get_object_or_404(PhoneCall.objects.select_for_update(), pk=call_id, organization=organization)
         call = get_object_or_404(callback_candidates(organization), pk=call_id)
         access = _access(request)
-        if access.organization_id != organization.pk or not can_read_call(request.user, call):
+        if access.organization_id != organization.pk:
             raise PermissionDenied
+        if not can_read_call(request.user, call):
+            raise Http404
         policy = CustomerReminderPolicy.objects.filter(organization=organization).first()
         work = Work("call", call, call.started_at, call.pk, lead_for_call(organization, call))
         if policy:
