@@ -1796,13 +1796,15 @@
     byId("crm-live-refresh").addEventListener("click", () => loadData());
 
     const dragScroll = win.createCrmBoardDragScroll?.(win, () => root.querySelector(".crm-live-board"), () => Boolean(state.dragging && !state.loading));
-    doc.addEventListener("dragover", (event) => dragScroll?.update(event), true);
-    doc.addEventListener("drop", () => dragScroll?.stop(), true);
-    doc.addEventListener("dragend", () => dragScroll?.stop(), true);
-    doc.addEventListener("dragleave", (event) => {
-      if (!event.relatedTarget && (event.clientX <= 0 || event.clientY <= 0 ||
-          event.clientX >= win.innerWidth || event.clientY >= win.innerHeight)) dragScroll?.stop();
-    });
+    if (dragScroll) {
+      doc.addEventListener("dragover", dragScroll.update, true);
+      doc.addEventListener("drop", dragScroll.stop, true);
+      doc.addEventListener("dragend", dragScroll.stop, true);
+      doc.addEventListener("dragleave", (event) => {
+        if (!event.relatedTarget && (event.clientX <= 0 || event.clientY <= 0 ||
+            event.clientX >= win.innerWidth || event.clientY >= win.innerHeight)) dragScroll.stop();
+      });
+    }
     const dragActions = element("div", "crm-drag-actions"); dragActions.hidden = true;
     const failureDrop = element("div", "crm-failure-drop crm-drag-target", "Сделка провалена");
     dragActions.append(failureDrop); root.append(dragActions);
