@@ -8,7 +8,7 @@ from django.utils import timezone
 
 
 class CrmReleaseMigrationTests(TransactionTestCase):
-    release = [('pool_service', '0204_customer_reminders')]
+    release = [('pool_service', '0205_reminder_recipient_roles')]
     production = [('pool_service', '0182_merge_onec_review_crm_contact')]
     prepared = [('pool_service', '0185_crm_failure_stage')]
 
@@ -64,7 +64,7 @@ class CrmReleaseMigrationTests(TransactionTestCase):
                 '0195_crm_lead_identity_origin', '0196_crm_outbound_intake_boundary', '0197_crm_role_policy',
                 '0198_crm_workflow_documents_and_routing', '0199_confirmed_internal_contact_numbers', '0200_staff_departments',
                 '0201_max_communication_channel', '0202_max_text_replies', '0203_max_media_and_contact',
-                '0204_customer_reminders'])
+                '0204_customer_reminders', '0205_reminder_recipient_roles'])
         else:
             self.assertEqual(plan, ['0172_clientimportcandidate_review_state_and_more',
                 '0182_merge_onec_review_crm_contact', '0186_merge_crm_release', '0187_enable_aqualine_crm_close', '0188_crm_card_comments', '0189_contact_management',
@@ -73,7 +73,7 @@ class CrmReleaseMigrationTests(TransactionTestCase):
                 '0195_crm_lead_identity_origin', '0196_crm_outbound_intake_boundary', '0197_crm_role_policy',
                 '0198_crm_workflow_documents_and_routing', '0199_confirmed_internal_contact_numbers', '0200_staff_departments',
                 '0201_max_communication_channel', '0202_max_text_replies', '0203_max_media_and_contact',
-                '0204_customer_reminders'])
+                '0204_customer_reminders', '0205_reminder_recipient_roles'])
         executor.migrate(self.release)
         new = executor.loader.project_state(self.release).apps
         self.assertFalse(new.get_model("pool_service", "CustomerReminderPolicy").objects.exists())
@@ -148,3 +148,4 @@ class CrmReleaseActivationTests(TestCase):
         self.assertEqual((audit.before, audit.changed_fields), ({'crm_close': True}, []))
         org.crm_close = False; org.save(update_fields=['crm_close'])
         self.apply(); org.refresh_from_db(); self.assertFalse(org.crm_close)
+

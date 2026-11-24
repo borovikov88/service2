@@ -4,11 +4,12 @@ from django.db import models
 
 class CustomerReminderPolicy(models.Model):
     organization = models.OneToOneField("pool_service.Organization", on_delete=models.CASCADE)
+    # Keep former per-manager settings for existing installations.
     duty_manager = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+",
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+", null=True, blank=True, editable=False,
     )
-    supervisor = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+",
+    fallback_owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+", db_column="supervisor_id",
     )
     started_at = models.DateTimeField(null=True, blank=True)
     last_tick_at = models.DateTimeField(null=True, blank=True, editable=False)
@@ -39,3 +40,4 @@ class CustomerReminderReceipt(models.Model):
                 name="customer_reminder_work_step",
             ),
         ]
+

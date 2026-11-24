@@ -10,9 +10,10 @@ from pool_service.communication_models import (
 )
 from pool_service.crm_commercial_models import CrmLead
 from pool_service.crm_followup_models import CustomerReminderPolicy, CustomerReminderReceipt, MissedCallFollowup
-from pool_service.models import Notification, Organization, OrganizationAccess
+from pool_service.models import Employee, Notification, Organization, OrganizationAccess
+from pool_service.staff_structure_models import DepartmentAssignment, StaffDepartment
 from pool_service.services.customer_reminder_calendar import BARNAUL, reminder_step, working_deadline
-from pool_service.services.customer_reminders import Work, notify_due, work_items
+from pool_service.services.customer_reminders import RecipientDirectory, Work, notify_due, work_items
 
 
 class BusinessTimeTests(SimpleTestCase):
@@ -44,7 +45,7 @@ class CustomerReminderTests(TestCase):
         self.owner = self.membership("reminder-owner", "owner")
         self.start = datetime(2026, 11, 23, 10, tzinfo=BARNAUL)
         self.policy = CustomerReminderPolicy.objects.create(
-            organization=self.org, duty_manager=self.manager, supervisor=self.owner,
+            organization=self.org, fallback_owner=self.owner,
             started_at=self.start - timedelta(minutes=1),
         )
         channel = CommunicationChannel.objects.create(
@@ -74,23 +75,77 @@ class CustomerReminderTests(TestCase):
 
     def test_reminder_groups_chat_and_lead_deduplicates_and_escalates(self):
         lead = CrmLead.objects.create(organization=self.org, title="Test lead", received_at=self.start)
+        second_manager = self.membership("reminder-second-manager", "manager")
         items = [Work("message", self.dialog, self.start, 1, lead), Work("lead", lead, self.start, lead.pk, lead)]
         with patch("pool_service.services.customer_reminders.work_items", side_effect=lambda org, **filters: iter(items)), patch(
             "pool_service.services.customer_reminders.may_see", return_value=True,
         ), patch("pool_service.services.customer_reminders._current_work", side_effect=lambda work, org: work):
             earlier = self.start + timedelta(minutes=5)
-            self.assertEqual(notify_due(self.policy, earlier), 1)
+            self.assertEqual(notify_due(self.policy, earlier), 2)
             self.assertEqual(notify_due(self.policy, earlier), 0)
             notice = Notification.objects.get(user=self.manager)
             self.assertIn("Ответить в чате", notice.message)
             self.assertIn("Разобрать лид", notice.message)
+            self.assertEqual(Notification.objects.filter(user=second_manager).count(), 1)
             self.assertFalse(Notification.objects.filter(user=self.owner).exists())
 
             overdue = self.start + timedelta(minutes=30)
-            self.assertEqual(notify_due(self.policy, overdue), 2)
+            self.assertEqual(notify_due(self.policy, overdue), 1)
             self.assertEqual(notify_due(self.policy, overdue), 0)
             self.assertEqual(Notification.objects.filter(user=self.owner).count(), 1)
-            self.assertEqual(CustomerReminderReceipt.objects.filter(step="30").count(), 4)
+            self.assertEqual(CustomerReminderReceipt.objects.filter(step="30").count(), 2)
+            self.assertEqual(Notification.objects.filter(user=self.manager).count(), 1)
+
+    def test_assigned_manager_and_active_department_head_are_resolved_from_structure(self):
+        head = self.membership("reminder-sales-head", "manager")
+        parent = StaffDepartment.objects.create(organization=self.org, name="Sales", created_by=self.owner)
+        child = StaffDepartment.objects.create(organization=self.org, name="Retail", parent=parent, created_by=self.owner)
+        head_employee = Employee.objects.create(organization=self.org, user=head, display_name="Sales head")
+        member = Employee.objects.create(organization=self.org, user=self.manager, display_name="Sales manager")
+        head_assignment = DepartmentAssignment.objects.create(
+            department=parent, employee=head_employee, user_at_assignment=head, assigned_by=self.owner,
+            position="sales_head", includes_children=True, valid_from=self.start - timedelta(days=1),
+        )
+        DepartmentAssignment.objects.create(
+            department=child, employee=member, user_at_assignment=self.manager, assigned_by=self.owner,
+            position="member", valid_from=self.start - timedelta(days=1),
+        )
+        self.dialog.assignee = self.manager
+        work = Work("message", self.dialog, self.start, 1)
+        with patch("pool_service.services.customer_reminders.may_see", return_value=True):
+            directory = RecipientDirectory(self.policy, self.start)
+            self.assertEqual(directory.recipients(work, "5"), (self.manager,))
+            self.assertEqual(directory.recipients(work, "30"), (head,))
+            self.assertFalse(directory.can_handle(work, head))
+            self.dialog.assignee = head
+            self.assertEqual(directory.recipients(work, "30"), (self.owner,))
+            self.dialog.assignee = self.manager
+            head_assignment.valid_to = self.start
+            head_assignment.save(update_fields=["valid_to"])
+            self.assertEqual(RecipientDirectory(self.policy, self.start).recipients(work, "30"), (self.owner,))
+
+    def test_unassigned_escalation_uses_single_sales_head_or_owner(self):
+        work = Work("message", self.dialog, self.start, 1)
+        with patch("pool_service.services.customer_reminders.may_see", return_value=True):
+            for index in range(2):
+                head = self.membership(f"reminder-head-{index}", "manager")
+                department = StaffDepartment.objects.create(
+                    organization=self.org, name=f"Sales team {index}", created_by=self.owner,
+                )
+                employee = Employee.objects.create(organization=self.org, user=head, display_name=f"Head {index}")
+                DepartmentAssignment.objects.create(
+                    department=department, employee=employee, user_at_assignment=head, assigned_by=self.owner,
+                    position="sales_head", valid_from=self.start - timedelta(days=1),
+                )
+                directory = RecipientDirectory(self.policy, self.start)
+                self.assertEqual(directory.recipients(work, "30"), (head,) if index == 0 else (self.owner,))
+
+    def test_unassigned_work_only_notifies_managers_who_can_see_it(self):
+        denied = self.membership("reminder-restricted-manager", "manager")
+        self.membership("reminder-service", "service")
+        with patch("pool_service.services.customer_reminders.may_see", side_effect=lambda work, user, org: user != denied):
+            directory = RecipientDirectory(self.policy, self.start)
+            self.assertEqual(directory.recipients(Work("message", self.dialog, self.start, 1), "5"), (self.manager,))
 
     def test_shared_morning_summary_sees_all_carried_deadlines_once(self):
         morning = datetime(2026, 11, 24, 9, 35, tzinfo=BARNAUL)
@@ -135,21 +190,16 @@ class CustomerReminderTests(TestCase):
         )
         self.assertEqual(list(work_items(self.org)), [])
 
-    def test_only_owner_sets_policy_and_rejects_unrelated_users(self):
-        outside = get_user_model().objects.create_user("reminders-outside")
+    def test_only_owner_sets_policy_and_becomes_fallback(self):
         url = reverse("customer_reminder_settings") + f"?org_id={self.org.pk}"
         self.client.force_login(self.manager)
-        self.assertEqual(self.client.get(url).status_code, 403)
+        self.assertEqual(self.client.post(url, {"enabled": True}).status_code, 403)
         self.client.force_login(self.owner)
-        response = self.client.post(url, {
-            "duty_manager": outside.pk, "supervisor": self.owner.pk, "enabled": True,
-        })
-        self.assertContains(response, "Настройки напоминаний")
-        self.policy.refresh_from_db()
-        self.assertEqual(self.policy.duty_manager_id, self.manager.pk)
-        response = self.client.post(url, {
-            "duty_manager": self.manager.pk, "supervisor": self.owner.pk, "enabled": False,
-        })
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.client.post(url, {}).status_code, 302)
         self.policy.refresh_from_db()
         self.assertIsNone(self.policy.started_at)
+        self.assertEqual(self.client.post(url, {"enabled": True}).status_code, 302)
+        self.policy.refresh_from_db()
+        self.assertEqual(self.policy.fallback_owner_id, self.owner.pk)
+        self.assertIsNotNone(self.policy.started_at)
+

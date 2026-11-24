@@ -46,3 +46,6 @@ html[data-theme=dark] .crm-live{--crm-bg:#0d1726;--crm-panel:#142237;--crm-soft:
 .crm-live-board>.crm-live-lane{align-self:stretch;height:auto}
 @media(max-width:1000px){#crm-live .crm-live-heading{grid-template-columns:1fr auto;gap:10px}#crm-live .crm-live-heading .crm-live-pipelines{grid-row:2;grid-column:1/-1}#crm-live .crm-live-heading>.crm-live-button{grid-row:1;grid-column:2;margin:0}}
 @media(max-width:700px){.crm-live-board{display:flex;align-items:stretch;overflow-x:auto;overscroll-behavior-x:contain;min-height:340px;padding-bottom:15px;scroll-snap-type:x proximity}.crm-live-board>.crm-live-lane{flex:0 0 82vw;width:auto;min-height:340px;margin-bottom:0;scroll-snap-align:start}}
+
+.lead-board.is-drag-scrolling,.crm-live-board.is-drag-scrolling{scroll-snap-type:none;scroll-behavior:auto}
+

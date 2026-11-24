@@ -4,7 +4,6 @@ from shlex import join as shell_join
 from django.conf import settings
 from django import forms
 from django.contrib import messages
-from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
@@ -19,31 +18,16 @@ from pool_service.communication_services import selected_communication_access
 from pool_service.crm_followup_models import CustomerReminderPolicy, MissedCallFollowup
 from pool_service.models import Organization
 from pool_service.services.call_access import can_read_call
+from pool_service.services.call_processing_settings import _lock_owner
 from pool_service.services.customer_reminder_calendar import BARNAUL, working_start
 from pool_service.services.customer_reminders import (
-    Work, callback_candidates, eligible_users, manager_for, may_see, queue_url,
+    RecipientDirectory, Work, callback_candidates, eligible_users, may_see, queue_url,
     lead_for_call, returned_call, work_items,
 )
 
 
 class ReminderSettingsForm(forms.Form):
-    duty_manager = forms.ModelChoiceField(
-        queryset=get_user_model().objects.none(), label="Дежурный менеджер",
-        widget=forms.Select(attrs={"class": "form-select"}),
-    )
-    supervisor = forms.ModelChoiceField(
-        queryset=get_user_model().objects.none(), label="Руководитель",
-        widget=forms.Select(attrs={"class": "form-select"}),
-    )
     enabled = forms.BooleanField(required=False, label="Напоминания включены")
-
-    def __init__(self, *args, organization, **kwargs):
-        super().__init__(*args, **kwargs)
-        choices = eligible_users(organization).order_by("first_name", "last_name", "username")
-        for name in ("duty_manager", "supervisor"):
-            field = self.fields[name]
-            field.queryset = choices
-            field.label_from_instance = lambda user: user.get_full_name() or user.get_username()
 
 
 class CallbackForm(forms.Form):
@@ -59,13 +43,14 @@ def _access(request):
 
 
 def _queue_rows(organization, user, policy):
-    users = {member.pk: member for member in eligible_users(organization)} if policy else {}
+    directory = RecipientDirectory(policy, timezone.now()) if policy else None
     for work in work_items(organization):
-        if not may_see(work, user, organization):
-            continue
-        if policy and user.pk != policy.supervisor_id and user != manager_for(work, policy, users):
-            continue
-        yield work
+        if directory:
+            can_handle = directory.can_handle(work, user)
+            if can_handle or user in directory.escalation(work):
+                yield work, can_handle
+        elif may_see(work, user, organization):
+            yield work, False
 
 
 @login_required
@@ -76,7 +61,7 @@ def followups(request):
     organization = access.organization
     policy = CustomerReminderPolicy.objects.filter(organization=organization).first()
     groups = {}
-    for work in sorted(_queue_rows(organization, request.user, policy), key=lambda item: item.started_at):
+    for work, can_handle in sorted(_queue_rows(organization, request.user, policy), key=lambda row: row[0].started_at):
         group = groups.setdefault(work.group_key, [])
         group.append({
             "label": work.label,
@@ -85,7 +70,7 @@ def followups(request):
             "since": work.started_at.astimezone(BARNAUL),
             "retry": work.retry,
             "call_id": work.source.pk if work.kind == "call" and (
-                policy or access.role == "owner" or work.responsible_id == request.user.pk
+                can_handle if policy else access.role == "owner" or work.responsible_id == request.user.pk
             ) else None,
         })
     return render(request, "pool_service/communications/customer_followups.html", {
@@ -106,32 +91,19 @@ def reminder_settings(request):
         raise PermissionDenied
     organization = access.organization
     policy = CustomerReminderPolicy.objects.filter(organization=organization).first()
-    initial = {"enabled": False}
-    if policy:
-        initial = {
-            "duty_manager": policy.duty_manager_id, "supervisor": policy.supervisor_id,
-            "enabled": bool(policy.started_at),
-        }
     form = ReminderSettingsForm(
-        request.POST if request.method == "POST" else None, organization=organization, initial=initial,
+        request.POST if request.method == "POST" else None,
+        initial={"enabled": bool(policy and policy.started_at)},
     )
     if request.method == "POST" and form.is_valid():
         with transaction.atomic():
-            Organization.objects.select_for_update().get(pk=organization.pk)
-            locked_access = _access(request)
-            if locked_access.organization_id != organization.pk or locked_access.role != "owner":
-                raise PermissionDenied
-            recipient_ids = {form.cleaned_data[name].pk for name in ("duty_manager", "supervisor")}
-            if eligible_users(organization).filter(pk__in=recipient_ids).count() != len(recipient_ids):
-                raise PermissionDenied
+            owner = _lock_owner(request.user, organization)
             policy = CustomerReminderPolicy.objects.select_for_update().filter(organization=organization).first()
-            start = (policy.started_at if policy and policy.started_at else timezone.now()) if form.cleaned_data["enabled"] else None
+            start = None
+            if form.cleaned_data["enabled"]:
+                start = (policy.started_at if policy else None) or timezone.now()
             CustomerReminderPolicy.objects.update_or_create(
-                organization=organization, defaults={
-                    "duty_manager": form.cleaned_data["duty_manager"],
-                    "supervisor": form.cleaned_data["supervisor"],
-                    "started_at": start,
-                },
+                organization=organization, defaults={"fallback_owner": owner, "started_at": start},
             )
         messages.success(request, "Настройки напоминаний сохранены.")
         return redirect(queue_url(organization))
@@ -179,8 +151,7 @@ def record_callback(request, call_id):
         policy = CustomerReminderPolicy.objects.filter(organization=organization).first()
         work = Work("call", call, call.started_at, call.pk, lead_for_call(organization, call))
         if policy:
-            users = {member.pk: member for member in eligible_users(organization)}
-            if request.user.pk != policy.supervisor_id and request.user != manager_for(work, policy, users):
+            if not RecipientDirectory(policy, now).can_handle(work, request.user):
                 raise PermissionDenied
         elif access.role != "owner" and request.user.pk != work.responsible_id:
             raise PermissionDenied
@@ -193,3 +164,4 @@ def record_callback(request, call_id):
         })
     messages.success(request, "Следующий звонок запланирован." if action == "schedule" else "Результат звонка записан.")
     return redirect(target)
+

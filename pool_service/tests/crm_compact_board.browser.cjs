@@ -1,6 +1,7 @@
 const assert=require('node:assert/strict');
 const {readFileSync}=require('node:fs');
 const {chromium}=require('playwright');
+const {verifyBoardDragScroll}=require('./crm_board_drag_scroll_case.cjs');
 (async()=>{
  let input='';for await(const c of process.stdin)input+=c;const f=JSON.parse(input);
  assert.match(f.base,/^http:\/\/(localhost|127\.0\.0\.1):[0-9]+$/);
@@ -28,6 +29,7 @@ const {chromium}=require('playwright');
    if(process.env.CRM_SYNTHETIC_SCREENSHOTS){await page.evaluate(()=>scrollTo(0,0));await page.screenshot({path:`${process.env.CRM_SYNTHETIC_SCREENSHOTS}/compact-${width}-${theme}.png`});}
  }
  await page.setViewportSize({width:1440,height:850});
+ await verifyBoardDragScroll(page,card(),'.crm-live-board');assert.equal(writes,0);
  await card().scrollIntoViewIfNeeded();let b=await card().boundingBox();
  await page.mouse.move(b.x+60,b.y+30);await page.mouse.down();await page.mouse.move(b.x+85,b.y+45,{steps:5});await page.keyboard.press('Escape');await page.mouse.up();assert.equal(writes,0);
  await card().scrollIntoViewIfNeeded();b=await card().boundingBox();const target=await lane(f.target).boundingBox();
@@ -59,3 +61,4 @@ const {chromium}=require('playwright');
  assert.deepEqual(errors,[]);console.log('Compact header, filters/navigation, lower blank drop, cancel/repeat, desktop/mobile/light/dark PASS');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
+

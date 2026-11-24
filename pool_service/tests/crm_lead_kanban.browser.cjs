@@ -2,6 +2,7 @@
 const assert = require('node:assert/strict');
 const {readFileSync} = require('node:fs');
 const {chromium} = require('playwright');
+const {verifyBoardDragScroll} = require('./crm_board_drag_scroll_case.cjs');
 (async () => {
   let input=''; for await (const chunk of process.stdin) input+=chunk;
   const f=JSON.parse(input);
@@ -68,6 +69,8 @@ const {chromium} = require('playwright');
     assert.deepEqual(await columnHeadings(),['Не разобраны · 1','В работе · 0','Завершённые · 0','Лид провален · 0']);
     await page.getByRole('button',{name:'Спам и удалённые',exact:true}).click();
     assert.deepEqual(await columnHeadings(),['Не разобраны · 1','В работе · 0','Завершённые · 0','Лид провален · 0','Спам · 0','Удалённые · 0']);
+    await verifyBoardDragScroll(page, card(), '#lead-list');
+    assert.deepEqual(commandResults, []);
     const sent=[];let lose=true;
     await context.route('**'+f.command+'*',async route=>{
       if(route.request().method()!=='POST')return route.continue();
@@ -127,3 +130,4 @@ const {chromium} = require('playwright');
     console.log('Lead kanban: real drag, immutable replay, reload, spam/trash restore, live search, keyboard, 390px and dark passed');
   } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
+

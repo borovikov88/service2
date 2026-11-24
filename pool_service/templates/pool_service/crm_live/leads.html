@@ -4,7 +4,7 @@
 {% block extra_head %}
 <link rel="stylesheet" href="{% static 'pool_service/crm_inline.css' %}?v=20261116-inline1">
 <script src="{% static 'pool_service/crm_inline.js' %}?v=20261118-budget" defer></script>
-<link rel="stylesheet" href="{% static 'pool_service/crm_live/workspace.css' %}?v=20261119-deal-controls">
+<link rel="stylesheet" href="{% static 'pool_service/crm_live/workspace.css' %}?v=20261124-drag-scroll">
 <link rel="stylesheet" href="{% static 'pool_service/crm_live/leads.css' %}?v=20261119-drag-actions">
 <link rel="stylesheet" href="{% static 'pool_service/crm_live/design.css' %}?v=20261119-completion-menu">
 <link rel="stylesheet" href="{% static 'pool_service/crm_live/bulk.css' %}?v=20261116-bulk">
@@ -13,7 +13,8 @@
 <link rel="stylesheet" href="{% static 'pool_service/crm_live/activity.css' %}?v=20261116-card-timeline">
 <script src="{% static 'pool_service/crm_live/activity.js' %}?v=20261118-distribution" defer></script>
 <script src="{% static 'pool_service/crm_live/bulk.js' %}?v=20261118-completion" defer></script>
-<script src="{% static 'pool_service/crm_live/leads.js' %}?v=20261119-completion-menu" defer></script>
+  <script src="{% static 'pool_service/crm_live/board-drag-scroll.js' %}?v=1" defer></script>
+<script src="{% static 'pool_service/crm_live/leads.js' %}?v=20261124-drag-scroll" defer></script>
 {% endblock %}
 {% block content %}
 <section class="crm-live crm-leads" id="crm-leads" aria-label="Лиды">
@@ -43,3 +44,4 @@
   {{ lead_bootstrap|json_script:'lead-bootstrap' }}
 </section>
 {% endblock %}
+

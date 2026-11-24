@@ -1795,6 +1795,16 @@
     ownerSelect.addEventListener("change", () => { state.owner = ownerSelect.value; state.page = 1; loadData(); });
     byId("crm-live-refresh").addEventListener("click", () => loadData());
 
+    const dragScroll = win.createCrmBoardDragScroll?.(win, () => root.querySelector(".crm-live-board"), () => Boolean(state.dragging && !state.loading));
+    if (dragScroll) {
+      doc.addEventListener("dragover", dragScroll.update, true);
+      doc.addEventListener("drop", dragScroll.stop, true);
+      doc.addEventListener("dragend", dragScroll.stop, true);
+      doc.addEventListener("dragleave", (event) => {
+        if (!event.relatedTarget && (event.clientX <= 0 || event.clientY <= 0 ||
+            event.clientX >= win.innerWidth || event.clientY >= win.innerHeight)) dragScroll.stop();
+      });
+    }
     const dragActions = element("div", "crm-drag-actions"); dragActions.hidden = true;
     const failureDrop = element("div", "crm-failure-drop crm-drag-target", "Сделка провалена");
     dragActions.append(failureDrop); root.append(dragActions);
@@ -1835,6 +1845,7 @@
       if (lane && !lane.contains(event.relatedTarget)) lane.classList.remove("is-drop-target");
     });
     function endDrag() {
+      dragScroll?.stop();
       root.querySelectorAll(".is-drop-target,.is-dragging").forEach((item) => item.classList.remove("is-drop-target", "is-dragging"));
       state.dragging = null;
       dragActions.hidden = true;
@@ -1896,3 +1907,4 @@
 
   return {parseMoney, formatMoney, OperationQueue, transitionIntent, deadlineISO, localDateTime, attentionFor, editableDeadline, conflictDraft, mount};
 });
+

@@ -6,7 +6,7 @@ from urllib.parse import urlencode
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.db.models import Exists, OuterRef, Q
+from django.db.models import Exists, F, OuterRef, Q
 from django.db.models.functions import Coalesce
 from django.urls import reverse
 
@@ -21,6 +21,7 @@ from pool_service.services.communication_reply_state import manager_reply_filter
 from pool_service.services.crm_lead_access import can_read_lead
 from pool_service.services.notifications import notify_users
 from pool_service.staff_call_models import StaffAccount
+from pool_service.staff_structure_models import DepartmentAssignment, StaffDepartment
 from .customer_reminder_calendar import BARNAUL, previous_workday_open, reminder_step, summary_ready, working_start
 
 
@@ -47,7 +48,7 @@ class Work:
     def responsible_id(self):
         if self.kind == "message" and self.source.assignee_id:
             return self.source.assignee_id
-        if self.lead and self.lead.assignee_id:
+        if self.lead:
             return self.lead.assignee_id
         if self.kind != "call":
             return None
@@ -209,12 +210,79 @@ def may_see(work, user, organization):
     return can_read_lead(user, organization, work.source)
 
 
-def manager_for(work, policy, users):
-    for user_id in dict.fromkeys((work.responsible_id, policy.duty_manager_id, policy.supervisor_id)):
-        user = users.get(user_id)
-        if user and may_see(work, user, policy.organization):
-            return user
-    return None
+class RecipientDirectory:
+    def __init__(self, policy, now):
+        self.organization = policy.organization
+        self.users = {user.pk: user for user in eligible_users(self.organization) if not user.is_superuser}
+        memberships = list(OrganizationAccess.objects.filter(
+            organization=self.organization, user_id__in=self.users,
+            role__in=("manager", "owner"),
+        ).order_by("user_id").values_list("user_id", "role"))
+        self.manager_ids = [user_id for user_id, role in memberships if role == "manager"]
+        owners = [user_id for user_id, role in memberships if role == "owner"]
+        self.owner_ids = [policy.fallback_owner_id] if policy.fallback_owner_id in owners else owners if len(owners) == 1 else []
+        self.departments = dict(StaffDepartment.objects.filter(
+            organization=self.organization,
+        ).values_list("pk", "parent_id"))
+        self.user_departments = {}
+        self.heads_by_department = defaultdict(list)
+        self.head_ids = set()
+        assignments = DepartmentAssignment.objects.filter(
+            department__organization=self.organization, employee__organization=self.organization,
+            employee__user_id=F("user_at_assignment_id"), employee__is_active=True,
+            user_at_assignment_id__in=self.users, valid_from__lte=now,
+        ).filter(Q(valid_to__isnull=True) | Q(valid_to__gt=now)).order_by("-valid_from", "-pk")
+        for user_id, department, position, includes_children in assignments.values_list(
+            "user_at_assignment_id", "department_id", "position", "includes_children",
+        ):
+            if user_id in self.user_departments:
+                continue
+            self.user_departments[user_id] = department
+            if position == "sales_head":
+                self.heads_by_department[department].append((user_id, includes_children))
+                self.head_ids.add(user_id)
+
+    def _visible(self, work, candidate_ids):
+        return tuple(
+            self.users[user_id] for user_id in dict.fromkeys(candidate_ids)
+            if user_id in self.users and may_see(work, self.users[user_id], self.organization)
+        )
+
+    def managers(self, work):
+        assigned = self._visible(work, (work.responsible_id,))
+        return assigned or self._visible(work, self.manager_ids)
+
+    def escalation(self, work):
+        department = self.user_departments.get(work.responsible_id)
+        if department is None:
+            heads = self._visible(work, self.head_ids) if len(self.head_ids) == 1 else ()
+            return heads or self._visible(work, self.owner_ids)
+        direct = True
+        visited = set()
+        while department in self.departments and department not in visited:
+            visited.add(department)
+            heads = self._visible(work, (
+                user_id for user_id, covers_children in self.heads_by_department[department]
+                if user_id != work.responsible_id and (direct or covers_children)
+            ))
+            if heads:
+                return heads
+            direct = False
+            department = self.departments[department]
+        return self._visible(work, self.owner_ids)
+
+    def recipients(self, work, step):
+        if step == "30":
+            return self.escalation(work)
+        managers = self.managers(work)
+        if step == "morning":
+            return tuple(dict.fromkeys((*managers, *self.escalation(work))))
+        return managers
+
+    def can_handle(self, work, user):
+        if user.pk in self.owner_ids:
+            return may_see(work, user, self.organization)
+        return user in self.managers(work)
 
 
 def queue_url(organization):
@@ -239,19 +307,9 @@ def _current_work(work, organization):
     return next(source(organization, work.source.pk), None)
 
 
-def _recipients(work, step, policy, users):
-    manager = manager_for(work, policy, users)
-    supervisor = users.get(policy.supervisor_id)
-    if step in ("30", "morning") and supervisor and supervisor != manager and may_see(
-        work, supervisor, policy.organization,
-    ):
-        return (manager, supervisor) if manager else (supervisor,)
-    return (manager,) if manager else ()
-
-
 def _recipient_batches(policy, now, *, morning):
     org = policy.organization
-    users = {user.pk: user for user in eligible_users(org)}
+    directory = RecipientDirectory(policy, now)
     grouping = defaultdict(list)
     # Minute ticks only scan recent work. A completed digest avoids rescanning
     # older open work on every tick.
@@ -260,13 +318,13 @@ def _recipient_batches(policy, now, *, morning):
         step = _work_step(work, policy, now)
         if not step or (step == "morning") != morning:
             continue
-        for user in _recipients(work, step, policy, users):
+        for user in directory.recipients(work, step):
             if not CustomerReminderReceipt.objects.filter(
                 organization=org, user=user, work_key=work.receipt_key, step=step,
             ).exists():
                 group_key = None if step == "morning" else work.group_key
                 grouping[(user.pk, step, group_key)].append(work)
-    return users, grouping
+    return directory.users, grouping
 
 
 def _write_notice(policy, user, step, items, now):
@@ -274,12 +332,11 @@ def _write_notice(policy, user, step, items, now):
     with transaction.atomic():
         Organization.objects.select_for_update().get(pk=org.pk)
         if not CustomerReminderPolicy.objects.select_for_update().filter(
-            pk=policy.pk, duty_manager_id=policy.duty_manager_id, supervisor_id=policy.supervisor_id,
-            started_at=policy.started_at,
+            pk=policy.pk, fallback_owner_id=policy.fallback_owner_id, started_at=policy.started_at,
         ).exists():
             return False
-        current_users = {member.pk: member for member in eligible_users(org)}
-        if user.pk not in current_users:
+        directory = RecipientDirectory(policy, now)
+        if user.pk not in directory.users:
             return False
         if step == "morning":
             batch_key = f"morning:{now.astimezone(BARNAUL).date().isoformat()}"
@@ -296,7 +353,7 @@ def _write_notice(policy, user, step, items, now):
             work = _current_work(item, org)
             if (not work or work.receipt_key != item.receipt_key or work.group_key != item.group_key
                     or _work_step(work, policy, now) != step
-                    or user not in _recipients(work, step, policy, current_users)):
+                    or user not in directory.recipients(work, step)):
                 continue
             _, created = CustomerReminderReceipt.objects.get_or_create(
                 organization=org, user=user, work_key=work.receipt_key, step=step,
@@ -340,3 +397,4 @@ def notify_due(policy, now):
     )
     policy.last_digest_on = digest_date
     return delivered
+
