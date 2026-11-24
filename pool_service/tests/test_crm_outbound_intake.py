@@ -133,9 +133,8 @@ class OutboundIntakeTests(EpisodeFixture, TestCase):
         self.assertFalse(CrmLead.objects.exists())
         self.assertFalse(CrmLeadSource.objects.exists())
 
-    def test_coworker_calls_to_same_person_remain_business_in_both_directions(self):
+    def test_owner_private_list_alone_does_not_exclude_coworker_from_sales(self):
         self.mark()
-        ClientBusinessRole.objects.create(client=self.person, role="personal", active=True)
         coworker = self.coworker()
         for direction in ("in", "out"):
             self.participant(self.call(type=direction), coworker)
@@ -182,9 +181,8 @@ class OutboundIntakeTests(EpisodeFixture, TestCase):
         self.assertTrue(can_read_lead(self.user, self.org, current))
         self.assertEqual(len(self.activity(current)), 1)
 
-    def test_personal_contact_category_and_phone_type_do_not_suppress_corporate_messages(self):
+    def test_personal_phone_type_and_owner_list_alone_do_not_suppress_corporate_messages(self):
         self.mark()
-        ClientBusinessRole.objects.create(client=self.person, role="personal", active=True)
         ClientContact.objects.create(client=self.person, kind="phone", value=self.person.phone, phone_type="personal")
         self.incoming(participant_phone=self.person.phone)
         self.assertEqual(self.deliver().error_code, "lead_created")
@@ -193,14 +191,36 @@ class OutboundIntakeTests(EpisodeFixture, TestCase):
         self.assertEqual(CrmLead.objects.count(), 1)
         self.assertEqual(CrmLeadSource.objects.count(), 2)
 
-    def test_personal_category_edit_does_not_change_call_or_message_intake(self):
-        ClientBusinessRole.objects.create(client=self.person, role="personal", active=True)
-        self.call(type="out"); self.deliver("call")
-        self.incoming(participant_phone=self.person.phone); self.deliver()
-        ClientBusinessRole.objects.filter(client=self.person).update(active=False)
-        self.call(type="in"); self.deliver("call")
+    def test_contact_category_blocks_sales_for_any_employee_and_both_directions(self):
+        coworker = self.coworker()
+        for role in ("personal", "internal"):
+            category = ClientBusinessRole.objects.create(client=self.person, role=role, active=True)
+            for direction in ("in", "out"):
+                with self.subTest(role=role, direction=direction):
+                    self.participant(self.call(type=direction), coworker)
+                    self.assertEqual(self.deliver("call").error_code, "contact_category_ignored")
+            self.incoming(participant_phone=self.person.phone, external_message_id=role)
+            self.assertEqual(self.deliver().error_code, "contact_category_ignored")
+            category.active = False
+            category.save()
+        self.assertFalse(CrmLead.objects.exists())
+        self.assertFalse(CrmLeadSource.objects.exists())
+        self.call(type="in")
+        self.assertEqual(self.deliver("call").error_code, "lead_created")
         self.assertEqual(CrmLead.objects.count(), 1)
-        self.assertEqual(CrmLeadSource.objects.count(), 3)
+        self.assertEqual(CrmLeadSource.objects.count(), 1)
+
+    def test_removed_category_does_not_turn_a_repeat_delivery_into_a_new_lead(self):
+        category = ClientBusinessRole.objects.create(client=self.person, role="internal", active=True)
+        call = self.call(type="out", status="missed")
+        self.assertEqual(self.deliver("call").error_code, "contact_category_ignored")
+        category.active = False
+        category.save()
+        self.history(callid=call.external_id, type="out", status="success", duration="45")
+        self.assertEqual(self.deliver("call").error_code, "contact_category_ignored")
+        self.assertFalse(CrmLead.objects.exists())
+        self.call(type="out")
+        self.assertEqual(self.deliver("call").error_code, "lead_created")
 
     def test_other_owner_and_foreign_organization_lists_do_not_apply(self):
         from pool_service.phone_utils import normalize_phone

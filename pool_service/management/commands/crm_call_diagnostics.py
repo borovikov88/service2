@@ -26,6 +26,7 @@ STATES = frozenset(('pending', 'claimed', 'awaiting_consumer', 'retry',
     'failed', 'blocked', 'done', 'superseded'))
 ERRORS = {
     '': 'none', 'lead_created': 'none', 'lead_linked': 'none',
+    'contact_category_ignored': 'contact_category', 'classification_pending': 'classification_pending',
     'historical_ignored': 'historical', 'legacy_scope_unknown': 'unverified',
     'process_disabled': 'disabled', 'consumer_unavailable': 'consumer_unavailable',
     'consumer_failed': 'processing_failed', 'lease_expired': 'retryable',

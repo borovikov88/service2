@@ -6,11 +6,14 @@ source and event before calling this module. No AI, provider API or client messa
 from pool_service.services.crm_role_runtime import resolve_crm_capabilities
 from django.contrib.auth import get_user_model
 from django.db import transaction
+from pool_service.client_crm_models import ClientBusinessRole
+from pool_service.client_phone_matching import clients_by_phone
 from pool_service.communication_models import PhoneCall, TelephonyEmployeeIdentity
 from pool_service.crm_commercial_models import (
     CrmEvent, CrmIntakeActivation, CrmLead, CrmLeadSource, CrmLeadThread,
 )
-from pool_service.models import Employee, Organization, OrganizationAccess
+from pool_service.crm_inbox_models import CrmInboxEvent
+from pool_service.models import Client, Employee, Organization, OrganizationAccess
 from pool_service.services.crm_lead_access import can_read_lead
 from pool_service.services.crm_lead_titles import automatic_call_title, call_title, has_manual_title
 from pool_service.services.call_privacy import is_private_call
@@ -20,7 +23,32 @@ from .crm_lead_identity import context_hash, is_active, lead_identity, matching_
 INTAKE_OUTCOMES = frozenset({
     "lead_created", "lead_linked", "deal_linked", "needs_distribution",
     "historical_ignored", "private_ignored", "internal_ignored", "classification_pending",
+    "contact_category_ignored",
 })
+
+
+def _contact_category_outcome(organization, source, identity):
+    excluded = ClientBusinessRole.objects.filter(
+        client__organization=organization, active=True, role__in=("personal", "internal"),
+    )
+    if isinstance(source, PhoneCall):
+        explicit_client_id, phone = source.client_id, source.phone_number
+    else:
+        dialog = source.conversation
+        explicit_client_id, phone = dialog.client_id, dialog.provider_phone or dialog.participant_phone
+    # Check the directly identified parties, not a company merely inferred
+    # from a person's directory entry.
+    party = identity.contact or identity.client
+    party_ids = {pk for pk in (explicit_client_id, party.pk if party else None) if pk is not None}
+    if party_ids and excluded.filter(client_id__in=party_ids).exists():
+        return "contact_category_ignored"
+    if identity.ambiguous or (explicit_client_id and not identity.contact):
+        # A shared phone or a stale company link cannot prove a sales contact.
+        # Search only tagged candidates, including legacy main phone numbers.
+        tagged = Client.objects.filter(pk__in=excluded.values("client_id"))
+        if clients_by_phone(organization, phone, limit=1, queryset=tagged):
+            return "classification_pending"
+    return None
 
 
 def _context_key(event):
@@ -92,9 +120,19 @@ def consume_incoming(event, source, operation_identity):
     existing = CrmLeadSource.objects.select_for_update().filter(inbox=event).first()
     if existing:
         return "lead_linked"
+    # A provider correction to an excluded call is still the same call, even
+    # if the category has since been removed. A new call has a new source key.
+    if event.revision > 1 and CrmInboxEvent.objects.filter(
+        organization=organization, source_key=event.source_key, revision__lt=event.revision,
+        state="done", error_code="contact_category_ignored",
+    ).exists():
+        return "contact_category_ignored"
+    identity = source_identity(organization, source)
+    category_outcome = _contact_category_outcome(organization, source, identity)
+    if category_outcome:
+        return category_outcome
     original = CrmLeadSource.objects.select_for_update().filter(organization=organization,
         inbox__organization=organization, inbox__source_key=event.source_key).order_by("inbox__revision", "pk").first()
-    identity = source_identity(organization, source)
     thread = None
     created = False
     if original:

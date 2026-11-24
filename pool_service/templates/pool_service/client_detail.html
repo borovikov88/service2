@@ -37,7 +37,7 @@
         {% if can_manage and not profile.merged_into_id %}
         <details class="border rounded-3 p-2" data-contact-categories>
           <summary class="small fw-semibold">Категории контакта</summary>
-          <p class="text-muted small mt-2 mb-2">Можно выбрать несколько. Категория «Личный» не меняет доступ к карточке.</p>
+          <p class="text-muted small mt-2 mb-2">Если выбраны «Личный» или «Внутренний», новые звонки и сообщения контакта пропускаются при автоматическом создании лидов и привязке к сделкам. Категория «Личный» не меняет доступ к карточке.</p>
           <div class="d-flex flex-wrap gap-2">
           {% for role in contact_roles %}
             <form method="post" {% if role.code == 'supplier' %}data-supplier-form{% endif %}>{% csrf_token %}

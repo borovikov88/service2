@@ -10,7 +10,7 @@ from .models import Client
 from .phone_utils import normalize_phone
 
 
-def clients_by_phones(organization, values, *, limit=10):
+def clients_by_phones(organization, values, *, limit=10, queryset=None):
     """Resolve multiple phone values with one CRM lookup pass.
 
     ClientContact is authoritative; legacy Client.phone is scanned once for
@@ -28,7 +28,8 @@ def clients_by_phones(organization, values, *, limit=10):
     if not match_values:
         return {}
 
-    base = active_clients(Client.objects.filter(organization=organization))
+    clients = queryset if queryset is not None else Client.objects.all()
+    base = active_clients(clients.filter(organization=organization))
     ids_by_match = {value: set() for value in match_values}
 
     contact_rows = (
@@ -77,7 +78,7 @@ def clients_by_phones(organization, values, *, limit=10):
     return results
 
 
-def clients_by_phone(organization, value, *, limit=10):
+def clients_by_phone(organization, value, *, limit=10, queryset=None):
     """Resolve every active CRM client sharing one normalized phone."""
     match_value = normalize_phone(value)
     if not match_value:
@@ -85,5 +86,5 @@ def clients_by_phone(organization, value, *, limit=10):
     return clients_by_phones(
         organization,
         [value],
-        limit=limit,
+        limit=limit, queryset=queryset,
     ).get(match_value, [])

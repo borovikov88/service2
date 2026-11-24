@@ -11,7 +11,7 @@ from django.core.files.base import ContentFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from pool_service.client_crm_models import ClientBusinessRole, ClientBusinessRoleEvent, ClientImportCandidate
+from pool_service.client_crm_models import ClientBusinessRole, ClientBusinessRoleEvent, ClientCompanyLink, ClientImportCandidate
 from pool_service.communication_models import CallAnalysis, CommunicationAccess, Conversation, ConversationMessage
 from pool_service.crm_commercial_bootstrap import bootstrap_commercial_settings
 from pool_service.crm_commercial_models import CrmAccess, CrmCommunicationRoute, CrmDeal, CrmLead, CrmLeadDealLink, CrmLeadSource, CrmPipeline
@@ -81,6 +81,55 @@ class DealRoutingTests(EpisodeFixture, TestCase):
         self.assertEqual(CrmCommunicationRoute.objects.get(inbox=future).deal_id, chosen.pk)
         self.assertEqual(CrmCommunicationRoute.objects.count(), 2)
         self.assertFalse(CrmLeadSource.objects.exists())
+
+    def test_tagged_person_does_not_route_to_company_deal_or_exclude_other_contacts(self):
+        company = Client.objects.create(organization=self.org, name="Synthetic company", client_type="legal")
+        ClientCompanyLink.objects.create(company=company, person=self.person)
+        for role in ("buyer", "personal", "internal"):
+            ClientBusinessRole.objects.create(client=self.person, role=role, active=True)
+        deal = self.deal()
+        deal.client, deal.contact = company, None
+        deal.save(update_fields=["client", "contact"])
+        self.call(type="out", person=company)
+        self.assertEqual(self.deliver("call").error_code, "contact_category_ignored")
+        self.assertEqual(self.message("excluded-contact").error_code, "contact_category_ignored")
+        self.assertFalse(CrmCommunicationRoute.objects.exists())
+        self.assertFalse(CrmLead.objects.exists())
+        colleague = Client.objects.create(organization=self.org, name="Synthetic colleague", phone="+79005550005")
+        ClientCompanyLink.objects.create(company=company, person=colleague)
+        self.call(type="out", person=company, phone=colleague.phone)
+        event = self.deliver("call")
+        self.assertEqual(CrmCommunicationRoute.objects.get(inbox=event).deal_id, deal.pk)
+
+    def test_shared_phone_with_tagged_candidate_cannot_create_or_route_a_card(self):
+        for name in ("A One", "B Two"):
+            Client.objects.create(organization=self.org, name=name, phone=self.person.phone)
+        ClientBusinessRole.objects.create(client=self.person, role="personal", active=True)
+        self.deal()
+        self.incoming(participant_phone=self.person.phone)
+        self.assertEqual(self.deliver("message").error_code, "classification_pending")
+        self.assertFalse(CrmCommunicationRoute.objects.exists())
+        self.assertFalse(CrmLead.objects.exists())
+
+    def test_tagged_phone_with_unrelated_company_fk_is_held_before_deal_routing(self):
+        company = Client.objects.create(organization=self.org, name="Unrelated company", client_type="legal")
+        ClientBusinessRole.objects.create(client=self.person, role="personal", active=True)
+        deal = self.deal()
+        deal.client, deal.contact = company, None
+        deal.save(update_fields=["client", "contact"])
+        self.call(type="out", person=company)
+        self.assertEqual(self.deliver("call").error_code, "classification_pending")
+        self.assertFalse(CrmCommunicationRoute.objects.exists())
+        self.assertFalse(CrmLead.objects.exists())
+
+    def test_explicit_tagged_company_suppresses_intake_but_inferred_company_does_not(self):
+        company = Client.objects.create(organization=self.org, name="Internal company", client_type="legal")
+        ClientBusinessRole.objects.create(client=company, role="internal", active=True)
+        ClientCompanyLink.objects.create(company=company, person=self.person)
+        self.call(type="in", person=company)
+        self.assertEqual(self.deliver("call").error_code, "contact_category_ignored")
+        self.call(type="in", person=self.person)
+        self.assertEqual(self.deliver("call").error_code, "lead_created")
 
     def test_shared_phone_with_known_company_requires_a_deal_decision(self):
         company = Client.objects.create(organization=self.org, name="Synthetic company", client_type="legal")

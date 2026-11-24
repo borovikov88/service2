@@ -128,7 +128,10 @@ class InternalContactNumbersTests(LeadIntakeFixture, TestCase):
         call.refresh_from_db()
         self.assertIsNone(call.internal_contact_number_id)
         self.assertFalse(call.internal_number_pending)
-        self.assertIn(self.deliver('call').error_code, ('lead_created', 'needs_distribution'))
+        # The PBX timing hold has cleared. The contact's active directory
+        # category independently keeps this call out of sales.
+        self.assertEqual(self.deliver('call').error_code, 'contact_category_ignored')
+        self.assertFalse(CrmLead.objects.exists())
 
     def test_replay_of_a_legacy_provider_call_without_intake_receipt(self):
         self.megafon()
