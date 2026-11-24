@@ -1,0 +1,21 @@
+{% extends "pool_service/base.html" %}
+{% load tz %}
+{% block title %}Настройки напоминаний{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h4">Настройки напоминаний</h1>
+  <a class="btn btn-outline-secondary" href="{{ queue_url }}">Назад</a>
+</div>
+<form method="post" class="card card-body">
+  {% csrf_token %}
+  <p>Понедельник–пятница, с 09:00 до 18:00 по Барнаулу. Напоминания через 5 и 30 рабочих минут, сводка на следующее рабочее утро.</p>
+  {{ form.as_p }}
+  <div><button class="btn btn-primary">Сохранить</button></div>
+</form>
+<section class="card card-body mt-3">
+  <h2 class="h6">Планировщик Beget</h2>
+  <p>Расписание CronTab <code>* * * * *</code>. Обычный вывод перенаправляется в <code>/dev/null</code>, сообщения об ошибках остаются доступны планировщику.</p>
+  <code class="text-break">{{ cron_command }}</code>
+  <p class="mt-2 mb-0">{% if last_tick_at %}Последний запуск {{ last_tick_at|timezone:"Asia/Barnaul"|date:"d.m.Y H:i" }} по Барнаулу.{% else %}Первого запуска пока не было.{% endif %}</p>
+</section>
+{% endblock %}

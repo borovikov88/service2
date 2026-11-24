@@ -1,0 +1,41 @@
+{% extends "pool_service/base.html" %}
+{% load tz %}
+{% block title %}Контроль обращений{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between gap-2 mb-3">
+  <h1 class="h4">Контроль обращений</h1>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-secondary" href="{% url 'communications_conversations' %}?org_id={{ communication_org_id }}">Диалоги</a>
+    {% if can_configure %}<a class="btn btn-outline-secondary" href="{% url 'customer_reminder_settings' %}?org_id={{ communication_org_id }}">Настройки напоминаний</a>{% endif %}
+  </div>
+</div>
+{% if not policy.started_at %}<div class="alert alert-secondary">Напоминания пока выключены.</div>{% endif %}
+{% for group in groups %}
+<section class="card mb-3">
+  <ul class="list-group list-group-flush">
+    {% for work in group %}
+    <li class="list-group-item">
+      <div class="d-flex flex-wrap justify-content-between align-items-start gap-2">
+        <div>
+          <strong>{{ work.label }}</strong>
+          <div>{% if work.url %}<a href="{{ work.url }}">{{ work.title }}</a>{% else %}{{ work.title }}{% endif %}</div>
+        </div>
+        <small class="text-muted">{% if work.retry %}Следующая попытка{% else %}Ожидает с{% endif %} {{ work.since|timezone:"Asia/Barnaul"|date:"d.m.Y H:i" }}</small>
+      </div>
+      {% if work.call_id %}
+      <form method="post" action="{% url 'customer_record_callback' work.call_id %}?org_id={{ communication_org_id }}" class="row g-2 mt-2">
+        {% csrf_token %}
+        <div class="col-auto"><input type="datetime-local" class="form-control" name="next_attempt_at" aria-label="Следующий звонок по Барнаулу"></div>
+        <div class="col-auto"><button class="btn btn-outline-secondary" name="action" value="schedule">Запланировать повтор</button></div>
+        <div class="col"><input class="form-control" name="note" maxlength="250" placeholder="Результат связи с клиентом" aria-label="Результат связи с клиентом"></div>
+        <div class="col-auto"><button class="btn btn-outline-primary" name="action" value="resolve">Записать результат</button></div>
+      </form>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% empty %}
+<div class="card card-body text-muted">Нет обращений, которые требуют вашего действия.</div>
+{% endfor %}
+{% endblock %}
