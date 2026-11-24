@@ -5988,6 +5988,41 @@ class WebsiteCommunicationApiTests(TestCase):
         with self.assertRaisesMessage(ValueError, "payload_too_large"):
             _payload(oversized_request)
 
+    def test_website_chat_reply_clears_response_queue_before_browser_ack(self):
+        self.client.force_login(User.objects.get(username="website-owner"))
+        chat = Conversation.objects.create(
+            organization=self.organization, connection=self.connection, external_id="chat:browser-queue",
+        )
+        ConversationMessage.objects.create(
+            conversation=chat, direction=ConversationMessage.DIRECTION_IN, body="Вопрос",
+        )
+        feed = reverse("communication_notification_feed")
+        index = reverse("communications_conversations")
+        self.assertEqual(self.client.get(feed).json()["unanswered_dialogs"], 1)
+        self.assertEqual(self.client.post(
+            reverse("communication_reply", args=[chat.uuid]), {"body": "Ответ менеджера"},
+        ).status_code, 302)
+        reply = chat.messages.get(direction=ConversationMessage.DIRECTION_OUT)
+        self.assertEqual(reply.delivery_status, ConversationMessage.DELIVERY_PENDING)
+        self.assertIsNone(reply.delivered_at)
+        self.assertEqual(self.client.get(feed).json()["unanswered_dialogs"], 0)
+        self.assertNotContains(self.client.get(index, {"dialogs": "unanswered"}), str(chat.uuid))
+        self.assertContains(self.client.get(index), "Ждёт получения в чате на сайте")
+
+        outbox_url = reverse("website_chat_outbox", args=[self.connection.public_id, "browser-queue"])
+        self.assertEqual(self.client.get(outbox_url, **self.headers).json()["messages"][0]["id"], reply.pk)
+        reply.refresh_from_db()
+        self.assertEqual(reply.delivery_status, ConversationMessage.DELIVERY_SENDING)
+        self.assertEqual(self.client.get(feed).json()["unanswered_dialogs"], 0)
+
+        ConversationMessage.objects.filter(pk=reply.pk).update(delivery_status=ConversationMessage.DELIVERY_FAILED)
+        self.assertEqual(self.client.get(feed).json()["unanswered_dialogs"], 1)
+        ConversationMessage.objects.filter(pk=reply.pk).update(delivery_status=ConversationMessage.DELIVERY_PENDING)
+        ConversationMessage.objects.create(
+            conversation=chat, direction=ConversationMessage.DIRECTION_IN, body="Новый вопрос",
+        )
+        self.assertEqual(self.client.get(feed).json()["unanswered_dialogs"], 1)
+
     @patch("pool_service.services.notifications.send_push_to_users")
     def test_website_request_and_reply_delivery_ack(self, _send_push):
         request_url = reverse("website_request_create", args=[self.connection.public_id])
