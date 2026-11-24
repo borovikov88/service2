@@ -239,8 +239,16 @@
     }
     const columnLabels = {unparsed: "Не разобраны", working: "В работе", history: "Завершённые", failed: "Лид провален", spam: "Спам", deleted: "Удалённые", restore: "Восстановить"};
     let dragged = null, suppressClickUntil = 0;
+    const dragScroll = win.createCrmBoardDragScroll?.(win, () => byId("lead-list"), () => Boolean(dragged && !state.loading && state.mode !== "closed"));
+    doc.addEventListener("dragover", (event) => dragScroll?.update(event), true);
+    doc.addEventListener("drop", () => dragScroll?.stop(), true);
+    doc.addEventListener("dragend", () => dragScroll?.stop(), true);
+    doc.addEventListener("dragleave", (event) => {
+      if (!event.relatedTarget && (event.clientX <= 0 || event.clientY <= 0 ||
+          event.clientX >= win.innerWidth || event.clientY >= win.innerHeight)) dragScroll?.stop();
+    });
     const dragActions=el("div","crm-drag-actions");dragActions.hidden=true;root.append(dragActions);
-    function endDrag(){if(dragged)suppressClickUntil=Date.now()+250;dragged=null;dragActions.hidden=true;root.querySelectorAll(".is-drop-target,.is-dragging").forEach(node=>node.classList.remove("is-drop-target","is-dragging"));}
+    function endDrag(){dragScroll?.stop();if(dragged)suppressClickUntil=Date.now()+250;dragged=null;dragActions.hidden=true;root.querySelectorAll(".is-drop-target,.is-dragging").forEach(node=>node.classList.remove("is-drop-target","is-dragging"));}
     const canComplete = lead => Boolean(lead && (lead.can_qualify || lead.can_complete_customer || moveTargets(lead).includes("history")));
     const dropActions = [
       ["lead-conversion-drop", "Завершить лид", "check", canComplete, lead => conversionDialog(lead, false, null)],
@@ -999,3 +1007,4 @@
   }
   return {intakeStatusText, LeadOperations, localDateTime, deadlineISO, moveTargets, leadEditChanges, mount};
 });
+
