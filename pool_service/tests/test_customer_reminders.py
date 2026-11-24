@@ -203,3 +203,29 @@ class CustomerReminderTests(TestCase):
         self.assertEqual(self.policy.fallback_owner_id, self.owner.pk)
         self.assertIsNotNone(self.policy.started_at)
 
+    def test_settings_find_owner_role_even_when_admin_role_was_added_first(self):
+        OrganizationAccess.objects.filter(user=self.owner, organization=self.org).update(role="admin")
+        other = Organization.objects.create(name="Other reminder organization")
+        OrganizationAccess.objects.create(user=self.owner, organization=other, role="admin")
+        OrganizationAccess.objects.create(user=self.owner, organization=self.org, role="owner")
+        self.client.force_login(self.owner)
+
+        settings = reverse("customer_reminder_settings")
+        queue = reverse("customer_followups")
+        own_settings = f"{settings}?org_id={self.org.pk}"
+        self.assertContains(self.client.get(queue, {"org_id": self.org.pk}), own_settings)
+        self.assertContains(self.client.get(own_settings), "Напоминания включены")
+        self.assertRedirects(self.client.post(own_settings, {}), f"{queue}?org_id={self.org.pk}")
+        self.policy.refresh_from_db()
+        self.assertIsNone(self.policy.started_at)
+        self.assertEqual(self.client.post(own_settings, {"enabled": True}).status_code, 302)
+        self.policy.refresh_from_db()
+        self.assertIsNotNone(self.policy.started_at)
+        self.assertEqual(self.policy.fallback_owner_id, self.owner.pk)
+
+        other_settings = f"{settings}?org_id={other.pk}"
+        self.assertNotContains(self.client.get(queue, {"org_id": other.pk}), other_settings)
+        self.assertEqual(self.client.get(other_settings).status_code, 403)
+        self.assertEqual(self.client.post(other_settings, {"enabled": True}).status_code, 403)
+        self.assertFalse(CustomerReminderPolicy.objects.filter(organization=other).exists())
+

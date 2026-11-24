@@ -18,7 +18,7 @@ from pool_service.communication_services import selected_communication_access
 from pool_service.crm_followup_models import CustomerReminderPolicy, MissedCallFollowup
 from pool_service.models import Organization
 from pool_service.services.call_access import can_read_call
-from pool_service.services.call_processing_settings import _lock_owner
+from pool_service.services.call_processing_settings import _lock_owner, settings_allowed
 from pool_service.services.customer_reminder_calendar import BARNAUL, working_start
 from pool_service.services.customer_reminders import (
     RecipientDirectory, Work, callback_candidates, eligible_users, may_see, queue_url,
@@ -77,7 +77,7 @@ def followups(request):
         "active_tab": "communications",
         "communication_org_id": organization.pk,
         "groups": groups.values(),
-        "can_configure": access.role == "owner",
+        "can_configure": settings_allowed(request.user, organization),
         "policy": policy,
     })
 
@@ -87,9 +87,9 @@ def followups(request):
 @require_http_methods(["GET", "POST"])
 def reminder_settings(request):
     access = _access(request)
-    if access.role != "owner":
-        raise PermissionDenied
     organization = access.organization
+    if not settings_allowed(request.user, organization):
+        raise PermissionDenied
     policy = CustomerReminderPolicy.objects.filter(organization=organization).first()
     form = ReminderSettingsForm(
         request.POST if request.method == "POST" else None,
