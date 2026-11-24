@@ -10,6 +10,7 @@ from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
+from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_http_methods, require_POST
 
 from pool_service.communication_models import PhoneCall
@@ -20,7 +21,7 @@ from pool_service.services.call_access import can_read_call
 from pool_service.services.customer_reminder_calendar import BARNAUL, working_start
 from pool_service.services.customer_reminders import (
     Work, callback_candidates, eligible_users, manager_for, may_see, queue_url,
-    related_lead, returned_call, work_items,
+    lead_for_call, returned_call, work_items,
 )
 
 
@@ -67,6 +68,7 @@ def _queue_rows(organization, user, policy):
 
 
 @login_required
+@never_cache
 @require_http_methods(["GET"])
 def followups(request):
     access = _access(request)
@@ -81,7 +83,9 @@ def followups(request):
             "url": work.url,
             "since": work.started_at.astimezone(BARNAUL),
             "retry": work.retry,
-            "call_id": work.source.pk if work.kind == "call" else None,
+            "call_id": work.source.pk if work.kind == "call" and (
+                policy or access.role == "owner" or work.responsible_id == request.user.pk
+            ) else None,
         })
     return render(request, "pool_service/communications/customer_followups.html", {
         "active_tab": "communications",
@@ -93,6 +97,7 @@ def followups(request):
 
 
 @login_required
+@never_cache
 @require_http_methods(["GET", "POST"])
 def reminder_settings(request):
     access = _access(request)
@@ -112,6 +117,12 @@ def reminder_settings(request):
     if request.method == "POST" and form.is_valid():
         with transaction.atomic():
             Organization.objects.select_for_update().get(pk=organization.pk)
+            locked_access = _access(request)
+            if locked_access.organization_id != organization.pk or locked_access.role != "owner":
+                raise PermissionDenied
+            recipient_ids = {form.cleaned_data[name].pk for name in ("duty_manager", "supervisor")}
+            if eligible_users(organization).filter(pk__in=recipient_ids).count() != len(recipient_ids):
+                raise PermissionDenied
             policy = CustomerReminderPolicy.objects.select_for_update().filter(organization=organization).first()
             start = (policy.started_at if policy and policy.started_at else timezone.now()) if form.cleaned_data["enabled"] else None
             CustomerReminderPolicy.objects.update_or_create(
@@ -159,14 +170,17 @@ def record_callback(request, call_id):
         Organization.objects.select_for_update().get(pk=organization.pk)
         get_object_or_404(PhoneCall.objects.select_for_update(), pk=call_id, organization=organization)
         call = get_object_or_404(callback_candidates(organization), pk=call_id)
-        if not can_read_call(request.user, call):
+        access = _access(request)
+        if access.organization_id != organization.pk or not can_read_call(request.user, call):
             raise PermissionDenied
         policy = CustomerReminderPolicy.objects.filter(organization=organization).first()
-        if policy and request.user.pk != policy.supervisor_id:
+        work = Work("call", call, call.started_at, call.pk, lead_for_call(organization, call))
+        if policy:
             users = {member.pk: member for member in eligible_users(organization)}
-            work = Work("call", call, call.started_at, call.pk, related_lead(organization, "call", call.pk))
-            if request.user != manager_for(work, policy, users):
+            if request.user.pk != policy.supervisor_id and request.user != manager_for(work, policy, users):
                 raise PermissionDenied
+        elif access.role != "owner" and request.user.pk != work.responsible_id:
+            raise PermissionDenied
         if returned_call(call):
             messages.info(request, "По этому обращению уже есть состоявшийся звонок.")
             return redirect(target)

@@ -12,6 +12,7 @@ class CustomerReminderPolicy(models.Model):
     )
     started_at = models.DateTimeField(null=True, blank=True)
     last_tick_at = models.DateTimeField(null=True, blank=True, editable=False)
+    last_digest_on = models.DateField(null=True, blank=True, editable=False)
 
 
 class MissedCallFollowup(models.Model):

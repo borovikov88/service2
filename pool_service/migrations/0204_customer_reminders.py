@@ -13,6 +13,7 @@ class Migration(migrations.Migration):
                 ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
                 ("started_at", models.DateTimeField(blank=True, null=True)),
                 ("last_tick_at", models.DateTimeField(blank=True, editable=False, null=True)),
+                ("last_digest_on", models.DateField(blank=True, editable=False, null=True)),
                 ("organization", models.OneToOneField(on_delete=django.db.models.deletion.CASCADE, to="pool_service.organization")),
                 ("duty_manager", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name="+", to=settings.AUTH_USER_MODEL)),
                 ("supervisor", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name="+", to=settings.AUTH_USER_MODEL)),

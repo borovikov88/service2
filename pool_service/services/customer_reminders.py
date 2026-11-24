@@ -6,7 +6,7 @@ from urllib.parse import urlencode
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 from django.db.models.functions import Coalesce
 from django.urls import reverse
 
@@ -21,7 +21,7 @@ from pool_service.services.communication_reply_state import manager_reply_filter
 from pool_service.services.crm_lead_access import can_read_lead
 from pool_service.services.notifications import notify_users
 from pool_service.staff_call_models import StaffAccount
-from .customer_reminder_calendar import BARNAUL, reminder_step, working_start
+from .customer_reminder_calendar import BARNAUL, previous_workday_open, reminder_step, summary_ready, working_start
 
 
 @dataclass(frozen=True)
@@ -49,7 +49,13 @@ class Work:
             return self.source.assignee_id
         if self.lead and self.lead.assignee_id:
             return self.lead.assignee_id
-        return self.source.employee_id if self.kind == "call" else None
+        if self.kind != "call":
+            return None
+        context = getattr(self.source, "work_context", None)
+        if context and context.organization_id == self.source.organization_id and context.deal_id:
+            if context.deal.organization_id == self.source.organization_id and not context.deal.is_archived:
+                return context.deal.manager_id
+        return self.source.employee_id
 
     @property
     def label(self):
@@ -58,7 +64,7 @@ class Work:
     @property
     def title(self):
         if self.kind == "lead":
-            return self.source.title
+            return f"Лид №{self.source.pk}"
         if self.kind == "message":
             return self.source.display_name
         return self.source.contact_name or self.source.phone_number
@@ -88,17 +94,26 @@ def eligible_users(organization):
     ).exclude(pk__in=dismissed).exclude(pk__in=technical).distinct()
 
 
-def related_lead(organization, kind, source_id):
+def _related_lead(organization, kind, source_ids):
     ids = list(CrmLeadSource.objects.filter(
         organization=organization, lead__organization=organization,
         inbox__organization=organization, inbox__scope_verified=True,
-        inbox__source_type=kind, inbox__source_id=source_id,
+        inbox__source_type=kind, inbox__source_id__in=source_ids,
         lead__is_archived=False,
     ).order_by().values_list("lead_id", flat=True).distinct()[:2])
     return CrmLead.objects.filter(pk=ids[0], organization=organization).first() if len(ids) == 1 else None
 
 
-def _chat_work(organization, source_id=None):
+def lead_for_call(organization, call):
+    context = getattr(call, "work_context", None)
+    if context:
+        if context.organization_id == organization.pk and context.lead_id:
+            return CrmLead.objects.filter(pk=context.lead_id, organization=organization, is_archived=False).first()
+        return None
+    return _related_lead(organization, "call", [call.pk])
+
+
+def _chat_work(organization, source_id=None, *, since=None):
     dialogs = with_reply_state(Conversation.objects.filter(
         organization=organization, connection__channel__organization=organization,
         connection__is_active=True, connection__channel__is_active=True,
@@ -108,6 +123,11 @@ def _chat_work(organization, source_id=None):
     ).select_related("client", "connection__channel")
     if source_id is not None:
         dialogs = dialogs.filter(pk=source_id)
+    if since is not None:
+        dialogs = dialogs.filter(Exists(ConversationMessage.objects.filter(
+            conversation_id=OuterRef("pk"), created_at__gte=since,
+            direction=ConversationMessage.DIRECTION_IN, intake_historical=False,
+        )))
     for dialog in dialogs.iterator(chunk_size=128):
         messages = dialog.messages.annotate(event_at=Coalesce("intake_occurred_at", "created_at"))
         last_reply = messages.filter(manager_reply_filter()).order_by("-event_at", "-pk").values("event_at", "pk").first()
@@ -122,7 +142,7 @@ def _chat_work(organization, source_id=None):
         first = incoming.order_by("created_at", "pk").values("created_at", "pk").first()
         if first:
             yield Work("message", dialog, first["created_at"], first["pk"],
-                       related_lead(organization, "message", first["pk"]))
+                       _related_lead(organization, "message", incoming.order_by().values("pk")))
 
 
 def callback_candidates(organization):
@@ -131,7 +151,7 @@ def callback_candidates(organization):
         source_kind=PhoneCall.SOURCE_TELEPHONY, direction=PhoneCall.DIRECTION_IN,
         result=PhoneCall.RESULT_MISSED, intake_historical=False, internal_number_pending=False,
         internal_contact_number__isnull=True, missedcallfollowup__resolved_at__isnull=True,
-    ).exclude(privacy_phone_key="").select_related("organization", "missedcallfollowup")
+    ).exclude(privacy_phone_key="").select_related("organization", "missedcallfollowup", "work_context__deal")
 
 
 def returned_call(call):
@@ -147,34 +167,38 @@ def returned_call(call):
     return any(not is_private_call(attempt) for attempt in attempts.iterator(chunk_size=32))
 
 
-def _call_work(organization, source_id=None):
+def _call_work(organization, source_id=None, *, since=None):
     calls = callback_candidates(organization).order_by("started_at", "pk")
     if source_id is not None:
         calls = calls.filter(pk=source_id)
+    if since is not None:
+        calls = calls.filter(Q(created_at__gte=since) | Q(missedcallfollowup__next_attempt_at__gte=since))
     for call in calls.iterator(chunk_size=128):
         if is_private_call(call) or returned_call(call):
             continue
         followup = getattr(call, "missedcallfollowup", None)
         retry_at = followup.next_attempt_at if followup else None
         yield Work("call", call, retry_at or max(call.started_at, call.created_at), call.pk,
-                   related_lead(organization, "call", call.pk), retry=bool(retry_at))
+                   lead_for_call(organization, call), retry=bool(retry_at))
 
 
-def _lead_work(organization, source_id=None):
+def _lead_work(organization, source_id=None, *, since=None):
     leads = CrmLead.objects.filter(
         Q(status="new") | Q(needs_review=True),
         organization=organization, kind="client", is_archived=False,
     ).exclude(status="closed")
     if source_id is not None:
         leads = leads.filter(pk=source_id)
+    if since is not None:
+        leads = leads.filter(received_at__gte=since)
     for lead in leads.order_by("received_at", "pk").iterator(chunk_size=128):
         yield Work("lead", lead, lead.received_at, lead.pk, lead)
 
 
-def work_items(organization):
-    yield from _chat_work(organization)
-    yield from _call_work(organization)
-    yield from _lead_work(organization)
+def work_items(organization, *, since=None):
+    yield from _chat_work(organization, since=since)
+    yield from _call_work(organization, since=since)
+    yield from _lead_work(organization, since=since)
 
 
 def may_see(work, user, organization):
@@ -225,13 +249,16 @@ def _recipients(work, step, policy, users):
     return (manager,) if manager else ()
 
 
-def _recipient_batches(policy, now):
+def _recipient_batches(policy, now, *, morning):
     org = policy.organization
     users = {user.pk: user for user in eligible_users(org)}
     grouping = defaultdict(list)
-    for work in work_items(org):
+    # Minute ticks only scan recent work. A completed digest avoids rescanning
+    # older open work on every tick.
+    since = None if morning else previous_workday_open(now)
+    for work in work_items(org, since=since):
         step = _work_step(work, policy, now)
-        if not step:
+        if not step or (step == "morning") != morning:
             continue
         for user in _recipients(work, step, policy, users):
             if not CustomerReminderReceipt.objects.filter(
@@ -294,9 +321,22 @@ def _write_notice(policy, user, step, items, now):
     return True
 
 
-def notify_due(policy, now):
-    users, groups = _recipient_batches(policy, now)
+def _deliver_batches(policy, now, *, morning):
+    users, groups = _recipient_batches(policy, now, morning=morning)
     return sum(
         _write_notice(policy, users[user_id], step, items, now)
         for (user_id, step, _), items in groups.items()
     )
+
+
+def notify_due(policy, now):
+    delivered = _deliver_batches(policy, now, morning=False)
+    if not summary_ready(now, policy.last_digest_on):
+        return delivered
+    delivered += _deliver_batches(policy, now, morning=True)
+    digest_date = now.astimezone(BARNAUL).date()
+    CustomerReminderPolicy.objects.filter(pk=policy.pk, started_at=policy.started_at).update(
+        last_digest_on=digest_date,
+    )
+    policy.last_digest_on = digest_date
+    return delivered

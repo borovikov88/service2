@@ -26,14 +26,15 @@ class BusinessTimeTests(SimpleTestCase):
         self.assertIsNone(reminder_step(arrived, self.local(21, 10)))
         self.assertEqual(reminder_step(arrived, self.local(23, 9, 3)), "5")
         self.assertEqual(reminder_step(arrived, self.local(23, 9, 28)), "30")
-        self.assertEqual(reminder_step(arrived, self.local(23, 9, 33)), "morning")
+        self.assertEqual(reminder_step(arrived, self.local(23, 9, 34)), "30")
+        self.assertEqual(reminder_step(arrived, self.local(23, 9, 35)), "morning")
 
     def test_after_hours_arrival_starts_at_next_opening(self):
         arrived = self.local(20, 18, 3)
         self.assertIsNone(reminder_step(arrived, self.local(23, 9, 4)))
         self.assertEqual(reminder_step(arrived, self.local(23, 9, 5)), "5")
         self.assertEqual(reminder_step(arrived, self.local(23, 9, 30)), "30")
-        self.assertEqual(reminder_step(arrived, self.local(24, 9, 15)), "morning")
+        self.assertEqual(reminder_step(arrived, self.local(24, 9, 35)), "morning")
 
 
 class CustomerReminderTests(TestCase):
@@ -74,7 +75,7 @@ class CustomerReminderTests(TestCase):
     def test_reminder_groups_chat_and_lead_deduplicates_and_escalates(self):
         lead = CrmLead.objects.create(organization=self.org, title="Test lead", received_at=self.start)
         items = [Work("message", self.dialog, self.start, 1, lead), Work("lead", lead, self.start, lead.pk, lead)]
-        with patch("pool_service.services.customer_reminders.work_items", side_effect=lambda org: iter(items)), patch(
+        with patch("pool_service.services.customer_reminders.work_items", side_effect=lambda org, **filters: iter(items)), patch(
             "pool_service.services.customer_reminders.may_see", return_value=True,
         ), patch("pool_service.services.customer_reminders._current_work", side_effect=lambda work, org: work):
             earlier = self.start + timedelta(minutes=5)
@@ -90,6 +91,24 @@ class CustomerReminderTests(TestCase):
             self.assertEqual(notify_due(self.policy, overdue), 0)
             self.assertEqual(Notification.objects.filter(user=self.owner).count(), 1)
             self.assertEqual(CustomerReminderReceipt.objects.filter(step="30").count(), 4)
+
+    def test_shared_morning_summary_sees_all_carried_deadlines_once(self):
+        morning = datetime(2026, 11, 24, 9, 35, tzinfo=BARNAUL)
+        late = self.start.replace(hour=17, minute=58)
+        lead1 = CrmLead.objects.create(organization=self.org, title="Private origin text 0000000000", received_at=self.start)
+        lead2 = CrmLead.objects.create(organization=self.org, title="Test lead 2", received_at=late)
+        items = [
+            Work("lead", lead1, self.start, lead1.pk, lead1),
+            Work("lead", lead2, late, lead2.pk, lead2),
+        ]
+        self.assertEqual(items[0].title, f"Лид №{lead1.pk}")
+        with patch("pool_service.services.customer_reminders.work_items", side_effect=lambda org, **filters: iter(items)) as query, patch(
+            "pool_service.services.customer_reminders.may_see", return_value=True,
+        ):
+            self.assertEqual(notify_due(self.policy, morning), 2)
+            self.assertEqual(CustomerReminderReceipt.objects.filter(step="morning", work_key__startswith="lead:").count(), 4)
+            self.assertEqual(notify_due(self.policy, morning + timedelta(minutes=1)), 0)
+            self.assertEqual(sum(call.kwargs["since"] is None for call in query.call_args_list), 1)
 
     def test_proposed_then_answered_callback_leaves_queue(self):
         connection = TelephonyConnection.objects.create(
