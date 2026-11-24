@@ -1,4 +1,4 @@
-"""Explicit role editing. No identity matching, accounting or intake effects."""
+"""Edit contact categories and record their origin and revisions."""
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
 from pool_service.client_crm_models import ClientBusinessRole, ClientBusinessRoleEvent

@@ -413,7 +413,7 @@ class ClientImportRun(models.Model):
 
 
 class ClientBusinessRole(models.Model):
-    """Explicit local classification; never an intake or access grant."""
+    """Local contact categories, including exclusions from automatic CRM intake."""
     ROLE_CHOICES = [
         ("supplier", "Поставщик"),
         ("buyer", "Покупатель"),
