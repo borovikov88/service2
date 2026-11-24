@@ -3398,3 +3398,4 @@ from . import crm_order_models  # noqa: F401,E402
 from . import staff_call_models, staff_structure_models  # noqa: F401,E402
 from . import crm_assignment_models  # noqa: F401,E402
 from . import crm_role_models  # noqa: F401,E402
+from . import crm_followup_models  # noqa: F401,E402

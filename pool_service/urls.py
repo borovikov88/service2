@@ -225,6 +225,7 @@ from .communication_crm import (
     client_lookup as communication_client_lookup,
     call_client_create,
 )
+from . import customer_reminder_views
 from .communication_views import (
     attachment_download,
     call_analysis_bulk,
@@ -313,6 +314,9 @@ urlpatterns = [
     path("communications/", communication_conversations, name="communications_conversations"),
     path("communications/<uuid:conversation_uuid>/identity/", conversation_identity, name="communication_conversation_identity"),
     path("communications/calls/", communication_calls, name="communications_calls"),
+    path("communications/followups/", customer_reminder_views.followups, name="customer_followups"),
+    path("communications/followups/settings/", customer_reminder_views.reminder_settings, name="customer_reminder_settings"),
+    path("communications/followups/callback/<int:call_id>/", customer_reminder_views.record_callback, name="customer_record_callback"),
     path("communications/distribution/", crm_communication_views.distribution, name="crm_communication_queue"),
     path("communications/distribution/<int:route_id>/", crm_communication_views.distribution, name="crm_communication_route"),
     path("communications/files/", communication_manual_recordings, name="communication_manual_recordings"),

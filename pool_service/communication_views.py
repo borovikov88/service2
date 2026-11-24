@@ -16,7 +16,7 @@ from django.core.exceptions import PermissionDenied
 from django.core.files.images import get_image_dimensions
 from django.db import transaction
 from django.db.models import F, OuterRef, Q, Subquery, Value
-from django.db.models.functions import Coalesce, Replace
+from django.db.models.functions import Replace
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseBadRequest, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -62,6 +62,7 @@ from pool_service.communication_services import (
     conversation_capability, optimize_message_image, organization_access,
     selected_communication_access as _selected_access,
 )
+from pool_service.services.communication_reply_state import with_reply_state
 from pool_service.services.call_ai import PROCESSING_STALE_MINUTES, request_call_analysis, start_requested_call_analysis_worker
 from pool_service.services.call_privacy import is_private_call, private_call_ids, visible_calls
 from pool_service.models import Client, Notification, OrganizationAccess
@@ -144,29 +145,6 @@ def _wake_uploaded_audio_worker_if_needed(organization, *, include_fresh_pending
     return needs_worker
 
 
-def _with_reply_state(conversations):
-    # A storefront reply stays queued until the customer's browser picks it up.
-    website_reply_queued = Q(
-        conversation__connection__channel__kind=CommunicationChannel.KIND_WEBSITE,
-        conversation__external_id__startswith="chat:",
-        sent_by__isnull=False,
-        delivery_status__in=(
-            ConversationMessage.DELIVERY_PENDING,
-            ConversationMessage.DELIVERY_SENDING,
-        ),
-    )
-    replies = Q(direction=ConversationMessage.DIRECTION_OUT) & (
-        Q(delivery_status=ConversationMessage.DELIVERY_DELIVERED) | website_reply_queued
-    ) & (
-        Q(max_details__contact_request__isnull=True) | Q(max_details__contact_request=False)
-    )
-    latest_exchange = ConversationMessage.objects.filter(
-        Q(direction=ConversationMessage.DIRECTION_IN) | replies,
-        conversation=OuterRef("pk"),
-    ).order_by(Coalesce("intake_occurred_at", "created_at").desc(), "-pk")
-    return conversations.annotate(last_exchange_direction=Subquery(latest_exchange.values("direction")[:1]))
-
-
 @login_required
 def conversations(request):
     organization = _context(request, "can_view_conversations")
@@ -190,7 +168,7 @@ def conversations(request):
     if show_closed:
         listed = scoped.filter(status=Conversation.STATUS_DONE)
     else:
-        listed = _with_reply_state(scoped.exclude(status=Conversation.STATUS_DONE))
+        listed = with_reply_state(scoped.exclude(status=Conversation.STATUS_DONE))
         if show_unanswered:
             listed = listed.filter(last_exchange_direction=ConversationMessage.DIRECTION_IN)
     items = list(listed.annotate(last_message_preview=Subquery(latest_message.values("body")[:1])))
@@ -2503,7 +2481,7 @@ def communication_notification_feed(request):
         "notifications": result,
         "resolved_ids": resolved_ids,
         "unread_dialogs": _unread_dialog_count(request.user, organization),
-        "unanswered_dialogs": _with_reply_state(Conversation.objects.filter(
+        "unanswered_dialogs": with_reply_state(Conversation.objects.filter(
             organization=organization, connection__channel__organization=organization,
         ).exclude(status=Conversation.STATUS_DONE)).filter(
             last_exchange_direction=ConversationMessage.DIRECTION_IN,

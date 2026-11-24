@@ -99,6 +99,9 @@
         <i class="bi bi-file-earmark-music"></i><span>Аудиофайлы</span>
       </a>
       {% endif %}
+      <a class="communications-tab {% if request.resolver_match.url_name == 'customer_followups' %}is-active{% endif %}"
+         href="{% url 'customer_followups' %}{% if communication_org_id %}?org_id={{ communication_org_id }}{% endif %}"
+         {% if request.resolver_match.url_name == 'customer_followups' %}aria-current="page"{% endif %}>Контроль обращений</a>
       {% if show_distribution %}
       <a class="communications-tab {% if request.resolver_match.url_name == 'crm_communication_queue' or request.resolver_match.url_name == 'crm_communication_route' %}is-active{% endif %}"
          href="{% url 'crm_communication_queue' %}?org_id={{ communication_org_id }}">Указать сделку</a>
