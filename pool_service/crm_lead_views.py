@@ -192,6 +192,9 @@ def _serialize_many(leads, user, capabilities, *, detail=False, conversion=False
             visible_tasks=visible if (lead.pk,lead.next_task_id) in links else {},
             client_cache=clients, projection=projection)
         row["source"] = next(iter(sources.get(lead.pk, [])), None)
+        if detail or conversion:
+            from .services.crm_conversion_contacts import lead_phone_version
+            row["source_phone_version"] = lead_phone_version(row["source"])
         from .services.crm_lead_titles import display_call_title, has_manual_title
         if not has_manual_title(lead, edited_ids):
             call_ids = {link.inbox.source_id for link in projection["links"].get(lead.pk, []) if link.inbox.source_type == "call"}

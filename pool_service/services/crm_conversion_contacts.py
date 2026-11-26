@@ -2,11 +2,9 @@
 import re
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.validators import validate_email
-from django.db.models import Q, F, Value, Case, When, CharField
-from django.db.models.functions import Trim, Length, Substr, Concat
-from pool_service.contact_directory import _phone_expression
-from pool_service.models import Client, OrganizationAccess
-from pool_service.client_crm_models import ClientBusinessRole, ClientContact, ClientCompanyLink
+from django.utils.crypto import salted_hmac
+from pool_service.models import Client, DataAuditLog, OrganizationAccess
+from pool_service.client_crm_models import ClientBusinessRole, ClientContact, ClientCompanyLink, ClientContactExclusion
 from pool_service.client_queries import active_clients, readable_clients
 from pool_service.phone_utils import normalize_phone, canonical_phone_value
 
@@ -75,6 +73,58 @@ def _authorize(using, actor, organization):
         organization=organization,user=actor,role__in=('owner','admin','manager','service','installer')).exists(): raise PermissionDenied
 
 
+def lead_phone_version(source):
+    """Bind a conversion form to its visible source and exact phone identity."""
+    phone = source.get("phone") if source else ""
+    key = normalize_phone(phone)
+    if not key or not re.fullmatch(r'[+0-9 ().\-\s]+', phone):
+        return ""
+    return salted_hmac("crm.lead.customer.phone", f"{source['id']}:{key}", algorithm="sha256").hexdigest()
+
+
+def _phone_already_saved(using, clients, key):
+    phones = ClientContact.objects.using(using).filter(client_id__in=clients.values('pk'), kind='phone')
+    if phones.filter(match_value=key).exists():
+        return True
+    # Legacy scalar and imported rows can lack a search key. Narrow the
+    # candidates in SQL, then apply the same RU/international identity rule.
+    suffix = r'\D*'.join(key.lstrip('+')) + r'\D*$'
+    for rows, field in ((clients, 'phone'), (phones, 'value')):
+        values = rows.filter(**{field + '__regex': suffix}).values_list(field, flat=True)
+        if any(normalize_phone(value) == key for value in values.iterator()):
+            return True
+    return False
+
+
+def _record_phone(using, client, phone, *, primary, source):
+    value = canonical_phone_value(phone)
+    if primary:
+        client.phone = value
+        client.save(using=using, update_fields=['phone'])
+    ClientContact.objects.using(using).create(client=client, kind='phone', value=value,
+        match_value=normalize_phone(phone), is_primary=primary, phone_type='other',
+        sources=[source], source_reference='crm-explicit-conversion')
+
+
+def save_unsaved_lead_phone(using, actor, customer, phone):
+    """Append the confirmed lead number under the existing organization writer lock."""
+    from .contact_edit_access import contact_edit_roles
+
+    key = normalize_phone(phone)
+    if not key or not re.fullmatch(r'[+0-9 ().\-\s]+', phone) or not contact_edit_roles(actor, customer, lock=True):
+        return
+    clients = active_clients(Client.objects.using(using)).filter(organization_id=customer.organization_id)
+    if _phone_already_saved(using, clients, key):
+        return
+    if ClientContactExclusion.objects.using(using).filter(client=customer, kind='phone', match_value=key).exists():
+        return
+    existing_primary = ClientContact.objects.using(using).filter(client=customer, kind='phone', is_primary=True)
+    _record_phone(using, customer, key, primary=not customer.phone and not existing_primary.exists(),
+        source='contact_directory')
+    DataAuditLog.objects.using(using).create(organization_id=customer.organization_id, client=customer, actor=actor,
+        entity_type='Client', entity_id=str(customer.pk), action='update', changed_fields=['phone'])
+
+
 def _create_identity(using, actor, organization, kind, value):
     if value.get('category') and not OrganizationAccess.objects.using(using).select_for_update().filter(
             organization=organization, user=actor, role__in=('owner', 'admin')).exists():
@@ -83,11 +133,8 @@ def _create_identity(using, actor, organization, kind, value):
         raise ValidationError('Сократите запись телефона до 20 символов, убрав лишние пробелы и скобки.')
     existing=active_clients(Client.objects.using(using).select_for_update()).filter(organization=organization)
     key=normalize_phone(value['phone']) if value['phone'] else ''
-    if key:
-        primary=_phone_matches(existing, 'phone', key)
-        extra=_phone_matches(ClientContact.objects.using(using).filter(client_id__in=existing.values('pk'),kind='phone'), 'value', key)
-        if primary.exists() or extra.exists():
-            raise ValidationError('Найден возможный существующий контакт. Выберите его явно; автоматическое объединение не выполняется.')
+    if key and _phone_already_saved(using, existing, key):
+        raise ValidationError('Найден возможный существующий контакт. Выберите его явно; автоматическое объединение не выполняется.')
     if existing.filter(client_type=kind, name__iexact=value['name']).exists():
         raise ValidationError('Найден одноимённый контакт. Проверьте справочник и выберите существующий.')
     if value.get('inn') and existing.filter(inn=value['inn']).exists():
@@ -99,8 +146,7 @@ def _create_identity(using, actor, organization, kind, value):
         name=value['name'], company_name=value['name'] if kind == 'legal' else '',
         inn=value.get('inn') or None, email=value.get('email') or '')
     if key:
-        contact.phone=canonical_phone_value(value['phone']);contact.save(using=using, update_fields=['phone'])
-        ClientContact.objects.using(using).create(client=contact,kind='phone',value=contact.phone,match_value=key,is_primary=True,phone_type='other',sources=['manual'],source_reference='crm-explicit-conversion')
+        _record_phone(using, contact, value['phone'], primary=True, source='manual')
     if value.get('email'):
         ClientContact.objects.using(using).create(client=contact, kind='email', value=value['email'],
             match_value=value['email'].casefold(), is_primary=True, sources=['manual'], source_reference='crm-explicit-conversion')
@@ -141,14 +187,3 @@ def create_conversion_contact(using, actor, organization, value, *, return_pair=
         'email': '', 'inn': value['inn']} if value['type'] in {'legal', 'both'} else None
     client, contact = resolve_conversion_customer(using, actor, organization, {'contact': person, 'company': company})
     return (client, contact) if return_pair else client
-
-
-def _phone_matches(queryset, field, key):
-    """Bounded SQL existence check for canonical and historical formatted phones."""
-    queryset=queryset.annotate(_raw=Trim(F(field)),_digits=_phone_expression(field)).annotate(_length=Length('_digits'))
-    return queryset.annotate(_key=Case(
-        When(_raw__startswith='+',_length=11,_digits__startswith='7',then=Substr('_digits',2)),
-        When(_raw__startswith='+',then=Concat(Value('+'),F('_digits'))),
-        When(Q(_length=11)&(Q(_digits__startswith='7')|Q(_digits__startswith='8')),then=Substr('_digits',2)),
-        When(_length=10,then=F('_digits')),
-        default=Concat(Value('+'),F('_digits')),output_field=CharField())).filter(_key=key)
