@@ -5,7 +5,7 @@ import mimetypes
 import os
 import re
 import secrets
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 from uuid import UUID, uuid4
 
 from django.contrib import messages
@@ -23,6 +23,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_GET, require_POST
+from django.views.decorators.vary import vary_on_headers
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.debug import sensitive_post_parameters, sensitive_variables
 from docx import Document
@@ -69,13 +70,22 @@ from pool_service.models import Client, Notification, OrganizationAccess
 
 
 
+def _list_filter_suffix(request):
+    filters = {}
+    if query := request.GET.get("q", "").strip()[:160]:
+        filters["q"] = query
+    if request.GET.get("unread") == "1":
+        filters["unread"] = "1"
+    return "&" + urlencode(filters) if filters else ""
+
+
 def _conversation_location(request, conversation):
     url = f"/communications/?conversation={conversation.uuid}"
     if request.GET.get("org_id"):
         url += f"&org_id={conversation.organization_id}"
     if request.GET.get("dialogs") == "unanswered":
         url += "&dialogs=unanswered"
-    return url
+    return url + _list_filter_suffix(request)
 
 
 def _context(request, capability):
@@ -146,6 +156,7 @@ def _wake_uploaded_audio_worker_if_needed(organization, *, include_fresh_pending
 
 
 @login_required
+@vary_on_headers("Sec-CH-UA-Mobile", "User-Agent")
 def conversations(request):
     organization = _context(request, "can_view_conversations")
     latest_message = ConversationMessage.objects.filter(conversation=OuterRef("pk")).order_by("-created_at", "-pk")
@@ -174,14 +185,18 @@ def conversations(request):
     items = list(listed.annotate(last_message_preview=Subquery(latest_message.values("body")[:1])))
     if show_unanswered and selected and all(item.pk != selected.pk for item in items):
         selected = None
-    if selected is None and items:
-        selected = items[0]
+    opened_conversation = selected is not None
+    # Phones open the inbox first. Do not fetch a hidden message history,
+    # generate reply intents or download attachments before choosing a dialog.
+    mobile_client = request.headers.get("Sec-CH-UA-Mobile") == "?1" or "Mobile" in request.headers.get("User-Agent", "")
+    if selected is None and items and not mobile_client:
+        selected = items[0]  # Desktop preview, acknowledged only when opened.
     states = {state.conversation_id: state.last_read_at for state in ConversationReadState.objects.filter(user=request.user, conversation__organization=organization)}
     for item in items:
         incoming = item.messages.filter(direction=ConversationMessage.DIRECTION_IN)
         last_read = states.get(item.pk)
         item.unread_count = incoming.filter(created_at__gt=last_read).count() if last_read else incoming.count()
-    if selected:
+    if opened_conversation:
         state, _ = ConversationReadState.objects.get_or_create(conversation=selected, user=request.user)
         state.last_read_at = timezone.now()
         state.save(update_fields=["last_read_at"])
@@ -226,6 +241,7 @@ def conversations(request):
             message.max_delivery_note = MAX_REPLY_ERRORS.get(error, "")
     return render(request, "pool_service/communications/conversations.html", {
         "active_tab": "communications", "conversations": items, "selected": selected,
+        "opened_conversation": opened_conversation,
         "communication_org_id": organization.pk, "show_closed_dialogs": show_closed,
         "show_unanswered_dialogs": show_unanswered,
         "can_finish": bool(selected and selected.status != Conversation.STATUS_DONE
@@ -454,7 +470,7 @@ def conversation_update(request, conversation_uuid):
             url = reverse("communications_conversations") + f"?org_id={organization.pk}"
             if request.GET.get("dialogs") == "unanswered":
                 url += "&dialogs=unanswered"
-            return redirect(url)
+            return redirect(url + _list_filter_suffix(request))
     return redirect(_conversation_location(request, conversation))
 
 

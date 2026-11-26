@@ -149,6 +149,20 @@ class MaxWebhookTests(LeadIntakeFixture, TestCase):
         CommunicationAccess.objects.filter(organization=self.org, user=manager).update(can_view_conversations=False)
         self.assertEqual(self.client.get(feed).status_code, 403)
 
+    def test_mobile_inbox_loads_history_and_marks_read_only_on_open(self):
+        conversation, _ = self._reply_form()
+        index = reverse("communications_conversations")
+        for headers in ({"sec-ch-ua-mobile": "?1"}, {"user-agent": "iPhone Mobile Safari"}):
+            page = self.client.get(index, headers=headers)
+            self.assertIsNone(page.context["selected"])
+            self.assertEqual(page.context["selected_messages"], [])
+            self.assertContains(page, 'data-pane="list"')
+            self.assertEqual(page.context["conversations"][0].unread_count, 1)
+        opened = self.client.get(index, {"conversation": conversation.uuid}, headers={"sec-ch-ua-mobile": "?1"})
+        self.assertContains(opened, 'data-pane="chat"')
+        self.assertTrue(opened.context["selected_messages"])
+        self.assertEqual(opened.context["conversations"][0].unread_count, 0)
+
     def test_unanswered_queue_only_clears_after_a_reply_or_completion(self):
         conversation, _ = self._reply_form()
         index = reverse("communications_conversations")
@@ -165,6 +179,8 @@ class MaxWebhookTests(LeadIntakeFixture, TestCase):
 
         self.assertContains(self.client.get(index), "Без ответа")
         self.assertEqual(listed(), [conversation.pk])
+        self.assertEqual(self.client.get(feed).json()["unread_dialogs"], 1)
+        self.client.get(index, {**unanswered, "conversation": conversation.uuid})
         self.assertEqual(self.client.get(feed).json()["unread_dialogs"], 0)
         self.assertEqual(count(), 1)
 
