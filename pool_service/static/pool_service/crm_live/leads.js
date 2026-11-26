@@ -224,6 +224,9 @@
     async function submit(form, kind, lead, changes) {
       if (operations.forSubject(lead?.id ?? null)) { errorNode(form, new Error("Сначала проверьте результат предыдущего сохранения.")); return; }
       try {
+        if ((kind === "lead.complete_customer" || kind === "lead.qualify") && lead.source_phone_version) {
+          changes.source_phone_version = lead.source_phone_version;
+        }
         const payload = {operation_key: win.crypto.randomUUID(), command_type: kind,
           subject_id: lead?.id ?? null, expected_revision: lead?.revision ?? null, changes};
         const item = operations.add(payload, kind === "lead.create" ? "Новый лид" : "Лид №" + lead.id);

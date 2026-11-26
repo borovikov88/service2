@@ -9,7 +9,7 @@ from django.db import close_old_connections, transaction
 from django.test import TestCase, TransactionTestCase, override_settings, skipUnlessDBFeature
 from django.urls import reverse
 
-from pool_service.client_crm_models import ClientCompanyLink
+from pool_service.client_crm_models import ClientCompanyLink, ClientContact, ClientContactExclusion
 from pool_service.communication_models import ConversationMessage, PhoneCall, CommunicationAccess
 from pool_service.crm_commercial_models import CrmLead, CrmLeadSource, CrmLeadThread
 from pool_service.crm_inbox_models import CrmInboxEvent
@@ -315,6 +315,118 @@ class ContactEpisodeTests(EpisodeFixture, TestCase):
         lead.refresh_from_db()
         self.assertEqual((lead.client_id, lead.next_task.client_id), before)
         self.assertEqual(lead_identity(lead, user=self.user).contact.pk, self.person.pk)
+
+    def conversion_phone_version(self, lead):
+        self.client.force_login(self.user)
+        page = self.client.get(reverse("crm_live_lead_detail", args=[lead.pk]), {"org_id": self.org.pk})
+        self.assertEqual(page.status_code, 200)
+        return page.json()["lead"]["source_phone_version"]
+
+    def test_unsaved_call_number_goes_to_selected_person_or_company_once(self):
+        from pool_service.phone_utils import normalize_phone
+        from pool_service.models import DataAuditLog
+
+        company = Client.objects.create(organization=self.org, name="Synthetic company", client_type="legal")
+        person = {"id": self.person.pk}
+        legal = {"id": company.pk}
+        original = self.person.phone
+        foreign = Organization.objects.create(name="Synthetic separate directory")
+        Client.objects.create(organization=foreign, name="Synthetic foreign person", phone="+79990001001")
+        cases = [
+            ({"contact": person, "company": legal}, self.person, "+79990001001", False),
+            ({"contact": person}, self.person, "+79990001002", False),
+            ({"company": legal}, company, "+79990001003", True),
+        ]
+        for customer, target, phone, primary in cases:
+            with self.subTest(customer=customer):
+                self.call(type="out", phone=phone)
+                lead = CrmLeadSource.objects.get(inbox=self.deliver("call")).lead
+                operation = dict(actor=self.user, organization=self.org, operation_key=uuid4().hex,
+                    command_type="lead.complete_customer", subject_id=lead.pk, expected_revision=lead.revision,
+                    changes={"customer": customer, "source_phone_version": self.conversion_phone_version(lead)})
+                result = execute_lead_command(**operation)
+                self.assertEqual(execute_lead_command(**operation), result)
+                row = ClientContact.objects.get(match_value=normalize_phone(phone))
+                self.assertEqual((row.client_id, row.is_primary), (target.pk, primary))
+                self.assertTrue(DataAuditLog.objects.filter(client=target, actor=self.user, changed_fields=["phone"]).exists())
+        self.person.refresh_from_db()
+        company.refresh_from_db()
+        self.assertEqual(self.person.phone, original)
+        self.assertEqual(normalize_phone(company.phone), normalize_phone(cases[-1][2]))
+        from pool_service.forms import ClientCreateForm
+        form = ClientCreateForm({"client_type": "private", "first_name": "Synthetic",
+            "last_name": "Person", "phone": original}, instance=self.person)
+        self.assertTrue(form.is_valid(), form.errors)
+        form.save()
+        for _, target, phone, _ in cases:
+            self.assertTrue(ClientContact.objects.filter(client=target, match_value=normalize_phone(phone)).exists())
+
+    def test_saved_or_previously_removed_number_is_not_copied(self):
+        from pool_service.phone_utils import normalize_phone
+        company = Client.objects.create(organization=self.org, name="Synthetic company", client_type="legal")
+        legacy = "+79990001004"
+        removed = "+79990001005"
+        ClientContact.objects.create(client=self.person, kind="phone", value="8 (999)\t000-10-04")
+        ClientContactExclusion.objects.create(client=company, kind="phone", match_value=normalize_phone(removed))
+        for phone in (self.person.phone, legacy, removed):
+            with self.subTest(phone=phone):
+                self.call(phone=phone)
+                lead = CrmLeadSource.objects.get(inbox=self.deliver("call")).lead
+                self.command("lead.complete_customer", {"customer": {"company": {"id": company.pk}},
+                    "source_phone_version": self.conversion_phone_version(lead)}, lead)
+        company.refresh_from_db()
+        self.assertFalse(company.phone)
+        self.assertFalse(ClientContact.objects.filter(client=company, kind="phone").exists())
+        self.assertTrue(ClientContactExclusion.objects.filter(client=company, kind="phone").exists())
+
+    def test_deal_conversion_only_appends_to_one_unambiguous_recipient(self):
+        from pool_service.crm_commercial_bootstrap import bootstrap_commercial_settings
+        from pool_service.crm_commercial_models import CrmPipeline
+        bootstrap_commercial_settings(self.org.pk)
+        pipeline = CrmPipeline.objects.get(organization=self.org, code="construction")
+        self.grant.qualify_own_leads = self.grant.create_own_deals = self.grant.manage_own_next_action = True
+        self.grant.view_team_deals = True
+        self.grant.save()
+        company = Client.objects.create(organization=self.org, name="Synthetic sales company", client_type="legal")
+        person = {"contact": {"id": self.person.pk}, "company": {"id": company.pk}}
+        legal = {"company": {"id": company.pk}}
+        for number, choices, recipient in (
+                ("9990001006", [person], self.person),
+                ("9990001007", [legal, legal], company),
+                ("9990001008", [legal, person], None)):
+            with self.subTest(number=number):
+                self.call(phone="+7" + number)
+                lead = CrmLeadSource.objects.get(inbox=self.deliver("call")).lead
+                deals = [{"pipeline_id": pipeline.pk, "title": "Synthetic conversion", "customer": customer,
+                    "next_action": {"title": "Synthetic step", "due_at": (self.now + timedelta(days=1)).isoformat()}}
+                    for customer in choices]
+                self.command("lead.qualify", {"need": "Synthetic need", "deals": deals,
+                    "source_phone_version": self.conversion_phone_version(lead)}, lead)
+                phones = ClientContact.objects.filter(kind="phone", match_value=number)
+                self.assertEqual(list(phones.values_list("client_id", flat=True)), [recipient.pk] if recipient else [])
+
+    def test_changed_source_phone_requires_refresh_without_writes(self):
+        from pool_service.services.crm_commercial_commands import CommercialConflict
+        call = self.call(phone="+79990001010")
+        lead = CrmLeadSource.objects.get(inbox=self.deliver("call")).lead
+        changes = {"customer": {"contact": {"id": self.person.pk}},
+            "source_phone_version": self.conversion_phone_version(lead)}
+        call.phone_number = "+79990001011"
+        call.save(update_fields=["phone_number"])
+        with self.assertRaises(CommercialConflict):
+            self.command("lead.complete_customer", changes, lead)
+        lead.refresh_from_db()
+        self.assertEqual(lead.status, "new")
+        self.assertFalse(ClientContact.objects.filter(client=self.person).exists())
+
+    def test_directory_edit_permission_is_required_to_append(self):
+        from pool_service.services.crm_conversion_contacts import save_unsaved_lead_phone
+        original = self.person.phone
+        OrganizationAccess.objects.filter(organization=self.org, user=self.user).update(role="installer")
+        save_unsaved_lead_phone("default", self.user, self.person, "+79990001009")
+        self.person.refresh_from_db()
+        self.assertEqual(self.person.phone, original)
+        self.assertFalse(ClientContact.objects.filter(match_value="9990001009").exists())
 
     def test_customer_completion_and_conversion_preserve_confirmed_identity(self):
         from pool_service.crm_commercial_bootstrap import bootstrap_commercial_settings

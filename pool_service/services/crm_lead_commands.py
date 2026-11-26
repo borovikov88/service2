@@ -113,8 +113,8 @@ def _normalize(kind, changes):
         "lead.edit": EDIT_FIELDS | {"next_action", "expected_task_version"},
         "lead.comment": {"body"},
         "lead.transition": {"status", "result", "reason", "follow_up_at", "target_deal_id", "target_lead_id", "next_action", "expected_task_version"},
-        "lead.complete_customer": {"customer", "reason", "expected_task_version"},
-        "lead.qualify": {"deals", "need", "reason", "expected_task_version"},
+        "lead.complete_customer": {"customer", "reason", "expected_task_version", "source_phone_version"},
+        "lead.qualify": {"deals", "need", "reason", "expected_task_version", "source_phone_version"},
         "lead.add_deal": {"deals", "reason"},
     }[kind]
     if (not changes and kind != "lead.acknowledge") or not set(changes) <= allowed:
@@ -141,6 +141,10 @@ def _normalize(kind, changes):
             result[name] = None if name in {"client_id", "contact_id"} and value is None else _positive_id(value)
         elif name == "next_action":
             result[name] = _next_action_values(value)
+        elif name == "source_phone_version":
+            if type(value) is not str or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+                raise ValidationError("Обновите карточку лида перед сохранением телефона.")
+            result[name] = value
         elif name == "customer":
             from .crm_conversion_contacts import normalize_customer
             result[name] = normalize_customer(value)
@@ -469,6 +473,15 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
         if lead and not safe_card_edit:
             _validate_task(using, lead, task, actor)
         additional = {}
+        lead_phone = ""
+        if "source_phone_version" in values:
+            # Recheck before taking the lead or changing its confirmed customer.
+            from .crm_conversion_contacts import lead_phone_version
+            from .crm_lead_access import source_metadata_many
+            sources = source_metadata_many(user=actor, organization=organization, leads=[lead]).get(lead.pk, [])
+            if not sources or lead_phone_version(sources[0]) != values["source_phone_version"]:
+                raise CommercialConflict("Телефон обращения изменился. Обновите карточку перед сохранением.")
+            lead_phone = sources[0]["phone"]
         if command_type in {"lead.create", "lead.new_need"}:
             old = lead
             threads = []
@@ -674,6 +687,9 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
                     raise CommercialConflict("Следующий шаг изменён. Обновите карточку перед завершением лида.")
             from .crm_conversion_contacts import resolve_conversion_customer
             lead.client, lead.contact = resolve_conversion_customer(using, actor, organization, values["customer"])
+            if lead_phone:
+                from .crm_conversion_contacts import save_unsaved_lead_phone
+                save_unsaved_lead_phone(using, actor, lead.contact or lead.client, lead_phone)
             lead.identity_origin = "manual"
             _finish_next(using, actor, lead, task)
             # Retain task provenance and its original client. A closed lead has
@@ -740,6 +756,7 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
                     "revision": {"before": old.revision - 1, "after": old.revision}})
         if command_type in {"lead.qualify", "lead.add_deal"}:
             ids = []
+            phone_targets = {}
             for row in values["deals"]:
                 if row.get("customer"):
                     from .crm_conversion_contacts import resolve_conversion_customer
@@ -792,6 +809,14 @@ def execute_lead_command(*, actor, organization, operation_key, command_type,
                     actor=actor, event_type="deal.create", safe_diff={"revision": {"before": 0, "after": 1},
                         "manager_id": {"before": None, "after": responsible.pk}})
                 ids.append(deal.pk)
+                if lead_phone:
+                    # An implicit inherited customer gives no confirmation for a phone write.
+                    recipient = (contact or client) if "customer" in row or "new_contact" in row else (
+                        client if "client_id" in row else None)
+                    phone_targets[recipient.pk if recipient else None] = recipient
+            if len(phone_targets) == 1 and None not in phone_targets:
+                from .crm_conversion_contacts import save_unsaved_lead_phone
+                save_unsaved_lead_phone(using, actor, next(iter(phone_targets.values())), lead_phone)
             # A single conversion keeps the exact confirmed customer on the lead
             # as well. Multi-deal conversion retains the original lead identity.
             if command_type == 'lead.qualify' and len(values['deals']) == 1:
