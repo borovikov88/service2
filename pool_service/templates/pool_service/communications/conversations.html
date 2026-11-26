@@ -2,7 +2,8 @@
 {% load static %}
 {% block title %}Связь{% endblock %}
 {% block content %}
-{% if avito_crm_url %}<div class="mb-2"><a class="btn btn-sm btn-outline-primary" href="{{ avito_crm_url }}">Авито Услуги: оценка обращений и CRM</a></div>{% endif %}
+<div class="dialog-workspace" data-pane="{% if opened_conversation %}chat{% else %}list{% endif %}" data-org="{{ communication_org_id }}">
+{% if avito_crm_url %}<div class="dialog-crm-link mb-2"><a class="btn btn-sm btn-outline-primary" href="{{ avito_crm_url }}">Авито Услуги: оценка обращений и CRM</a></div>{% endif %}
 <style>
 .communications-grid{display:grid;grid-template-columns:minmax(230px,29%) minmax(0,1fr);min-height:65vh}.conversation-list{border-right:1px solid #dee2e6;max-height:72vh;overflow:auto}.conversation-row{display:block;padding:.55rem .65rem;border-bottom:1px solid #eee;color:inherit;text-decoration:none}.conversation-row{font-size:.8rem}.conversation-row.active{background:#eef6ff}.chat-history{height:48vh;overflow:auto;background:#f7f8fa;padding:1rem}.website-request-card{background:#fff;border:1px solid #d9e3f1;border-radius:.75rem;padding:.55rem .65rem;margin-bottom:1rem}.website-request-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.75rem 1.25rem}.website-request-field{min-width:0}.website-request-label{font-size:.75rem;color:#6c757d;text-transform:uppercase}.bubble{max-width:76%;padding:.4rem .65rem;border-radius:1rem;margin-bottom:.4rem;background:white}.bubble{font-size:.86rem;line-height:1.4}.bubble.out{margin-left:auto;background:#dcebff}.delivery-state{font-weight:600}.delivery-state.failed{color:#b42318}.delivery-state.pending,.delivery-state.sending{color:#725c00}.composer-note{font-size:.82rem;color:#725c00;background:#fff8d8;border-radius:.5rem;padding:.55rem .7rem}@media(max-width:767px){.communications-grid{grid-template-columns:1fr}.conversation-list{max-height:35vh;border-right:0}.chat-history{height:42vh}.website-request-grid{grid-template-columns:1fr}}
 
@@ -26,20 +27,29 @@ html[data-theme="dark"] .composer-note{color:#d7c38e;background:#2a291f;border:1
  .conversation-photo-button{display:block;padding:0;border:0;background:none}.conversation-photo-dialog{max-width:calc(100vw - 2rem);max-height:calc(100dvh - 2rem);border:var(--bs-border-width) solid var(--bs-border-color);border-radius:.75rem;padding:1rem;color:var(--bs-body-color);background:var(--bs-body-bg)}.conversation-photo-dialog::backdrop{background:rgba(0,0,0,.65)}.conversation-photo-dialog img{display:block;max-width:min(86vw,70rem);max-height:75dvh;object-fit:contain;margin:auto}.conversation-photo-dialog img[hidden]{display:none}
 </style>
 {% include "pool_service/communications/_section_nav.html" %}
+<link rel="stylesheet" href="{% static 'assets/css/mobile-dialogs.css' %}">
 <div class="card communications-grid overflow-hidden">
  <aside class="conversation-list">
    {% now "Y-m-d" as dialog_today %}
-   <nav class="d-flex flex-wrap gap-2 px-2 py-2 border-bottom" aria-label="Состояние диалогов">
+   <div class="dialog-list-tools">
+     <h2 class="dialog-mobile dialog-list-heading">Диалоги</h2>
+   <nav class="dialog-folders d-flex flex-wrap gap-2 px-2 py-2 border-bottom" aria-label="Состояние диалогов">
      <a href="{% url 'communications_conversations' %}?org_id={{ communication_org_id }}" class="btn btn-sm {% if not show_closed_dialogs and not show_unanswered_dialogs %}btn-primary{% else %}btn-outline-secondary{% endif %}"{% if not show_closed_dialogs and not show_unanswered_dialogs %} aria-current="page"{% endif %}>Активные</a>
      <a href="{% url 'communications_conversations' %}?org_id={{ communication_org_id }}&amp;dialogs=unanswered" class="btn btn-sm {% if show_unanswered_dialogs %}btn-primary{% else %}btn-outline-secondary{% endif %}"{% if show_unanswered_dialogs %} aria-current="page"{% endif %}>Без ответа</a>
      <a href="{% url 'communications_conversations' %}?org_id={{ communication_org_id }}&amp;dialogs=closed" class="btn btn-sm {% if show_closed_dialogs %}btn-primary{% else %}btn-outline-secondary{% endif %}"{% if show_closed_dialogs %} aria-current="page"{% endif %}>Завершённые</a>
    </nav>
+     <div class="dialog-mobile dialog-search-tools" hidden>
+       <label class="dialog-search"><i class="bi bi-search" aria-hidden="true"></i><input type="search" placeholder="Поиск" aria-label="Поиск по имени и последнему сообщению" maxlength="160" autocomplete="off"></label>
+       <button class="dialog-unread" type="button" aria-pressed="false">Непрочитанные</button>
+     </div>
+   </div>
+   <div class="dialog-rows">
    {% for conversation in conversations %}
-     <div class="conversation-row{% if selected.pk == conversation.pk %} active{% endif %}">
+     <div class="conversation-row{% if selected.pk == conversation.pk %} active{% endif %}" data-unread="{{ conversation.unread_count }}">
        <div class="conversation-row-header">
          <div class="conversation-title">
            <a class="conversation-row-name" href="?conversation={{ conversation.uuid }}&amp;org_id={{ communication_org_id }}{% if show_unanswered_dialogs %}&amp;dialogs=unanswered{% endif %}">
-             {% include "pool_service/communications/_channel_icon.html" with channel=conversation.connection.channel only %}
+             <span class="dialog-avatar" data-channel="{{ conversation.connection.channel.kind }}"><span class="dialog-mobile dialog-initial" aria-hidden="true">{{ conversation.display_name|first|upper }}</span>{% include "pool_service/communications/_channel_icon.html" with channel=conversation.connection.channel only %}</span>
              <strong title="{{ conversation.display_name }}"{% if selected.pk == conversation.pk %} data-selected-conversation-name{% endif %}>{{ conversation.display_name }}</strong>
            </a>
            {% if conversation.client_card_url or selected.pk == conversation.pk %}
@@ -54,8 +64,8 @@ html[data-theme="dark"] .composer-note{color:#d7c38e;background:#2a291f;border:1
        </div>
        <div class="d-flex align-items-end gap-2">
          <a class="conversation-select flex-grow-1" href="?conversation={{ conversation.uuid }}&amp;org_id={{ communication_org_id }}{% if show_unanswered_dialogs %}&amp;dialogs=unanswered{% endif %}" tabindex="-1">
-           <div class="text-muted text-truncate">{{ conversation.last_message_preview|default:"Вложение" }}</div>
-           <div class="d-flex flex-wrap gap-2 mt-1">
+           <div class="dialog-preview text-muted text-truncate">{{ conversation.last_message_preview|default:"Вложение" }}</div>
+           <div class="dialog-row-meta d-flex flex-wrap gap-2 mt-1">
              <span class="badge bg-secondary">{{ conversation.get_status_display }}</span>
              {% if conversation.last_exchange_direction == 'in' %}<span class="badge text-bg-warning">Ждёт ответа</span>{% endif %}
              {% if conversation.unread_count %}<span class="badge bg-danger" title="Непрочитанные сообщения">{{ conversation.unread_count }}</span>{% endif %}
@@ -68,17 +78,30 @@ html[data-theme="dark"] .composer-note{color:#d7c38e;background:#2a291f;border:1
    {% empty %}
      <div class="p-4 text-muted">{% if show_closed_dialogs %}Завершённых диалогов пока нет.{% elif show_unanswered_dialogs %}Диалогов без ответа нет.{% else %}Активных диалогов пока нет.{% endif %}</div>
    {% endfor %}
+   <p class="dialog-no-results" hidden role="status"></p>
+   {% if avito_crm_url %}<a class="dialog-mobile dialog-links" href="{{ avito_crm_url }}">Авито Услуги: оценка обращений и CRM</a>{% endif %}
+   </div>
  </aside>
- <section>{% if selected %}<header class="conversation-header border-bottom d-flex flex-wrap justify-content-between align-items-center gap-2"><div><div data-conversation-identity data-identity-url="{% url 'communication_conversation_identity' selected.uuid %}?org_id={{ communication_org_id }}">{% include "pool_service/communications/_conversation_identity.html" with conversation=selected only %}</div><div class="small text-muted">{{ selected.get_status_display }}{% if selected.assignee %} · {{ selected.assignee.get_full_name|default:selected.assignee.username }}{% endif %}</div></div><div class="d-flex gap-2 conversation-actions">{% if can_take and not selected.assignee %}<form method="post" action="{% url 'communication_take' selected.uuid %}?org_id={{ communication_org_id }}{% if show_unanswered_dialogs %}&amp;dialogs=unanswered{% endif %}">{% csrf_token %}<button class="btn btn-primary">Взять в работу</button></form>{% endif %}{% if can_assign %}<form method="post" action="{% url 'communication_update' selected.uuid %}?org_id={{ communication_org_id }}{% if show_unanswered_dialogs %}&amp;dialogs=unanswered{% endif %}" class="d-flex">{% csrf_token %}<select class="form-select" name="assignee" aria-label="Ответственный" onchange="this.form.submit()"><option value="">Без ответственного</option>{% for access in staff %}<option value="{{ access.user_id }}" {% if selected.assignee_id == access.user_id %}selected{% endif %}>{{ access.user.get_full_name|default:access.user.username }}</option>{% endfor %}</select></form>{% endif %}{% if can_take or can_assign %}<form method="post" action="{% url 'communication_update' selected.uuid %}?org_id={{ communication_org_id }}{% if show_unanswered_dialogs %}&amp;dialogs=unanswered{% endif %}" class="d-flex">{% csrf_token %}<select class="form-select" name="status" aria-label="Статус диалога" onchange="this.form.submit()"><option value="new" {% if selected.status == 'new' %}selected{% endif %}>Новое</option><option value="active" {% if selected.status == 'active' %}selected{% endif %}>В работе</option><option value="waiting" {% if selected.status == 'waiting' %}selected{% endif %}>Ожидаем клиента</option><option value="done" {% if selected.status == 'done' %}selected{% endif %}>Завершено</option><option value="spam" {% if selected.status == 'spam' %}selected{% endif %}>Спам / Нецелевое</option></select></form>{% endif %}
+ <section class="dialog-thread">{% if selected %}<header class="conversation-header border-bottom d-flex flex-wrap justify-content-between align-items-center gap-2">
+   <a class="dialog-mobile dialog-icon-button dialog-back" aria-label="Назад к диалогам" href="{% url 'communications_conversations' %}?org_id={{ communication_org_id }}{% if show_closed_dialogs %}&amp;dialogs=closed{% elif show_unanswered_dialogs %}&amp;dialogs=unanswered{% endif %}"><i class="bi bi-chevron-left" aria-hidden="true"></i></a>
+   <div class="dialog-identity"><div data-conversation-identity data-identity-url="{% url 'communication_conversation_identity' selected.uuid %}?org_id={{ communication_org_id }}">{% include "pool_service/communications/_conversation_identity.html" with conversation=selected only %}</div><div class="small text-muted">{{ selected.get_status_display }}{% if selected.assignee %} · {{ selected.assignee.get_full_name|default:selected.assignee.username }}{% endif %}</div></div>{% if can_take or can_assign or max_contact_request_id %}<button type="button" class="dialog-mobile dialog-menu-toggle dialog-icon-button" aria-label="Действия с диалогом" aria-expanded="false" aria-controls="dialog-actions" hidden><i class="bi bi-three-dots" aria-hidden="true"></i></button>{% endif %}
+   <div class="d-flex gap-2 conversation-actions" id="dialog-actions">{% if can_take and not selected.assignee %}<form method="post" action="{% url 'communication_take' selected.uuid %}?org_id={{ communication_org_id }}{% if show_unanswered_dialogs %}&amp;dialogs=unanswered{% endif %}">{% csrf_token %}<button class="btn btn-primary">Взять в работу</button></form>{% endif %}{% if can_assign %}<form method="post" action="{% url 'communication_update' selected.uuid %}?org_id={{ communication_org_id }}{% if show_unanswered_dialogs %}&amp;dialogs=unanswered{% endif %}" class="d-flex">{% csrf_token %}<select class="form-select" name="assignee" aria-label="Ответственный" onchange="this.form.submit()"><option value="">Без ответственного</option>{% for access in staff %}<option value="{{ access.user_id }}" {% if selected.assignee_id == access.user_id %}selected{% endif %}>{{ access.user.get_full_name|default:access.user.username }}</option>{% endfor %}</select></form>{% endif %}{% if can_take or can_assign %}<form method="post" action="{% url 'communication_update' selected.uuid %}?org_id={{ communication_org_id }}{% if show_unanswered_dialogs %}&amp;dialogs=unanswered{% endif %}" class="d-flex">{% csrf_token %}<select class="form-select" name="status" aria-label="Статус диалога" onchange="this.form.submit()"><option value="new" {% if selected.status == 'new' %}selected{% endif %}>Новое</option><option value="active" {% if selected.status == 'active' %}selected{% endif %}>В работе</option><option value="waiting" {% if selected.status == 'waiting' %}selected{% endif %}>Ожидаем клиента</option><option value="done" {% if selected.status == 'done' %}selected{% endif %}>Завершено</option><option value="spam" {% if selected.status == 'spam' %}selected{% endif %}>Спам / Нецелевое</option></select></form>{% endif %}
      {% if can_finish %}
        <form method="post" action="{% url 'communication_update' selected.uuid %}?org_id={{ communication_org_id }}{% if show_unanswered_dialogs %}&amp;dialogs=unanswered{% endif %}">
          {% csrf_token %}
          <button class="btn btn-outline-secondary" name="status" value="done">Завершить диалог</button>
        </form>
      {% endif %}
+      {% if can_reply and max_contact_request_id %}
+        <form class="dialog-phone-request" method="post" action="{% url 'communication_reply' selected.uuid %}?org_id={{ communication_org_id }}{% if show_unanswered_dialogs %}&amp;dialogs=unanswered{% endif %}">
+          {% csrf_token %}
+          <input type="hidden" name="max_reply_id" value="{{ max_contact_request_id }}">
+          <button class="btn btn-sm btn-outline-secondary" type="submit" name="request_phone" value="1">Запросить телефон</button>
+        </form>
+      {% endif %}
    </div></header>
- <div data-conversation-listing>{% include "pool_service/communications/_listing.html" with conversation=selected only %}</div>
- <div class="chat-history">{% if selected.website_request %}<section class="website-request-card"><div class="d-flex justify-content-between gap-3 mb-3"><div><div class="text-muted small">Сайт</div><h2 class="h5 mb-0">Заявка с сайта</h2></div><small class="text-muted">{{ selected.website_request.submitted_at|date:"d.m.Y H:i" }}</small></div><div class="website-request-grid"><div class="website-request-field"><div class="website-request-label">Имя</div><div>{{ selected.participant_name }}</div></div><div class="website-request-field"><div class="website-request-label">Телефон</div><div>{{ selected.participant_phone|default:"Не указан" }}</div></div><div class="website-request-field"><div class="website-request-label">Услуга</div><div>{{ selected.website_request.service|default:"Не указана" }}</div></div><div class="website-request-field"><div class="website-request-label">Доставка</div><div>{{ selected.website_request.delivery|default:"Не указана" }}</div></div><div class="website-request-field"><div class="website-request-label">Адрес</div><div>{{ selected.website_request.address|default:"Не указан" }}</div></div><div class="website-request-field"><div class="website-request-label">Комментарий</div><div>{{ selected.website_request.comment|default:"Нет комментария"|linebreaksbr }}</div></div></div></section>{% endif %}{% for message in selected_messages %}<div class="bubble {{ message.direction }}"><div>{{ message.body|linebreaksbr }}</div>{% if message.max_details.shared_phone %}<div class="mt-1"><strong>Телефон из MAX</strong> {{ message.max_details.shared_phone }}</div>{% endif %}{% for attachment in message.attachments.all %}{% include "pool_service/communications/_message_attachment.html" with attachment=attachment org_id=communication_org_id only %}{% endfor %}<small class="message-meta"><span class="message-meta__sender" title="{{ message.sender_name }}" {% if message.direction == 'in' %}data-incoming-sender{% endif %}>{% if message.direction == 'in' %}{{ selected.display_name }}{% else %}{{ message.sender_name }}{% endif %}</span><time datetime="{{ message.created_at|date:'c' }}">{{ message.created_at|date:"d.m.Y H:i" }}</time>{% if message.direction == 'out' %} · <span class="delivery-state {{ message.delivery_status }}">{% if message.avito_delivery %}{{ message.avito_delivery.label }}{% elif message.max_delivery_note %}{{ message.max_delivery_note }}{% elif selected.connection.channel.kind == 'max' and message.delivery_status == 'delivered' %}Отправлено в MAX{% elif selected.connection.channel.kind == 'website' and message.delivery_status == 'pending' %}Ждёт получения в чате на сайте{% elif selected.connection.channel.kind == 'website' and message.delivery_status == 'sending' %}Ждёт подтверждения в чате на сайте{% else %}{{ message.get_delivery_status_display }}{% endif %}</span>{% endif %}</small></div>{% endfor %}</div>
+ <div class="dialog-scroll" tabindex="0" role="region" aria-label="История переписки"><div data-conversation-listing>{% include "pool_service/communications/_listing.html" with conversation=selected only %}</div>
+ <div class="chat-history">{% if selected.website_request %}<section class="website-request-card"><div class="d-flex justify-content-between gap-3 mb-3"><div><div class="text-muted small">Сайт</div><h2 class="h5 mb-0">Заявка с сайта</h2></div><small class="text-muted">{{ selected.website_request.submitted_at|date:"d.m.Y H:i" }}</small></div><div class="website-request-grid"><div class="website-request-field"><div class="website-request-label">Имя</div><div>{{ selected.participant_name }}</div></div><div class="website-request-field"><div class="website-request-label">Телефон</div><div>{{ selected.participant_phone|default:"Не указан" }}</div></div><div class="website-request-field"><div class="website-request-label">Услуга</div><div>{{ selected.website_request.service|default:"Не указана" }}</div></div><div class="website-request-field"><div class="website-request-label">Доставка</div><div>{{ selected.website_request.delivery|default:"Не указана" }}</div></div><div class="website-request-field"><div class="website-request-label">Адрес</div><div>{{ selected.website_request.address|default:"Не указан" }}</div></div><div class="website-request-field"><div class="website-request-label">Комментарий</div><div>{{ selected.website_request.comment|default:"Нет комментария"|linebreaksbr }}</div></div></div></section>{% endif %}{% for message in selected_messages %}{% ifchanged message.created_at|date:"Y-m-d" %}<div class="dialog-mobile dialog-day"><time datetime="{{ message.created_at|date:'Y-m-d' }}">{% if message.created_at|date:"Y-m-d" == dialog_today %}Сегодня{% else %}{{ message.created_at|date:"d E Y" }}{% endif %}</time></div>{% endifchanged %}<div class="bubble {{ message.direction }}"><div>{{ message.body|linebreaksbr }}</div>{% if message.max_details.shared_phone %}<div class="mt-1"><strong>Телефон из MAX</strong> {{ message.max_details.shared_phone }}</div>{% endif %}{% for attachment in message.attachments.all %}{% include "pool_service/communications/_message_attachment.html" with attachment=attachment org_id=communication_org_id only %}{% endfor %}<small class="message-meta"><span class="message-meta__sender" title="{{ message.sender_name }}" {% if message.direction == 'in' %}data-incoming-sender{% endif %}>{% if message.direction == 'in' %}{{ selected.display_name }}{% else %}{{ message.sender_name }}{% endif %}</span><time datetime="{{ message.created_at|date:'c' }}">{{ message.created_at|date:"d.m.Y H:i" }}</time>{% if message.direction == 'out' %} · <span class="delivery-state {{ message.delivery_status }}">{% if message.avito_delivery %}{{ message.avito_delivery.label }}{% elif message.max_delivery_note %}{{ message.max_delivery_note }}{% elif selected.connection.channel.kind == 'max' and message.delivery_status == 'delivered' %}Отправлено в MAX{% elif selected.connection.channel.kind == 'website' and message.delivery_status == 'pending' %}Ждёт получения в чате на сайте{% elif selected.connection.channel.kind == 'website' and message.delivery_status == 'sending' %}Ждёт подтверждения в чате на сайте{% else %}{{ message.get_delivery_status_display }}{% endif %}</span>{% endif %}</small></div>{% empty %}{% if not selected.website_request %}<p class="dialog-mobile dialog-empty-history">В этом диалоге пока нет сообщений.</p>{% endif %}{% endfor %}</div></div>
   {% if can_reply %}
     {% if selected.connection.channel.kind == 'max' and not max_reply_id %}
       <div class="composer-note">
@@ -92,22 +115,17 @@ html[data-theme="dark"] .composer-note{color:#d7c38e;background:#2a291f;border:1
       <form class="conversation-composer border-top" method="post" enctype="multipart/form-data" action="{% url 'communication_reply' selected.uuid %}?org_id={{ communication_org_id }}{% if show_unanswered_dialogs %}&amp;dialogs=unanswered{% endif %}">
         {% csrf_token %}
         {% if max_reply_id %}<input type="hidden" name="max_reply_id" value="{{ max_reply_id }}">{% endif %}
-        <textarea class="form-control mb-2" name="body" rows="2" placeholder="Напишите ответ..."{% if max_reply_id %} maxlength="4000"{% endif %}></textarea>
+        <textarea aria-label="Сообщение" class="form-control mb-2" name="body" rows="2" placeholder="Напишите ответ..."{% if max_reply_id %} maxlength="4000"{% endif %}></textarea>
         {% if selected.connection.channel.kind == 'avito' %}<div class="small text-muted mb-1">Avito · только текст</div>{% endif %}
-        <div class="d-flex justify-content-between">
+        <div class="dialog-send-tools d-flex justify-content-between">
           {% if selected.connection.channel.kind != 'avito' %}
-            <input class="form-control w-auto" type="file" name="attachments" aria-label="Приложить файл"{% if not max_reply_id %} multiple{% endif %}>
+            <label class="dialog-file"><span class="dialog-mobile" aria-hidden="true"><i class="bi bi-paperclip"></i></span><input class="form-control w-auto" type="file" name="attachments" aria-label="Приложить файл"{% if not max_reply_id %} multiple{% endif %}></label>
           {% else %}<span></span>{% endif %}
-          <button class="btn btn-primary">Отправить</button>
+          <button class="btn btn-primary dialog-send" aria-label="Отправить"><span class="dialog-send-label">Отправить</span><i class="dialog-mobile bi bi-arrow-up" aria-hidden="true"></i></button>
         </div>
+        <output class="dialog-mobile dialog-file-names" aria-live="polite"></output>
       </form>
-      {% if max_contact_request_id %}
-        <form class="px-2 pb-2" method="post" action="{% url 'communication_reply' selected.uuid %}?org_id={{ communication_org_id }}{% if show_unanswered_dialogs %}&amp;dialogs=unanswered{% endif %}">
-          {% csrf_token %}
-          <input type="hidden" name="max_reply_id" value="{{ max_contact_request_id }}">
-          <button class="btn btn-sm btn-outline-secondary" type="submit" name="request_phone" value="1">Запросить телефон</button>
-        </form>
-      {% endif %}
+
     {% endif %}
   {% endif %}
   {% else %}<div class="p-5 text-center text-muted">Выберите диалог</div>{% endif %}
@@ -123,5 +141,7 @@ html[data-theme="dark"] .composer-note{color:#d7c38e;background:#2a291f;border:1
   <div class="text-muted" data-photo-error hidden>Фото пока недоступно.</div>
 </dialog>
 {% endif %}
+</div>
+<script src="{% static 'assets/js/mobile-dialogs.js' %}" defer></script>
 <script src="{% static 'assets/js/conversation-identity.js' %}?v=3" defer></script>
 {% endblock %}
