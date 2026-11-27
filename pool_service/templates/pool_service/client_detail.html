@@ -79,6 +79,27 @@
     </div>
     {% endif %}
 
+    {% if avito_phone_suggestions %}
+    <section class="border rounded-3 p-3 mb-3" aria-label="Телефоны из сообщений Авито">
+      <h6 class="fw-bold mb-2">Телефоны из сообщений Авито</h6>
+      {% for phone in avito_phone_suggestions %}
+      <div class="d-flex flex-wrap align-items-center gap-2 py-1">
+        <a href="tel:{{ phone.dial }}">{{ phone.display }}</a>
+        {% if phone.role == "foreman" %}<span class="small text-muted">Телефон прораба</span>{% endif %}
+        <a class="small" href="{% url 'communications_conversations' %}?conversation={{ phone.conversation }}&amp;org_id={{ client.organization_id }}">Переписка</a>
+        {% if can_manage_phones and phone.role == "unknown" %}
+        <form method="post" action="{% url 'client_avito_phone_confirm' client.pk %}" class="m-0">{% csrf_token %}
+          <input type="hidden" name="message_id" value="{{ phone.message_id }}">
+          <input type="hidden" name="phone_key" value="{{ phone.key }}">
+          <input type="hidden" name="contacts_revision" value="{{ phone_revision }}">
+          <button class="btn btn-outline-primary btn-sm" type="submit">Сделать основным</button>
+        </form>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </section>
+    {% endif %}
+
     <div class="row g-3 mb-4 contact-metrics">
       <div class="col-6 col-lg-3">
         <div class="border rounded-3 p-3 h-100">
@@ -154,7 +175,7 @@
                 <dt class="col-sm-4 text-muted fw-normal">Тип</dt>
                 <dd class="col-sm-8">{{ client_kind_label }}</dd>
                 <dt class="col-sm-4 text-muted fw-normal">Телефон</dt>
-                <dd class="col-sm-8">{% for phone in phone_rows %}<div class="mb-1"><a href="tel:{{ phone.value }}">{{ phone.display }}</a>{% if phone.primary %} <span class="contact-primary">Основной</span>{% endif %}</div>{% empty %}<span class="text-muted">Не указан</span>{% endfor %}{% if can_manage_phones %}<a class="small" href="?tab=contacts">Управлять номерами</a>{% endif %}</dd>
+                <dd class="col-sm-8">{% for phone in phone_rows %}<div class="mb-1"><a href="tel:{{ phone.value }}">{{ phone.display }}</a>{% if phone.primary %} <span class="contact-primary">Основной</span>{% endif %}</div>{% empty %}<span class="text-muted">{% if avito_phone_suggestions %}Основной не выбран{% else %}Не указан{% endif %}</span>{% endfor %}{% if can_manage_phones %}<a class="small" href="?tab=contacts">Управлять номерами</a>{% endif %}</dd>
                 <dt class="col-sm-4 text-muted fw-normal">Email</dt>
                 <dd class="col-sm-8">{{ client.email|default:"—" }}</dd>
                 {% if client.client_type == "legal" %}<dt class="col-sm-4 text-muted fw-normal">ИНН</dt>
