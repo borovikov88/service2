@@ -1,0 +1,15 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{font:15px/1.5 system-ui,sans-serif;margin:0;padding:20px;color:var(--text-primary,#17202b);background:var(--background-primary,#fff)}button{border:0;border-radius:8px;padding:10px 16px;background:#1864ab;color:white;font:inherit;cursor:pointer}button:disabled{opacity:.6}p{margin:0 0 12px}</style></head>
+<body><p id="status">Подтвердите сотрудника для этого чата.</p><button id="confirm" type="button">Подтвердить личность</button>
+<script>
+const statusNode=document.getElementById('status'), button=document.getElementById('confirm');
+let result={}, metadata={}, pending=false;
+function render(value){result=value||{};const ok=result.status==='confirmed';statusNode.textContent=ok?'Сотрудник: '+result.employee_name:'Подтвердите сотрудника для этого чата.';button.hidden=ok;}
+function update(){metadata=window.openai?.toolResponseMetadata||{};render(window.openai?.toolOutput);}
+window.addEventListener('openai:set_globals', update);
+button.addEventListener('click',async()=>{const href=metadata.confirmation_url;if(!href)return;try{await window.openai.openExternal({href});}catch{statusNode.textContent='Не удалось открыть приложение. Попробуйте нажать ещё раз.';}});
+async function refresh(){if(pending||result.status==='confirmed'||!window.openai?.callTool)return;pending=true;try{const value=await window.openai.callTool('get_chat_identity',{});metadata=value._meta||{};render(value.structuredContent);}catch{statusNode.textContent='Вернулись из приложения? Попросите Ровика проверить подтверждение.';}finally{pending=false;}}
+window.addEventListener('focus',refresh);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
+update();
+</script></body></html>

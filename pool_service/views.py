@@ -10069,7 +10069,7 @@ class CustomLoginView(LoginView):
             except Resolver404:
                 pass
             else:
-                if match.url_name in {"onec_drafts_home", "onec_drafts_detail", "onec_drafts_lines"}:
+                if match.url_name in {"onec_drafts_home", "onec_drafts_detail", "onec_drafts_lines", "onec_chat_confirm"}:
                     return reverse(match.url_name, kwargs=match.kwargs)
         return _default_authenticated_url(self.request.user)
 

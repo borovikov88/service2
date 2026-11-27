@@ -40,7 +40,7 @@ def _plan_token(writer, body, intent):
 def review_plan(row, choices):
     if not row.intent:
         return {"digest": "", "message": ""}
-    writer = FreshWriter(employee_config(row.user_id, row.organization_id))
+    writer = FreshWriter(integration_config() if row.chat_identity_id else employee_config(row.user_id, row.organization_id))
     if row.kind == "nomenclature":
         cards = []
         for source in row.intent.get("items", [row.intent]):
@@ -76,7 +76,7 @@ def approve(user_id, request_id, expected_digest, expected_plan="", choices=None
     choices = choices or {}
     rows = drafts.personal_requests(user_id)
     row = rows.filter(pk=request_id, expires_at__gt=timezone.now()).first()
-    if (not row or not row.intent or (row.kind == "document" and (row.token_hash is None or is_enabled(ONEC_DRAFTS)))
+    if (not row or row.chat_identity_id or not row.intent or (row.kind == "document" and (row.token_hash is None or is_enabled(ONEC_DRAFTS)))
             or _intent_digest(row.intent) != expected_digest):
         raise drafts.DraftUnavailable
     config = employee_config(user_id, org_id)
@@ -110,6 +110,14 @@ def review_digest(row):
 
 
 def _authorize(row):
+    if row.chat_identity_id:
+        if (not row.approved_at or row.expires_at <= timezone.now() or row.kind != "nomenclature"
+                or row.approved_digest != review_digest(row) or _intent_digest(row.card_plan) != row.approved_plan):
+            raise drafts.DraftUnavailable
+        config = integration_config()
+        if row.approved_binding != binding_key(config):
+            raise drafts.DraftUnavailable
+        return config
     if ((row.kind == "document" and is_enabled(ONEC_DRAFTS)) or not row.approved_at or row.expires_at <= timezone.now() or row.approved_digest != review_digest(row)
             or row.organization_id != drafts.target_organization()
             or not drafts.is_staff_member(row.user_id, row.organization_id)):
@@ -265,6 +273,9 @@ def _verify(writer, entity, fence, body, row, identity, status):
         raise WriteError("При предыдущей проверке 1С вернула другие реквизиты. Проверьте запись в базе.")
     fields = _canonical_body(body, row.intent)
     fields.pop("Posted", None)
+    expected_author = str(row.confirmed_author) if row.chat_identity_id else None
+    if expected_author:
+        fields.pop(AUTHOR, None)
     number = "Code" if entity == ITEMS else "Number"
     selected = list(fields) + [number] + ([] if entity == ITEMS else ["Posted"])
     direct_document = row.token_hash is None and row.kind == "document"
@@ -311,13 +322,20 @@ def _verify(writer, entity, fence, body, row, identity, status):
     if not fence.verified_at:
         OneCWriteFence.objects.filter(pk=fence.pk, mismatch=False, verified_at__isnull=True).update(
             verified_at=timezone.now(), remote_key=receipt["ref_key"],
-            author_was_empty=receipt.get("author_empty"))
+            author_was_empty=receipt.get("author_empty"),
+            author_matches=(remote.get(AUTHOR) == expected_author) if expected_author else None)
         fence.refresh_from_db()
         if fence.mismatch or not fence.verified_at:
             raise WriteError("По этому объекту 1С обнаружено несоответствие. Проверьте результат.")
     if direct_document:
         receipt["initial_author_empty"] = fence.author_was_empty
-        if fence.author_was_empty is False:
+        if expected_author:
+            receipt["expected_author_ref_key"] = expected_author
+            receipt["initial_author_matches"] = fence.author_matches
+            if fence.author_matches is False:
+                receipt["status"] = "author_mismatch"
+                receipt["message"] = "Документ создан, но 1С не сохранила подтверждённого автора. Повторное создание заблокировано; проверьте документ по номеру."
+        elif fence.author_was_empty is False:
             receipt["status"] = "author_not_empty"
             receipt["message"] = "Документ записан, но при первой проверке поле «Автор» уже было заполнено в 1С. Повторно создавать его не нужно. Правило первого сотрудника не подтверждено."
     return receipt
@@ -335,6 +353,8 @@ def _document_snapshot(row, writer, authenticated):
         entity = entity_for(writer, row.intent["document_type"])
         _draft_schema(writer, entity)
         body = document_payload(writer, entity, row.intent, str(uuid.uuid4()), row.submitted_at)
+        if row.chat_identity_id:
+            body[AUTHOR] = str(row.confirmed_author)
         with transaction.atomic():
             _check_actor(authenticated, row)
             locked = OneCDraftRequest.objects.select_for_update().get(pk=row.pk)
@@ -345,6 +365,11 @@ def _document_snapshot(row, writer, authenticated):
     entity, body = snapshot["entity"], snapshot["body"]
     _draft_schema(writer, entity)
     writer.schema(entity, body)
+    if row.chat_identity_id:
+        from .onec_chat_identity import verify_author
+        if body.get(AUTHOR) != str(row.confirmed_author):
+            raise drafts.DraftUnavailable
+        verify_author(writer, entity, str(row.confirmed_author))
     if "Организация_Key" in body:
         _scope_org(writer, body["Организация_Key"])
     return entity, body
@@ -411,7 +436,10 @@ def _run_one(row, writer, source, position, authenticated=None):
             return _result(entity, visible, "exists", include_author=direct_document)
         return _verify(writer, entity, fence, body, row, identity, "verified")
     try:
-        payload = {**body, AUTHOR: EMPTY_GUID} if row.kind == "document" and row.token_hash is None else body
+        payload = ({**body, AUTHOR: str(row.confirmed_author) if row.chat_identity_id else EMPTY_GUID}
+                   if row.kind == "document" and row.token_hash is None else body)
+        if row.chat_identity_id:
+            _check_actor(authenticated, row)
         returned = writer.create(entity, payload)
     except AccessDenied:
         OneCWriteFence.objects.filter(pk=fence.pk, remote_key=initial_key).delete()
@@ -433,6 +461,8 @@ def execute(ticket, kind):
 
 
 def _execute_approved(row, authenticated=None):
+    if row.chat_identity_id:
+        _check_actor(authenticated, row)
     writer = FreshWriter(_authorize(row))
     items = row.intent.get("items", [row.intent])
     results = []
@@ -455,6 +485,12 @@ def _execute_approved(row, authenticated=None):
 
 
 def _check_actor(authenticated, row=None):
+    from .onec_chat_identity import ChatActor, enabled, validate
+    if isinstance(authenticated, ChatActor):
+        identity = validate(authenticated, row)
+        return identity.user_id, identity.organization_id
+    if enabled():
+        raise drafts.DraftUnavailable
     if not authenticated or not is_enabled(ONEC_DRAFTS):
         raise drafts.DraftUnavailable
     try:
@@ -474,17 +510,21 @@ def _new_request(authenticated, intent, config=None):
     drafts._lock_staff(actor, org)
     now = timezone.now()
     rows = OneCDraftRequest.objects.filter(organization_id=org, user_id=actor)
+    from .onec_chat_identity import ChatActor, validate
+    identity = validate(authenticated) if isinstance(authenticated, ChatActor) else None
     pk = uuid.uuid4()
     if intent["kind"] == "document":
         # Derived from an authenticated initiator and normalized contents. Never an access credential.
-        pk = uuid.uuid5(uuid.NAMESPACE_URL, _intent_digest(["onec-mcp-draft-v1", org, actor, config.base_url, intent]))
+        pk = uuid.uuid5(uuid.NAMESPACE_URL, _intent_digest(["onec-mcp-draft-v1", org, actor, config.base_url, intent,
+            *([str(identity.pk)] if identity else [])]))
         previous = rows.filter(pk=pk, kind="document", token_hash__isnull=True).first()
         if previous:
             return previous
     if rows.filter(created_at__gt=now-timedelta(hours=1)).count() >= getattr(settings, "ONEC_DRAFTS_HOURLY_LIMIT", 10):
         raise WriteError("Достигнут часовой лимит новых запросов в 1С.")
     return rows.create(pk=pk, organization_id=org, user_id=actor, kind=intent["kind"], token_hash=None,
-                       intent=intent, submitted_at=now, expires_at=now+timedelta(minutes=15))
+                       intent=intent, submitted_at=now, expires_at=now+timedelta(minutes=15),
+                       chat_identity=identity, confirmed_author=identity.author_ref if identity else None)
 
 
 def create_document(authenticated, arguments):
@@ -498,6 +538,40 @@ def create_document(authenticated, arguments):
 
 def prepare_cards(authenticated, arguments):
     return _new_request(authenticated, nomenclature_intent(arguments)).pk
+
+
+def prepare_chat_cards(authenticated, arguments):
+    row = _new_request(authenticated, nomenclature_intent(arguments))
+    plan = review_plan(row, {})
+    with transaction.atomic():
+        _check_actor(authenticated, row)
+        row.card_plan = plan["cards"]
+        row.approved_plan = plan["digest"]
+        row.approved_binding = binding_key(integration_config())
+        row.save(update_fields=["card_plan", "approved_plan", "approved_binding"])
+    return {"request_id": str(row.pk), "confirmation_digest": _intent_digest([review_digest(row), plan["digest"]]),
+            "items": row.intent.get("items", [row.intent]), "resolved": plan["cards"],
+            "message": "Покажите эти карточки сотруднику в чате и создавайте только после его явного согласия."}
+
+
+def create_chat_cards(authenticated, request_id, confirmation_digest):
+    try:
+        pk = uuid.UUID(request_id) if isinstance(request_id, str) else None
+    except ValueError:
+        pk = None
+    with transaction.atomic():
+        actor, org = _check_actor(authenticated)
+        row = OneCDraftRequest.objects.select_for_update().filter(pk=pk, user_id=actor, organization_id=org,
+            kind="nomenclature", chat_identity_id=authenticated.identity_id, token_hash__isnull=True).first()
+        if (not row or not row.approved_plan or row.expires_at <= timezone.now()
+                or confirmation_digest != _intent_digest([review_digest(row), row.approved_plan])):
+            raise drafts.DraftUnavailable
+        _check_actor(authenticated, row)
+        if not row.approved_at:
+            row.approved_at = timezone.now()
+            row.approved_digest = review_digest(row)
+            row.save(update_fields=["approved_at", "approved_digest"])
+    return _execute_approved(row, authenticated)
 
 
 def create_cards(authenticated, request_id):

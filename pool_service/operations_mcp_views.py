@@ -1851,6 +1851,7 @@ def operations_oauth_authorize(request, policy=OPERATIONS):
                     "client": client,
                     "organizations": scoped_organizations(client, policy),
                     "onec_drafts": policy == ONEC_DRAFTS,
+                    "onec_chat_identity": policy == ONEC_DRAFTS and getattr(settings, "ONEC_MCP_CHAT_IDENTITY_ENABLED", False),
                     "scope": " ".join(authorization["scopes"]),
                     "oauth_params": params,
                     "consent_binding": _consent_binding(authorization),

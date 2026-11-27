@@ -89,7 +89,7 @@ class AuthRedirectMiddleware:
                 }, status=401)
                 response["Cache-Control"] = "private, no-store"
                 return response
-            if path.startswith("/onec/drafts/"):
+            if path.startswith("/onec/drafts/") and not path.startswith("/onec/drafts/identity/"):
                 return redirect_to_login(path, login_url=reverse("login"))
             exact_allowed_paths = {
                 "/",
@@ -109,7 +109,8 @@ class AuthRedirectMiddleware:
                 "/.well-known/oauth-authorization-server/onec-diagnostic",
                 "/.well-known/oauth-authorization-server/operations",
             }
-            if path not in exact_allowed_paths and not any(path.startswith(p) for p in allowed_prefixes):
+            if (path not in exact_allowed_paths and not path.startswith("/onec/drafts/identity/")
+                    and not any(path.startswith(p) for p in allowed_prefixes)):
                 return redirect("/accounts/login/")
         return self.get_response(request)
 
