@@ -17,7 +17,7 @@
     const node = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     node.setAttribute("viewBox", "0 0 24 24"); node.setAttribute("fill", "none"); node.setAttribute("stroke", "currentColor"); node.setAttribute("stroke-width", "1.7"); node.setAttribute("aria-hidden", "true");
     const path = document.createElementNS(node.namespaceURI, "path");
-    path.setAttribute("d", ({comment:"M5 4h14v12H9l-4 4V4Z M8 8h8M8 12h5", message:"M3 5h18v14H3V5Z m0 1 9 7 9-7", call:"M7 3H3c0 10 8 18 18 18v-4l-5-2-2 2c-3-1-6-4-7-7l2-2-2-5Z", task:"M9 3h6v4H9V3Z M6 5H4v16h16V5h-2M8 14l3 3 5-6", change:"M3 12a9 9 0 1 0 3-7M3 3v5h5M12 7v6l4 2"})[kind] || "M12 4v16M4 12h16");
+    path.setAttribute("d", ({comment:"M5 4h14v12H9l-4 4V4Z M8 8h8M8 12h5", message:"M3 5h18v14H3V5Z m0 1 9 7 9-7", email:"M3 5h18v14H3V5Z m0 1 9 7 9-7", call:"M7 3H3c0 10 8 18 18 18v-4l-5-2-2 2c-3-1-6-4-7-7l2-2-2-5Z", task:"M9 3h6v4H9V3Z M6 5H4v16h16V5h-2M8 14l3 3 5-6", change:"M3 12a9 9 0 1 0 3-7M3 3v5h5M12 7v6l4 2"})[kind] || "M12 4v16M4 12h16");
     node.append(path); return node;
   }
   function mount(host, config) {
@@ -76,7 +76,7 @@
       } catch (error) { if (generation === sequence && host.isConnected && error.name !== "AbortError") status.textContent = error.message; }
       finally { if (generation === sequence) refresh.disabled = more.disabled = false; }
     }
-    for (const [key, label] of [["all", "Все"], ["comment", "Комментарии"], ["call", "Звонки"], ["message", "Сообщения"], ["task", "Дела"], ["change", "Изменения"]]) {
+    for (const [key, label] of [["all", "Все"], ["comment", "Комментарии"], ["call", "Звонки"], ["message", "Сообщения"], ["email", "Почта"], ["task", "Дела"], ["change", "Изменения"]]) {
       const button = el("button", "", label); button.type = "button"; button.setAttribute("aria-pressed", String(key === filter));
       button.addEventListener("click", () => { filter = key; for (const other of filters.children) other.setAttribute("aria-pressed", String(other === button)); load(false); }); filters.append(button);
     }

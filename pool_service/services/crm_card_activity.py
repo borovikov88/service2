@@ -22,8 +22,8 @@ from .call_privacy import private_call_ids
 from .task_read_permissions import readable_tasks
 
 PAGE_SIZE = 30
-KINDS = {"all", "comment", "call", "message", "task", "change"}
-RANK = {"event": 4, "task": 3, "call": 2, "message": 1}
+KINDS = {"all", "comment", "call", "message", "task", "change", "email"}
+RANK = {"event": 4, "task": 3, "call": 2, "message": 1, "email": 0}
 FIELD_LABELS = {
     "amount": "Сумма", "currency": "Валюта", "amount_basis": "Основание суммы",
     "budget_kind": "Бюджет", "budget_min": "Сумма / от", "budget_max": "До",
@@ -172,6 +172,15 @@ def activity_page(request, organization, subject):
     family = _family(request.user, organization, subject)
     caps = _communication_caps(request.user, organization)
     rows = []
+    if kind in {"all", "email"}:
+        from .mailbox_access import mailbox_role
+        from .mailbox_routing import card_letters
+        if mailbox_role(request.user, organization):
+            mail = card_letters(organization, subject, family)
+            for letter in _portion(mail.only("id", "sent_at", "subject", "sender", "outgoing"), "sent_at", RANK["email"], before):
+                rows.append(_entry("email", letter, letter.sent_at, "email", letter.subject or "Без темы",
+                    actor=letter.sender, origin="Исходящее письмо" if letter.outgoing else "Входящее письмо",
+                    url=reverse("crm_mail_detail", args=[letter.pk]) + "?" + urlencode({"org_id": organization.pk})))
     returned_calls = []
     if kind in {"all", "change", "comment"}:
         rows += _event_entries(request, organization, subject, family, kind, before)
@@ -317,6 +326,8 @@ def activity_page(request, organization, subject):
     hidden_calls = {"call:" + str(pk) for pk in private_call_ids(returned_calls)
         | ({call.pk for call in returned_calls} - visible_ids)}
     rows = [row for row in rows if row["id"] not in hidden_calls]
+    if any(row["kind"] == "email" for row in rows) and not mailbox_role(request.user, organization):
+        raise Http404
     rows.sort(key=lambda row: row["_key"], reverse=True)
     selected = rows[:PAGE_SIZE]
     cursor = None
