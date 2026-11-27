@@ -44,6 +44,7 @@ class PoolServiceConfig(AppConfig):
         import pool_service.finance_position_models  # noqa: F401
         import pool_service.money_models  # noqa: F401
         import pool_service.onec_diagnostic_mcp_models  # noqa: F401
+        import pool_service.mailbox_models  # noqa: F401
         import pool_service.communication_models  # noqa: F401
         import pool_service.operations_models  # noqa: F401
         import pool_service.call_processing_models  # noqa: F401

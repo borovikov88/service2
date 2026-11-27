@@ -1,3 +1,4 @@
+from . import mailbox_views
 from . import crm_role_views
 from . import crm_construction_views
 from . import crm_quote_views
@@ -313,6 +314,15 @@ urlpatterns = [
     path("api/communications/website/<uuid:public_id>/chat/<str:session_id>/outbox/ack/", website_outbox_ack, name="website_chat_outbox_ack"),
     path("api/communications/website/<uuid:public_id>/chat/<str:session_id>/attachments/<int:attachment_id>/", website_chat_attachment, name="website_chat_attachment"),
     path("communications/", communication_conversations, name="communications_conversations"),
+    path("communications/mail/", mailbox_views.inbox, name="crm_mail"),
+    path("communications/mail/settings/", mailbox_views.setup, name="crm_mail_setup"),
+    path("communications/mail/refresh/", mailbox_views.refresh, name="crm_mail_refresh"),
+    path("communications/mail/new/", mailbox_views.compose, name="crm_mail_compose"),
+    path("communications/mail/<int:pk>/", mailbox_views.detail, name="crm_mail_detail"),
+    path("communications/mail/<int:pk>/link/", mailbox_views.link, name="crm_mail_link"),
+    path("communications/mail/<int:pk>/reply/", mailbox_views.compose, name="crm_mail_reply"),
+    path("communications/mail/<int:pk>/processed/", mailbox_views.processed, name="crm_mail_processed"),
+    path("communications/mail/<int:pk>/files/<int:index>/", mailbox_views.attachment, name="crm_mail_attachment"),
     path("communications/updates/", dialog_updates, name="communication_dialog_updates"),
     path("communications/<uuid:conversation_uuid>/identity/", conversation_identity, name="communication_conversation_identity"),
     path("communications/calls/", communication_calls, name="communications_calls"),

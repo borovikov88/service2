@@ -1,0 +1,7 @@
+{% extends "pool_service/mailbox/base.html" %}
+{% block mail %}<a href="{% url 'crm_mail' %}?org_id={{ org.pk }}">← Почта</a><h2>Подключение почты VK WorkSpace</h2>
+<p>Весь ящик будет доступен владельцу, руководителю отдела продаж и менеджерам этой организации. Архив загрузится постепенно. Новые лиды сотрудники создают вручную.</p>
+<form class="mail-form" method="post">{% csrf_token %}{{ form.as_p }}
+<p><a href="https://account.mail.ru/user/2-step-auth/passwords/" target="_blank" rel="noopener noreferrer">Создать пароль приложения в Mail</a>. Для получения и отправки писем выберите «Полный доступ к Почте».</p>
+<button class="btn btn-primary">Проверить и подключить</button></form>
+{% if box.enabled %}<form class="mt-4" method="post">{% csrf_token %}<button class="btn btn-outline-secondary" name="action" value="pause">Отключить синхронизацию</button></form>{% endif %}{% endblock %}
