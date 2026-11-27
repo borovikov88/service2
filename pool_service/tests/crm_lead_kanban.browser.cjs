@@ -51,6 +51,23 @@ const {verifyBoardDragScroll} = require('./crm_board_drag_scroll_case.cjs');
     assert.equal(focus.outline,'none');
     assert.ok(focus.radius>0 && focus.ring!=='none');
     const owner=page.locator('#lead-owner');
+    const sizes = await owner.evaluate(control => {
+      const css = control.getAttribute('style'), original = control.value;
+      const option = new Option('Длинное имя сотрудника для выбора ответственного', 'synthetic-long', false, true);
+      control.add(option);
+      control.style.width = '9rem';
+      const bounds = control.getBoundingClientRect();
+      const style = getComputedStyle(control), arrow = getComputedStyle(control, '::picker-icon');
+      const measured = {height: bounds.height, line: parseFloat(style.lineHeight),
+        right: parseFloat(arrow.right), top: parseFloat(arrow.top), padding: parseFloat(style.paddingRight)};
+      option.remove();
+      control.value = original;
+      if (css === null) control.removeAttribute('style'); else control.setAttribute('style', css);
+      return measured;
+    });
+    assert.ok(sizes.height < sizes.line * 2 + 6, 'Long selected label should occupy a single line');
+    assert.ok(sizes.right >= 0 && sizes.padding > sizes.right + 10, 'Reserve space for the arrow on the right');
+    assert.ok(Math.abs(sizes.top - sizes.height / 2) <= 2, 'Center the arrow vertically');
     await owner.focus();
     await page.keyboard.press('Space');
     await page.waitForFunction(()=>document.querySelector('#lead-owner').matches(':open'));

@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from hashlib import sha256
 import csv
 import io
 import mimetypes
@@ -15,14 +16,15 @@ from django.conf import settings
 from django.core.exceptions import PermissionDenied
 from django.core.files.images import get_image_dimensions
 from django.db import transaction
-from django.db.models import F, OuterRef, Q, Subquery, Value
+from django.db.models import Count, F, OuterRef, Q, Subquery, Value
 from django.db.models.functions import Replace
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseBadRequest, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.template.loader import render_to_string
 from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.cache import never_cache
-from django.views.decorators.http import require_GET, require_POST
+from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from django.views.decorators.vary import vary_on_headers
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.debug import sensitive_post_parameters, sensitive_variables
@@ -42,7 +44,7 @@ from pool_service.communication_avito import (
     webhook_subscriptions as avito_webhook_subscriptions,
 )
 from pool_service.avito_outbox import dispatch_committed_reply, register_reply_intent
-from pool_service.avito_outbox_display import conversation_context
+from pool_service.avito_outbox_display import conversation_context, message_display
 from pool_service.communication_forms import CommunicationConnectionForm, TelephonyConnectionForm
 from pool_service.communication_max_contact import CONTACT_REQUEST_TEXT
 from pool_service.communication_max_media import (
@@ -155,34 +157,85 @@ def _wake_uploaded_audio_worker_if_needed(organization, *, include_fresh_pending
     return needs_worker
 
 
+def _dialog_scope(organization):
+    return Conversation.objects.filter(
+        organization=organization, connection__channel__organization=organization,
+    ).select_related("connection__channel", "assignee", "website_request", "client")
+
+
+def _selected_dialog(scoped, uuid):
+    if not uuid:
+        return None
+    try:
+        uuid = UUID(uuid)
+    except ValueError:
+        raise Http404 from None
+    return get_object_or_404(scoped, uuid=uuid)
+
+
+def _dialog_list(scoped, user, closed, unanswered):
+    latest = ConversationMessage.objects.filter(conversation=OuterRef("pk")).order_by("-created_at", "-pk")
+    if closed:
+        listed = scoped.filter(status=Conversation.STATUS_DONE)
+    else:
+        listed = with_reply_state(scoped.exclude(status=Conversation.STATUS_DONE))
+        if unanswered:
+            listed = listed.filter(last_exchange_direction=ConversationMessage.DIRECTION_IN)
+    # The list needs names and previews, not provider contexts or connection settings.
+    rows = listed.select_related(None).select_related("connection__channel", "assignee", "client").only(
+        "uuid", "organization_id", "participant_name", "external_id", "status", "last_message_at",
+        "connection__channel__kind", "client__organization_id", "client__name",
+        "assignee__username", "assignee__first_name", "assignee__last_name")
+    items = list(rows.annotate(last_message_preview=Subquery(latest.values("body")[:1])))
+    # Count unread messages for the entire folder in one query, also on mobile.
+    read_at = ConversationReadState.objects.filter(user=user, conversation_id=OuterRef("conversation_id"))
+    unread = (ConversationMessage.objects.filter(direction=ConversationMessage.DIRECTION_IN,
+              conversation__in=listed.order_by().values("pk"))
+              .alias(read_at=Subquery(read_at.values("last_read_at")[:1]))
+              .filter(Q(read_at__isnull=True) | Q(created_at__gt=F("read_at"))).order_by()
+              .values("conversation_id").annotate(total=Count("pk")).values_list("conversation_id", "total"))
+    counts = dict(unread)
+    for item in items:
+        item.unread_count = counts.get(item.pk, 0)
+    return items
+
+
+def _dialog_list_version(items):
+    # The fingerprint covers what the rows display, including the per-viewer badges.
+    digest = sha256(str(timezone.localdate()).encode())
+    for item in items:
+        client = item.client if item.client_id and item.client.organization_id == item.organization_id else None
+        row = (item.uuid, (client.pk, client.name) if client else None,
+               item.external_id, item.connection.channel.kind, item.participant_name,
+               item.status, item.last_message_at, item.last_message_preview, item.unread_count,
+               getattr(item, "last_exchange_direction", ""), item.assignee_id,
+               (item.assignee.get_full_name() or item.assignee.username) if item.assignee_id else "")
+        digest.update(repr(row).encode())
+    return digest.hexdigest()
+
+
+def _set_max_delivery_notes(selected, messages):
+    if not selected or selected.connection.channel.kind != CommunicationChannel.KIND_MAX:
+        return
+    stale_before = timezone.now() - timedelta(minutes=1)
+    for message in messages:
+        error = message.delivery_error
+        if (message.delivery_status in {ConversationMessage.DELIVERY_PENDING, ConversationMessage.DELIVERY_SENDING}
+                and message.created_at < stale_before):
+            error = "max_delivery_unknown"
+        message.max_delivery_note = MAX_REPLY_ERRORS.get(error, "")
+
+
 @login_required
 @vary_on_headers("Sec-CH-UA-Mobile", "User-Agent")
 def conversations(request):
     organization = _context(request, "can_view_conversations")
-    latest_message = ConversationMessage.objects.filter(conversation=OuterRef("pk")).order_by("-created_at", "-pk")
-    scoped = Conversation.objects.filter(
-        organization=organization, connection__channel__organization=organization,
-    ).select_related("connection__channel", "assignee", "website_request", "client")
-    selected = None
-    selected_id = request.GET.get("conversation")
+    scoped = _dialog_scope(organization)
+    selected = _selected_dialog(scoped, request.GET.get("conversation"))
     requested_tab = request.GET.get("dialogs")
-    show_closed = requested_tab == "closed"
-    if selected_id:
-        try:
-            selected_uuid = UUID(selected_id)
-        except ValueError:
-            raise Http404 from None
-        selected = get_object_or_404(scoped, uuid=selected_uuid)
-        show_closed = selected.status == Conversation.STATUS_DONE
-
+    show_closed = selected.status == Conversation.STATUS_DONE if selected else requested_tab == "closed"
     show_unanswered = not show_closed and requested_tab == "unanswered"
-    if show_closed:
-        listed = scoped.filter(status=Conversation.STATUS_DONE)
-    else:
-        listed = with_reply_state(scoped.exclude(status=Conversation.STATUS_DONE))
-        if show_unanswered:
-            listed = listed.filter(last_exchange_direction=ConversationMessage.DIRECTION_IN)
-    items = list(listed.annotate(last_message_preview=Subquery(latest_message.values("body")[:1])))
+    items = _dialog_list(scoped, request.user, show_closed, show_unanswered)
     if show_unanswered and selected and all(item.pk != selected.pk for item in items):
         selected = None
     opened_conversation = selected is not None
@@ -191,26 +244,6 @@ def conversations(request):
     mobile_client = request.headers.get("Sec-CH-UA-Mobile") == "?1" or "Mobile" in request.headers.get("User-Agent", "")
     if selected is None and items and not mobile_client:
         selected = items[0]  # Desktop preview, acknowledged only when opened.
-    states = {state.conversation_id: state.last_read_at for state in ConversationReadState.objects.filter(user=request.user, conversation__organization=organization)}
-    for item in items:
-        incoming = item.messages.filter(direction=ConversationMessage.DIRECTION_IN)
-        last_read = states.get(item.pk)
-        item.unread_count = incoming.filter(created_at__gt=last_read).count() if last_read else incoming.count()
-    if opened_conversation:
-        state, _ = ConversationReadState.objects.get_or_create(conversation=selected, user=request.user)
-        state.last_read_at = timezone.now()
-        state.save(update_fields=["last_read_at"])
-        for item in items:
-            if item.pk == selected.pk:
-                item.unread_count = 0
-                break
-        Notification.objects.filter(
-            user=request.user,
-            organization=selected.organization,
-            kind="communication",
-            action_url__contains=str(selected.uuid),
-            is_resolved=False,
-        ).update(is_read=True, is_resolved=True, resolved_at=timezone.now())
     from .communication_enrichment import start_client_enrichment_worker
     from .crm_source_links import navigation as crm_source_navigation
     from .services.crm_commercial_access import can_view_team_deals
@@ -220,6 +253,16 @@ def conversations(request):
     max_contact_request_id = None
     max_settings_url = ""
     context = conversation_context(selected, organization, request.user, include_outbox=False)
+    if opened_conversation:
+        # Advance only through the incoming messages in this response's snapshot.
+        received = next((msg for msg in reversed(context["selected_messages"])
+                         if msg.direction == ConversationMessage.DIRECTION_IN), None)
+        if received:
+            _read_displayed_message(request.user, selected, received)
+            for item in items:
+                if item.pk == selected.pk:
+                    item.unread_count = 0
+                    break
     if selected and selected.connection.channel.kind == CommunicationChannel.KIND_MAX:
         connection = selected.connection
         if connection.channel.is_active and connection.is_active:
@@ -230,18 +273,10 @@ def conversations(request):
                 request.user, "can_manage_channels", organization,
             ):
                 max_settings_url = reverse("communication_connection_edit", args=[connection.pk])
-        stale_before = timezone.now() - timedelta(minutes=1)
-        for message in context["selected_messages"]:
-            error = message.delivery_error
-            if (
-                message.delivery_status in {ConversationMessage.DELIVERY_PENDING, ConversationMessage.DELIVERY_SENDING}
-                and message.created_at < stale_before
-            ):
-                error = "max_delivery_unknown"
-            message.max_delivery_note = MAX_REPLY_ERRORS.get(error, "")
+    _set_max_delivery_notes(selected, context["selected_messages"])
     return render(request, "pool_service/communications/conversations.html", {
         "active_tab": "communications", "conversations": items, "selected": selected,
-        "opened_conversation": opened_conversation,
+        "opened_conversation": opened_conversation, "dialog_list_version": _dialog_list_version(items),
         "communication_org_id": organization.pk, "show_closed_dialogs": show_closed,
         "show_unanswered_dialogs": show_unanswered,
         "can_finish": bool(selected and selected.status != Conversation.STATUS_DONE
@@ -260,6 +295,83 @@ def conversations(request):
         "can_access_manual_recordings": _can_access_manual_recordings(request.user, organization),
         "staff": OrganizationAccess.objects.filter(organization=organization).exclude(role="accountant").select_related("user"),
     })
+
+
+def _set_dialog_delivery(selected, messages):
+    if selected.connection.channel.kind == CommunicationChannel.KIND_AVITO:
+        for message in messages:
+            if message.direction == ConversationMessage.DIRECTION_OUT:
+                message.avito_delivery = message_display(message)
+    _set_max_delivery_notes(selected, messages)
+
+
+@transaction.atomic
+def _read_displayed_message(user, dialog, received):
+    state, created = ConversationReadState.objects.get_or_create(
+        conversation=dialog, user=user, defaults={"last_read_at": received.created_at})
+    advanced = created or ConversationReadState.objects.filter(pk=state.pk).filter(
+        Q(last_read_at__isnull=True) | Q(last_read_at__lt=received.created_at)).update(last_read_at=received.created_at)
+    if advanced:
+        Notification.objects.filter(user=user, organization_id=dialog.organization_id, kind="communication",
+            action_url__contains=str(dialog.uuid), is_resolved=False).filter(
+            Q(created_at__lte=received.created_at) | Q(dedupe_key=f"communication:{received.pk}")
+        ).update(is_read=True, is_resolved=True, resolved_at=timezone.now())
+
+
+@login_required
+@never_cache
+@require_http_methods(["GET", "POST"])
+def dialog_updates(request):
+    organization = _context(request, "can_view_conversations")
+    scoped = _dialog_scope(organization)
+    selected = _selected_dialog(scoped, request.GET.get("conversation"))
+    params = [request.GET.get("after", "0"), request.GET.get("count", "0"), request.POST.get("seen", "0")]
+    if any(not value.isascii() or not value.isdecimal() or len(value) > 18 for value in params):
+        return HttpResponseBadRequest("Некорректная позиция в диалоге.")
+    pending = request.GET.get("pending", "").split(",") if request.GET.get("pending") else []
+    if len(pending) > 25 or any(not pk.isascii() or not pk.isdecimal() or len(pk) > 18 for pk in pending):
+        return HttpResponseBadRequest("Некорректный список исходящих сообщений.")
+    after, count, seen = map(int, params)
+    closed = request.GET.get("dialogs") == "closed"
+    unanswered = request.GET.get("dialogs") == "unanswered"
+    context = {"selected": selected, "communication_org_id": organization.pk,
+               "show_closed_dialogs": closed, "show_unanswered_dialogs": unanswered}
+    result = {}
+    if selected:
+        # A transaction may commit a lower ID after the tab has received a higher ID.
+        # Reconcile the history in that case, or if an already displayed message was removed.
+        if selected.messages.filter(pk__lte=after).count() != count:
+            result["reset"] = True
+            after = 0
+        elif seen and seen <= after:
+            received = selected.messages.filter(pk=seen, direction=ConversationMessage.DIRECTION_IN).only("pk", "created_at").first()
+            if received:
+                _read_displayed_message(request.user, selected, received)
+                result["seen"] = seen
+        batch = list(selected.messages.filter(pk__gt=after).order_by("pk").prefetch_related("attachments")[:51])
+        if batch:
+            messages = batch[:50]
+            _set_dialog_delivery(selected, messages)
+            result["messages_html"] = render_to_string("pool_service/communications/_dialog_messages.html",
+                                                        {**context, "selected_messages": messages})
+            result["more"] = len(batch) > len(messages)
+
+        if pending:
+            outgoing = list(selected.messages.filter(pk__in=pending, pk__lte=after,
+                                                     direction=ConversationMessage.DIRECTION_OUT))
+            _set_dialog_delivery(selected, outgoing)
+            result["delivery"] = {str(message.pk): render_to_string(
+                "pool_service/communications/_dialog_delivery.html", {**context, "message": message})
+                for message in outgoing}
+
+    if request.GET.get("list") != "0":
+        items = _dialog_list(scoped, request.user, closed, unanswered)
+        version = _dialog_list_version(items)
+        if request.GET.get("list_version") != version:
+            result["rows_html"] = render_to_string("pool_service/communications/_dialog_rows.html",
+                                                   {**context, "conversations": items})
+        result["list_version"] = version
+    return JsonResponse(result)
 
 
 @login_required

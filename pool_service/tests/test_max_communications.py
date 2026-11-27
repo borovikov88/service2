@@ -11,6 +11,7 @@ from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.core.files.storage import FileSystemStorage
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import Client as TestClient
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -18,8 +19,11 @@ from django.utils import timezone
 from pool_service.communication_max_media import MaxMediaError, media_fingerprints, media_url
 from pool_service.communication_max_outbound import MAX_CA, MaxApiError, dispatch_reply, max_api_ssl_context
 from pool_service.communication_secrets import decrypt_secret, encrypt_secret
-from pool_service.models import Organization, OrganizationAccess
-from pool_service.communication_models import ChannelConnection, CommunicationAccess, CommunicationChannel, Conversation, ConversationMessage, MessageAttachment
+from pool_service.models import Client, Organization, OrganizationAccess
+from pool_service.communication_models import (
+    ChannelConnection, CommunicationAccess, CommunicationChannel, Conversation, ConversationMessage,
+    ConversationReadState, MessageAttachment,
+)
 from pool_service.crm_commercial_models import CrmLead
 from pool_service.crm_inbox_models import CrmInboxEvent
 from pool_service.services.crm_lead_access import leads_for_user
@@ -162,6 +166,99 @@ class MaxWebhookTests(LeadIntakeFixture, TestCase):
         self.assertContains(opened, 'data-pane="chat"')
         self.assertTrue(opened.context["selected_messages"])
         self.assertEqual(opened.context["conversations"][0].unread_count, 0)
+
+    def test_live_dialog_updates_keep_list_preview_and_read_receipts_separate(self):
+        conversation, _ = self._reply_form()
+        url = reverse("communication_dialog_updates")
+        args = {"org_id": self.org.pk}
+        page = self.client.get(url, args)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("no-store", page["Cache-Control"])
+        self.assertNotIn("messages_html", page.json())
+        self.assertIn('data-unread="1"', page.json()["rows_html"])
+        args["list_version"] = page.json()["list_version"]
+        self.assertEqual(self.client.get(url, args).json(), {"list_version": args["list_version"]})
+        self.assertFalse(ConversationReadState.objects.filter(user=self.user, conversation=conversation).exists())
+
+        first = conversation.messages.get()
+        args.update(conversation=str(conversation.uuid), after=first.pk, count=1)
+        second = ConversationMessage.objects.create(conversation=conversation, direction="in", body="Second <script>synthetic</script>")
+        response = self.client.get(url, args).json()
+        self.assertIn("&lt;script&gt;synthetic&lt;/script&gt;", response["messages_html"])
+        self.assertNotIn(f'data-message-id="{first.pk}"', response["messages_html"])
+        self.assertIn('data-unread="2"', response["rows_html"])
+        following = ConversationMessage.objects.create(conversation=conversation, direction="in", body="Still unread")
+        args.update(after=second.pk, count=2, list_version=response["list_version"])
+        self.client.get(url, {**args, "seen": second.pk})
+        self.assertFalse(ConversationReadState.objects.filter(user=self.user, conversation=conversation).exists())
+        protected = TestClient(enforce_csrf_checks=True)
+        protected.force_login(self.user)
+        self.assertEqual(protected.post(url, {"seen": second.pk}, query_params=args).status_code, 403)
+        payload = self.client.post(url, {"seen": second.pk}, query_params=args).json()
+        self.assertIn(f'data-message-id="{following.pk}"', payload["messages_html"])
+        self.assertIn('data-unread="1"', payload["rows_html"])
+        state = ConversationReadState.objects.get(user=self.user, conversation=conversation)
+        self.assertEqual(state.last_read_at, second.created_at)
+        self.client.post(url, {"seen": first.pk}, query_params=args)
+        state.refresh_from_db()
+        self.assertEqual(state.last_read_at, second.created_at)
+
+    def test_open_dialog_acknowledges_only_rendered_history(self):
+        from pool_service.avito_outbox_display import conversation_context
+
+        conversation, _ = self._reply_form()
+        first = conversation.messages.get()
+
+        def new_message_after_snapshot(*args, **kwargs):
+            context = conversation_context(*args, **kwargs)
+            ConversationMessage.objects.create(conversation=conversation, direction="in", body="Arrived after snapshot")
+            return context
+
+        with patch("pool_service.communication_views.conversation_context", side_effect=new_message_after_snapshot):
+            page = self.client.get(reverse("communications_conversations"), {"conversation": conversation.uuid})
+        self.assertNotContains(page, "Arrived after snapshot")
+        self.assertEqual(ConversationReadState.objects.get(user=self.user, conversation=conversation).last_read_at,
+                         first.created_at)
+        rows = self.client.get(reverse("communication_dialog_updates"), {"org_id": self.org.pk}).json()["rows_html"]
+        self.assertIn('data-unread="1"', rows)
+
+    def test_live_dialog_refreshes_only_requested_outgoing_delivery_states(self):
+        conversation, _ = self._reply_form()
+        sent = ConversationMessage.objects.create(conversation=conversation, direction="out", body="Synthetic reply",
+                                                 delivery_status="pending")
+        ConversationMessage.objects.filter(pk=sent.pk).update(delivery_status="delivered", delivered_at=timezone.now())
+        args = {"org_id": self.org.pk, "conversation": conversation.uuid, "after": sent.pk, "count": 2,
+                "pending": f"{sent.pk},{conversation.messages.first().pk}"}
+        payload = self.client.get(reverse("communication_dialog_updates"), args).json()
+        self.assertEqual(set(payload["delivery"]), {str(sent.pk)})
+        self.assertIn("Отправлено в MAX", payload["delivery"][str(sent.pk)])
+        self.assertNotIn("messages_html", payload)
+
+    def test_live_dialog_updates_are_scoped_and_recover_a_missing_message(self):
+        conversation, _ = self._reply_form()
+        url = reverse("communication_dialog_updates")
+        args = {"org_id": self.org.pk, "conversation": conversation.uuid}
+        original = conversation.messages.get()
+        response = self.client.post(url, {"seen": original.pk}, query_params={**args, "after": original.pk, "count": 0}).json()
+        self.assertTrue(response["reset"])
+        self.assertFalse(ConversationReadState.objects.filter(user=self.user, conversation=conversation).exists())
+        self.assertIn(f'data-message-id="{original.pk}"', response["messages_html"])
+        self.assertEqual(self.client.get(url, {**args, "after": "invalid"}).status_code, 400)
+        other = Organization.objects.create(name="Synthetic other inbox")
+        channel = CommunicationChannel.objects.create(organization=other, kind="website", name="Other inbox")
+        connection = ChannelConnection.objects.create(channel=channel, name="Other")
+        foreign = Conversation.objects.create(organization=other, connection=connection, external_id="foreign")
+        self.assertEqual(self.client.get(url, {**args, "conversation": foreign.uuid}).status_code, 404)
+        self.assertEqual(self.client.get(url, {**args, "org_id": other.pk}).status_code, 403)
+        self.assertFalse(ConversationReadState.objects.filter(user=self.user, conversation=foreign).exists())
+        stale_client = Client.objects.create(organization=other, name="Legacy foreign client")
+        Conversation.objects.filter(pk=conversation.pk).update(client=stale_client)
+        before = self.client.get(url, args).json()
+        self.assertNotIn(stale_client.name, before["rows_html"])
+        Client.objects.filter(pk=stale_client.pk).update(name="Renamed foreign client")
+        self.assertEqual(self.client.get(url, args).json()["list_version"], before["list_version"])
+        CommunicationAccess.objects.filter(organization=self.org, user=self.user).update(can_view_conversations=False)
+        self.assertEqual(self.client.get(url, args).status_code, 403)
 
     def test_unanswered_queue_only_clears_after_a_reply_or_completion(self):
         conversation, _ = self._reply_form()
