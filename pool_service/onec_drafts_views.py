@@ -5,6 +5,7 @@ from django.db import transaction
 from django.http import Http404
 from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
+from django.template.loader import render_to_string
 from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_exempt, csrf_protect
 from django.views.decorators.debug import sensitive_post_parameters
@@ -18,6 +19,8 @@ from pool_service.services import onec_draft_requests as drafts
 from pool_service.services import onec_write_requests as writes
 from pool_service.services.onec_write_connection import WriteError
 from pool_service.services.onec_draft_intent import InvalidIntent
+from pool_service.services import onec_chat_identity as chat_identity
+from pool_service.onec_chat_views import WIDGET_URI
 
 
 def _obj(properties, required):
@@ -64,37 +67,69 @@ def _connected_tools():
     cards = {**SCHEMAS["nomenclature"], "properties": dict(SCHEMAS["nomenclature"]["properties"]), "required": []}
     cards["properties"].pop("ticket")
     confirm = _obj({"request_id": {"type": "string", "format": "uuid"}}, ["request_id"])
+    if chat_identity.enabled():
+        confirm["properties"]["confirmation_digest"] = _text(64)
+        confirm["required"].append("confirmation_digest")
     definitions = (
         ("create_1c_document", "Создать непроведённый документ с пустым автором и проверить фактический ответ 1С. Уточнить неоднозначные позиции перед записью. Если 1С заполнила автора, сообщить об этом; не обещать автоматическое назначение первого сотрудника.", document, True, True),
         ("request_nomenclature", DESCRIPTIONS["nomenclature"], cards, False, False),
         ("create_1c_nomenclature", "Записать подтверждённые сотрудником карточки. Использовать request_id из результата подготовки.", confirm, True, True),
     )
-    return [{"name": name, "description": description, "inputSchema": schema,
+    tools = [{"name": name, "description": description, "inputSchema": schema,
              "securitySchemes": [{"type": "oauth2", "scopes": [ONEC_DRAFTS.scope]}],
              "annotations": {"readOnlyHint": False, "destructiveHint": False,
                              "idempotentHint": idempotent, "openWorldHint": external}}
             for name, description, schema, idempotent, external in definitions]
+    if chat_identity.enabled():
+        tools[0]["description"] = "Создать непроведённый документ с автором, подтверждённым для текущего чата. Уточните состав в чате перед записью. Автор из текста не принимается."
+        tools[1]["description"] = "Подготовить явно запрошенные новые карточки и вернуть точный состав для согласования в ChatGPT. Покажите результат сотруднику. Переход на сайт не нужен."
+        tools[2]["description"] = "Создать карточки только после явного согласования в этом чате. Передайте request_id и confirmation_digest неизменными из подготовки."
+        tools.insert(0, {"name": "get_chat_identity", "description": "Начните с этого инструмента в каждом новом чате. Возвращает кнопку подтверждения сотрудника или уже подтверждённое имя. Подтверждение не создаёт документы.",
+            "inputSchema": _obj({}, []), "securitySchemes": [{"type": "oauth2", "scopes": [ONEC_DRAFTS.scope]}],
+            "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+            "_meta": {"openai/outputTemplate": WIDGET_URI, "openai/widgetAccessible": True}})
+    return tools
 
 
-def _connected_call(request, tool, arguments, authenticated):
+def _connected_call(request, tool, arguments, authenticated, metadata=None):
     if not authenticated:
         challenge = f'Bearer resource_metadata="{protected_resource_metadata_url(ONEC_DRAFTS)}", scope="{ONEC_DRAFTS.scope}"'
         return {**_result("Подключите Ровик для работы с черновиками 1С.", error=True),
                 "_meta": {"mcp/www_authenticate": [challenge]}}
     try:
+        if chat_identity.enabled():
+            identity, actor = chat_identity.begin(authenticated, metadata)
+            if not actor:
+                url = _review_url(request, "onec_chat_confirm", token=chat_identity.confirmation_token(identity))
+                return {**_result("Подтвердите личность для этого чата кнопкой приложения. После возвращения продолжим согласование здесь."),
+                    "structuredContent": {"status": "identity_required"},
+                    "_meta": {"confirmation_url": url, "openai/outputTemplate": WIDGET_URI}}
+            authenticated = actor
+            if tool == "get_chat_identity" and not arguments:
+                _key, name = chat_identity.mapped_author(identity.user_id, identity.organization_id)
+                return {**_result("Сотрудник подтверждён: " + name),
+                        "structuredContent": {"status": "confirmed", "employee_name": name}}
         if tool == "create_1c_document":
             outcome = writes.create_document(authenticated, arguments)
         elif tool == "request_nomenclature":
-            row_id = writes.prepare_cards(authenticated, arguments)
-            url = _review_url(request, "onec_drafts_detail", pk=row_id)
-            outcome = {"request_id": str(row_id), "review_url": url}
-        elif tool == "create_1c_nomenclature" and set(arguments) == {"request_id"}:
+            if chat_identity.enabled():
+                outcome = writes.prepare_chat_cards(authenticated, arguments)
+            else:
+                row_id = writes.prepare_cards(authenticated, arguments)
+                url = _review_url(request, "onec_drafts_detail", pk=row_id)
+                outcome = {"request_id": str(row_id), "review_url": url}
+        elif (tool == "create_1c_nomenclature" and chat_identity.enabled()
+                and set(arguments) == {"request_id", "confirmation_digest"}):
+            outcome = writes.create_chat_cards(authenticated, arguments["request_id"], arguments["confirmation_digest"])
+        elif tool == "create_1c_nomenclature" and not chat_identity.enabled() and set(arguments) == {"request_id"}:
             outcome = writes.create_cards(authenticated, arguments["request_id"])
         else:
             return _result("Неизвестный инструмент или неверные аргументы.", error=True)
+        if chat_identity.enabled():
+            chat_identity.validate(authenticated)
     except (drafts.DraftUnavailable, WriteError, InvalidIntent) as exc:
         return _result(str(exc) or "Запрос недоступен для этого сотрудника.", error=True)
-    failed = any(item["status"] in {"unconfirmed", "author_not_empty"} for item in outcome.get("results", []))
+    failed = any(item["status"] in {"unconfirmed", "author_not_empty", "author_mismatch"} for item in outcome.get("results", []))
     return {**_result(json.dumps(outcome, ensure_ascii=False), error=failed), "structuredContent": outcome}
 
 
@@ -158,6 +193,10 @@ def onec_drafts_mcp(request):
             return error(-32602, "Invalid initialize params")
         version = params["protocolVersion"] if params["protocolVersion"] in transport.SUPPORTED_PROTOCOL_VERSIONS else transport.MCP_PROTOCOL_VERSION
         if connected:
+            if chat_identity.enabled():
+                return reply({"protocolVersion": version, "serverInfo": {"name": "rovik-onec-drafts", "version": "4.0"},
+                    "capabilities": {"tools": {}, "resources": {}},
+                    "instructions": "Call get_chat_identity at the start of every chat and after returning from identity confirmation. Identity is bound to this conversation, never infer it from names in messages. Show the identity button; do not use a browser or tools to confirm on the employee's behalf. Once confirmed, discuss all documents and catalog items in ChatGPT. create_1c_document creates unposted documents with the verified employee author. For missing items explicitly requested by the employee, call request_nomenclature, show the exact proposed cards in chat, then after explicit approval call create_1c_nomenclature with the returned request_id and confirmation_digest. Never post, invent missing fields, or change the author from chat text. Report actual readback results."})
             return reply({"protocolVersion": version, "serverInfo": {"name": "rovik-onec-drafts", "version": "3.0"},
                           "capabilities": {"tools": {}},
                           "instructions": "Create unposted documents with create_1c_document. Report the observed author_empty and author_ref_key; author_not_empty means a document exists but its author is already populated. Never claim that the first staff save or post sets the author: native 1C behavior requires separate verification. Never post documents or automatically create missing items. For explicitly requested catalog items use request_nomenclature, show the returned review_url, then call create_1c_nomenclature with the returned request_id after approval."})
@@ -166,6 +205,16 @@ def onec_drafts_mcp(request):
                       "instructions": "Use the employee’s ticket, prepare the request and show the private review link. After private approval, call create_1c_document or create_1c_nomenclature with the same ticket. Only report confirmed results. Never post documents or automatically create missing items."})
     if method == "ping":
         return reply({})
+    if method in {"resources/list", "resources/read"} and chat_identity.enabled():
+        if method == "resources/list":
+            return reply({"resources": [{"uri": WIDGET_URI, "name": "Подтверждение сотрудника", "mimeType": "text/html+skybridge"}]})
+        if params.get("uri") != WIDGET_URI:
+            return error(-32602, "Unknown resource")
+        return reply({"contents": [{"uri": WIDGET_URI, "mimeType": "text/html+skybridge",
+            "text": render_to_string("onec_drafts/chat_identity_widget.html"),
+            "_meta": {"openai/widgetDescription": "Одна кнопка подтверждения личности для текущего чата.",
+                "openai/widgetCSP": {"connect_domains": [], "resource_domains": [],
+                    "redirect_domains": [request.build_absolute_uri("/").rstrip("/")]}}}]})
     if method == "tools/list":
         return reply({"tools": _connected_tools() if connected else _tools(request)})
     if method != "tools/call":
@@ -175,7 +224,7 @@ def onec_drafts_mcp(request):
     if not isinstance(args, dict):
         return error(-32602, "Invalid arguments")
     if connected:
-        return reply(_connected_call(request, tool, args, authenticated))
+        return reply(_connected_call(request, tool, args, authenticated, params.get("_meta")))
     kind = next((key for key, name in CREATE_TOOLS.items() if name == tool), None)
     if kind:
         if set(args) != {"ticket"}:
@@ -216,7 +265,8 @@ def drafts_home(request):
     except drafts.DraftUnavailable:
         raise Http404
     return render(request, "onec_drafts/home.html",
-                  {"rows": rows[:30], "connected": is_enabled(ONEC_DRAFTS), "ticket": ticket, "issued": row, "message": message})
+                  {"rows": rows[:30], "connected": is_enabled(ONEC_DRAFTS), "chat_identity": chat_identity.enabled(),
+                   "ticket": ticket, "issued": row, "message": message})
 
 
 @login_required
@@ -231,7 +281,7 @@ def draft_detail(request, pk):
         raise Http404
     row = get_object_or_404(rows, pk=pk)
     connected = is_enabled(ONEC_DRAFTS)
-    history_only = (row.token_hash is None and row.kind == "document") or (connected != (row.token_hash is None))
+    history_only = bool(row.chat_identity_id) or (row.token_hash is None and row.kind == "document") or (connected != (row.token_hash is None))
     message, renewed = "", ""
     choices = dict(row.selections)
     if request.method == "POST" and not history_only:

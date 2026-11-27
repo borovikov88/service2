@@ -30,6 +30,7 @@ from pool_service.mcp_oauth_shared import (
     shared_oauth_authorize,
     shared_oauth_token,
 )
+from pool_service.onec_chat_views import confirm_identity
 
 urlpatterns = [
     path('', include('pool_service.call_processing_urls')),
@@ -56,6 +57,7 @@ urlpatterns = [
          {'policy': ONEC_DRAFTS}, name='onec_drafts_resource_metadata'),
     path('mcp/1c-drafts', onec_drafts_views.onec_drafts_mcp, name='onec_drafts_mcp'),
     path('onec/drafts/', onec_drafts_views.drafts_home, name='onec_drafts_home'),
+    path('onec/drafts/identity/<str:token>/', confirm_identity, name='onec_chat_confirm'),
     path('onec/drafts/<uuid:pk>/', onec_drafts_views.draft_detail, name='onec_drafts_detail'),
     path('mcp/1c', onec_diagnostic_mcp, name='onec_diagnostic_mcp'),
     path('mcp/operations', operations_mcp, name='operations_mcp'),

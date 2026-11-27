@@ -1,0 +1,17 @@
+{% extends "onec_drafts/base.html" %}
+{% block title %}Подтверждение сотрудника{% endblock %}
+{% block content %}
+<h1>{% if done %}Личность подтверждена{% else %}Подтвердите личность{% endif %}</h1>
+<p>Вы: <strong>{{ display_name }}</strong></p>
+{% if message %}<p role="alert">{{ message }}</p>{% endif %}
+{% if done %}
+<p>Вернитесь в открытый чат ChatGPT. Согласование и создание документов продолжатся там.</p>
+{% elif not message %}
+<p>Этот чат будет работать от вашего имени. В новом чате потребуется новое подтверждение.</p>
+<form method="post">{% csrf_token %}
+  <input type="hidden" name="account_binding" value="{{ account_binding }}">
+  <button type="submit">Подтвердить</button>
+</form>
+<p>Если указано чужое имя, сначала войдите в Ровик под своей учётной записью.</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "rovik-onec-drafts": {
+      "type": "streamable-http",
+      "url": "https://service2.aqualine22.ru/mcp/1c-drafts",
+      "extensions": {
+        "com.openai": {
+          "auth": {
+            "type": "oauth",
+            "client": {"mode": "cimd"},
+            "defaultScopes": ["service2.onec.drafts", "offline_access"]
+          }
+        }
+      }
+    }
+  }
+}

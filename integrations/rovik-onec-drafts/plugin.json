@@ -1,0 +1,20 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "rovik-onec-drafts",
+  "version": "1.0.0",
+  "description": "Создание непроведённых документов и согласованной номенклатуры 1С с подтверждением сотрудника для каждого чата.",
+  "author": {"name": "Аквалайн"},
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Ровик — документы 1С",
+        "shortDescription": "Документы с вашим авторством",
+        "longDescription": "В каждом новом чате подтвердите личность в Ровике, затем согласуйте документы и новые карточки номенклатуры в ChatGPT. Документы создаются без проведения с автором из подтверждённой привязки сотрудника к 1С.",
+        "developerName": "Аквалайн",
+        "category": "Business & Operations",
+        "capabilities": ["Interactive"],
+        "defaultPrompt": "Подтвердим сотрудника для этого чата и подготовим документ в 1С."
+      }
+    }
+  }
+}
