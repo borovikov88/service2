@@ -1,5 +1,6 @@
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from django.contrib.auth.views import redirect_to_login
 from django.http import HttpResponseForbidden, JsonResponse
 from django.shortcuts import redirect
 from django.urls import reverse
@@ -88,12 +89,15 @@ class AuthRedirectMiddleware:
                 }, status=401)
                 response["Cache-Control"] = "private, no-store"
                 return response
+            if path.startswith("/onec/drafts/"):
+                return redirect_to_login(path, login_url=reverse("login"))
             exact_allowed_paths = {
                 "/",
                 "/index/",
                 "/mcp/test/",
                 "/mcp/finance",
                 "/mcp/1c",
+                "/mcp/1c-drafts",
                 "/mcp/operations",
                 "/mcp/avito",
                 "/.well-known/oauth-protected-resource/mcp/finance",
@@ -173,6 +177,7 @@ class FinanceOnlyRoleMiddleware:
         "/billing/",
         "/consent/",
         "/finance/",
+        "/onec/drafts/",
         "/media/",
         "/notifications/",
         "/profile/",
