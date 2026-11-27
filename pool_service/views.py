@@ -33,7 +33,7 @@ from django.views.decorators.cache import never_cache
 
 from django.views.decorators.http import require_POST
 
-from django.urls import reverse, reverse_lazy
+from django.urls import Resolver404, resolve, reverse, reverse_lazy
 
 from django.db import connection, transaction
 
@@ -10062,6 +10062,15 @@ class CustomLoginView(LoginView):
 
 
     def get_success_url(self):
+        next_url = self.get_redirect_url()
+        if next_url.startswith("/onec/drafts/"):
+            try:
+                match = resolve(next_url)
+            except Resolver404:
+                pass
+            else:
+                if match.url_name in {"onec_drafts_home", "onec_drafts_detail", "onec_drafts_lines"}:
+                    return reverse(match.url_name, kwargs=match.kwargs)
         return _default_authenticated_url(self.request.user)
 
 

@@ -1,0 +1,48 @@
+{% extends "onec_drafts/base.html" %}
+{% block content %}
+<p><a href="{% url 'onec_drafts_home' %}">Мои запросы</a></p>
+<h1>{% firstof row.intent.document_type row.intent.name row.get_kind_display %}</h1>
+{% if not row.intent %}
+<p>Предложение из чата ещё не поступило. Вернитесь сюда после ответа чата.</p>
+{% else %}
+
+<dl>
+{% if plan.document_date %}<dt>Дата и время документа в 1С</dt><dd>{{ plan.document_date }}</dd>{% endif %}
+{% if row.intent.organization %}<dt>Организация</dt><dd>{{ row.intent.organization }}</dd>{% endif %}
+{% if row.intent.counterparty %}<dt>Контрагент</dt><dd>{{ row.intent.counterparty }}</dd>{% endif %}
+{% if row.intent.source_number %}<dt>Номер исходного документа</dt><dd>{{ row.intent.source_number }}</dd>{% endif %}
+{% if row.intent.source_date %}<dt>Дата исходного документа</dt><dd>{{ row.intent.source_date }}</dd>{% endif %}
+{% if row.intent.details %}<dt>Описание операции</dt><dd>{{ row.intent.details }}</dd>{% endif %}
+{% if row.intent.article %}<dt>Артикул</dt><dd>{{ row.intent.article }}</dd>{% endif %}
+{% if row.intent.unit %}<dt>Единица</dt><dd>{{ row.intent.unit }}</dd>{% endif %}
+{% if row.intent.packaging %}<dt>Фасовка</dt><dd>{{ row.intent.packaging }}</dd>{% endif %}
+{% if row.intent.group %}<dt>Группа</dt><dd>{{ row.intent.group }}</dd>{% endif %}
+</dl>
+{% if row.intent.lines %}
+<div class="scroll"><table><thead><tr><th>Наименование из запроса</th><th>Артикул</th><th>Количество</th><th>Единица</th><th>Цена</th></tr></thead>
+<tbody>{% for line in row.intent.lines %}<tr><td>{{ line.item }}</td><td>{{ line.article }}</td><td>{{ line.quantity }}</td><td>{{ line.unit }}</td><td>{{ line.price }}</td></tr>{% endfor %}</tbody></table></div>
+{% endif %}
+{% if batch_items %}
+<div class="scroll"><table><thead><tr><th>Артикул</th><th>Название</th><th>Единица</th><th>Фасовка</th><th>Группа</th></tr></thead>
+<tbody>{% for item in batch_items %}<tr><td>{{ item.article }}</td><td>{{ item.name }}</td><td>{{ item.unit }}</td><td>{{ item.packaging }}</td><td>{{ item.group }}</td></tr>{% endfor %}</tbody></table></div>
+{% endif %}
+{% if row.intent.fields %}<h2>Реквизиты документа</h2><pre>{{ fields_json }}</pre>{% endif %}
+{% if row.intent.tables %}<h2>Табличные части</h2><pre>{{ tables_json }}</pre>{% endif %}
+{% if row.approved_at %}
+{% if renewed %}<p>Личный код для продолжения этого запроса</p><textarea rows="2" readonly>{{ renewed }}</textarea>{% endif %}
+{% if row.write_attempts.exists %}<form method="post">{% csrf_token %}<button name="action" value="renew">Получить новый код для этой же записи</button></form>{% endif %}
+<p>Вы подтвердили этот запрос. Вернитесь в чат, чтобы записать его через MCP и получить результат из 1С.</p>
+{% else %}
+<form method="post">{% csrf_token %}<input type="hidden" name="digest" value="{{ digest }}">
+<input type="hidden" name="plan" value="{{ plan.digest }}">
+{% if plan.cards %}<h2>Сверка перед записью</h2><ul>{% for card in plan.cards %}<li>{{ card.article }} · {% if card.existing %}уже есть в 1С · {{ card.code }}{% else %}создать · {{ card.unit }} ({{ card.unit_ref }}){% if card.group %} · {{ card.group }} ({{ card.group_ref }}){% endif %}{% endif %}</li>{% endfor %}</ul>{% endif %}
+{% if plan.lines %}<h2>Позиции для записи в 1С</h2><div class="scroll"><table><thead><tr><th>Запрошено</th><th>Артикул из счёта</th><th>Карточка в 1С</th><th>Количество</th><th>Единица в 1С</th></tr></thead>
+<tbody>{% for line in plan.lines %}<tr><td>{{ line.requested }}</td><td>{{ line.article }}</td><td>{{ line.name }}</td><td>{{ line.quantity }}</td><td>{{ line.unit }}</td></tr>{% endfor %}</tbody></table></div>{% endif %}
+{% if plan.labels %}<h2>Выбранные в 1С объекты</h2><ul>{% for obj in plan.labels %}<li>{{ obj.label }} · {{ obj.entity }} · {{ obj.key }}</li>{% endfor %}</ul>{% endif %}
+{% for line in options %}<label>Позиция {{ line.position }} в 1С <select name="line_{{ line.position }}"><option value="">Выберите товар</option>{% for opt in line.choices %}<option value="{{ opt.key }}" {% if opt.selected %}selected{% endif %}>{{ opt.label }} · {{ opt.article }}</option>{% endfor %}</select></label>{% endfor %}
+{% if options %}<button name="action" value="preview">Проверить выбранные позиции</button>{% endif %}
+{% if plan.digest %}<button name="action" value="approve">{% if row.kind == "document" %}Разрешить запись документа без проведения{% else %}Разрешить создание перечисленной номенклатуры{% endif %}</button>{% endif %}</form>
+{% endif %}
+{% if message %}<p role="alert">{{ message }}</p>{% endif %}
+{% endif %}
+{% endblock %}

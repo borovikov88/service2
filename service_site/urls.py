@@ -12,6 +12,7 @@ from django.conf import settings
 from django.templatetags.static import static
 from django.conf.urls.static import static as static_serve
 from pool_service.mcp_views import mcp_test
+from pool_service import onec_drafts_views
 from pool_service.finance_mcp_views import (
     finance_mcp,
     finance_protected_resource_metadata,
@@ -50,6 +51,9 @@ urlpatterns = [
     ),
     path('oauth/finance/authorize', shared_oauth_authorize, name='finance_mcp_authorize'),
     path('oauth/finance/token', shared_oauth_token, name='finance_mcp_token'),
+    path('mcp/1c-drafts', onec_drafts_views.onec_drafts_mcp, name='onec_drafts_mcp'),
+    path('onec/drafts/', onec_drafts_views.drafts_home, name='onec_drafts_home'),
+    path('onec/drafts/<uuid:pk>/', onec_drafts_views.draft_detail, name='onec_drafts_detail'),
     path('mcp/1c', onec_diagnostic_mcp, name='onec_diagnostic_mcp'),
     path('mcp/operations', operations_mcp, name='operations_mcp'),
     path('mcp/avito', avito_mcp, name='avito_mcp'),
