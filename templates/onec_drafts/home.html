@@ -1,11 +1,15 @@
 {% extends "onec_drafts/base.html" %}
 {% block content %}
 <h1>Запросы в 1С</h1>
+{% if connected %}
+<p>Попросите Ровика создать черновик в чате. Он запросит запись без проведения с пустым автором и сообщит результат проверки в 1С. Заполнение автора при дальнейшей работе зависит от настроек вашей 1С.</p>
+{% else %}
 <p>Скопируйте личный код в чат вместе с поручением или счётом. Он действует 15 минут и принимает одно предложение. Для номенклатуры используйте отдельный код. В него можно включить до десяти артикулов.</p>
 <form method="post">{% csrf_token %}
   <button name="kind" value="document">Получить код для документа</button>
   <button name="kind" value="nomenclature">Запросить новую номенклатуру</button>
 </form>
+{% endif %}
 {% if message %}<p role="alert">{{ message }}</p>{% endif %}
 {% if ticket %}
 <h2>{% if issued.kind == "document" %}Код для документа{% else %}Код для номенклатуры{% endif %}</h2>
@@ -15,7 +19,7 @@
 {% if rows %}
 <h2>Последние запросы</h2>
 <ul>{% for row in rows %}
-<li><a href="{% url 'onec_drafts_detail' pk=row.pk %}">{{ row.get_kind_display }} · {{ row.created_at|date:"d.m H:i" }}</a> — {% if row.approved_at %}подтверждено{% elif row.intent %}готово к проверке{% else %}предложение не поступало{% endif %}</li>
+<li><a href="{% url 'onec_drafts_detail' pk=row.pk %}">{{ row.get_kind_display }} · {{ row.created_at|date:"d.m H:i" }}</a> — {% if row.token_hash == None and row.kind == "document" %}из чата{% elif row.approved_at %}подтверждено{% elif row.intent %}готово к проверке{% else %}предложение не поступало{% endif %}</li>
 {% endfor %}</ul>
 {% endif %}
 {% endblock %}

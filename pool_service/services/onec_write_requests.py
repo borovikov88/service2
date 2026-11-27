@@ -14,9 +14,11 @@ from pool_service.onec_draft_models import OneCDraftRequest, OneCWriteFence
 from . import onec_draft_requests as drafts
 from .onec_write_connection import (
     ITEMS, UNITS, AccessDenied, FreshWriter, TransportFailure, WriteError, article_key,
-    binding_key, employee_config, fingerprint, guid, reference_filter, text_filter,
+    binding_key, employee_config, fingerprint, guid, integration_config, reference_filter, text_filter,
 )
-from .onec_write_documents import document_payload, entity_for
+from .onec_write_documents import AUTHOR, EMPTY_GUID, _scope_org, document_payload, entity_for
+from .onec_draft_intent import document_intent, nomenclature_intent
+from pool_service.operations_mcp_auth import ONEC_DRAFTS, is_enabled, revalidate_authenticated_request
 
 
 def _intent_digest(intent):
@@ -74,7 +76,8 @@ def approve(user_id, request_id, expected_digest, expected_plan="", choices=None
     choices = choices or {}
     rows = drafts.personal_requests(user_id)
     row = rows.filter(pk=request_id, expires_at__gt=timezone.now()).first()
-    if not row or not row.intent or _intent_digest(row.intent) != expected_digest:
+    if (not row or not row.intent or (row.kind == "document" and (row.token_hash is None or is_enabled(ONEC_DRAFTS)))
+            or _intent_digest(row.intent) != expected_digest):
         raise drafts.DraftUnavailable
     config = employee_config(user_id, org_id)
     binding = binding_key(config)
@@ -107,7 +110,7 @@ def review_digest(row):
 
 
 def _authorize(row):
-    if (not row.approved_at or row.expires_at <= timezone.now() or row.approved_digest != review_digest(row)
+    if ((row.kind == "document" and is_enabled(ONEC_DRAFTS)) or not row.approved_at or row.expires_at <= timezone.now() or row.approved_digest != review_digest(row)
             or row.organization_id != drafts.target_organization()
             or not drafts.is_staff_member(row.user_id, row.organization_id)):
         raise drafts.DraftUnavailable
@@ -148,12 +151,18 @@ def _identity(row, entity, body):
     return {"contents": _intent_digest(_canonical_body(body, row.intent, matching_existing=True))}
 
 
-def _result(entity, remote, status):
+def _observed_author(remote):
+    empty = remote[AUTHOR] == EMPTY_GUID
+    return {"author_empty": empty, "author_ref_key": None if empty else guid(remote[AUTHOR])}
+
+
+def _result(entity, remote, status, *, include_author=False):
     number = remote.get("Code" if entity == ITEMS else "Number")
     if not isinstance(number, str) or not number.strip():
         raise TransportFailure("1С ещё не подтвердила код или номер.")
     return {"status": status, "ref_key": guid(remote.get("Ref_Key")), "code" if entity == ITEMS else "number": number,
-            **({"posted": remote["Posted"]} if entity != ITEMS else {})}
+            **({"posted": remote["Posted"]} if entity != ITEMS else {}),
+            **(_observed_author(remote) if include_author else {})}
 
 
 def _item_payload(writer, item, key):
@@ -188,18 +197,26 @@ def _fence_key(writer, entity, identity):
 
 
 @transaction.atomic
-def _claim(row, token, key):
+def _claim(row, token, key, authenticated=None, config=None, *, existing=False):
+    if row.token_hash is None:
+        _check_actor(authenticated, row)
     drafts._lock_staff(row.user_id, row.organization_id)
-    _authorize(row)
+    if row.token_hash is None:
+        current = integration_config() if row.kind == "document" else _authorize(row)
+        if current != config:
+            raise drafts.DraftUnavailable
+    else:
+        _authorize(row)
     previous = OneCWriteFence.objects.select_for_update().filter(pk=token).first()
     if previous:
         return previous, False
     now = timezone.now()
-    count = OneCWriteFence.objects.filter(request__user_id=row.user_id, request__organization_id=row.organization_id,
+    count = OneCWriteFence.objects.filter(request__user_id=row.user_id, request__organization_id=row.organization_id, is_existing=False,
                                           reserved_at__gt=now - timedelta(hours=1)).count()
-    if count >= getattr(settings, "ONEC_MCP_WRITE_HOURLY_LIMIT", 10):
+    if not existing and count >= getattr(settings, "ONEC_MCP_WRITE_HOURLY_LIMIT", 10):
         raise WriteError("Достигнут часовой лимит записи объектов в 1С для сотрудника.")
-    fence, new = OneCWriteFence.objects.get_or_create(pk=token, defaults={"request": row, "remote_key": key})
+    fence, new = OneCWriteFence.objects.get_or_create(pk=token, defaults={"request": row, "remote_key": key,
+        "is_existing": existing, "verified_at": now if existing else None})
     return fence, new
 
 
@@ -232,13 +249,15 @@ def _same_value(writer, dtype, actual, expected):
     return actual == expected
 
 
-def _check_existing_document(writer, entity, key, body, source):
+def _check_existing_document(writer, entity, key, body, source, *, include_author=False):
     expected = _canonical_body(body, source, matching_existing=True)
     expected.pop("Posted", None)
-    remote = writer.active(entity, expected.keys(), reference_filter("Ref_Key", key))
+    selected = list(expected) + ["Number", "Posted"] + ([AUTHOR] if include_author else [])
+    remote = writer.active(entity, selected, reference_filter("Ref_Key", key))
     types = writer.entities[entity].field_types
     if not remote or not all(_same_value(writer, types[k], remote.get(k), v) for k, v in expected.items()):
         raise WriteError("Документ по этим реквизитам уже существует с другим содержимым. Сверьте строки в 1С.")
+    return remote
 
 
 def _verify(writer, entity, fence, body, row, identity, status):
@@ -248,27 +267,92 @@ def _verify(writer, entity, fence, body, row, identity, status):
     fields.pop("Posted", None)
     number = "Code" if entity == ITEMS else "Number"
     selected = list(fields) + [number] + ([] if entity == ITEMS else ["Posted"])
+    direct_document = row.token_hash is None and row.kind == "document"
+    if direct_document:
+        selected += [AUTHOR]
     remote = writer.active(entity, selected, reference_filter("Ref_Key", str(fence.remote_key)))
-    if not remote:
+    if not remote and not direct_document:
         # A provider may assign its own UUID and lose the POST response. Search the business key under the same rights.
         found = _locate(writer, entity, identity)
         if found:
             remote = writer.active(entity, selected, reference_filter("Ref_Key", found["Ref_Key"]))
     if not remote:
         raise TransportFailure("Результат записи пока не подтверждён. Повторная отправка заблокирована.")
-    if (not all(_same_value(writer, writer.entities[entity].field_types[key], remote.get(key), value) for key, value in fields.items())
-            or (entity != ITEMS and remote["Posted"] is not False and not fence.verified_at)):
-        OneCWriteFence.objects.filter(pk=fence.pk).update(mismatch=True)
-        raise WriteError("Результат отличается от подтверждённых реквизитов или режима записи. Проверьте объект в 1С.")
-    receipt = _result(entity, remote, status)
+    if direct_document:
+        if "Организация_Key" in fields:
+            _scope_org(writer, remote["Организация_Key"])
+        if remote[AUTHOR] != EMPTY_GUID:
+            guid(remote[AUTHOR])
+        if fence.verified_at:
+            status = "exists" if fence.is_existing else "verified"
+    # No native handler is installed. A populated author cannot prove who saved
+    # the document, and cannot waive first-read content/Posted verification.
+    compare_contents = not direct_document or not fence.verified_at
+    if compare_contents and (
+        not all(_same_value(writer, writer.entities[entity].field_types[key], remote.get(key), value)
+                for key, value in fields.items())
+        or (entity != ITEMS and remote["Posted"] is not False and not fence.verified_at)
+    ):
+        pending = OneCWriteFence.objects.filter(pk=fence.pk)
+        if direct_document:
+            pending = pending.filter(verified_at__isnull=True)
+        if pending.update(mismatch=True):
+            raise WriteError("Результат отличается от подтверждённых реквизитов или режима записи. Проверьте объект в 1С.")
+        # A concurrent request may have completed initial verification while
+        # this GET was in flight. Native edits now require identity-only readback.
+        fence.refresh_from_db()
+        if not direct_document or fence.mismatch or not fence.verified_at:
+            raise WriteError("По этому объекту 1С требуется сверка результата.")
+        compare_contents = False
+        status = "exists" if fence.is_existing else "verified"
+    receipt = _result(entity, remote, status, include_author=direct_document)
+    if direct_document:
+        receipt["verification"] = "creation_fields" if compare_contents else "document_identity"
     if not fence.verified_at:
-        if not OneCWriteFence.objects.filter(pk=fence.pk, mismatch=False).update(verified_at=timezone.now(), remote_key=receipt["ref_key"]):
+        OneCWriteFence.objects.filter(pk=fence.pk, mismatch=False, verified_at__isnull=True).update(
+            verified_at=timezone.now(), remote_key=receipt["ref_key"],
+            author_was_empty=receipt.get("author_empty"))
+        fence.refresh_from_db()
+        if fence.mismatch or not fence.verified_at:
             raise WriteError("По этому объекту 1С обнаружено несоответствие. Проверьте результат.")
+    if direct_document:
+        receipt["initial_author_empty"] = fence.author_was_empty
+        if fence.author_was_empty is False:
+            receipt["status"] = "author_not_empty"
+            receipt["message"] = "Документ записан, но при первой проверке поле «Автор» уже было заполнено в 1С. Повторно создавать его не нужно. Правило первого сотрудника не подтверждено."
     return receipt
 
 
-def _run_one(row, writer, source, position):
+def _draft_schema(writer, entity):
+    schema = writer.entities.get(entity)
+    if not schema or schema.field_types.get(AUTHOR) != "Edm.Guid":
+        raise WriteError("Для этого вида документа не опубликовано поле «Автор» типа ссылка.")
+
+
+def _document_snapshot(row, writer, authenticated):
+    snapshot = row.document_snapshot
+    if snapshot is None:
+        entity = entity_for(writer, row.intent["document_type"])
+        _draft_schema(writer, entity)
+        body = document_payload(writer, entity, row.intent, str(uuid.uuid4()), row.submitted_at)
+        with transaction.atomic():
+            _check_actor(authenticated, row)
+            locked = OneCDraftRequest.objects.select_for_update().get(pk=row.pk)
+            if locked.document_snapshot is None:
+                locked.document_snapshot = {"entity": entity, "body": body}
+                locked.save(update_fields=["document_snapshot"])
+            snapshot = locked.document_snapshot
+    entity, body = snapshot["entity"], snapshot["body"]
+    _draft_schema(writer, entity)
+    writer.schema(entity, body)
+    if "Организация_Key" in body:
+        _scope_org(writer, body["Организация_Key"])
+    return entity, body
+
+
+def _run_one(row, writer, source, position, authenticated=None):
     initial_key = str(uuid.uuid4())
+    direct_document = row.kind == "document" and row.token_hash is None
     if row.kind == "nomenclature":
         if not source.get("article"):
             raise WriteError("Укажите артикул новой карточки.")
@@ -285,6 +369,10 @@ def _run_one(row, writer, source, position):
         body = _item_payload(writer, source, initial_key)
         if _intent_digest(_canonical_body(body, source)) != approved.get("body_digest"):
             raise WriteError("Единица измерения, группа или реквизиты карточки изменились после подтверждения.")
+    elif row.token_hash is None:
+        entity, body = _document_snapshot(row, writer, authenticated)
+        initial_key = body["Ref_Key"]
+        identity = _identity(row, entity, body)
     else:
         entity = entity_for(writer, source["document_type"])
         writer.choices = row.selections
@@ -293,14 +381,23 @@ def _run_one(row, writer, source, position):
             raise WriteError("Состав или реквизиты из 1С изменились после подтверждения. Требуется сверка.")
         identity = _identity(row, entity, body)
     token = _fence_key(writer, entity, identity)
+    fence = None
     prior_claim = OneCWriteFence.objects.filter(pk=token).first()
     if not prior_claim:
         previous = _locate(writer, entity, identity)
         if previous and not OneCWriteFence.objects.filter(pk=token).exists():
             if entity != ITEMS:
-                _check_existing_document(writer, entity, previous["Ref_Key"], body, source)
-            return _result(entity, previous, "exists")
-    fence, fresh = _claim(row, token, initial_key)
+                previous = _check_existing_document(writer, entity, previous["Ref_Key"], body, source,
+                                                    include_author=direct_document)
+            receipt = _result(entity, previous, "exists", include_author=direct_document)
+            if not direct_document:
+                return receipt
+            fence, fresh = _claim(row, token, previous["Ref_Key"], authenticated, writer.config, existing=True)
+            if fresh:
+                receipt["initial_author_empty"] = None
+                return receipt
+    if fence is None:
+        fence, fresh = _claim(row, token, initial_key, authenticated, writer.config)
     if not fresh:
         if fence.request_id != row.pk:
             if not fence.verified_at or fence.mismatch:
@@ -309,11 +406,13 @@ def _run_one(row, writer, source, position):
             if not visible:
                 raise WriteError("Ранее записанный объект недоступен. Проверьте его в 1С.")
             if entity != ITEMS:
-                _check_existing_document(writer, entity, visible["Ref_Key"], body, source)
-            return _result(entity, visible, "exists")
+                visible = _check_existing_document(writer, entity, visible["Ref_Key"], body, source,
+                                                   include_author=direct_document)
+            return _result(entity, visible, "exists", include_author=direct_document)
         return _verify(writer, entity, fence, body, row, identity, "verified")
     try:
-        returned = writer.create(entity, body)
+        payload = {**body, AUTHOR: EMPTY_GUID} if row.kind == "document" and row.token_hash is None else body
+        returned = writer.create(entity, payload)
     except AccessDenied:
         OneCWriteFence.objects.filter(pk=fence.pk, remote_key=initial_key).delete()
         raise
@@ -324,25 +423,92 @@ def _run_one(row, writer, source, position):
 
 
 def execute(ticket, kind):
-    if not isinstance(ticket, str) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", ticket):
+    if is_enabled(ONEC_DRAFTS) or not isinstance(ticket, str) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", ticket):
         raise drafts.DraftUnavailable
     row = OneCDraftRequest.objects.filter(token_hash=drafts._digest(ticket), organization_id=drafts.target_organization(),
                                           kind=kind).first()
     if row is None:
         raise drafts.DraftUnavailable
+    return _execute_approved(row)
+
+
+def _execute_approved(row, authenticated=None):
     writer = FreshWriter(_authorize(row))
     items = row.intent.get("items", [row.intent])
     results = []
     for i, item in enumerate(items):
         try:
+            if authenticated:
+                with transaction.atomic():
+                    _check_actor(authenticated, row)
             config = _authorize(row)
             # Also observe a freshly rotated password on a long-running batch.
             if config != writer.config:
                 writer = FreshWriter(config)
-            result = _run_one(row, writer, item, i)
+            result = _run_one(row, writer, item, i, authenticated)
         except (WriteError, drafts.DraftUnavailable) as exc:
             result = {"status": "unconfirmed", "message": str(exc) or "Запрос больше не разрешён."}
             results.append({"position": i + 1, **result})
             break
         results.append({"position": i + 1, **result})
     return {"results": results, "unattempted": len(items) - len(results)}
+
+
+def _check_actor(authenticated, row=None):
+    if not authenticated or not is_enabled(ONEC_DRAFTS):
+        raise drafts.DraftUnavailable
+    try:
+        current = revalidate_authenticated_request(authenticated, ONEC_DRAFTS)
+    except PermissionError:
+        raise drafts.DraftUnavailable from None
+    actor = current.grant.authorized_by_id
+    org = drafts.target_organization()
+    if row is not None and (row.user_id != actor or row.organization_id != org or row.token_hash is not None):
+        raise drafts.DraftUnavailable
+    return actor, org
+
+
+@transaction.atomic
+def _new_request(authenticated, intent, config=None):
+    actor, org = _check_actor(authenticated)
+    drafts._lock_staff(actor, org)
+    now = timezone.now()
+    rows = OneCDraftRequest.objects.filter(organization_id=org, user_id=actor)
+    pk = uuid.uuid4()
+    if intent["kind"] == "document":
+        # Derived from an authenticated initiator and normalized contents. Never an access credential.
+        pk = uuid.uuid5(uuid.NAMESPACE_URL, _intent_digest(["onec-mcp-draft-v1", org, actor, config.base_url, intent]))
+        previous = rows.filter(pk=pk, kind="document", token_hash__isnull=True).first()
+        if previous:
+            return previous
+    if rows.filter(created_at__gt=now-timedelta(hours=1)).count() >= getattr(settings, "ONEC_DRAFTS_HOURLY_LIMIT", 10):
+        raise WriteError("Достигнут часовой лимит новых запросов в 1С.")
+    return rows.create(pk=pk, organization_id=org, user_id=actor, kind=intent["kind"], token_hash=None,
+                       intent=intent, submitted_at=now, expires_at=now+timedelta(minutes=15))
+
+
+def create_document(authenticated, arguments):
+    intent = document_intent(arguments)
+    config = integration_config()
+    row = _new_request(authenticated, intent, config)
+    writer = FreshWriter(config)
+    result = _run_one(row, writer, row.intent, 0, authenticated)
+    return {"results": [{"position": 1, **result}], "unattempted": 0}
+
+
+def prepare_cards(authenticated, arguments):
+    return _new_request(authenticated, nomenclature_intent(arguments)).pk
+
+
+def create_cards(authenticated, request_id):
+    try:
+        pk = uuid.UUID(request_id) if isinstance(request_id, str) else None
+    except ValueError:
+        pk = None
+    with transaction.atomic():
+        actor, org = _check_actor(authenticated)
+        row = OneCDraftRequest.objects.filter(pk=pk, user_id=actor, organization_id=org, kind="nomenclature",
+                                              token_hash__isnull=True).first()
+        if not row:
+            raise drafts.DraftUnavailable
+    return _execute_approved(row, authenticated)

@@ -107,6 +107,21 @@ def employee_config(user_id, org_id):
         raise AccessDenied("Для сотрудника не настроена личная учётная запись 1С для записи.") from None
 
 
+def integration_config():
+    """Use only the provisioned writer identity on the already configured Fresh base."""
+    username = getattr(settings, "ONEC_MCP_DRAFT_USERNAME", os.getenv("ONEC_MCP_DRAFT_USERNAME", ""))
+    password = getattr(settings, "ONEC_MCP_DRAFT_PASSWORD", os.getenv("ONEC_MCP_DRAFT_PASSWORD", ""))
+    if not isinstance(username, str) or not username or username.strip() != username or ":" in username or not password:
+        raise AccessDenied("Для черновиков не настроена служебная учётная запись 1С.")
+    try:
+        config = diagnostic.config_from_settings()
+        if not config.organization_guids:
+            raise AccessDenied("Не настроена область организаций для черновиков 1С.")
+        return diagnostic._validated_config(replace(config, username=username, password=password))
+    except diagnostic.OneCDiagnosticError:
+        raise AccessDenied("Подключение для черновиков 1С недоступно.") from None
+
+
 def fingerprint(value):
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -123,7 +138,7 @@ class FreshWriter:
             self.metadata = diagnostic.fetch_metadata(config, opener=self.client)
             self.entities = diagnostic.parse_metadata(self.metadata)
         except (diagnostic.OneCDiagnosticError, OSError, http.client.HTTPException):
-            raise AccessDenied("Не удалось прочитать метаданные базы под личной учётной записью 1С.") from None
+            raise AccessDenied("Не удалось прочитать метаданные базы под учётной записью подключения.") from None
 
         self.edm_nodes = {}
         self.edm_aliases = {}

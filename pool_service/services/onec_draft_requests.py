@@ -63,14 +63,15 @@ def _digest(ticket):
 def issue(user_id, kind):
     org_id = target_organization()
     _lock_staff(user_id, org_id)
-    if kind not in ("document", "nomenclature"):
+    if getattr(settings, "ONEC_MCP_DIRECT_DRAFTS_ENABLED", False) or kind not in ("document", "nomenclature"):
         raise DraftUnavailable
     now = timezone.now()
     owner_requests = OneCDraftRequest.objects.filter(organization_id=org_id, user_id=user_id)
     limit = getattr(settings, "ONEC_DRAFTS_HOURLY_LIMIT", 10)
     if owner_requests.filter(created_at__gt=now - timedelta(hours=1)).count() >= limit:
         raise DraftLimit
-    owner_requests.filter(created_at__lt=now - timedelta(days=2), approved_at__isnull=True).delete()
+    owner_requests.filter(created_at__lt=now - timedelta(days=2), approved_at__isnull=True,
+                          token_hash__isnull=False).delete()
     ticket = secrets.token_urlsafe(32)
     row = owner_requests.create(
         user_id=user_id, organization_id=org_id, kind=kind, token_hash=_digest(ticket),
@@ -81,6 +82,8 @@ def issue(user_id, kind):
 
 @transaction.atomic
 def submit(ticket, kind, arguments):
+    if getattr(settings, "ONEC_MCP_DIRECT_DRAFTS_ENABLED", False):
+        raise DraftUnavailable
     if not isinstance(ticket, str) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", ticket):
         raise DraftUnavailable
     criteria = {"token_hash": _digest(ticket), "organization_id": target_organization(), "kind": kind}
@@ -116,6 +119,12 @@ def renew_approved(user_id, row_id):
     row = personal_requests(user_id).select_for_update().filter(pk=row_id, approved_at__isnull=False).first()
     if not row or not row.write_attempts.exists():
         raise DraftUnavailable
+    if getattr(settings, "ONEC_MCP_DIRECT_DRAFTS_ENABLED", False):
+        if row.token_hash is not None or row.kind != "nomenclature":
+            raise DraftUnavailable
+        row.expires_at = timezone.now() + timedelta(minutes=15)
+        row.save(update_fields=["expires_at"])
+        return ""
     ticket = secrets.token_urlsafe(32)
     row.token_hash = _digest(ticket)
     row.expires_at = timezone.now() + timedelta(minutes=15)

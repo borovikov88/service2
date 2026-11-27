@@ -6,7 +6,10 @@
 <main class="container py-4" style="max-width: 720px;">
   <section class="admin-card card shadow-sm">
     <div class="card-body p-4">
-      <div class="admin-page-header"><h1 class="h3 mb-3">Подключение Service2 Operations</h1></div>
+      <div class="admin-page-header"><h1 class="h3 mb-3">{% if onec_drafts %}Черновики 1С{% else %}Подключение Service2 Operations{% endif %}</h1></div>
+      {% if onec_drafts %}
+      <p>Приложение <strong>{{ client.display_name }}</strong> сможет создавать непроведённые документы в 1С через настроенную учётную запись подключения. Оно передаст пустого автора и проверит ответ 1С. Заполнение автора при дальнейшей записи зависит от настроек вашей 1С. Создание номенклатуры требует отдельного подтверждения в Ровике.</p>
+      {% else %}
       <p>
         Приложение <strong>{{ client.display_name }}</strong> запрашивает доступ к управлению
         задачами и уведомлениями сотрудников в Service2.
@@ -15,24 +18,27 @@
         Разрешение: <code>{{ scope }}</code>. Этот доступ не разрешает изменять финансы,
         импорт 1С, права пользователей, тарифы, секреты или настройки интеграций.
       </p>
+      {% endif %}
       <h2 class="h5 mt-4">Организация</h2>
       <ul>
         {% for item in organizations %}
           <li>{{ item.organization.name }}</li>
         {% endfor %}
       </ul>
+      {% if not onec_drafts %}
       <p class="small text-muted mb-4">
         Dot сможет создавать, переносить и завершать задачи, читать анализы звонков и
         отправлять уведомления сотрудникам. Действия ограничены этой организацией и
         фиксируются в истории Service2.
       </p>
+      {% endif %}
       <form method="post" class="admin-actions d-flex gap-2 flex-wrap">
         {% csrf_token %}
         {% for key, value in oauth_params.items %}
           <input type="hidden" name="{{ key }}" value="{{ value }}">
         {% endfor %}
         <input type="hidden" name="consent_binding" value="{{ consent_binding }}">
-        <button class="btn btn-primary" type="submit" name="decision" value="approve">Разрешить управление задачами</button>
+        <button class="btn btn-primary" type="submit" name="decision" value="approve">{% if onec_drafts %}Подключить черновики 1С{% else %}Разрешить управление задачами{% endif %}</button>
         <button class="btn btn-outline-secondary" type="submit" name="decision" value="deny">Отказать</button>
       </form>
     </div>

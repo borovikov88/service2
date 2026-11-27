@@ -11,6 +11,9 @@ from django.views.decorators.debug import sensitive_post_parameters
 from django.views.decorators.http import require_http_methods
 
 from pool_service import onec_diagnostic_mcp_views as transport
+from pool_service.operations_mcp_auth import (
+    ONEC_DRAFTS, OperationsMcpOAuthError, authenticate_bearer_header, is_enabled, protected_resource_metadata_url,
+)
 from pool_service.services import onec_draft_requests as drafts
 from pool_service.services import onec_write_requests as writes
 from pool_service.services.onec_write_connection import WriteError
@@ -55,6 +58,46 @@ def _review_url(request, name, **kwargs):
     return request.build_absolute_uri(reverse(name, kwargs=kwargs))
 
 
+def _connected_tools():
+    document = {**SCHEMAS["document"], "properties": dict(SCHEMAS["document"]["properties"]), "required": ["document_type"]}
+    document["properties"].pop("ticket")
+    cards = {**SCHEMAS["nomenclature"], "properties": dict(SCHEMAS["nomenclature"]["properties"]), "required": []}
+    cards["properties"].pop("ticket")
+    confirm = _obj({"request_id": {"type": "string", "format": "uuid"}}, ["request_id"])
+    definitions = (
+        ("create_1c_document", "Создать непроведённый документ с пустым автором и проверить фактический ответ 1С. Уточнить неоднозначные позиции перед записью. Если 1С заполнила автора, сообщить об этом; не обещать автоматическое назначение первого сотрудника.", document, True, True),
+        ("request_nomenclature", DESCRIPTIONS["nomenclature"], cards, False, False),
+        ("create_1c_nomenclature", "Записать подтверждённые сотрудником карточки. Использовать request_id из результата подготовки.", confirm, True, True),
+    )
+    return [{"name": name, "description": description, "inputSchema": schema,
+             "securitySchemes": [{"type": "oauth2", "scopes": [ONEC_DRAFTS.scope]}],
+             "annotations": {"readOnlyHint": False, "destructiveHint": False,
+                             "idempotentHint": idempotent, "openWorldHint": external}}
+            for name, description, schema, idempotent, external in definitions]
+
+
+def _connected_call(request, tool, arguments, authenticated):
+    if not authenticated:
+        challenge = f'Bearer resource_metadata="{protected_resource_metadata_url(ONEC_DRAFTS)}", scope="{ONEC_DRAFTS.scope}"'
+        return {**_result("Подключите Ровик для работы с черновиками 1С.", error=True),
+                "_meta": {"mcp/www_authenticate": [challenge]}}
+    try:
+        if tool == "create_1c_document":
+            outcome = writes.create_document(authenticated, arguments)
+        elif tool == "request_nomenclature":
+            row_id = writes.prepare_cards(authenticated, arguments)
+            url = _review_url(request, "onec_drafts_detail", pk=row_id)
+            outcome = {"request_id": str(row_id), "review_url": url}
+        elif tool == "create_1c_nomenclature" and set(arguments) == {"request_id"}:
+            outcome = writes.create_cards(authenticated, arguments["request_id"])
+        else:
+            return _result("Неизвестный инструмент или неверные аргументы.", error=True)
+    except (drafts.DraftUnavailable, WriteError, InvalidIntent) as exc:
+        return _result(str(exc) or "Запрос недоступен для этого сотрудника.", error=True)
+    failed = any(item["status"] in {"unconfirmed", "author_not_empty"} for item in outcome.get("results", []))
+    return {**_result(json.dumps(outcome, ensure_ascii=False), error=failed), "structuredContent": outcome}
+
+
 def _tools(request):
     start = _review_url(request, "onec_drafts_home")
     tools = []
@@ -79,7 +122,8 @@ def _result(text, *, error=False):
 @csrf_exempt
 @never_cache
 def onec_drafts_mcp(request):
-    # Browser sessions and tokens from the other MCPs carry no authority here.
+    connected = is_enabled(ONEC_DRAFTS)
+    authenticated = None
     version = transport._protocol_version(request)
     if not drafts.target_organization():
         raise Http404
@@ -90,6 +134,13 @@ def onec_drafts_mcp(request):
         response = transport._mcp_empty(status=204 if request.method == "OPTIONS" else 405, protocol_version=version)
         response["Allow"] = "POST, OPTIONS"
         return response
+    if connected and request.headers.get("Authorization"):
+        try:
+            authenticated = authenticate_bearer_header(request.headers["Authorization"], ONEC_DRAFTS)
+        except OperationsMcpOAuthError:
+            response = transport._mcp_empty(status=401, protocol_version=version)
+            response["WWW-Authenticate"] = f'Bearer resource_metadata="{protected_resource_metadata_url(ONEC_DRAFTS)}", scope="{ONEC_DRAFTS.scope}"'
+            return response
     body, invalid = transport._require_json_mcp_request(request, protocol_version=version)
     if invalid:
         return invalid
@@ -106,19 +157,25 @@ def onec_drafts_mcp(request):
         if not isinstance(params.get("protocolVersion"), str) or not isinstance(params.get("clientInfo"), dict) or not isinstance(params.get("capabilities"), dict):
             return error(-32602, "Invalid initialize params")
         version = params["protocolVersion"] if params["protocolVersion"] in transport.SUPPORTED_PROTOCOL_VERSIONS else transport.MCP_PROTOCOL_VERSION
+        if connected:
+            return reply({"protocolVersion": version, "serverInfo": {"name": "rovik-onec-drafts", "version": "3.0"},
+                          "capabilities": {"tools": {}},
+                          "instructions": "Create unposted documents with create_1c_document. Report the observed author_empty and author_ref_key; author_not_empty means a document exists but its author is already populated. Never claim that the first staff save or post sets the author: native 1C behavior requires separate verification. Never post documents or automatically create missing items. For explicitly requested catalog items use request_nomenclature, show the returned review_url, then call create_1c_nomenclature with the returned request_id after approval."})
         return reply({"protocolVersion": version, "serverInfo": {"name": "rovik-onec-drafts", "version": "2.0"},
                       "capabilities": {"tools": {}},
                       "instructions": "Use the employee’s ticket, prepare the request and show the private review link. After private approval, call create_1c_document or create_1c_nomenclature with the same ticket. Only report confirmed results. Never post documents or automatically create missing items."})
     if method == "ping":
         return reply({})
     if method == "tools/list":
-        return reply({"tools": _tools(request)})
+        return reply({"tools": _connected_tools() if connected else _tools(request)})
     if method != "tools/call":
         return error(-32601, "Unknown method")
     args = params.get("arguments")
     tool = params.get("name")
     if not isinstance(args, dict):
         return error(-32602, "Invalid arguments")
+    if connected:
+        return reply(_connected_call(request, tool, args, authenticated))
     kind = next((key for key, name in CREATE_TOOLS.items() if name == tool), None)
     if kind:
         if set(args) != {"ticket"}:
@@ -151,7 +208,7 @@ def drafts_home(request):
     try:
         rows = drafts.personal_requests(request.user.pk)
         row, ticket, message = None, None, ""
-        if request.method == "POST":
+        if request.method == "POST" and not is_enabled(ONEC_DRAFTS):
             try:
                 row, ticket = drafts.issue(request.user.pk, request.POST.get("kind"))
             except drafts.DraftLimit:
@@ -159,7 +216,7 @@ def drafts_home(request):
     except drafts.DraftUnavailable:
         raise Http404
     return render(request, "onec_drafts/home.html",
-                  {"rows": rows[:30], "ticket": ticket, "issued": row, "message": message})
+                  {"rows": rows[:30], "connected": is_enabled(ONEC_DRAFTS), "ticket": ticket, "issued": row, "message": message})
 
 
 @login_required
@@ -173,15 +230,19 @@ def draft_detail(request, pk):
     except drafts.DraftUnavailable:
         raise Http404
     row = get_object_or_404(rows, pk=pk)
+    connected = is_enabled(ONEC_DRAFTS)
+    history_only = (row.token_hash is None and row.kind == "document") or (connected != (row.token_hash is None))
     message, renewed = "", ""
     choices = dict(row.selections)
-    if request.method == "POST":
+    if request.method == "POST" and not history_only:
         choices = {key.removeprefix("line_"): value for key, value in request.POST.items()
                    if key.startswith("line_") and key[5:].isdigit() and value and len(value) == 36}
         try:
             if request.POST.get("action") == "renew":
                 renewed = drafts.renew_approved(request.user.pk, pk)
                 row.refresh_from_db()
+                if connected:
+                    message = "Срок подтверждения продлён. Вернитесь в чат."
             elif request.POST.get("action") != "preview":
                 writes.approve(request.user.pk, pk, request.POST.get("digest"), request.POST.get("plan", ""), choices)
                 row.refresh_from_db()
@@ -190,7 +251,7 @@ def draft_detail(request, pk):
         except WriteError as exc:
             message = str(exc)
     preview = {}
-    if row.intent and not row.approved_at:
+    if row.intent and not row.approved_at and not history_only:
         try:
             preview = writes.review_plan(row, choices)
         except WriteError as exc:
@@ -199,7 +260,7 @@ def draft_detail(request, pk):
     for position, candidates in preview.get("candidates", {}).items():
         options.append({"position": position, "choices": [{"key": opt["Ref_Key"], "label": opt["Description"],
                         "article": opt["Артикул"], "selected": choices.get(position) == opt["Ref_Key"]} for opt in candidates]})
-    return render(request, "onec_drafts/detail.html", {"row": row, "message": message or preview.get("message"), "renewed": renewed,
+    return render(request, "onec_drafts/detail.html", {"row": row, "history_only": history_only, "connected": connected, "message": message or preview.get("message"), "renewed": renewed,
                   "digest": writes.review_digest(row), "plan": preview, "options": options,
                   "batch_items": (row.intent or {}).get("items", []),
                   "fields_json": json.dumps(row.intent.get("fields", {}), ensure_ascii=False, indent=2) if row.intent else "",

@@ -8,7 +8,7 @@ from django.utils import timezone
 
 
 class CrmReleaseMigrationTests(TransactionTestCase):
-    release = [('pool_service', '0207_onec_write_approvals')]
+    release = [('pool_service', '0208_onec_ticketless_drafts')]
     production = [('pool_service', '0182_merge_onec_review_crm_contact')]
     prepared = [('pool_service', '0185_crm_failure_stage')]
 
@@ -65,7 +65,8 @@ class CrmReleaseMigrationTests(TransactionTestCase):
                 '0198_crm_workflow_documents_and_routing', '0199_confirmed_internal_contact_numbers', '0200_staff_departments',
                 '0201_max_communication_channel', '0202_max_text_replies', '0203_max_media_and_contact',
                 '0204_customer_reminders', '0205_reminder_recipient_roles',
-                '0206_onec_personal_draft_requests', '0207_onec_write_approvals'])
+                '0206_onec_personal_draft_requests', '0207_onec_write_approvals',
+                '0208_onec_ticketless_drafts'])
         else:
             self.assertEqual(plan, ['0172_clientimportcandidate_review_state_and_more',
                 '0182_merge_onec_review_crm_contact', '0186_merge_crm_release', '0187_enable_aqualine_crm_close', '0188_crm_card_comments', '0189_contact_management',
@@ -75,7 +76,8 @@ class CrmReleaseMigrationTests(TransactionTestCase):
                 '0198_crm_workflow_documents_and_routing', '0199_confirmed_internal_contact_numbers', '0200_staff_departments',
                 '0201_max_communication_channel', '0202_max_text_replies', '0203_max_media_and_contact',
                 '0204_customer_reminders', '0205_reminder_recipient_roles',
-                '0206_onec_personal_draft_requests', '0207_onec_write_approvals'])
+                '0206_onec_personal_draft_requests', '0207_onec_write_approvals',
+                '0208_onec_ticketless_drafts'])
         executor.migrate(self.release)
         new = executor.loader.project_state(self.release).apps
         self.assertFalse(new.get_model("pool_service", "CustomerReminderPolicy").objects.exists())
