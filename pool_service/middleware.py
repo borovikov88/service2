@@ -102,6 +102,7 @@ class AuthRedirectMiddleware:
                 "/mcp/avito",
                 "/.well-known/oauth-protected-resource/mcp/finance",
                 "/.well-known/oauth-protected-resource/mcp/1c",
+                "/.well-known/oauth-protected-resource/mcp/1c-drafts",
                 "/.well-known/oauth-protected-resource/mcp/operations",
                 "/.well-known/oauth-protected-resource/mcp/avito",
                 "/.well-known/oauth-authorization-server",

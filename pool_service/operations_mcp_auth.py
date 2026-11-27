@@ -1,8 +1,7 @@
 """OAuth 2.1 authorization for isolated Service2 operational actions.
 
-Storage reuses the hardened opaque-token tables introduced for Finance MCP,
-but every Diagnostic grant/token is bound to its own resource and scope.  No
-Finance MCP authorization decision is reused here.
+Operations and 1C drafts share the issuer and PKCE/token implementation.
+Each resource has its own audience, scope, organization and access policy.
 """
 
 from __future__ import annotations
@@ -13,6 +12,7 @@ from datetime import timedelta
 import hashlib
 import re
 import secrets
+from typing import Callable
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from django.conf import settings
@@ -38,7 +38,6 @@ from pool_service.operations_mcp_policy import can_access_operations_mcp
 OPERATIONS_SCOPE = "service2.operations"
 OFFLINE_ACCESS_SCOPE = "offline_access"
 ORGANIZATION_SCOPE_PREFIX = "service2.operations.organization:"
-SUPPORTED_SCOPES = frozenset({OPERATIONS_SCOPE, OFFLINE_ACCESS_SCOPE})
 AUTHORIZATION_CODE_GRANT = "authorization_code"
 REFRESH_TOKEN_GRANT = "refresh_token"
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -61,6 +60,31 @@ class AuthenticatedOperationsMcpRequest:
     token: FinanceMcpAccessToken
     grant: FinanceMcpGrant
     principal: object
+
+
+@dataclass(frozen=True)
+class ResourcePolicy:
+    path: str
+    scope: str
+    url_setting: str
+    org_setting: str
+    enabled_setting: str
+    can_access: Callable
+
+
+def _drafts_access(user, organization):
+    from pool_service.services.onec_draft_requests import is_staff_member
+    return bool(user and user.is_authenticated and is_staff_member(user.pk, organization.pk))
+
+
+OPERATIONS = ResourcePolicy(
+    "mcp/operations", OPERATIONS_SCOPE, "ADVISOR_OPERATIONS_MCP_RESOURCE_URL",
+    "ADVISOR_OPERATIONS_MCP_ORGANIZATION_ID", "ADVISOR_OPERATIONS_MCP_ENABLED", can_access_operations_mcp,
+)
+ONEC_DRAFTS = ResourcePolicy(
+    "mcp/1c-drafts", "service2.onec.drafts", "ONEC_DRAFTS_RESOURCE_URL",
+    "ONEC_ODATA_TARGET_ORGANIZATION_ID", "ONEC_MCP_DIRECT_DRAFTS_ENABLED", _drafts_access,
+)
 
 
 def _https_url(value, *, field):
@@ -100,8 +124,8 @@ def _canonical_https_origin(value, *, field):
     return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), "", "", ""))
 
 
-def is_enabled():
-    return bool(getattr(settings, "ADVISOR_OPERATIONS_MCP_ENABLED", False))
+def is_enabled(policy=OPERATIONS):
+    return bool(getattr(settings, policy.enabled_setting, False))
 
 
 def operations_mcp_allowed_origins():
@@ -142,12 +166,12 @@ def operations_mcp_origin_is_allowed(origin):
     return normalized in operations_mcp_allowed_origins()
 
 
-def resource_url():
-    configured = getattr(settings, "ADVISOR_OPERATIONS_MCP_RESOURCE_URL", "")
+def resource_url(policy=OPERATIONS):
+    configured = getattr(settings, policy.url_setting, "")
     if not configured:
         site_url = getattr(settings, "SITE_URL", "")
-        configured = f"{site_url.rstrip('/')}/mcp/operations" if site_url else ""
-    return _https_url(configured, field="ADVISOR_OPERATIONS_MCP_RESOURCE_URL")
+        configured = f"{site_url.rstrip('/')}/{policy.path}" if site_url else ""
+    return _https_url(configured, field=policy.url_setting)
 
 
 def issuer_url():
@@ -160,12 +184,12 @@ def issuer_url():
         ) from exc
 
 
-def protected_resource_metadata_url():
+def protected_resource_metadata_url(policy=OPERATIONS):
     site_url = getattr(settings, "SITE_URL", "")
     if not site_url:
         raise OperationsMcpConfigurationError("SITE_URL must be configured.")
     root = _https_url(site_url, field="SITE_URL")
-    return f"{root}/.well-known/oauth-protected-resource/mcp/operations"
+    return f"{root}/.well-known/oauth-protected-resource/{policy.path}"
 
 
 def authorization_server_metadata_url():
@@ -230,18 +254,18 @@ def _random_secret():
     return secrets.token_urlsafe(48)
 
 
-def _normalize_scopes(value, *, require_read=True):
+def _normalize_scopes(value, *, require_read=True, policy=OPERATIONS):
     if value is None:
-        values = {OPERATIONS_SCOPE}
+        values = {policy.scope}
     elif not isinstance(value, str):
         raise OperationsMcpOAuthError("invalid_scope", "Некорректный OAuth scope.")
     else:
         values = {item for item in value.split() if item}
-    if not values or not values.issubset(SUPPORTED_SCOPES):
+    if not values or not values.issubset({policy.scope, OFFLINE_ACCESS_SCOPE}):
         raise OperationsMcpOAuthError("invalid_scope", "Запрошен неподдерживаемый OAuth scope.")
-    if require_read and OPERATIONS_SCOPE not in values:
+    if require_read and policy.scope not in values:
         raise OperationsMcpOAuthError(
-            "invalid_scope", "Для Operations MCP необходим scope service2.operations."
+            "invalid_scope", f"Требуется OAuth scope {policy.scope}."
         )
     return sorted(values)
 
@@ -313,39 +337,39 @@ def _verify_pkce(verifier, challenge):
     return secrets.compare_digest(expected, challenge)
 
 
-def target_organization():
-    raw = getattr(settings, "ADVISOR_OPERATIONS_MCP_ORGANIZATION_ID", None)
+def target_organization(policy=OPERATIONS):
+    raw = getattr(settings, policy.org_setting, None)
     if isinstance(raw, bool):
-        raise OperationsMcpConfigurationError("ADVISOR_OPERATIONS_MCP_ORGANIZATION_ID is invalid.")
+        raise OperationsMcpConfigurationError(f"{policy.org_setting} is invalid.")
     try:
         organization_id = int(raw)
     except (TypeError, ValueError) as exc:
         raise OperationsMcpConfigurationError(
-            "ADVISOR_OPERATIONS_MCP_ORGANIZATION_ID is invalid."
+            f"{policy.org_setting} is invalid."
         ) from exc
     organization = Organization.objects.filter(pk=organization_id).first()
     if organization is None:
         raise OperationsMcpConfigurationError(
-            "ADVISOR_OPERATIONS_MCP_ORGANIZATION_ID does not reference an organization."
+            f"{policy.org_setting} does not reference an organization."
         )
     return organization
 
 
-def principal_has_target_scope(client):
-    organization = target_organization()
+def principal_has_target_scope(client, policy=OPERATIONS):
+    organization = target_organization(policy)
     return client.principal.organization_scopes.filter(organization=organization).exists()
 
 
-def _organization_scope(organization_id):
-    return f"{ORGANIZATION_SCOPE_PREFIX}{int(organization_id)}"
+def _organization_scope(organization_id, policy=OPERATIONS):
+    return f"{policy.scope}.organization:{int(organization_id)}"
 
 
-def _grant_is_bound_to_organization(grant, organization):
+def _grant_is_bound_to_organization(grant, organization, policy=OPERATIONS):
     scopes = grant.scopes if isinstance(grant.scopes, list) else []
-    return _organization_scope(organization.id) in scopes
+    return _organization_scope(organization.id, policy) in scopes
 
 
-def validate_authorization_request(params):
+def validate_authorization_request(params, policy=OPERATIONS):
     if not isinstance(params, dict):
         raise OperationsMcpOAuthError("invalid_request", "Некорректный OAuth запрос.")
     if params.get("response_type") != "code":
@@ -359,12 +383,12 @@ def validate_authorization_request(params):
         raise OperationsMcpOAuthError("invalid_request", "Требуется PKCE S256.")
     challenge = _validate_pkce_challenge(params.get("code_challenge"))
     resource = params.get("resource")
-    if resource != resource_url():
+    if resource != resource_url(policy):
         raise OperationsMcpOAuthError(
-            "invalid_target", "OAuth resource не соответствует Operations MCP."
+            "invalid_target", "OAuth resource не соответствует запрошенному ресурсу."
         )
     client = client_for_authorization(params.get("client_id"), params.get("redirect_uri"))
-    organization = target_organization()
+    organization = target_organization(policy)
     if not client.principal.organization_scopes.filter(organization=organization).exists():
         raise OperationsMcpOAuthError("access_denied", "Operations principal не имеет target scope.", status=403)
     return {
@@ -372,22 +396,22 @@ def validate_authorization_request(params):
         "state": state,
         "redirect_uri": params["redirect_uri"],
         "resource": resource,
-        "scopes": _normalize_scopes(params.get("scope")),
+        "scopes": _normalize_scopes(params.get("scope"), policy=policy),
         "code_challenge": challenge,
         "organization_id": organization.id,
     }
 
 
-def authorization_is_allowed(user, client):
+def authorization_is_allowed(user, client, policy=OPERATIONS):
     try:
-        organization = target_organization()
+        organization = target_organization(policy)
     except OperationsMcpConfigurationError:
         return False
-    return bool(principal_has_target_scope(client) and can_access_operations_mcp(user, organization))
+    return bool(principal_has_target_scope(client, policy) and policy.can_access(user, organization))
 
 
-def scoped_organizations(client):
-    organization = target_organization()
+def scoped_organizations(client, policy=OPERATIONS):
+    organization = target_organization(policy)
     return list(
         client.principal.organization_scopes.select_related("organization")
         .filter(organization=organization)
@@ -411,11 +435,11 @@ def _revoke_operations_grants(queryset, *, now, reason):
     return grant_ids
 
 
-def issue_authorization_code(*, authorization, user):
+def issue_authorization_code(*, authorization, user, policy=OPERATIONS):
     client = authorization["client"]
-    if not authorization_is_allowed(user, client):
+    if authorization["resource"] != resource_url(policy) or not authorization_is_allowed(user, client, policy):
         raise OperationsMcpOAuthError(
-            "access_denied", "Недостаточно прав для Operations MCP.", status=403
+            "access_denied", "Недостаточно прав для запрошенного ресурса.", status=403
         )
     now = timezone.now()
     raw_code = _random_secret()
@@ -424,7 +448,7 @@ def issue_authorization_code(*, authorization, user):
         # remaining independent grants.  Re-authorizing one Diagnostic link
         # must not revoke sibling Diagnostic grants or Finance grants.
         # Explicit revoke and refresh-token replay handling stay grant-scoped.
-        organization = target_organization()
+        organization = target_organization(policy)
         if organization.id != authorization.get("organization_id"):
             raise OperationsMcpOAuthError(
                 "access_denied",
@@ -432,7 +456,7 @@ def issue_authorization_code(*, authorization, user):
                 status=403,
             )
         grant_scopes = sorted(
-            set(authorization["scopes"]) | {_organization_scope(organization.id)}
+            set(authorization["scopes"]) | {_organization_scope(organization.id, policy)}
         )
         grant = FinanceMcpGrant.objects.create(
             client=client,
@@ -453,12 +477,13 @@ def issue_authorization_code(*, authorization, user):
     return raw_code
 
 
-def _grant_is_valid(grant, *, now, client, resource):
+def _grant_is_valid(grant, *, now, client, resource, policy=OPERATIONS):
     if not (
         grant
         and grant.client_id == client.id
         and grant.principal_id == client.principal_id
         and grant.resource == resource
+        and policy.scope in grant.scopes
         and grant.revoked_at is None
         and (grant.expires_at is None or grant.expires_at > now)
         and client.is_active
@@ -469,13 +494,13 @@ def _grant_is_valid(grant, *, now, client, resource):
     ):
         return False
     try:
-        organization = target_organization()
+        organization = target_organization(policy)
     except OperationsMcpConfigurationError:
         return False
     return bool(
-        _grant_is_bound_to_organization(grant, organization)
-        and principal_has_target_scope(client)
-        and can_access_operations_mcp(grant.authorized_by, organization)
+        _grant_is_bound_to_organization(grant, organization, policy)
+        and principal_has_target_scope(client, policy)
+        and policy.can_access(grant.authorized_by, organization)
     )
 
 
@@ -512,12 +537,12 @@ def _issue_tokens(grant, *, scopes, family_id=None):
     return response, refresh
 
 
-def exchange_authorization_code(params):
+def exchange_authorization_code(params, policy=OPERATIONS):
     required = ("code", "client_id", "redirect_uri", "code_verifier", "resource")
     if any(not params.get(key) for key in required):
         raise OperationsMcpOAuthError("invalid_request", "Не передан обязательный OAuth параметр.")
-    if params.get("resource") != resource_url():
-        raise OperationsMcpOAuthError("invalid_target", "OAuth resource не соответствует Operations MCP.")
+    if params.get("resource") != resource_url(policy):
+        raise OperationsMcpOAuthError("invalid_target", "OAuth resource не соответствует запрошенному ресурсу.")
     client = client_for_authorization(params.get("client_id"), params.get("redirect_uri"))
     now = timezone.now()
     with transaction.atomic():
@@ -529,9 +554,9 @@ def exchange_authorization_code(params):
         if (
             code.redirect_uri != params.get("redirect_uri")
             or code.resource != params.get("resource")
-            or OPERATIONS_SCOPE not in code.scopes
+            or policy.scope not in code.scopes
             or not _verify_pkce(params.get("code_verifier"), code.code_challenge)
-            or not _grant_is_valid(code.grant, now=now, client=client, resource=code.resource)
+            or not _grant_is_valid(code.grant, now=now, client=client, resource=code.resource, policy=policy)
         ):
             raise OperationsMcpOAuthError("invalid_grant", "Authorization code недействителен.")
         code.used_at = now
@@ -540,12 +565,12 @@ def exchange_authorization_code(params):
     return response
 
 
-def exchange_refresh_token(params):
+def exchange_refresh_token(params, policy=OPERATIONS):
     required = ("refresh_token", "client_id", "resource")
     if any(not params.get(key) for key in required):
         raise OperationsMcpOAuthError("invalid_request", "Не передан обязательный OAuth параметр.")
-    if params.get("resource") != resource_url():
-        raise OperationsMcpOAuthError("invalid_target", "OAuth resource не соответствует Operations MCP.")
+    if params.get("resource") != resource_url(policy):
+        raise OperationsMcpOAuthError("invalid_target", "OAuth resource не соответствует запрошенному ресурсу.")
     client = FinanceMcpClient.objects.select_related("principal").filter(
         client_id=params.get("client_id"),
         is_active=True,
@@ -555,7 +580,7 @@ def exchange_refresh_token(params):
     ).first()
     if not _is_pinned_chatgpt_client(client):
         raise OperationsMcpOAuthError("invalid_client", "Неизвестный OAuth клиент.", status=401)
-    requested = _normalize_scopes(params.get("scope")) if params.get("scope") else None
+    requested = _normalize_scopes(params.get("scope"), policy=policy) if params.get("scope") else None
     now = timezone.now()
     invalid = False
     response = None
@@ -569,8 +594,8 @@ def exchange_refresh_token(params):
             refresh.used_at is None
             and refresh.revoked_at is None
             and refresh.expires_at > now
-            and OPERATIONS_SCOPE in refresh.scopes
-            and _grant_is_valid(refresh.grant, now=now, client=client, resource=params.get("resource"))
+            and policy.scope in refresh.scopes
+            and _grant_is_valid(refresh.grant, now=now, client=client, resource=params.get("resource"), policy=policy)
         )
         if not valid:
             _revoke_operations_grants(
@@ -586,7 +611,7 @@ def exchange_refresh_token(params):
         else:
             original = set(refresh.scopes)
             scopes = sorted(original if requested is None else set(requested))
-            if not set(scopes).issubset(original) or OPERATIONS_SCOPE not in scopes:
+            if not set(scopes).issubset(original) or policy.scope not in scopes:
                 raise OperationsMcpOAuthError("invalid_scope", "Нельзя расширить Operations scope.")
             refresh.used_at = now
             response, replacement = _issue_tokens(
@@ -599,20 +624,20 @@ def exchange_refresh_token(params):
     return response
 
 
-def exchange_token(params):
+def exchange_token(params, policy=OPERATIONS):
     if not isinstance(params, dict):
         raise OperationsMcpOAuthError("invalid_request", "Некорректный OAuth запрос.")
     grant_type = params.get("grant_type")
     if grant_type == AUTHORIZATION_CODE_GRANT:
-        return exchange_authorization_code(params)
+        return exchange_authorization_code(params, policy)
     if grant_type == REFRESH_TOKEN_GRANT:
-        return exchange_refresh_token(params)
+        return exchange_refresh_token(params, policy)
     raise OperationsMcpOAuthError(
         "unsupported_grant_type", "Поддерживаются authorization_code и refresh_token."
     )
 
 
-def authenticate_bearer_header(value):
+def authenticate_bearer_header(value, policy=OPERATIONS):
     if not isinstance(value, str) or not value.startswith("Bearer "):
         raise OperationsMcpOAuthError("invalid_token", "Требуется Bearer access token.", status=401)
     raw_token = value.removeprefix("Bearer ")
@@ -629,10 +654,10 @@ def authenticate_bearer_header(value):
     if not (
         token.expires_at > now
         and token.revoked_at is None
-        and token.audience == resource_url()
-        and OPERATIONS_SCOPE in token.scopes
-        and OPERATIONS_SCOPE in grant.scopes
-        and _grant_is_valid(grant, now=now, client=client, resource=token.audience)
+        and token.audience == resource_url(policy)
+        and policy.scope in token.scopes
+        and policy.scope in grant.scopes
+        and _grant_is_valid(grant, now=now, client=client, resource=token.audience, policy=policy)
     ):
         raise OperationsMcpOAuthError("invalid_token", "Access token недействителен.", status=401)
     FinanceMcpAccessToken.objects.filter(pk=token.pk).update(last_used_at=now)
@@ -641,7 +666,7 @@ def authenticate_bearer_header(value):
     )
 
 
-def revalidate_authenticated_request(authenticated):
+def revalidate_authenticated_request(authenticated, policy=OPERATIONS):
     """Lock/re-read mutable token and grant state inside a tool transaction."""
     now = timezone.now()
     token_id = getattr(getattr(authenticated, "token", None), "pk", None)
@@ -664,14 +689,15 @@ def revalidate_authenticated_request(authenticated):
         or token.grant_id != grant.id
         or token.expires_at <= now
         or token.revoked_at is not None
-        or token.audience != resource_url()
-        or OPERATIONS_SCOPE not in token.scopes
-        or OPERATIONS_SCOPE not in grant.scopes
+        or token.audience != resource_url(policy)
+        or policy.scope not in token.scopes
+        or policy.scope not in grant.scopes
         or not _grant_is_valid(
             grant,
             now=now,
             client=grant.client,
             resource=token.audience,
+            policy=policy,
         )
     ):
         raise PermissionError("operations_authorization_revoked")
@@ -698,11 +724,11 @@ def authorization_redirect_uri(redirect_uri, *, code=None, state=None, error=Non
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), ""))
 
 
-def protected_resource_metadata():
+def protected_resource_metadata(policy=OPERATIONS):
     return {
-        "resource": resource_url(),
+        "resource": resource_url(policy),
         "authorization_servers": [issuer_url()],
-        "scopes_supported": [OPERATIONS_SCOPE],
+        "scopes_supported": [policy.scope],
         "bearer_methods_supported": ["header"],
     }
 

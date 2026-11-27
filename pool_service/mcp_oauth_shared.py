@@ -80,7 +80,7 @@ from pool_service.onec_diagnostic_mcp_auth import (  # noqa: E402
     resource_url as diagnostic_resource_url,
 )
 from pool_service.operations_mcp_auth import (  # noqa: E402
-    OPERATIONS_SCOPE,
+    OPERATIONS_SCOPE, ONEC_DRAFTS,
     OperationsMcpConfigurationError,
     is_enabled as operations_is_enabled,
     resource_url as operations_resource_url,
@@ -107,6 +107,8 @@ def shared_authorization_server_metadata_data():
         scopes.append(DIAGNOSTIC_READ_SCOPE)
     if operations_is_enabled() and OPERATIONS_SCOPE not in scopes:
         scopes.append(OPERATIONS_SCOPE)
+    if operations_is_enabled(ONEC_DRAFTS) and ONEC_DRAFTS.scope not in scopes:
+        scopes.append(ONEC_DRAFTS.scope)
     if avito_is_enabled() and AVITO_READ_SCOPE not in scopes:
         scopes.append(AVITO_READ_SCOPE)
     data["scopes_supported"] = scopes
@@ -171,7 +173,7 @@ def shared_authorization_server_metadata(request):
         response = HttpResponse(status=405)
         response["Allow"] = "GET"
         return _no_store(response)
-    if not finance_is_enabled() and not diagnostic_is_enabled() and not operations_is_enabled() and not avito_is_enabled():
+    if not finance_is_enabled() and not diagnostic_is_enabled() and not operations_is_enabled() and not avito_is_enabled() and not operations_is_enabled(ONEC_DRAFTS):
         return _no_store(HttpResponseNotFound())
     try:
         return _no_store(JsonResponse(shared_authorization_server_metadata_data()))
@@ -204,9 +206,9 @@ def _is_diagnostic_resource(value):
         return False
 
 
-def _is_operations_resource(value):
+def _is_operations_resource(value, policy=None):
     try:
-        return value == operations_resource_url()
+        return value == (operations_resource_url(policy) if policy is not None else operations_resource_url())
     except OperationsMcpConfigurationError:
         return False
 
@@ -225,6 +227,8 @@ def shared_oauth_authorize(request):
     resource = _single_resource(params)
     if _is_avito_resource(resource):
         return avito_views.avito_oauth_authorize(request)
+    if _is_operations_resource(resource, ONEC_DRAFTS):
+        return operations_views.operations_oauth_authorize(request, ONEC_DRAFTS)
     if _is_operations_resource(resource):
         return operations_views.operations_oauth_authorize(request)
     if _is_diagnostic_resource(resource):
@@ -239,6 +243,8 @@ def shared_oauth_token(request):
     resource = _single_resource(request.POST)
     if _is_avito_resource(resource):
         return avito_views.avito_oauth_token(request)
+    if _is_operations_resource(resource, ONEC_DRAFTS):
+        return operations_views.operations_oauth_token(request, ONEC_DRAFTS)
     if _is_operations_resource(resource):
         return operations_views.operations_oauth_token(request)
     if _is_diagnostic_resource(resource):

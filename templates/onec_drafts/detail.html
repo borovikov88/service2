@@ -28,9 +28,12 @@
 {% endif %}
 {% if row.intent.fields %}<h2>Реквизиты документа</h2><pre>{{ fields_json }}</pre>{% endif %}
 {% if row.intent.tables %}<h2>Табличные части</h2><pre>{{ tables_json }}</pre>{% endif %}
-{% if row.approved_at %}
+{% if history_only %}
+{% if row.token_hash == None and row.kind == "document" %}<p>Запрос на создание черновика. Результат записи доступен в чате.</p>{% else %}<p>Запрос из предыдущего подключения. Новое поручение можно дать в чате.</p>{% endif %}
+{% elif row.approved_at %}
 {% if renewed %}<p>Личный код для продолжения этого запроса</p><textarea rows="2" readonly>{{ renewed }}</textarea>{% endif %}
-{% if row.write_attempts.exists %}<form method="post">{% csrf_token %}<button name="action" value="renew">Получить новый код для этой же записи</button></form>{% endif %}
+{% if row.write_attempts.exists %}<form method="post">{% csrf_token %}<button name="action" value="renew">{% if connected %}Продлить подтверждение{% else %}Получить новый код для этой же записи{% endif %}</button></form>{% endif %}
+{% if message %}<p role="status">{{ message }}</p>{% endif %}
 <p>Вы подтвердили этот запрос. Вернитесь в чат, чтобы записать его через MCP и получить результат из 1С.</p>
 {% else %}
 <form method="post">{% csrf_token %}<input type="hidden" name="digest" value="{{ digest }}">

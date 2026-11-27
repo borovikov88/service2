@@ -655,7 +655,7 @@ def exchange_refresh_token(params):
             # issue a replacement.  Reuse of an otherwise live family revokes
             # that entire grant and all access tokens immediately.
             _revoke_grants(
-                FinanceMcpGrant.objects.filter(pk=refresh.grant_id, revoked_at__isnull=True),
+                FinanceMcpGrant.objects.filter(pk=refresh.grant_id, resource=params.get("resource"), revoked_at__isnull=True),
                 now=now,
                 reason="refresh-token reuse or invalid refresh",
             )

@@ -12,6 +12,8 @@ from .onec_write_validation import checked_ref, require_profile, validate_links
 
 
 ORDER = "Document_ЗаказПоставщику"
+AUTHOR = "Автор_Key"
+EMPTY_GUID = "00000000-0000-0000-0000-000000000000"
 SYSTEM_FIELDS = {
     "ref_key", "number", "posted", "deletionmark", "dataversion", "linenumber",
     "проведен", "проведён", "пометкаудаления", "обменданными", "автор", "автор_key",

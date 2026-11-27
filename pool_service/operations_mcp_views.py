@@ -37,6 +37,7 @@ from pool_service.models import (
 )
 from pool_service.operations_models import OperationsTaskEventCounter
 from pool_service.operations_mcp_auth import (
+    OPERATIONS, ONEC_DRAFTS,
     OPERATIONS_SCOPE,
     OperationsMcpConfigurationError,
     OperationsMcpOAuthError,
@@ -1749,15 +1750,15 @@ def operations_mcp(request):
     )
 
 
-def operations_protected_resource_metadata(request):
+def operations_protected_resource_metadata(request, policy=OPERATIONS):
     if request.method != "GET":
         response = HttpResponse(status=405)
         response["Allow"] = "GET"
         return transport._no_store(response)
-    if not is_enabled():
+    if not is_enabled(policy):
         return transport._no_store(HttpResponseNotFound())
     try:
-        return transport._no_store(JsonResponse(protected_resource_metadata()))
+        return transport._no_store(JsonResponse(protected_resource_metadata(policy)))
     except OperationsMcpConfigurationError:
         return transport._no_store(HttpResponseServerError())
 
@@ -1816,21 +1817,21 @@ def _validate_consent_binding(value, authorization):
 
 
 @require_http_methods(["GET", "POST"])
-def operations_oauth_authorize(request):
-    if not is_enabled():
+def operations_oauth_authorize(request, policy=OPERATIONS):
+    if not is_enabled(policy):
         return transport._no_store(HttpResponseNotFound())
     if not request.user.is_authenticated:
         return transport._no_store(redirect_to_login(request.get_full_path()))
     try:
         params = _single_value_params(request.GET if request.method == "GET" else request.POST)
-        authorization = validate_authorization_request(params)
+        authorization = validate_authorization_request(params, policy)
     except (OperationsMcpOAuthError, OperationsMcpConfigurationError) as exc:
         return _oauth_error_page(exc)
 
     client = authorization["client"]
     from pool_service.operations_mcp_auth import authorization_is_allowed
 
-    if not authorization_is_allowed(request.user, client):
+    if not authorization_is_allowed(request.user, client, policy):
         return transport._no_store(
             redirect(
                 authorization_redirect_uri(
@@ -1848,7 +1849,8 @@ def operations_oauth_authorize(request):
                 "pool_service/operations_mcp/authorize.html",
                 {
                     "client": client,
-                    "organizations": scoped_organizations(client),
+                    "organizations": scoped_organizations(client, policy),
+                    "onec_drafts": policy == ONEC_DRAFTS,
                     "scope": " ".join(authorization["scopes"]),
                     "oauth_params": params,
                     "consent_binding": _consent_binding(authorization),
@@ -1882,7 +1884,7 @@ def operations_oauth_authorize(request):
         )
 
     try:
-        code = issue_authorization_code(authorization=authorization, user=request.user)
+        code = issue_authorization_code(authorization=authorization, user=request.user, policy=policy)
     except OperationsMcpOAuthError:
         return transport._no_store(
             redirect(
@@ -1906,8 +1908,8 @@ def operations_oauth_authorize(request):
 
 @csrf_exempt
 @require_http_methods(["POST"])
-def operations_oauth_token(request):
-    if not is_enabled():
+def operations_oauth_token(request, policy=OPERATIONS):
+    if not is_enabled(policy):
         return transport._no_store(HttpResponseNotFound())
     if request.content_type != "application/x-www-form-urlencoded":
         return transport._no_store(
@@ -1920,7 +1922,7 @@ def operations_oauth_token(request):
             )
         )
     try:
-        result = exchange_token(_single_value_params(request.POST))
+        result = exchange_token(_single_value_params(request.POST), policy)
     except OperationsMcpOAuthError as exc:
         response = JsonResponse(
             {"error": exc.error, "error_description": exc.description},
