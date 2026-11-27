@@ -55,6 +55,131 @@ class Fixtures:
 
 
 class ConversationClientCaptureTests(Fixtures, TestCase):
+    def test_avito_callback_is_visible_on_the_linked_card_and_can_be_saved(self):
+        from pool_service.phone_utils import normalize_phone
+        from pool_service.services.contact_people import phone_revision
+
+        message, _ = self.incoming(body="+7 (900) 234-56-78")
+        customer = message.conversation.client
+        evidence = ContactObservation.objects.get(source_message_id=message.pk, kind="phone")
+        self.incoming(message="repeat-phone", body="Для связи: 8 (900) 234-56-78")
+        url = reverse("client_detail", args=[customer.pk])
+        confirm_url = reverse("client_avito_phone_confirm", args=[customer.pk])
+        card = self.client.get(url, {"tab": "contacts"})
+        self.assertContains(card, 'href="tel:+79002345678"', count=1)
+        self.assertContains(card, "Сделать основным")
+        customer.refresh_from_db()
+        self.assertFalse(customer.phone)
+        self.assertFalse(customer.crm_contacts.exists())
+        data = {"message_id": message.pk, "phone_key": evidence.value,
+                "contacts_revision": phone_revision(customer)}
+        self.assertRedirects(self.client.post(confirm_url, data), url + "?tab=contacts", fetch_redirect_response=False)
+        customer.refresh_from_db()
+        self.assertEqual(normalize_phone(customer.phone), evidence.value)
+        self.assertTrue(customer.crm_contacts.get().is_primary)
+        self.assertNotContains(self.client.get(url), "Сделать основным")
+        self.client.post(confirm_url, data)
+        self.assertEqual(customer.crm_contacts.count(), 1)
+
+    def test_stored_incoming_phone_without_an_observation_can_be_dialed_and_confirmed(self):
+        from pool_service.services.contact_people import phone_revision
+
+        message, _ = self.incoming()
+        customer = message.conversation.client
+        source = ConversationMessage.objects.filter(pk=message.pk)
+        source.update(body="+79002345678")
+        url = reverse("client_detail", args=[customer.pk])
+        confirm_url = reverse("client_avito_phone_confirm", args=[customer.pk])
+        self.assertContains(self.client.get(url), 'href="tel:+79002345678"')
+        data = {"message_id": message.pk, "phone_key": "9002345678", "contacts_revision": phone_revision(customer)}
+        source.update(body="Исправлю номер")
+        self.client.post(confirm_url, data)
+        self.assertFalse(customer.crm_contacts.exists())
+        source.update(body="+79002345678")
+        self.client.post(confirm_url, data)
+        self.assertTrue(customer.crm_contacts.get(match_value="9002345678").is_primary)
+        self.assertFalse(ContactObservation.objects.filter(source_message_id=message.pk, kind="phone").exists())
+
+    def test_legacy_phone_requires_a_surviving_message_and_its_source_observation(self):
+        older, _ = self.incoming(body="+79002345678")
+        newer, _ = self.incoming(message="repeat", body="8 (900) 234-56-78")
+        unobserved, _ = self.incoming(message="unobserved")
+        ConversationMessage.objects.filter(pk__in=[older.pk, newer.pk, unobserved.pk]).update(
+            intake_received_at=None, intake_scope=None)
+        ConversationMessage.objects.filter(pk=unobserved.pk).update(body="+79001112233")
+        newer.delete()
+        page = self.client.get(reverse("client_detail", args=[older.conversation.client_id]))
+        self.assertContains(page, 'href="tel:+79002345678"', count=1)
+        self.assertNotContains(page, 'href="tel:+79001112233"')
+
+    def test_confirming_an_avito_phone_keeps_the_previous_primary_and_explicit_removals(self):
+        from pool_service.services.contact_people import manage_phone, phone_revision
+
+        message, _ = self.incoming(phone="+79001112233", body="Мой номер: +79002345678")
+        customer = message.conversation.client
+        evidence = ContactObservation.objects.get(source_message_id=message.pk, origin="message", kind="phone")
+        url = reverse("client_detail", args=[customer.pk])
+        confirm_url = reverse("client_avito_phone_confirm", args=[customer.pk])
+        data = {"message_id": message.pk, "phone_key": evidence.value,
+                "contacts_revision": phone_revision(customer)}
+        self.assertRedirects(self.client.post(confirm_url, data), url + "?tab=contacts", fetch_redirect_response=False)
+        customer.refresh_from_db()
+        self.assertEqual(customer.phone, "+7 900 234 5678")
+        self.assertEqual(set(customer.crm_contacts.values_list("match_value", "is_primary")),
+                         {("9001112233", False), ("9002345678", True)})
+        manage_phone(self.owner, customer.pk, action="delete", key=evidence.value, revision=phone_revision(customer))
+        customer.refresh_from_db()
+        self.assertNotContains(self.client.get(url), 'href="tel:+79002345678"')
+        data["contacts_revision"] = phone_revision(customer)
+        self.client.post(confirm_url, data)
+        self.assertFalse(customer.crm_contacts.filter(match_value=evidence.value).exists())
+
+    def test_avito_suggestion_stays_on_its_card_and_requires_a_contact_editor(self):
+        from pool_service.services.contact_people import phone_revision
+
+        message, _ = self.incoming(body="+79002345678")
+        customer = message.conversation.client
+        evidence = ContactObservation.objects.get(source_message_id=message.pk, kind="phone")
+        other_message, _ = self.incoming(chat="other-chat", message="other-message", author="different-author")
+        other = other_message.conversation.client
+        url = reverse("client_detail", args=[other.pk])
+        confirm_url = reverse("client_avito_phone_confirm", args=[other.pk])
+        self.assertNotContains(self.client.get(url), 'href="tel:+79002345678"')
+        data = {"message_id": message.pk, "phone_key": evidence.value,
+                "contacts_revision": phone_revision(other)}
+        self.client.post(confirm_url, data)
+        self.assertFalse(other.crm_contacts.exists())
+        OrganizationAccess.objects.filter(user=self.owner, organization=self.org).update(role="service")
+        url = reverse("client_detail", args=[customer.pk])
+        confirm_url = reverse("client_avito_phone_confirm", args=[customer.pk])
+        page = self.client.get(url)
+        self.assertContains(page, 'href="tel:+79002345678"')
+        self.assertNotContains(page, "Сделать основным")
+        self.assertEqual(self.client.post(confirm_url, data).status_code, 403)
+        self.assertFalse(customer.crm_contacts.exists())
+
+    def test_avito_phone_suggestion_requires_current_message_access_and_source(self):
+        from pool_service.services.contact_people import phone_revision
+
+        message, _ = self.incoming(body="Для связи: +79002345678")
+        customer = message.conversation.client
+        observation = ContactObservation.objects.get(kind="phone", source_message_id=message.pk)
+        url = reverse("client_detail", args=[customer.pk])
+        confirm_url = reverse("client_avito_phone_confirm", args=[customer.pk])
+        data = {"message_id": message.pk, "phone_key": observation.value,
+                "contacts_revision": phone_revision(customer)}
+        grant = CommunicationAccess.objects.filter(user=self.owner, organization=self.org)
+        grant.update(can_view_conversations=False)
+        self.assertNotContains(self.client.get(url), 'tel:+79002345678')
+        self.assertEqual(self.client.post(confirm_url, data).status_code, 403)
+        grant.update(can_view_conversations=True)
+        ChannelConnection.objects.filter(pk=self.connection.pk).update(external_id="different-account")
+        self.assertNotContains(self.client.get(url), 'tel:+79002345678')
+        self.client.post(confirm_url, data)
+        customer.refresh_from_db()
+        self.assertFalse(customer.phone)
+        self.assertFalse(customer.crm_contacts.exists())
+
     def test_incoming_creates_card_and_extracts_contacts_and_explicit_details(self):
         message, created = self.incoming(body="Меня зовут Тестовый Клиент. Телефон +7 (900) 123-45-67\nEmail: test@example.invalid\nАдрес: Тестовая улица, 10\nКомпания: Test Company")
         self.assertTrue(created)

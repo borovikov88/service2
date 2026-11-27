@@ -92,7 +92,7 @@ from . import views
 from . import crm_live_views, crm_pilot_views, crm_lead_views, crm_object_need_views, crm_activity_views, crm_bulk_views
 from .estimate_views import estimate_page, estimate_api, estimate_print, estimate_document
 from .client_crm_views import client_detail, client_merge_index, client_merge_search, client_onec_import
-from .contact_management_views import client_phone_manage, client_bulk_merge
+from .contact_management_views import client_avito_phone_confirm, client_phone_manage, client_bulk_merge
 from .client_crm_ui import client_edit
 from .contact_creation import lookup as contact_create_lookup
 from .security_views import (
@@ -438,6 +438,7 @@ urlpatterns = [
     path("clients/merge/", client_merge_index, name="client_merge_index"),
     path("clients/merge/selected/", client_bulk_merge, name="client_bulk_merge"),
     path("clients/<int:client_id>/phones/", client_phone_manage, name="client_phone_manage"),
+    path("clients/<int:client_id>/phones/from-avito/", client_avito_phone_confirm, name="client_avito_phone_confirm"),
     path("clients/merge/search/", client_merge_search, name="client_merge_search"),
     path("crm/", crm_index, name="crm_index"),
     path("crm/workspace/needs/", crm_object_need_views.workspace, name="crm_object_needs"),

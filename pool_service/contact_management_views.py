@@ -1,8 +1,10 @@
 import json
+from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import IntegrityError
-from django.http import JsonResponse
+from django.http import HttpResponseBadRequest, JsonResponse
+from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse
 from django.views.decorators.http import require_POST
 
@@ -17,6 +19,27 @@ def _error(exc):
     else:
         message = "Связи карточек конфликтуют. Ничего не изменено; проверьте выбранные записи."
     return JsonResponse({"error": message}, status=409)
+
+
+@login_required
+@require_POST
+def client_avito_phone_confirm(request, client_id):
+    from .avito_contact_phones import confirm_phone
+    from .client_crm_ui import card_url
+    from .client_queries import readable_clients
+
+    client = get_object_or_404(readable_clients(request.user).select_related("organization"), pk=client_id)
+    message_id = request.POST.get("message_id", "")
+    if not message_id.isascii() or not message_id.isdecimal() or len(message_id) > 18:
+        return HttpResponseBadRequest("Некорректный номер сообщения.")
+    try:
+        confirm_phone(request.user, client, int(message_id), request.POST.get("phone_key", ""),
+                      request.POST.get("contacts_revision", ""))
+    except ValidationError as error:
+        messages.error(request, " ".join(error.messages))
+    else:
+        messages.success(request, "Номер из Авито сохранён как основной телефон клиента.")
+    return redirect(card_url(client.pk, "contacts"))
 
 
 @login_required

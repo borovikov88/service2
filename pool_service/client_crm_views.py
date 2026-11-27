@@ -531,11 +531,17 @@ def client_detail(request, client_id):
     )
     from .communication_services import conversation_capability
     from .communication_models import CommunicationChannel, Conversation, ConversationMessage
+    from .services.contact_people import phone_revision, phone_rows
+    from .avito_contact_phones import suggested_phones
+    saved_phones = phone_rows(client)
+    avito_phone_suggestions = []
     client_conversations = []
     max_phone_contacts = []
     if conversation_capability(request.user, "can_view_conversations", client.organization):
         client_conversations = list(Conversation.objects.filter(client=client, organization_id=client.organization_id,
             connection__channel__organization_id=client.organization_id).select_related("connection__channel").order_by("-last_message_at")[:30])
+        if client_conversations:
+            avito_phone_suggestions = suggested_phones(request.user, client, saved_phones)
         seen_connections = set()
         shared = ConversationMessage.objects.filter(
             conversation__client=client, conversation__organization_id=client.organization_id,
@@ -563,7 +569,6 @@ def client_detail(request, client_id):
                     | Q(inbox__source_type="message", inbox__source_id__in=message_ids))
                 .select_related("inbox").order_by("-pk")[:10])
 
-    from .services.contact_people import phone_revision, phone_rows
     from .client_crm_ui import inline_editor_context
     from .client_crm_models import OrganizationPersonLink
     from .services.call_processing_settings import settings_allowed
@@ -586,12 +591,13 @@ def client_detail(request, client_id):
             **(inline_editor_context(client, profile, limited=limited_editor) if can_edit_contacts else {}),
             "client_conversations": client_conversations,
             "max_phone_contacts": max_phone_contacts,
+            "avito_phone_suggestions": avito_phone_suggestions,
             "pending_communications": pending_communications,
             "profile": profile,
             "client_kind_label": client_kind_label,
             "phones": phones,
             "phone_revision": phone_revision(client) if can_edit_contacts else "",
-            "phone_rows": phone_rows(client),
+            "phone_rows": saved_phones,
             "can_manage_phones": can_edit_contacts,
             "merge_history": client.merge_records.select_related("actor").order_by("-created_at")[:10] if can_manage else [],
             "person_user_link": OrganizationPersonLink.objects.filter(person=client, organization_id=client.organization_id).select_related("user", "employee").first() if can_manage else None,

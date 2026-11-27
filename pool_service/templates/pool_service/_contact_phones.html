@@ -1,5 +1,5 @@
 <section class="contact-phones" aria-label="Телефоны" data-phone-manager>
-  <div class="d-flex align-items-center justify-content-between gap-2 mb-2"><h6 class="fw-bold mb-0">Телефоны</h6><span class="text-muted small">{{ phone_rows|length }}</span></div>
+  <div class="d-flex align-items-center justify-content-between gap-2 mb-2"><h6 class="fw-bold mb-0">{% if avito_phone_suggestions %}Сохранённые телефоны{% else %}Телефоны{% endif %}</h6><span class="text-muted small">{{ phone_rows|length }}</span></div>
   {% for phone in phone_rows %}
   <div class="contact-phone-row" data-phone-row>
     <div class="contact-phone-summary"><a href="tel:{{ phone.value }}">{{ phone.display }}</a><span class="text-muted small">{{ phone.type_label }}{% if phone.label %} · {{ phone.label }}{% endif %}</span>{% if phone.primary %}<span class="contact-primary">Основной</span>{% endif %}</div>
@@ -18,7 +18,7 @@
 
     {% endif %}
   </div>
-  {% empty %}<div class="contact-empty">Телефон не указан. Карточка сохранена, номер можно добавить позже.</div>{% endfor %}
+  {% empty %}<div class="contact-empty">{% if avito_phone_suggestions %}Основной телефон пока не выбран.{% else %}Телефон не указан. Карточка сохранена, номер можно добавить позже.{% endif %}</div>{% endfor %}
   {% if can_manage_phones %}
   <div class="contact-phone-add" data-phone-row><div class="contact-phone-summary">Добавить телефон</div>
     <form method="post" action="{% url 'client_phone_manage' client.id %}" data-phone-form data-person-phone-form hidden>{% csrf_token %}
