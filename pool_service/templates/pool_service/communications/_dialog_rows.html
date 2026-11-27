@@ -1,0 +1,35 @@
+{% now "Y-m-d" as dialog_today %}
+   {% for conversation in conversations %}
+     <div class="conversation-row{% if selected.pk == conversation.pk %} active{% endif %}" data-dialog-id="{{ conversation.uuid }}" data-unread="{{ conversation.unread_count }}">
+       <div class="conversation-row-header">
+         <div class="conversation-title">
+           <a class="conversation-row-name" href="?conversation={{ conversation.uuid }}&amp;org_id={{ communication_org_id }}{% if show_unanswered_dialogs %}&amp;dialogs=unanswered{% endif %}">
+             <span class="dialog-avatar" data-channel="{{ conversation.connection.channel.kind }}"><span class="dialog-mobile dialog-initial" aria-hidden="true">{{ conversation.display_name|first|upper }}</span>{% include "pool_service/communications/_channel_icon.html" with channel=conversation.connection.channel only %}</span>
+             <strong title="{{ conversation.display_name }}"{% if selected.pk == conversation.pk %} data-selected-conversation-name{% endif %}>{{ conversation.display_name }}</strong>
+           </a>
+           {% if conversation.client_card_url or selected.pk == conversation.pk %}
+             <a class="conversation-client-shortcut-inline"{% if conversation.client_card_url %} href="{{ conversation.client_card_url }}"{% else %} hidden{% endif %}{% if selected.pk == conversation.pk %} data-selected-conversation-client{% endif %} aria-label="Открыть карточку {{ conversation.display_name }}" title="Карточка клиента">{% include "pool_service/communications/_icon.html" with name="contact" only %}</a>
+           {% endif %}
+         </div>
+         {% if conversation.last_message_at %}
+           <time datetime="{{ conversation.last_message_at|date:'c' }}" class="conversation-row-time">
+             {% if conversation.last_message_at|date:"Y-m-d" != dialog_today %}{{ conversation.last_message_at|date:"d.m.y" }} {% endif %}{{ conversation.last_message_at|date:"H:i" }}
+           </time>
+         {% endif %}
+       </div>
+       <div class="d-flex align-items-end gap-2">
+         <a class="conversation-select flex-grow-1" href="?conversation={{ conversation.uuid }}&amp;org_id={{ communication_org_id }}{% if show_unanswered_dialogs %}&amp;dialogs=unanswered{% endif %}" tabindex="-1">
+           <div class="dialog-preview text-muted text-truncate">{{ conversation.last_message_preview|default:"Вложение" }}</div>
+           <div class="dialog-row-meta d-flex flex-wrap gap-2 mt-1">
+             <span class="badge bg-secondary">{{ conversation.get_status_display }}</span>
+             {% if conversation.last_exchange_direction == 'in' %}<span class="badge text-bg-warning">Ждёт ответа</span>{% endif %}
+             {% if conversation.unread_count %}<span class="badge bg-danger" title="Непрочитанные сообщения">{{ conversation.unread_count }}</span>{% endif %}
+             <small>{% if conversation.assignee %}{{ conversation.assignee.get_full_name|default:conversation.assignee.username }}{% else %}Свободен{% endif %}</small>
+           </div>
+         </a>
+         {% if conversation.external_chat_url %}<a class="conversation-external" href="{{ conversation.external_chat_url }}" target="_blank" rel="noopener noreferrer" aria-label="Открыть диалог с {{ conversation.participant_name }} в Avito" title="Открыть в Avito">↗</a>{% endif %}
+       </div>
+     </div>
+   {% empty %}
+     <div class="p-4 text-muted">{% if show_closed_dialogs %}Завершённых диалогов пока нет.{% elif show_unanswered_dialogs %}Диалогов без ответа нет.{% else %}Активных диалогов пока нет.{% endif %}</div>
+   {% endfor %}

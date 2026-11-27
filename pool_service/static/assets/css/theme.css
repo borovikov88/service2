@@ -1080,12 +1080,22 @@ html .large-choice-search [role="option"]:is(.active, [aria-selected="true"]) {
 @supports (appearance: base-select) {
   html select:not([multiple]):is(:not([size]), [size="1"]) {
     appearance: base-select;
+    position: relative;
+    /* The UA renders the selected label in an anonymous block. Clamp that
+       block to one line, including in narrow Bootstrap and inline forms. */
+    display: -webkit-inline-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+    padding-inline-end: 2rem !important;
+    white-space: normal;
+    word-break: break-all;
+    overflow: hidden;
     background-image: none;
     min-inline-size: 0;
   }
 
   html select.form-select:not([multiple]):is(:not([size]), [size="1"]) {
-    padding-inline-end: .75rem;
+    display: -webkit-box;
   }
 
   select:not([multiple]):is(:not([size]), [size="1"])::picker(select) {
@@ -1105,12 +1115,21 @@ html .large-choice-search [role="option"]:is(.active, [aria-selected="true"]) {
 
   select:not([multiple]):is(:not([size]), [size="1"])::picker-icon {
     color: var(--crm-muted, var(--bs-secondary-color, #66758a));
-    margin-inline-end: .125rem;
+    position: absolute;
+    inset-inline-end: .65rem;
+    inset-block-start: 50%;
+    transform: translateY(-50%);
+    pointer-events: none;
+  }
+
+  .ui-select:has(> select:not([multiple]):is(:not([size]), [size="1"]))::after {
+    content: none;
   }
 
   select:not([multiple]):is(:not([size]), [size="1"]) option {
     padding: .5rem .625rem;
     border-radius: var(--choice-row-radius);
+    word-break: normal;
     white-space: normal;
     overflow-wrap: anywhere;
   }
