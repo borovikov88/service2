@@ -1,0 +1,5 @@
+{% if letters %}<section class="border rounded-3 p-3 mb-3" aria-label="Почта клиента">
+  <h6 class="fw-bold mb-2">Почта клиента</h6>
+  {% for letter in letters %}<div><a href="{% url 'crm_mail_detail' letter.pk %}?org_id={{ client.organization_id }}">{{ letter.subject|default:"Без темы" }}</a> <small class="text-muted">{{ letter.sent_at|date:"d.m.Y H:i" }}</small></div>{% endfor %}
+  <a class="small" href="{% url 'crm_mail' %}?org_id={{ client.organization_id }}&amp;client={{ client.pk }}">Вся переписка с клиентом</a>
+</section>{% endif %}

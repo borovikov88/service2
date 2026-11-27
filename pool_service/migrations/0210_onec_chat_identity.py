@@ -9,7 +9,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('pool_service', '0208_onec_ticketless_drafts'),
+        ('pool_service', '0209_crm_mailbox'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 

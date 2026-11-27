@@ -1,3 +1,4 @@
+{% load crm_mail %}
 {% load call_processing_tags static %}
 <link rel="stylesheet" href="{% static 'assets/css/communications.css' %}">
 {% call_processing_settings_allowed as can_configure_call_processing %}
@@ -90,6 +91,8 @@
       >
         <i class="bi bi-telephone"></i><span>Звонки</span>
       </a>
+      {% mailbox_navigation request communication_org_id as mail_url %}
+      {% if mail_url %}<a class="communications-tab {% if 'crm_mail' in request.resolver_match.url_name %}is-active{% endif %}" href="{{ mail_url }}" {% if 'crm_mail' in request.resolver_match.url_name %}aria-current="page"{% endif %}><i class="bi bi-envelope"></i><span>Почта</span></a>{% endif %}
       {% if can_access_manual_recordings %}
       <a
         class="communications-tab {% if request.resolver_match.url_name == 'communication_manual_recordings' %}is-active{% endif %}"

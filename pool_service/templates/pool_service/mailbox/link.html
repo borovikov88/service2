@@ -1,0 +1,13 @@
+{% extends "pool_service/mailbox/base.html" %}
+{% block mail %}<a href="{% url 'crm_mail_detail' letter.pk %}?org_id={{ org.pk }}">← Письмо</a>
+<h2>Добавить в лид / сделку</h2><p>{{ letter.subject|default:"Без темы" }}</p>
+{% if current %}<p>Текущая связь · <a href="{{ current.url }}">{{ current.kind }} · {{ current.title }}</a></p>{% endif %}
+<form method="get" class="mail-filters"><input type="hidden" name="org_id" value="{{ org.pk }}"><label>Поиск карточки<input class="form-control" type="search" name="q" value="{{ term }}" placeholder="Название или номер" maxlength="120"></label><button class="btn btn-outline-primary">Найти</button></form>
+<div class="mail-link-forms">
+{% if leads %}<form method="post">{% csrf_token %}<input type="hidden" name="revision" value="{{ letter.revision }}"><input type="hidden" name="kind" value="lead">
+<label>Существующий лид<select required class="form-select" name="target"><option value="">Выберите лид</option>{% for card in leads %}<option value="{{ card.pk }}">№{{ card.pk }} · {{ card.title }}</option>{% endfor %}</select></label><button class="btn btn-primary">Добавить в лид</button></form>{% endif %}
+{% if deals %}<form method="post">{% csrf_token %}<input type="hidden" name="revision" value="{{ letter.revision }}"><input type="hidden" name="kind" value="deal">
+<label>Существующая сделка<select required class="form-select" name="target"><option value="">Выберите сделку</option>{% for card in deals %}<option value="{{ card.pk }}">№{{ card.pk }} · {{ card.title }}</option>{% endfor %}</select></label><button class="btn btn-primary">Добавить в сделку</button></form>{% endif %}
+{% if not leads and not deals %}<p>Доступных для привязки карточек по этому запросу нет.</p>{% endif %}</div>
+{% if can_create and not letter.lead_id and not letter.deal_id %}<details class="mail-panel" {% if form.errors %}open{% endif %}><summary>Создать лид из письма</summary><form method="post" class="mail-form">{% csrf_token %}
+<input type="hidden" name="revision" value="{{ letter.revision }}"><input type="hidden" name="kind" value="new_lead">{{ form.as_p }}<button class="btn btn-primary">Создать лид и добавить письмо</button></form></details>{% endif %}{% endblock %}
