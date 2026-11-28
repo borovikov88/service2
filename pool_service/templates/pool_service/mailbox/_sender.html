@@ -1,0 +1,2 @@
+<header class="mail-compose-head"><svg class="mail-symbol" aria-hidden="true"><use href="#mail-icon-envelope"></use></svg><h2>С какого ящика написать?</h2><button type="button" class="mail-icon" data-dialog-close aria-label="Закрыть окно"><svg class="mail-symbol" aria-hidden="true"><use href="#mail-icon-close"></use></svg></button></header>
+<ul class="mail-account-choices">{% for box in boxes %}<li><a data-mail-dialog="compose" href="{% url 'crm_mail_compose' %}?org_id={{ org.pk }}&amp;box={{ box.pk }}">{{ box.address }}</a></li>{% endfor %}</ul>

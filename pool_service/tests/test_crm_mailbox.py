@@ -20,12 +20,12 @@ from pool_service.client_crm_models import ClientBusinessRole, ClientCompanyLink
 from pool_service.communication_secrets import decrypt_secret, encrypt_secret
 from pool_service.crm_commercial_models import CrmDeal, CrmLead
 from pool_service.mailbox_forms import ComposeForm
-from pool_service.mailbox_models import CrmMailbox, MailLocation, MailSubmission
+from pool_service.mailbox_models import CrmMailbox, MailFolder, MailLocation, MailReadReceipt, MailSignature, MailSubmission
 from pool_service.models import Client, Employee, Organization, OrganizationAccess
 from pool_service.services import mailbox_imap as imap
 from pool_service.services.crm_commercial_commands import create_commercial_deal
 from pool_service.services.mailbox_access import mailbox_role
-from pool_service.services.mailbox_mime import header_data, parse_content
+from pool_service.services.mailbox_mime import CONTENT_VERSION, body_preview, header_data, parse_content, preview_from_prefix
 from pool_service.services.mailbox_routing import bind_mail, contact_letters
 from pool_service.services.mailbox_sending import deliver
 from pool_service.services.mailbox_sync import store_letter, sync_mailbox
@@ -489,6 +489,136 @@ class MailboxTests(LeadFixture, TestCase):
             self.assertEqual(response.content, b"synthetic-data")
             self.assertIn("attachment", response["Content-Disposition"])
             self.assertEqual(response["Content-Security-Policy"], "sandbox")
+
+    def test_cached_blank_newsletter_is_repaired_and_real_file_downloads(self):
+        letter = self.letter()
+        letter.body_loaded = True
+        letter.save(update_fields=["body_loaded"])
+        folder = MailFolder.objects.create(mailbox=self.box, key="inbox", name="Inbox",
+                                           wire_name="INBOX", generation=5)
+        MailLocation.objects.create(letter=letter, folder=folder, generation=5, uid=10)
+        msg = message()
+        msg.set_content("   ")
+        msg.add_alternative(
+            '<p>Добрый день!</p><a href="https://example.org/tenders">Новые тендеры</a>'
+            '<a href="data:text/plain,hidden">Безопасный текст</a>'
+            '<img src="https://images.example.org/track" alt="">', subtype="html",
+        )
+        msg.add_attachment(b"PDF sample", maintype="application", subtype="pdf", filename="Выписка.pdf")
+        with patch.object(imap, "raw_message", return_value=msg.as_bytes()) as fetch:
+            detail = self.http.get(self.url("_detail", letter.pk))
+            self.assertContains(detail, 'href="https://example.org/tenders"')
+            self.assertNotContains(detail, "data:text/plain,hidden")
+            self.assertNotContains(detail, "images.example.org")
+            self.assertContains(detail, "Выписка.pdf")
+            self.http.get(self.url("_detail", letter.pk))
+            fetch.assert_called_once()
+            letter.refresh_from_db()
+            self.assertTrue(letter.preview.startswith("Новые тендеры"))
+            self.assertEqual(letter.content_version, CONTENT_VERSION)
+            file = self.http.get(self.url("_attachment", letter.pk, letter.attachments[0]["index"]))
+            self.assertEqual(file.content, b"PDF sample")
+        self.assertEqual(MailReadReceipt.objects.filter(letter=letter).count(), 1)
+        self.assertTrue(letter.needs_attention)
+
+    def test_preview_fetch_reads_only_requested_folder_generation_without_marking_read(self):
+        letter = self.letter()
+        folder = MailFolder.objects.create(mailbox=self.box, key="inbox", name="Inbox", wire_name="INBOX", generation=3)
+        MailLocation.objects.create(folder=folder, generation=3, letter=letter, uid=4, size=500)
+        second = self.letter()
+        url = self.url("_previews", folder.pk)
+        msg = message()
+        msg.set_content("Здравствуйте, коллеги!\nУточните сроки поставки.")
+        connection = MagicMock()
+        connection.uid.return_value = ("OK", [(b"1 (BODY[]<0> {500}", msg.as_bytes()), b" UID 4)"])
+        with (patch.object(imap, "mailbox_session", return_value=nullcontext(connection)),
+              patch.object(imap, "select", return_value=(4, 6)) as select):
+            self.assertEqual(self.http.post(url, {"letter": [letter.pk]}).json()["previews"], {})
+            connection.uid.assert_not_called()
+            select.return_value = (3, 5)
+            data = {"letter": [letter.pk, second.pk]}
+            self.assertEqual(self.http.post(url, data).json()["previews"], {str(letter.pk): "Уточните сроки поставки."})
+            self.assertEqual(self.http.post(url, data).json()["previews"], {str(letter.pk): "Уточните сроки поставки."})
+            self.assertEqual(connection.uid.call_args.args, ("FETCH", "4", "(UID BODY.PEEK[]<0.65536>)"))
+            connection.uid.assert_called_once()
+        self.assertFalse(MailReadReceipt.objects.exists())
+        letter.refresh_from_db()
+        self.assertFalse(letter.body_loaded)
+        self.assertTrue(letter.needs_attention)
+        self.assertContains(self.http.get(self.url("")), "Уточните сроки поставки.")
+        foreign_org = Organization.objects.create(name="Another mail organization")
+        foreign_box = CrmMailbox.objects.create(organization=foreign_org, address="separate@example.org")
+        foreign_folder = MailFolder.objects.create(mailbox=foreign_box, name="inbox", key="i", wire_name="i")
+        self.assertEqual(self.http.post(self.url("_previews", foreign_folder.pk), data).status_code, 404)
+        OrganizationAccess.objects.filter(organization=self.org, user=self.user).update(role="service")
+        self.assertEqual(self.http.post(url, data).status_code, 403)
+
+    def test_mail_reader_and_signature_belong_to_each_staff_member(self):
+        letter = self.letter()
+        letter.body_loaded = True
+        letter.body = "Доброе утро! Остатки на складе."
+        letter.save()
+        for age in (1, 5, 9, 41):
+            past = self.letter()
+            past.sent_at = self.at - timedelta(days=age)
+            past.save(update_fields=["sent_at"])
+        inbox = self.http.get(self.url(""))
+        self.assertEqual([row.date_group for row in inbox.context["page"]], ["Сегодня", "Вчера", "Неделя", "Месяц", "Ранее"])
+        self.assertContains(inbox, "Остатки на складе.")
+        self.assertTrue(inbox.context["page"][0].unread)
+        self.http.get(self.url("_detail", letter.pk))
+        self.assertFalse(self.http.get(self.url("")).context["page"][0].unread)
+        ajax = {"HTTP_X_MAIL_DIALOG": "1"}
+        address = self.url("_signature")
+        self.assertEqual(self.http.post(address, {"text": "Менеджер\r\nОтдел продаж"}, **ajax).json(),
+                         {"signature": "Менеджер\nОтдел продаж"})
+        compose = self.http.get(self.url("_compose"), **ajax)
+        self.assertEqual(compose.headers["X-Mail-Dialog"], "1")
+        self.assertNotContains(compose, "<html")
+        self.assertEqual(compose.context["form"].initial["body"], "\n\nМенеджер\nОтдел продаж")
+        reply = self.http.get(self.url("_reply", letter.pk), **ajax)
+        self.assertEqual(reply.context["form"].initial["body"], compose.context["form"].initial["body"])
+        other = get_user_model().objects.create_user("other-mail-reader")
+        OrganizationAccess.objects.create(organization=self.org, user=other, role="manager")
+        self.http.force_login(other)
+        self.assertTrue(self.http.get(self.url("")).context["page"][0].unread)
+        self.assertNotContains(self.http.get(address), "Отдел продаж")
+        self.http.post(address, {"text": "", "user": self.user.pk}, **ajax)
+        self.assertEqual(self.http.get(self.url("_compose")).context["form"].initial["body"], "")
+        self.assertEqual(MailSignature.objects.get(organization=self.org, user=self.user).text, "Менеджер\nОтдел продаж")
+
+    def test_truncated_base64_previews_and_html_after_large_stylesheet(self):
+        expected = "Проверка длинного письма"
+        for length in range(1, 6):
+            msg = EmailMessage()
+            msg["Subject"] = "x" * length
+            msg.set_content("Здравствуйте! " + (expected + " ") * 1800, cte="base64")
+            self.assertTrue(preview_from_prefix(msg.as_bytes()[:65536], partial=True).startswith(expected))
+
+        msg = EmailMessage()
+        msg.set_content("<style>" + " " * 1_100_000 + "</style><p>Доступен новый документ</p>",
+                        subtype="html", cte="8bit")
+        raw = msg.as_bytes()
+        connection = MagicMock()
+        def fetch(command, uids, params):
+            size = int(params.split("<0.")[1].split(">")[0])
+            return "OK", [(b"1 (UID 7 BODY[]<0>", raw[:size]), b")"]
+        connection.uid.side_effect = fetch
+        self.assertEqual(imap.selected_previews(connection, {7: len(raw)}), {7: "Доступен новый документ"})
+        self.assertEqual(parse_content(raw), ("Доступен новый документ", []))
+        connection.uid.side_effect = lambda *args: ("OK", [(b"1 (UID 7 BODY[]<0>", raw[:65536]), b")"])
+        self.assertEqual(imap.selected_previews(connection, {7: len(raw)}), {})
+
+    def test_preview_preserves_first_meaningful_sentence(self):
+        for raw, expected in (
+            ("Здравствуйте, Елена!\r\nСчёт приложен.", "Счёт приложен."),
+            ("Добрый день, подскажите цену.", "подскажите цену."),
+            ("Доброе утро! Отправили расчёт.", "Отправили расчёт."),
+            ("Елена, добрый день! Подтвердите дату.", "Подтвердите дату."),
+            ("Елена, уточните цену.", "Елена, уточните цену."),
+            ("Остатки на складе", "Остатки на складе"),
+        ):
+            self.assertEqual(body_preview(raw), expected)
 
     def test_outgoing_retries_and_attachment_without_remote_sent_copy(self):
         key = uuid4()

@@ -74,6 +74,8 @@ class MailLetter(models.Model):
     needs_attention = models.BooleanField(default=False)
     processed_at = models.DateTimeField(null=True)
     body_loaded = models.BooleanField(default=False)
+    content_version = models.PositiveSmallIntegerField(default=0)
+    preview = models.CharField(max_length=220, null=True, blank=True)
     body = models.TextField(blank=True)
     attachments = models.JSONField(default=list)
     lead = models.ForeignKey(
@@ -96,6 +98,23 @@ class MailLetter(models.Model):
             ),
         ]
         indexes = [models.Index(fields=["mailbox", "sent_at"], name="mail_chronological")]
+
+
+class MailReadReceipt(models.Model):
+    letter = models.ForeignKey(MailLetter, on_delete=models.CASCADE)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["letter", "user"], name="mail_read_by_user")]
+
+
+class MailSignature(models.Model):
+    organization = models.ForeignKey("pool_service.Organization", on_delete=models.CASCADE)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    text = models.TextField(blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["organization", "user"], name="mail_user_signature")]
 
 
 class MailPeer(models.Model):

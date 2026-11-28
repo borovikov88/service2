@@ -1,0 +1,5 @@
+{% extends "pool_service/mailbox/base.html" %}
+{% block mail %}
+<a class="mail-back" href="{% url 'crm_mail' %}?org_id={{ org.pk }}">← Почта</a>
+<section class="mail-standalone">{% include "pool_service/mailbox/_signature.html" %}</section>
+{% endblock %}

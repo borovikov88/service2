@@ -8,8 +8,9 @@ from django.core import signing
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.paginator import Paginator
 from django.db import IntegrityError, transaction
-from django.db.models import Q
-from django.http import Http404, HttpResponse
+from django.db.models import Exists, F, OuterRef, Q, Subquery
+from django.db.models.functions import Substr
+from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -21,13 +22,13 @@ from django.views.decorators.http import require_GET, require_http_methods, requ
 from .client_queries import readable_clients
 from .communication_secrets import encrypt_secret
 from .communication_services import selected_communication_access
-from .mailbox_forms import ComposeForm, MailboxSetupForm, NewMailLeadForm
-from .mailbox_models import CrmMailbox, MailFolder, MailLetter, MailLocation
-from .models import Organization
+from .mailbox_forms import ComposeForm, MailboxSetupForm, MailSignatureForm, NewMailLeadForm
+from .mailbox_models import CrmMailbox, MailFolder, MailLetter, MailLocation, MailReadReceipt, MailSignature
+from .models import Employee, Organization
 from .services import mailbox_imap as provider
 from .services.crm_role_runtime import resolve_crm_capabilities
 from .services.mailbox_access import mailbox_role
-from .services.mailbox_mime import parse_content
+from .services.mailbox_mime import CONTENT_VERSION, body_preview, cache_content, parse_content
 from .services.mailbox_routing import bind_mail, contact_letters, visible_link, writable_cards
 from .services.mailbox_sending import deliver
 from .services.mailbox_transport import smtp_session
@@ -50,11 +51,14 @@ def _url(name, org, *args, **params):
 
 
 def _page(request, org, section, **context):
+    modal = request.headers.get("X-Mail-Dialog") == "1" and section in ("compose", "sender", "signature")
     response = render(
         request,
-        "pool_service/mailbox/" + section + ".html",
+        "pool_service/mailbox/" + ("_" if modal else "") + section + ".html",
         {"org": org, "communication_org_id": org.pk, "active_tab": "communications", **context},
     )
+    if modal:
+        response["X-Mail-Dialog"] = "1"
     response["Referrer-Policy"] = "same-origin"
     return response
 
@@ -107,9 +111,27 @@ def inbox(request):
     if query:
         letters = letters.filter(Q(subject__icontains=query) | Q(sender__icontains=query)
                                  | Q(sender_name__icontains=query) | Q(peers__address__icontains=query)
-                                 | Q(body__icontains=query))
-    page = Paginator(letters.select_related("mailbox").defer("body", "attachments", "mailbox__credential")
-                     .order_by("-sent_at", "-pk").distinct(), 40).get_page(request.GET.get("page"))
+                                 | Q(body__icontains=query) | Q(preview__icontains=query))
+    location = MailLocation.objects.filter(
+        letter=OuterRef("pk"), folder__mailbox_id=OuterRef("mailbox_id"), folder__available=True,
+        generation=F("folder__generation"),
+    ).order_by("pk")
+    if folder_id not in ("all", "review", "sent"):
+        location = location.filter(folder_id=folder.pk)
+    letters = letters.select_related("mailbox").defer("body", "attachments", "mailbox__credential").annotate(
+        seen_here=Exists(MailReadReceipt.objects.filter(letter=OuterRef("pk"), user=request.user)),
+        cached_start=Substr("body", 1, 1500),
+        preview_folder=Subquery(location.values("folder_id")[:1]),
+    ).order_by("-sent_at", "-pk").distinct()
+    page = Paginator(letters, 40).get_page(request.GET.get("page"))
+    today = timezone.localdate()
+    for letter in page.object_list:
+        age = (today - timezone.localdate(letter.sent_at)).days
+        letter.date_group = next(label for days, label in (
+            (0, "Сегодня"), (1, "Вчера"), (6, "Неделя"), (29, "Месяц"), (float("inf"), "Ранее")
+        ) if age <= days)
+        letter.snippet = letter.preview if letter.preview is not None else body_preview(letter.cached_start)
+        letter.unread = not (letter.outgoing or letter.seen_here)
     filters = {"folder": folder_id, "q": query}
     if box:
         filters["box"] = box.pk
@@ -118,6 +140,7 @@ def inbox(request):
     return _page(request, org, "inbox", boxes=boxes, box=box, active_boxes=active_boxes, owner=role == "owner",
                  folders=folders.select_related("mailbox").defer("mailbox__credential").order_by("mailbox__address", "name"),
                  chosen=folder_id, query=query, client=client, page=page, review_count=review_count,
+                 status_box=box or (boxes[0] if len(boxes) == 1 else None),
                  paging=_url("crm_mail", org, **filters))
 
 
@@ -125,6 +148,73 @@ def _number(value):
     if not value or not value.isascii() or not value.isdecimal() or len(value) > 18:
         raise Http404
     return int(value)
+
+
+@login_required
+@never_cache
+@require_POST
+def previews(request, folder_id):
+    org, _ = _scope(request)
+    folder = get_object_or_404(MailFolder.objects.select_related("mailbox"), pk=folder_id,
+                               mailbox__organization=org, available=True)
+    ids = request.POST.getlist("letter")
+    if not ids or len(ids) > 40:
+        raise Http404
+    ids = {_number(value) for value in ids}
+    locations = MailLocation.objects.filter(
+        folder=folder, generation=folder.generation, letter_id__in=ids, letter__mailbox=folder.mailbox,
+    )
+    missing = dict(locations.filter(letter__preview__isnull=True).values_list("uid", "size"))
+    if missing and folder.mailbox.enabled:
+        try:
+            with provider.mailbox_session(folder.mailbox) as client:
+                generation, _ = provider.select(client, folder.wire_name)
+                if generation != folder.generation:
+                    raise provider.MailUnavailable()
+                snippets = provider.selected_previews(client, missing)
+            with transaction.atomic():
+                box = CrmMailbox.objects.select_for_update().get(pk=folder.mailbox_id)
+                _scope(request)
+                if box.enabled and box.config_version == folder.mailbox.config_version:
+                    current = locations.filter(uid__in=snippets, folder__generation=generation, folder__available=True)
+                    updates = {}
+                    for uid, letter_id in current.values_list("uid", "letter_id"):
+                        if not updates.get(letter_id):
+                            updates[letter_id] = snippets[uid]
+                    box.letters.filter(preview__isnull=True).bulk_update(
+                        [MailLetter(pk=pk, preview=text) for pk, text in updates.items()], ["preview"]
+                    )
+        except (ValueError, LookupError, UnicodeError) + PROVIDER_ERRORS:
+            pass  # Keep the list usable if a provider is temporarily unavailable.
+    _scope(request)
+    rows = locations.exclude(letter__preview__isnull=True).values_list("letter_id", "letter__preview")
+    return JsonResponse({"previews": dict(rows)})
+
+
+def _signature_text(user, org):
+    stored = MailSignature.objects.filter(organization=org, user=user).values_list("text", flat=True).first()
+    if stored is not None:
+        return stored
+    name = user.get_full_name().strip() or Employee.objects.filter(
+        user=user, organization=org, is_active=True
+    ).order_by("pk").values_list("display_name", flat=True).first()
+    return "\n".join(filter(None, ("С уважением,", name, org.name)))
+
+
+@login_required
+@never_cache
+@require_http_methods(["GET", "POST"])
+def signature(request):
+    org, _ = _scope(request)
+    form = MailSignatureForm(request.POST if request.method == "POST" else None,
+                             initial={"text": _signature_text(request.user, org)})
+    if request.method == "POST" and form.is_valid():
+        content = form.cleaned_data["text"].replace("\r\n", "\n")
+        MailSignature.objects.update_or_create(organization=org, user=request.user, defaults={"text": content})
+        if request.headers.get("X-Mail-Dialog") == "1":
+            return JsonResponse({"signature": content})
+        return redirect(_url("crm_mail", org))
+    return _page(request, org, "signature", form=form)
 
 
 @transaction.atomic
@@ -263,14 +353,15 @@ def detail(request, pk):
     org, _ = _scope(request)
     letter = _letter(org, pk)
     error = ""
-    if not letter.body_loaded and letter.mailbox.enabled:
+    cached_old = letter.body_loaded and letter.content_version < CONTENT_VERSION
+    if letter.mailbox.enabled and (not letter.body_loaded or (cached_old and letter.locations.exists())):
         try:
-            letter.body, letter.attachments = parse_content(provider.raw_message(letter))
-            letter.body_loaded = True
-            letter.save(update_fields=["body", "attachments", "body_loaded"])
+            cache_content(letter, provider.raw_message(letter))
         except (ValueError, LookupError, UnicodeError) + PROVIDER_ERRORS:
             error = "Текст пока недоступен. Попробуйте обновить письмо позже."
     _scope(request)
+    if letter.body_loaded and not letter.outgoing:
+        MailReadReceipt.objects.get_or_create(letter=letter, user=request.user)
     return _page(
         request, org, "detail", letter=letter, error=error, link=visible_link(letter, request.user, org)
     )
@@ -407,6 +498,8 @@ def compose(request, pk=None):
         box = choices[0]
     scope = [request.user.pk, box.pk, pk]
     initial = {"token": signing.dumps([*scope, str(uuid4())], salt="mail-send")}
+    personal_signature = _signature_text(request.user, org)
+    initial["body"] = "\n\n" + personal_signature if personal_signature else ""
     if parent:
         initial["to"] = ", ".join(parent.recipients) if parent.outgoing else parent.reply_to or parent.sender
         initial["subject"] = (
@@ -429,8 +522,11 @@ def compose(request, pk=None):
             if receipt.status in ("sent", "partial") and receipt.letter_id:
                 if receipt.status == "partial":
                     messages.warning(request, "Почтовый сервер принял письмо только для части получателей.")
-                return redirect(_url("crm_mail_detail", org, receipt.letter_id))
+                destination = _url("crm_mail_detail", org, receipt.letter_id)
+                if request.headers.get("X-Mail-Dialog") == "1":
+                    return JsonResponse({"sent": destination})
+                return redirect(destination)
             form.add_error(
                 None, "Отправку подтвердить не удалось. Проверьте папку «Отправленные» перед новой попыткой."
             )
-    return _page(request, org, "compose", parent=parent, form=form, box=box)
+    return _page(request, org, "compose", parent=parent, form=form, box=box, signature_text=personal_signature)

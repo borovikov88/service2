@@ -102,6 +102,10 @@ class ComposeForm(forms.Form):
     token = forms.CharField(widget=forms.HiddenInput)
 
 
+class MailSignatureForm(forms.Form):
+    text = forms.CharField(label="Моя подпись", required=False, max_length=4000, widget=forms.Textarea(attrs={"rows": 5}))
+
+
 class NewMailLeadForm(forms.Form):
     title = forms.CharField(label="Название лида", max_length=255)
     need = forms.CharField(label="Что нужно клиенту", max_length=2000)

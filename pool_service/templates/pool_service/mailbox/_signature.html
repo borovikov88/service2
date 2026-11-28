@@ -1,0 +1,10 @@
+<form class="mail-personal-signature" method="post" action="{% url 'crm_mail_signature' %}?org_id={{ org.pk }}">
+  {% csrf_token %}
+  <header class="mail-compose-head"><svg class="mail-symbol" aria-hidden="true"><use href="#mail-icon-pen"></use></svg><h2>Моя подпись</h2>
+    <button type="button" class="mail-icon" data-dialog-close aria-label="Закрыть окно"><svg class="mail-symbol" aria-hidden="true"><use href="#mail-icon-close"></use></svg></button>
+  </header>
+  <div class="mail-signature-fields"><label for="{{ form.text.id_for_label }}">Подпись для новых писем и ответов</label>
+    {{ form.text }}{{ form.text.errors }}<small>Оставьте поле пустым, чтобы писать без подписи.</small>
+  </div>
+  <footer class="mail-compose-footer"><button class="btn btn-primary">Сохранить</button><button type="button" class="btn btn-link" data-dialog-close>Закрыть</button><span data-mail-feedback role="status"></span></footer>
+</form>

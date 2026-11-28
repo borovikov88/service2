@@ -1,0 +1,27 @@
+<form class="mail-compose" method="post" enctype="multipart/form-data" action="{% if parent %}{% url 'crm_mail_reply' parent.pk %}{% else %}{% url 'crm_mail_compose' %}{% endif %}?org_id={{ org.pk }}">
+  {% csrf_token %}<input type="hidden" name="box" value="{{ box.pk }}">{{ form.token }}
+  <header class="mail-compose-head">
+    <svg class="mail-symbol" aria-hidden="true"><use href="#mail-icon-envelope"></use></svg><h2>{% if parent %}Ответить на письмо{% else %}Новое письмо{% endif %}</h2>
+    <span class="mail-from" title="{{ box.address }}">{{ box.address }}</span>
+    <button type="button" class="mail-icon" data-maximize aria-label="Развернуть окно" aria-pressed="false"><svg class="mail-symbol" aria-hidden="true"><use href="#mail-icon-expand"></use></svg></button>
+    <button type="button" class="mail-icon" data-dialog-close aria-label="Закрыть окно"><svg class="mail-symbol" aria-hidden="true"><use href="#mail-icon-close"></use></svg></button>
+  </header>
+  <div class="mail-envelope">
+    {{ form.non_field_errors }}{{ form.token.errors }}
+    <div class="mail-field"><label for="{{ form.to.id_for_label }}">Кому</label>{{ form.to }}</div>{{ form.to.errors }}
+    <details class="mail-copy" {% if form.cc.value or form.cc.errors %}open{% endif %}><summary>Копия</summary>
+      <div class="mail-field"><label for="{{ form.cc.id_for_label }}">Копия</label>{{ form.cc }}</div>{{ form.cc.errors }}
+    </details>
+    <div class="mail-field"><label for="{{ form.subject.id_for_label }}">Тема</label>{{ form.subject }}</div>{{ form.subject.errors }}
+  </div>
+  <div class="mail-editor-tools">
+    <label class="mail-attach"><svg class="mail-symbol" aria-hidden="true"><use href="#mail-icon-clip"></use></svg> Прикрепить файл<input type="file" name="files" multiple></label>
+    <a data-mail-dialog="signature" href="{% url 'crm_mail_signature' %}?org_id={{ org.pk }}"><svg class="mail-symbol" aria-hidden="true"><use href="#mail-icon-pen"></use></svg> Моя подпись</a>
+  </div>
+  <output class="mail-uploads" aria-live="polite"></output>
+  {{ form.body.errors }}<label class="visually-hidden" for="{{ form.body.id_for_label }}">Сообщение</label>{{ form.body }}
+  <textarea data-previous-signature hidden>{{ signature_text }}</textarea>
+  <footer class="mail-compose-footer"><button class="btn btn-primary" type="submit"><svg class="mail-symbol" aria-hidden="true"><use href="#mail-icon-send"></use></svg> Отправить</button>
+    <button class="btn btn-link" type="button" data-dialog-close>Закрыть</button><span data-mail-feedback role="status"></span>
+  </footer>
+</form>
