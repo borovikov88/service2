@@ -1,17 +1,14 @@
-"""Read-only IMAP operations for hosted Mail.ru / VK WorkSpace mailboxes."""
+"""Read-only IMAP operations for configured organization mailboxes."""
 
-import imaplib
 import re
-import ssl
-from contextlib import contextmanager
 from email.utils import parsedate_to_datetime
 
 from django.utils import timezone
 
 from pool_service.communication_secrets import decrypt_secret
 from .mailbox_mime import MAX_RAW, folder_label
+from .mailbox_transport import imap_session as connect
 
-HOST = "imap.mail.ru"
 HEADER_FIELDS = "MESSAGE-ID FROM TO CC SUBJECT DATE REFERENCES IN-REPLY-TO REPLY-TO"
 FOLDER_REPLY = re.compile(rb'^\(([^)]*)\)\s+(?:"(?:\\.|[^"])*"|NIL)\s+(.*)$', re.I)
 SPECIAL = {
@@ -49,21 +46,8 @@ def ok(reply):
     return data
 
 
-@contextmanager
-def connect(address, password):
-    client = imaplib.IMAP4_SSL(HOST, 993, ssl_context=ssl.create_default_context(), timeout=12)
-    try:
-        ok(client.login(address, password))
-        yield client
-    finally:
-        try:
-            client.logout()
-        except (OSError, imaplib.IMAP4.error):
-            pass
-
-
 def mailbox_session(box):
-    return connect(box.address, decrypt_secret(box.credential))
+    return connect(box, decrypt_secret(box.credential))
 
 
 def folders(client):
@@ -168,6 +152,9 @@ def raw_message(letter):
             generation, _ = select(client, location.folder.wire_name)
             if generation == location.generation:
                 raw = selected_message(client, location.uid)
-                if raw is not None:
+                if raw is not None and locations.filter(
+                    pk=location.pk, folder__mailbox__enabled=True,
+                    folder__mailbox__config_version=letter.mailbox.config_version,
+                ).exists():
                     return raw
     raise MailUnavailable("Письмо недоступно для загрузки из этой папки.")

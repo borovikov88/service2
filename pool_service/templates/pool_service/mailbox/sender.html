@@ -1,0 +1,6 @@
+{% extends "pool_service/mailbox/base.html" %}
+{% block mail %}
+<a href="{% url 'crm_mail' %}?org_id={{ org.pk }}">← Почта</a>
+<h2>С какого ящика написать?</h2>
+<ul class="list-group">{% for box in boxes %}<li class="list-group-item"><a href="{% url 'crm_mail_compose' %}?org_id={{ org.pk }}&amp;box={{ box.pk }}">{{ box.address }}</a></li>{% endfor %}</ul>
+{% endblock %}

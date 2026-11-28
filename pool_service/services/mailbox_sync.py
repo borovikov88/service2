@@ -29,8 +29,13 @@ WINDOW = 80
 PROVIDER_ERRORS = (OSError, imaplib.IMAP4.error, CommunicationSecretError, provider.MailUnavailable)
 
 
-def store_letter(box, data, fallback, *, commercial, historical, sent_folder=False):
-    own_address = display_address(box.address)
+def _organization_addresses(box):
+    return {display_address(address) for address in CrmMailbox.objects.filter(
+        organization_id=box.organization_id
+    ).values_list("address", flat=True)}
+
+
+def store_letter(box, data, fallback, *, commercial, historical, sent_folder=False, own_addresses=None):
     key = fingerprint(data, fallback)
     letter, created = MailLetter.objects.get_or_create(
         mailbox=box,
@@ -52,16 +57,18 @@ def store_letter(box, data, fallback, *, commercial, historical, sent_folder=Fal
         letter.needs_attention = not (letter.historical or letter.outgoing or letter.processed_at)
         letter.save(update_fields=["commercial", "outgoing", "needs_attention"])
     if created or promoted or confirmed_sent:
+        if own_addresses is None:
+            own_addresses = _organization_addresses(box)
         peers = sorted(
             {
                 addr
                 for addr in [data["sender"], *data["recipients"], *data["copies"]]
-                if addr and addr != own_address
+                if addr and addr not in own_addresses
             }
         )
         if created:
             MailPeer.objects.bulk_create([MailPeer(address=addr, letter=letter) for addr in peers])
-        if len(peers) == 1 and (letter.outgoing or data["sender"] != own_address):
+        if len(peers) == 1 and (letter.outgoing or data["sender"] not in own_addresses):
             automatic_link(letter, peers[0])
             if letter.outgoing and commercial and data["reference_ids"]:
                 # A confirmed Sent copy from any mail client also settles the referenced incoming message.
@@ -149,6 +156,7 @@ def _scan(box, token, client, folder):
         )
         removed = list(obsolete.values_list("letter_id", flat=True))
         obsolete.delete()
+        own_addresses = _organization_addresses(box) if prepared else set()
         for uid, size, arrived, data, fallback in prepared:
             letter = store_letter(
                 box,
@@ -157,6 +165,7 @@ def _scan(box, token, client, folder):
                 commercial=folder.role not in ("junk", "trash", "drafts"),
                 historical=arrived < box.connected_at,
                 sent_folder=folder.role == "sent",
+                own_addresses=own_addresses,
             )
             MailLocation.objects.get_or_create(
                 folder=folder, generation=generation, uid=uid, defaults={"letter": letter, "size": size}
@@ -174,7 +183,7 @@ def sync_mailbox(box_id, *, seconds=35):
     if (
         not CrmMailbox.objects.filter(pk=box_id, enabled=True)
         .filter(Q(lease_until__isnull=True) | Q(lease_until__lte=now))
-        .update(sync_token=token, lease_until=now + timedelta(minutes=3))
+        .update(sync_token=token, lease_until=now + timedelta(minutes=3), last_attempt_at=now)
     ):
         return False
     box = CrmMailbox.objects.select_related("organization").get(pk=box_id)

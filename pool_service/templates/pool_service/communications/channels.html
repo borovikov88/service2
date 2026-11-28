@@ -8,11 +8,31 @@
     <div class="text-muted">Подключайте источники обращений и управляйте их состоянием из Service2.</div>
   </div>
   <div class="d-flex flex-wrap gap-2">
-    <a href="{% url 'avito_dashboard' %}" class="btn btn-outline-primary">Обзор Авито</a>
+    {% if can_edit_channels %}<a href="{% url 'avito_dashboard' %}" class="btn btn-outline-primary">Обзор Авито</a>{% endif %}
       <a href="{% url 'communications_conversations' %}" class="btn btn-outline-secondary">К диалогам</a>
   </div>
 </div>
 
+{% if mail_owner %}
+<section class="card mb-4" id="mailboxes" aria-labelledby="mailboxes-title">
+  <div class="card-body">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+      <h2 class="h5 mb-0" id="mailboxes-title"><i class="bi bi-envelope" aria-hidden="true"></i> Почтовые ящики</h2>
+      <a class="btn btn-primary" href="{% url 'crm_mail_add' %}?org_id={{ communication_org_id }}">Добавить ящик</a>
+    </div>
+    <ul class="list-group list-group-flush mt-2">
+      {% for mailbox in mailboxes %}
+      <li class="list-group-item px-0 d-flex flex-wrap align-items-center justify-content-between gap-2">
+        <div class="text-break"><strong>{{ mailbox.address }}</strong><div class="text-muted small">
+          {{ mailbox.get_provider_display }} · {% if not mailbox.enabled %}Отключён{% elif mailbox.sync_error %}{{ mailbox.sync_error }}{% elif mailbox.last_sync_at %}Синхронизация {{ mailbox.last_sync_at|date:"d.m.Y H:i" }}{% else %}Ожидает первой синхронизации{% endif %}
+        </div></div>
+        <a class="btn btn-sm btn-outline-secondary" href="{% url 'crm_mail_account' mailbox.pk %}?org_id={{ communication_org_id }}" aria-label="Настроить {{ mailbox.address }}">Настроить</a>
+      </li>{% empty %}<li class="list-group-item px-0 text-muted">Почтовые ящики ещё не подключены.</li>{% endfor %}
+    </ul>
+  </div>
+</section>
+{% endif %}
+{% if can_edit_channels %}
 <div class="row g-4">
   {% for provider in providers %}
   <div class="col-xl-6">
@@ -238,4 +258,5 @@
     </section>
   </div>
 </div>
+{% endif %}
 {% endblock %}

@@ -3,7 +3,6 @@
 import hashlib
 import imaplib
 import smtplib
-import ssl
 from email import policy
 from email.message import EmailMessage
 from email.utils import format_datetime
@@ -17,6 +16,7 @@ from pool_service.communication_secrets import CommunicationSecretError, decrypt
 from pool_service.mailbox_models import CrmMailbox, MailSubmission
 from pool_service.models import Organization
 from . import mailbox_imap as provider
+from .mailbox_transport import smtp_session
 from .mailbox_access import mailbox_role
 from .mailbox_mime import smtp_address, header_data, parse_content
 from .mailbox_sync import PROVIDER_ERRORS, store_letter
@@ -64,8 +64,7 @@ def deliver(box, actor, key, fields, uploads, parent=None):
     try:
         if uploads:
             receipt.attachment_source.save(f"{key}.eml", ContentFile(raw))
-        with smtplib.SMTP_SSL("smtp.mail.ru", 465, timeout=15, context=ssl.create_default_context()) as smtp:
-            smtp.login(box.address, decrypt_secret(box.credential))
+        with smtp_session(box, decrypt_secret(box.credential)) as smtp:
             attempted = True
             refused = smtp.sendmail(
                 smtp_address(box.address),

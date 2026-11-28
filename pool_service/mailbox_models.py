@@ -9,8 +9,22 @@ from .storage import private_media_storage
 
 
 class CrmMailbox(models.Model):
-    organization = models.OneToOneField("pool_service.Organization", on_delete=models.PROTECT)
+    class Provider(models.TextChoices):
+        MAIL = "mailru", "Mail.ru / VK WorkSpace"
+        YANDEX = "yandex", "Яндекс Почта"
+        GOOGLE = "gmail", "Gmail / Google Workspace"
+        CUSTOM = "custom", "Другой провайдер"
+
+    organization = models.ForeignKey("pool_service.Organization", on_delete=models.PROTECT, related_name="mailboxes")
     address = models.EmailField(unique=True)
+    provider = models.CharField(max_length=12, choices=Provider.choices, default=Provider.MAIL)
+    login = models.CharField(max_length=254, blank=True)
+    imap_host = models.CharField(max_length=253, default="imap.mail.ru")
+    imap_port = models.PositiveSmallIntegerField(default=993)
+    smtp_host = models.CharField(max_length=253, default="smtp.mail.ru")
+    smtp_port = models.PositiveSmallIntegerField(default=465)
+    config_version = models.PositiveIntegerField(default=0)
+    last_attempt_at = models.DateTimeField(null=True)
     credential = models.TextField(editable=False)
     enabled = models.BooleanField(default=True)
     connected_at = models.DateTimeField(default=timezone.now)
@@ -18,6 +32,10 @@ class CrmMailbox(models.Model):
     sync_error = models.CharField(max_length=100, blank=True)
     sync_token = models.UUIDField(null=True, editable=False)
     lease_until = models.DateTimeField(null=True, editable=False)
+
+    @property
+    def incoming_account(self):
+        return self.imap_host, self.imap_port, self.login or self.address
 
 
 class MailFolder(models.Model):

@@ -118,10 +118,11 @@
       {% endif %}
     </nav>
   </div>
-  {% if can_manage_communication_channels %}
+  {% communication_settings_url request as settings_url %}
+  {% if settings_url %}
     <a
       class="communications-settings"
-      href="{% url 'communications_channels' %}"
+      href="{{ settings_url }}"
       aria-label="Каналы связи"
       title="Каналы связи"
     >

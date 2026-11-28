@@ -11,7 +11,7 @@ from uuid import uuid4
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import Client as Browser, TestCase
+from django.test import Client as Browser, SimpleTestCase, TestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -111,11 +111,11 @@ class MailboxTests(LeadFixture, TestCase):
         lead = self.create(client_id=self.client.pk)
         first = self.letter(addr)
         self.assertEqual(first.lead_id, lead.pk)
-        self.assertIn(first, contact_letters(self.box, self.client))
+        self.assertIn(first, contact_letters(self.org, self.client))
         second_party = Client.objects.create(
             organization=self.org, client_type="legal", name="Synthetic firm", email=addr
         )
-        self.assertFalse(contact_letters(self.box, second_party).exists())
+        self.assertFalse(contact_letters(self.org, second_party).exists())
         self.assertIsNone(self.letter(addr).lead_id)
         ClientCompanyLink.objects.create(person=self.client, company=second_party)
         result = create_commercial_deal(
@@ -129,8 +129,8 @@ class MailboxTests(LeadFixture, TestCase):
         )
         other = self.letter(addr)
         self.assertEqual((other.lead_id, other.deal_id), (None, None))
-        self.assertIn(other, contact_letters(self.box, second_party))
-        self.assertIn(other, contact_letters(self.box, self.client))
+        self.assertIn(other, contact_letters(self.org, second_party))
+        self.assertIn(other, contact_letters(self.org, self.client))
         bind_mail(self.user, self.org, other.pk, 0, "deal", target=result["deal_id"])
         events = self.http.get(
             reverse("crm_deal_activity", args=[result["deal_id"]]) + f"?org_id={self.org.pk}&type=email"
@@ -164,7 +164,7 @@ class MailboxTests(LeadFixture, TestCase):
         letter = self.letter(self.client.email)
         self.assertFalse(letter.needs_attention)
         self.assertIsNone(letter.lead_id)
-        self.assertFalse(contact_letters(self.box, self.client).exists())
+        self.assertFalse(contact_letters(self.org, self.client).exists())
         self.assertContains(self.http.get(self.url("")), letter.subject)
 
     def test_role_checks_membership_live_and_settings_owner_only(self):
@@ -191,10 +191,10 @@ class MailboxTests(LeadFixture, TestCase):
         self.assertEqual(self.http.get(self.url("")).status_code, 403)
         member.role = "owner"
         member.save()
-        self.assertContains(self.http.get(self.url("_setup")), "Подключение почты")
+        self.assertContains(self.http.get(self.url("_setup"), follow=True), "Настроить office@example.org")
         with patch.object(imap, "connect", return_value=nullcontext(None)), patch.object(
             imap, "folders", return_value=[]
-        ):
+        ), patch("pool_service.mailbox_views.smtp_session", return_value=nullcontext(None)):
             response = self.http.post(
                 self.url("_setup"), {"address": self.box.address, "password": "rotated-synthetic"}
             )
@@ -204,6 +204,133 @@ class MailboxTests(LeadFixture, TestCase):
         self.assertEqual(decrypt_secret(self.box.credential), "rotated-synthetic")
         StaffAccount.objects.create(organization=self.org, user=self.user, kind="system")
         self.assertEqual(self.http.get(self.url("_setup")).status_code, 403)
+
+    def make_owner(self):
+        OrganizationAccess.objects.filter(user=self.user, organization=self.org).update(role="owner")
+
+    def test_gear_has_owner_only_mail_section_and_scopes_rows(self):
+        from pool_service.communication_models import CommunicationAccess
+
+        self.make_owner()
+        other = Organization.objects.create(name="Other tenant")
+        box = CrmMailbox.objects.create(organization=other, address="outside@example.org")
+        gear = reverse("communications_channels") + f"?org_id={self.org.pk}"
+        page = self.http.get(gear)
+        self.assertContains(page, "Почтовые ящики")
+        self.assertContains(page, self.box.address)
+        self.assertNotContains(page, box.address)
+        self.assertNotContains(page, "Мегафон")
+        self.assertNotContains(page, self.box.credential)
+        self.assertContains(self.http.get(self.url("")), gear)
+        self.assertEqual(self.http.get(self.url("_account", box.pk)).status_code, 404)
+        OrganizationAccess.objects.filter(user=self.user, organization=self.org).update(role="manager")
+        CommunicationAccess.objects.update_or_create(organization=self.org, user=self.user,
+                                                      defaults={"can_manage_channels": True})
+        self.assertNotContains(self.http.get(gear), self.box.address)
+        self.assertContains(self.http.get(gear), "Мегафон")
+        self.assertEqual(self.http.get(self.url("_add")).status_code, 403)
+
+    def test_add_two_edit_noop_and_pause_independently(self):
+        self.make_owner()
+        cipher = self.box.credential
+        data = {"provider": "yandex", "address": "second@example.org", "login": "separate-user",
+                "password": "synthetic-only-password", "version": 0}
+        with patch.object(imap, "connect", return_value=nullcontext(None)), patch.object(imap, "folders"), patch(
+            "pool_service.mailbox_views.smtp_session", return_value=nullcontext(None)
+        ) as smtp:
+            self.assertEqual(self.http.post(self.url("_add"), data).status_code, 302)
+            self.assertEqual(smtp.call_args.args[0].smtp_host, "smtp.yandex.ru")
+            smtp.reset_mock()
+            self.assertContains(self.http.post(self.url("_add"), data), "Не удалось добавить")
+            smtp.assert_not_called()
+        second = CrmMailbox.objects.get(address=data["address"])
+        self.assertEqual((second.login, second.imap_host, second.smtp_port), ("separate-user", "imap.yandex.ru", 465))
+        self.assertNotEqual(second.credential, data["password"])
+        self.assertNotContains(self.http.get(self.url("_account", second.pk)), data["password"])
+        with patch.object(imap, "connect") as dial:
+            self.assertEqual(self.http.post(self.url("_account", self.box.pk), {"provider": "mailru", "version": 0}).status_code, 302)
+            self.assertContains(self.http.post(self.url("_account", self.box.pk), {"provider": "gmail", "version": 0}), "Для смены сервера")
+            dial.assert_not_called()
+        self.assertEqual(self.http.post(self.url("_account", second.pk), {"action": "pause", "version": 0}).status_code, 302)
+        self.box.refresh_from_db()
+        second.refresh_from_db()
+        self.assertTrue(self.box.enabled)
+        self.assertEqual(self.box.credential, cipher)
+        self.assertEqual((second.enabled, second.credential), (False, ""))
+
+    def test_custom_endpoint_reset_preserves_letters_and_does_not_bind_old_uids(self):
+        import smtplib
+        self.make_owner()
+        letter = self.letter()
+        folder = self.box.folders.create(key="s", name="INBOX", wire_name="INBOX", generation=9, latest_uid=5)
+        location = MailLocation.objects.create(folder=folder, letter=letter, generation=9, uid=5)
+        data = {"provider": "custom", "imap_host": "imap.example.org", "imap_port": 143,
+                "smtp_host": "smtp.example.org", "smtp_port": 587, "login": "other",
+                "password": "test-only-secret", "version": 0}
+        with patch.object(imap, "connect", return_value=nullcontext(None)), patch.object(imap, "folders"), patch(
+            "pool_service.mailbox_views.smtp_session", side_effect=smtplib.SMTPException("provider detail")
+        ):
+            page = self.http.post(self.url("_account", self.box.pk), data)
+            self.assertContains(page, "по SMTP")
+            self.assertNotContains(page, data["password"])
+            self.assertNotContains(page, "provider detail")
+            self.assertTrue(MailLocation.objects.filter(pk=location.pk).exists())
+        with patch.object(imap, "connect", return_value=nullcontext(None)), patch.object(imap, "folders"), patch(
+            "pool_service.mailbox_views.smtp_session", return_value=nullcontext(None)
+        ):
+            self.assertEqual(self.http.post(self.url("_account", self.box.pk), data).status_code, 302)
+        self.assertTrue(self.box.letters.filter(pk=letter.pk).exists())
+        self.assertFalse(letter.locations.exists())
+        folder.refresh_from_db()
+        self.assertEqual((folder.available, folder.generation, folder.latest_uid), (False, 0, 0))
+        self.http.post(self.url("_account", self.box.pk), {"action": "pause", "version": 0})
+        self.box.refresh_from_db()
+        self.assertTrue(self.box.enabled)
+        self.assertEqual(self.box.config_version, 1)
+
+    def test_archive_sender_and_replies_with_two_mailboxes(self):
+        from django.core import signing
+
+        self.client.email = "external@example.org"
+        self.client.save()
+        a = self.letter(self.client.email)
+        b = CrmMailbox.objects.create(organization=self.org, address="sales@example.org")
+        raw = message(self.client.email, msgid="<other@example.org>", subject="Other inbox").as_bytes()
+        second = store_letter(b, header_data(raw, self.at), "", commercial=True, historical=False)
+        page = self.http.get(self.url(""))
+        self.assertContains(page, a.subject)
+        self.assertContains(page, second.subject)
+        page = self.http.get(self.url("") + f"&box={b.pk}")
+        self.assertContains(page, second.subject)
+        self.assertNotContains(page, a.subject)
+        self.assertEqual(set(contact_letters(self.org, self.client)), {a, second})
+        self.assertContains(self.http.get(self.url("_compose")), "С какого ящика написать")
+        compose = self.http.get(self.url("_compose") + f"&box={b.pk}")
+        token = compose.context["form"].initial["token"]
+        self.assertEqual(signing.loads(token, salt="mail-send")[1:3], [b.pk, None])
+        reply = self.http.get(self.url("_reply", second.pk))
+        self.assertEqual(reply.context["box"], b)
+        self.assertEqual(self.http.get(self.url("_reply", second.pk) + f"&box={self.box.pk}").status_code, 404)
+        form = {"to": self.client.email, "subject": "Subject", "body": "Content", "box": self.box.pk, "token": token}
+        with patch("pool_service.mailbox_views.deliver") as send:
+            self.assertContains(self.http.post(self.url("_compose"), form), "Откройте новое письмо")
+            send.assert_not_called()
+        foreign = Organization.objects.create(name="Separate organization")
+        other = CrmMailbox.objects.create(organization=foreign, address="another@example.org")
+        self.assertEqual(self.http.get(self.url("") + f"&box={other.pk}").status_code, 404)
+        self.assertEqual(self.http.get(self.url("_compose") + f"&box={other.pk}").status_code, 404)
+
+    def test_scheduler_resumes_with_least_recent_attempt_after_timeout(self):
+        from django.core.management import call_command
+
+        second = CrmMailbox.objects.create(organization=self.org, address="sales@example.org")
+        with patch.object(imap, "mailbox_session", side_effect=OSError):
+            self.assertFalse(sync_mailbox(self.box.pk))
+        path = "pool_service.management.commands.sync_crm_mail."
+        # A slow run of the oldest mailbox uses the remaining cron budget.
+        with patch(path + "sync_mailbox") as sync, patch(path + "time.monotonic", side_effect=[0, 1, 34]):
+            call_command("sync_crm_mail", organization=self.org.pk)
+        sync.assert_called_once_with(second.pk, seconds=34)
 
     def test_foreign_mail_and_other_assignee_are_inaccessible(self):
         foreign = Organization.objects.create(name="Other synthetic org")
@@ -283,7 +410,7 @@ class MailboxTests(LeadFixture, TestCase):
         record = store_letter(
             self.box, header_data(m.as_bytes(), self.at), "", commercial=True, historical=False
         )
-        self.assertIn(record, contact_letters(self.box, self.client))
+        self.assertIn(record, contact_letters(self.org, self.client))
         self.assertIsNone(record.lead_id)
         first = self.letter()
         outgoing = message(self.box.address, msgid="<replied@example.org>", refs=first.message_id)
@@ -329,7 +456,7 @@ class MailboxTests(LeadFixture, TestCase):
         with TemporaryDirectory() as directory, patch.object(
             MailSubmission._meta.get_field("attachment_source"), "storage", new=PrivateMediaStorage(directory)
         ), patch(
-            "pool_service.services.mailbox_sending.smtplib.SMTP_SSL", return_value=smtp
+            "pool_service.services.mailbox_sending.smtp_session", return_value=smtp
         ) as dial, patch.object(
             imap, "mailbox_session", side_effect=OSError
         ):
@@ -346,8 +473,63 @@ class MailboxTests(LeadFixture, TestCase):
             self.assertTrue(list(Path(directory).rglob("*.eml")))
             self.assertFalse(CrmLead.objects.exists())
         smtp.__enter__.return_value.sendmail.side_effect = TimeoutError
-        with patch("pool_service.services.mailbox_sending.smtplib.SMTP_SSL", return_value=smtp) as dial:
+        with patch("pool_service.services.mailbox_sending.smtp_session", return_value=smtp) as dial:
             second = uuid4()
             self.assertEqual(deliver(self.box, self.user, second, params, []).status, "uncertain")
             self.assertEqual(deliver(self.box, self.user, second, params, []).status, "uncertain")
             self.assertEqual(dial.call_count, 1)
+
+
+class MailTransportTests(SimpleTestCase):
+    def test_presets_and_custom_hosts_require_verified_tls(self):
+        from pool_service.services import mailbox_transport as transport
+
+        box = CrmMailbox(address="a@example.org", login="service-user", imap_host="imap.example.org",
+                         smtp_host="smtp.example.org", imap_port=143, smtp_port=587)
+        with patch.object(transport, "_Imap") as dial:
+            with transport.imap_session(box, "synthetic"):
+                pass
+            client = dial.return_value
+            self.assertEqual([args[0] for args in client.method_calls], ["starttls", "login", "logout"])
+            self.assertTrue(client.starttls.call_args.kwargs["ssl_context"].check_hostname)
+            self.assertEqual(client.login.call_args.args, ("service-user", "synthetic"))
+            client.reset_mock()
+            client.starttls.side_effect = OSError()
+            with self.assertRaises(OSError), transport.imap_session(box, "synthetic"):
+                pass
+            client.login.assert_not_called()
+        with patch.object(transport, "_Smtp") as dial:
+            with transport.smtp_session(box, "synthetic"):
+                pass
+            client = dial.return_value.__enter__.return_value
+            self.assertEqual([args[0] for args in client.method_calls], ["starttls", "login"])
+            self.assertTrue(client.starttls.call_args.kwargs["context"].check_hostname)
+            client.reset_mock()
+            client.starttls.side_effect = OSError()
+            with self.assertRaises(OSError), transport.smtp_session(box, "synthetic"):
+                pass
+            client.login.assert_not_called()
+        for port in (25, 110):
+            box.smtp_port = port
+            with self.assertRaises(OSError), transport.smtp_session(box, "synthetic"):
+                pass
+
+    def test_public_dns_addresses_are_pinned_with_tls_hostname_and_fallback(self):
+        import socket
+        from pool_service.services import mailbox_transport as transport
+
+        name = "mail.example.org"
+        addresses = ["2606:4700:4700::1111", "1.1.1.1"]
+        tls, raw = MagicMock(), MagicMock()
+        with patch.object(transport, "_resolve", return_value=addresses) as dns, patch.object(
+            transport, "_numeric_socket", side_effect=[OSError(), raw]
+        ) as connect:
+            self.assertIs(transport._socket(name, 465, 3, tls), tls.wrap_socket.return_value)
+            self.assertEqual(dns.call_count, 1)
+            self.assertEqual([call.args[0] for call in connect.call_args_list], addresses)
+            tls.wrap_socket.assert_called_once_with(raw, server_hostname=name)
+        replies = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 993)) for ip in ("1.1.1.1", "127.0.0.1")]
+        with patch("socket.getaddrinfo", return_value=replies), patch.object(transport, "_numeric_socket") as connect:
+            with self.assertRaises(OSError):
+                transport._socket(name, 993, 3, tls)
+            connect.assert_not_called()
