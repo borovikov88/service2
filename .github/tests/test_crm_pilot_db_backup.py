@@ -35,7 +35,7 @@ SQL = (DDL + ';\nINSERT INTO `synthetic` VALUES (1);\n-- Dump completed on 2026-
 def config():
     return {'ENGINE': 'django.db.backends.mysql', 'NAME': 'synthetic', 'USER': 'test_user',
             'PASSWORD': 'private-value"\\', 'HOST': 'localhost', 'PORT': '3306',
-            'OPTIONS': {'init_command': "SET sql_mode='STRICT_TRANS_TABLES'"}}
+            'OPTIONS': {'init_command': "SET sql_mode='STRICT_TRANS_TABLES'", 'charset': 'utf8mb4'}}
 
 
 def receipt():
@@ -196,6 +196,16 @@ class CoverageTests(unittest.TestCase):
 
 
 class PrivateBackupTests(unittest.TestCase):
+    def test_native_charset_matches_explicit_and_legacy_settings(self):
+        current = config()
+        legacy = current | {'OPTIONS': {'init_command': current['OPTIONS']['init_command']}}
+        text = B.client_options(current)
+        self.assertEqual(text, B.client_options(legacy))
+        self.assertIn('default-character-set=utf8mb4', text.splitlines())
+        for charset in ('utf8', 'latin1', None, 'utf8mb4\nuser=other'):
+            with self.subTest(charset=charset), self.assertRaises(B.Blocked):
+                B.client_options(current | {'OPTIONS': current['OPTIONS'] | {'charset': charset}})
+
     def test_options_escape_credentials_and_reject_ambiguous_config(self):
         text = B.client_options(config())
         self.assertIn('password="private-value\\"\\\\"', text)
