@@ -595,6 +595,21 @@ class MailboxTests(LeadFixture, TestCase):
                          {7: False, 8: True, 9: True, 10: True})
         connection.uid.assert_called_once_with("FETCH", "7,8,9,10,11", "(UID BODYSTRUCTURE)")
 
+    def test_delivery_status_has_a_clip_only_when_the_original_message_is_attached(self):
+        raw = (b'MIME-Version: 1.0\r\nContent-Type: multipart/report; boundary="status"\r\n\r\n'
+               b'--status\r\nContent-Type: text/plain\r\n\r\nDelivery failed\r\n'
+               b'--status\r\nContent-Type: message/delivery-status\r\n\r\n'
+               b'Reporting-MTA: dns; example.org\r\n\r\nAction: failed\r\nStatus: 5.1.1\r\n')
+        original = b'--status\r\nContent-Type: message/rfc822\r\n\r\nSubject: original\r\n\r\nExample\r\n'
+        text = b'("TEXT" "PLAIN" NIL NIL NIL "7BIT" 15 1)'
+        status = b'("MESSAGE" "DELIVERY-STATUS" NIL NIL NIL "7BIT" 70)'
+        forwarded = b'("MESSAGE" "RFC822" NIL NIL NIL "7BIT" 50 (NIL NIL NIL NIL NIL NIL NIL NIL NIL NIL) ' + text + b' 3)'
+        connection = MagicMock()
+        for file_part, mime_part, expected in ((b"", b"", False), (original, forwarded, True)):
+            connection.uid.return_value = ("OK", [b'1 (UID 4 BODYSTRUCTURE (' + text + status + mime_part + b' "REPORT"))'])
+            self.assertEqual(bool(parse_content(raw + file_part + b"--status--\r\n")[1]), expected)
+            self.assertEqual(imap.selected_attachment_flags(connection, {4}), {4: expected})
+
     def test_preview_fetch_reads_only_requested_folder_generation_without_marking_read(self):
         letter = self.letter()
         folder = MailFolder.objects.create(mailbox=self.box, key="inbox", name="Inbox", wire_name="INBOX", generation=3)
@@ -632,6 +647,25 @@ class MailboxTests(LeadFixture, TestCase):
         self.assertEqual(self.http.post(self.url("_previews", foreign_folder.pk), data).status_code, 404)
         OrganizationAccess.objects.filter(organization=self.org, user=self.user).update(role="service")
         self.assertEqual(self.http.post(url, data).status_code, 403)
+
+    def test_preview_and_attachment_lookups_can_recover_independently(self):
+        folder = MailFolder.objects.create(mailbox=self.box, key="inbox", name="Inbox", wire_name="INBOX", generation=3)
+        letter = self.letter()
+        MailLocation.objects.create(folder=folder, generation=3, letter=letter, uid=4, size=1000)
+        url = self.url("_previews", folder.pk)
+        with (patch.object(imap, "mailbox_session", return_value=nullcontext(MagicMock())),
+              patch.object(imap, "select", return_value=(3, 5)),
+              patch.object(imap, "selected_previews", side_effect=imap.MailUnavailable) as preview,
+              patch.object(imap, "selected_attachment_flags", return_value={4: True}) as flags):
+            result = self.http.post(url, {"letter": letter.pk}).json()
+            self.assertEqual(result, {"previews": {}, "attachments": {str(letter.pk): True}})
+            preview.side_effect = None
+            preview.return_value = {4: "Сроки поставки"}
+            flags.side_effect = imap.MailUnavailable
+            self.box.letters.filter(pk=letter.pk).update(has_attachments=None)
+            result = self.http.post(url, {"letter": letter.pk}).json()
+            self.assertEqual(result, {"previews": {str(letter.pk): "Сроки поставки"}, "attachments": {}})
+        self.assertFalse(MailReadReceipt.objects.exists())
 
     def test_mail_reader_and_signature_belong_to_each_staff_member(self):
         letter = self.letter()

@@ -143,10 +143,22 @@ def _named_parameter(parameters, key):
 def _has_file(part):
     """Match the downloadable parts exposed by mailbox_mime.parse_content."""
     if part.is_multipart:
-        return any(_has_file(child) for child in part[0])
+        children = [_has_file(child) for child in part[0]]
+        if True in children:
+            return True
+        return None if None in children else False
     if len(part) < 7 or not isinstance(part[0], bytes):
         raise ValueError("Incomplete MIME structure")
-    if part[0].upper() != b"TEXT" or _named_parameter(part[2], b"NAME"):
+    kind = part[0].upper()
+    if kind == b"MESSAGE":
+        subtype = part[1].upper()
+        if subtype == b"RFC822":
+            return True
+        if subtype == b"DELIVERY-STATUS":
+            return False  # Delivery reports contain status headers, not downloadable files.
+        # Other message containers can hold nested parts not described by this server.
+        return None
+    if kind != b"TEXT" or _named_parameter(part[2], b"NAME"):
         return True
     # For text the line count and optional MD5 precede the disposition.
     disposition = part[9] if len(part) > 9 else None
@@ -170,7 +182,9 @@ def selected_attachment_flags(client, uids):
         uid = fields.get(b"UID")
         if uid in uids and b"BODYSTRUCTURE" in fields:
             try:
-                flags[uid] = _has_file(fields[b"BODYSTRUCTURE"])
+                flag = _has_file(fields[b"BODYSTRUCTURE"])
+                if flag is not None:
+                    flags[uid] = flag
             except (AttributeError, IndexError, TypeError, ValueError, RecursionError):
                 continue
     return flags

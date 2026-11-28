@@ -193,11 +193,14 @@ def previews(request, folder_id):
                 generation, _ = provider.select(client, folder.wire_name)
                 if generation != folder.generation:
                     raise provider.MailUnavailable()
-                snippets = provider.selected_previews(client, missing_previews)
+                try:
+                    snippets = provider.selected_previews(client, missing_previews)
+                except (ValueError, LookupError, UnicodeError) + PROVIDER_ERRORS:
+                    snippets = {}
                 try:
                     flags = provider.selected_attachment_flags(client, missing_flags)
-                except PROVIDER_ERRORS:
-                    flags = {}  # A provider can decline BODYSTRUCTURE while previews still work.
+                except (ValueError, LookupError, UnicodeError) + PROVIDER_ERRORS:
+                    flags = {}
             with transaction.atomic():
                 box = CrmMailbox.objects.select_for_update().get(pk=folder.mailbox_id)
                 _scope(request)
