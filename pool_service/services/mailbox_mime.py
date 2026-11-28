@@ -289,6 +289,7 @@ def parse_content(raw, download_index=None):
 def cache_content(letter, raw):
     letter.body, letter.attachments = parse_content(raw)
     letter.preview = body_preview(letter.body)
+    letter.has_attachments = bool(letter.attachments)
     letter.body_loaded = True
     letter.content_version = CONTENT_VERSION
-    letter.save(update_fields=["body", "attachments", "body_loaded", "preview", "content_version"])
+    letter.save(update_fields=["body", "attachments", "has_attachments", "body_loaded", "preview", "content_version"])

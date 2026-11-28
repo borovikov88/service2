@@ -1,6 +1,6 @@
 {% extends "pool_service/base.html" %}{% load static %}
 {% block title %}Почта{% endblock %}
-{% block extra_head %}{{ block.super }}<link rel="stylesheet" href="{% static 'assets/css/crm-mail.css' %}?v=2"><script defer src="{% static 'assets/js/communication-filters.js' %}?v=2"></script><script defer src="{% static 'assets/js/crm-mail-workspace.js' %}?v=1"></script>{% endblock %}
+{% block extra_head %}{{ block.super }}<link rel="stylesheet" href="{% static 'assets/css/crm-mail.css' %}?v=3"><script defer src="{% static 'assets/js/communication-filters.js' %}?v=2"></script><script defer src="{% static 'assets/js/crm-mail-workspace.js' %}?v=2"></script>{% endblock %}
 {% block content %}<div class="mail-workspace">
 {% include "pool_service/mailbox/_icons.html" %}
 {% include "pool_service/communications/_section_nav.html" %}

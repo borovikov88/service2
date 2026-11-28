@@ -78,6 +78,7 @@ class MailLetter(models.Model):
     preview = models.CharField(max_length=220, null=True, blank=True)
     body = models.TextField(blank=True)
     attachments = models.JSONField(default=list)
+    has_attachments = models.BooleanField(null=True)
     lead = models.ForeignKey(
         "pool_service.CrmLead", null=True, on_delete=models.PROTECT, related_name="mail_letters"
     )

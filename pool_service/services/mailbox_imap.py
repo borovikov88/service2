@@ -4,6 +4,8 @@ import re
 from email.utils import parsedate_to_datetime
 
 from django.utils import timezone
+from imapclient.exceptions import ProtocolError
+from imapclient.response_parser import parse_fetch_response
 
 from pool_service.communication_secrets import decrypt_secret
 from .mailbox_mime import MAX_RAW, folder_label, preview_from_prefix
@@ -129,6 +131,49 @@ def headers(client, start, end):
         if not at or not at.tzinfo:
             at = timezone.now()
         yield int(uid[1]), int(size[1]), at, header
+
+
+def _named_parameter(parameters, key):
+    if not isinstance(parameters, tuple):
+        return False
+    return any(isinstance(name, bytes) and name.partition(b"*")[0].upper() == key and value
+               for name, value in zip(parameters[::2], parameters[1::2]))
+
+
+def _has_file(part):
+    """Match the downloadable parts exposed by mailbox_mime.parse_content."""
+    if part.is_multipart:
+        return any(_has_file(child) for child in part[0])
+    if len(part) < 7 or not isinstance(part[0], bytes):
+        raise ValueError("Incomplete MIME structure")
+    if part[0].upper() != b"TEXT" or _named_parameter(part[2], b"NAME"):
+        return True
+    # For text the line count and optional MD5 precede the disposition.
+    disposition = part[9] if len(part) > 9 else None
+    return bool(isinstance(disposition, tuple) and len(disposition) == 2
+                and (disposition[0].upper() == b"ATTACHMENT"
+                     or _named_parameter(disposition[1], b"FILENAME")))
+
+
+def selected_attachment_flags(client, uids):
+    """Fetch just MIME structure, including later parts of large unopened messages."""
+    if not uids:
+        return {}
+    rows = ok(client.uid("FETCH", ",".join(str(uid) for uid in sorted(uids)), "(UID BODYSTRUCTURE)"))
+    try:
+        # Require an explicit UID, never confuse an unsolicited sequence number with a UID.
+        items = parse_fetch_response(rows or [], uid_is_key=False)
+    except (ProtocolError, AttributeError, IndexError, TypeError, ValueError, RecursionError):
+        return {}
+    flags = {}
+    for fields in items.values():
+        uid = fields.get(b"UID")
+        if uid in uids and b"BODYSTRUCTURE" in fields:
+            try:
+                flags[uid] = _has_file(fields[b"BODYSTRUCTURE"])
+            except (AttributeError, IndexError, TypeError, ValueError, RecursionError):
+                continue
+    return flags
 
 
 def selected_previews(client, sizes):

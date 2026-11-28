@@ -521,6 +521,80 @@ class MailboxTests(LeadFixture, TestCase):
         self.assertEqual(MailReadReceipt.objects.filter(letter=letter).count(), 1)
         self.assertTrue(letter.needs_attention)
 
+    def test_mark_read_from_list_is_personal_idempotent_and_does_not_process(self):
+        letter = self.letter()
+        url = self.url("_read", letter.pk)
+        self.assertEqual(self.http.get(url).status_code, 405)
+        with patch.object(imap, "mailbox_session") as session:
+            result = self.http.post(url + "&folder=review&page=2", {"user": 0})
+            self.assertRedirects(result, self.url("") + "&folder=review&page=2", fetch_redirect_response=False)
+            self.assertEqual(self.http.post(url, HTTP_X_REQUESTED_WITH="XMLHttpRequest").json(), {"read": True})
+            session.assert_not_called()
+        self.assertEqual(MailReadReceipt.objects.filter(letter=letter, user=self.user).count(), 1)
+        letter.refresh_from_db()
+        self.assertFalse(letter.body_loaded)
+        self.assertTrue(letter.needs_attention)
+        self.assertIsNone(letter.processed_at)
+        self.assertFalse(self.http.get(self.url("")).context["page"][0].unread)
+        other = get_user_model().objects.create_user("another-reader")
+        OrganizationAccess.objects.create(user=other, organization=self.org, role="manager")
+        self.http.force_login(other)
+        self.assertTrue(self.http.get(self.url("")).context["page"][0].unread)
+        guarded = Browser(enforce_csrf_checks=True)
+        guarded.force_login(other)
+        self.assertEqual(guarded.post(url).status_code, 403)
+        foreign = Organization.objects.create(name="Other inbox")
+        box = CrmMailbox.objects.create(organization=foreign, address="foreign@example.org")
+        foreign_letter = box.letters.create(fingerprint="b" * 64, sent_at=self.at)
+        self.assertEqual(self.http.post(self.url("_read", foreign_letter.pk)).status_code, 404)
+        OrganizationAccess.objects.filter(organization=self.org, user=other).update(role="service")
+        self.assertEqual(self.http.post(url).status_code, 403)
+        self.assertFalse(MailReadReceipt.objects.filter(user=other).exists())
+
+    def test_mail_row_avatar_timestamps_and_preexisting_attachment_metadata(self):
+        today = timezone.localtime(self.at).replace(hour=12, minute=20)
+        yesterday = today - timedelta(days=1)
+        branded = self.letter("Alerts <sender@notice.avito.ru>")
+        self.box.letters.filter(pk=branded.pk).update(sent_at=today)
+        other = self.letter("Анна Орлова <manager@other-avito.ru>")
+        self.box.letters.filter(pk=other.pk).update(
+            sent_at=yesterday, body_loaded=True, attachments=[{"index": 2, "name": "example.pdf"}])
+        outgoing = self.letter()
+        self.box.letters.filter(pk=outgoing.pk).update(outgoing=True, sent_at=today)
+        result = self.http.get(self.url(""))
+        rows = {r.pk: r for r in result.context["page"]}
+        self.assertTrue(rows[branded.pk].avito_avatar)
+        self.assertFalse(rows[other.pk].avito_avatar)
+        self.assertEqual(rows[other.pk].initials, "АО")
+        self.assertTrue(rows[other.pk].shows_files)
+        self.assertIsNone(rows[branded.pk].shows_files)
+        self.assertFalse(rows[branded.pk].show_date)
+        self.assertTrue(rows[outgoing.pk].show_date)
+        self.assertContains(result, f">{today:%H:%M}</time>")
+        self.assertContains(result, f">{today:%d.%m %H:%M}</time>")
+        self.assertContains(result, f">{yesterday:%d.%m %H:%M}</time>")
+        self.assertContains(result, 'title="Есть вложения"><svg', count=1)
+
+    def test_attachment_flags_for_mime_parts_without_reading_files(self):
+        plain = b'("TEXT" "PLAIN" NIL NIL NIL "7BIT" 50 2 NIL NIL)'
+        html = b'("TEXT" "HTML" NIL NIL NIL "7BIT" 64 2 NIL NIL)'
+        alternative = b'(' + plain + html + b' "ALTERNATIVE" NIL NIL)'
+        pdf = b'("APPLICATION" "PDF" NIL NIL NIL "BASE64" 52428800 NIL NIL)'
+        text_file = b'("TEXT" "PLAIN" NIL NIL NIL "7BIT" 80 2 NIL ("ATTACHMENT" NIL))'
+        connection = MagicMock()
+        connection.uid.return_value = ("OK", [
+            b"1 (UID 7 BODYSTRUCTURE " + alternative + b")",
+            b'2 (BODYSTRUCTURE (' + alternative + pdf + b' "MIXED") UID 8)',
+            b"3 (UID 9 BODYSTRUCTURE " + text_file + b")",
+            (b'4 (BODYSTRUCTURE ("TEXT" "PLAIN" ("NAME*0*" {13}', b'file (01).txt'),
+            b') NIL NIL "7BIT" 40 1 NIL NIL) UID 10)',
+            b'11 (BODYSTRUCTURE ' + pdf + b')',  # unsolicited unkeyed sequence
+            b'5 (UID 99 BODYSTRUCTURE ' + pdf + b')',
+        ])
+        self.assertEqual(imap.selected_attachment_flags(connection, {7, 8, 9, 10, 11}),
+                         {7: False, 8: True, 9: True, 10: True})
+        connection.uid.assert_called_once_with("FETCH", "7,8,9,10,11", "(UID BODYSTRUCTURE)")
+
     def test_preview_fetch_reads_only_requested_folder_generation_without_marking_read(self):
         letter = self.letter()
         folder = MailFolder.objects.create(mailbox=self.box, key="inbox", name="Inbox", wire_name="INBOX", generation=3)
@@ -530,17 +604,23 @@ class MailboxTests(LeadFixture, TestCase):
         msg = message()
         msg.set_content("Здравствуйте, коллеги!\nУточните сроки поставки.")
         connection = MagicMock()
-        connection.uid.return_value = ("OK", [(b"1 (BODY[]<0> {500}", msg.as_bytes()), b" UID 4)"])
+        def fetch(_command, _uids, fields):
+            if fields == "(UID BODYSTRUCTURE)":
+                return "OK", [b'1 (BODYSTRUCTURE ("APPLICATION" "PDF" NIL NIL NIL "BASE64" 9000000) UID 4)']
+            return "OK", [(b"1 (BODY[]<0> {500}", msg.as_bytes()), b" UID 4)"]
+        connection.uid.side_effect = fetch
         with (patch.object(imap, "mailbox_session", return_value=nullcontext(connection)),
               patch.object(imap, "select", return_value=(4, 6)) as select):
             self.assertEqual(self.http.post(url, {"letter": [letter.pk]}).json()["previews"], {})
             connection.uid.assert_not_called()
             select.return_value = (3, 5)
             data = {"letter": [letter.pk, second.pk]}
-            self.assertEqual(self.http.post(url, data).json()["previews"], {str(letter.pk): "Уточните сроки поставки."})
-            self.assertEqual(self.http.post(url, data).json()["previews"], {str(letter.pk): "Уточните сроки поставки."})
-            self.assertEqual(connection.uid.call_args.args, ("FETCH", "4", "(UID BODY.PEEK[]<0.65536>)"))
-            connection.uid.assert_called_once()
+            expected = {"previews": {str(letter.pk): "Уточните сроки поставки."},
+                        "attachments": {str(letter.pk): True}}
+            self.assertEqual(self.http.post(url, data).json(), expected)
+            self.assertEqual(self.http.post(url, data).json(), expected)
+            self.assertEqual([call.args for call in connection.uid.call_args_list], [
+                ("FETCH", "4", "(UID BODY.PEEK[]<0.65536>)"), ("FETCH", "4", "(UID BODYSTRUCTURE)")])
         self.assertFalse(MailReadReceipt.objects.exists())
         letter.refresh_from_db()
         self.assertFalse(letter.body_loaded)

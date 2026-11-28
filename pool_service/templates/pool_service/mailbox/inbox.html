@@ -25,18 +25,27 @@
 <label><span class="visually-hidden">Папка</span><select name="folder" data-native-select class="form-select"><option value="all">Вся почта</option><option value="review"{% if chosen == "review" %} selected{% endif %}>Требует разбора</option><option value="sent"{% if chosen == "sent" %} selected{% endif %}>Отправленные</option>
 {% for folder in folders %}<option value="{{ folder.pk }}"{% if chosen == folder.pk|stringformat:"s" %} selected{% endif %}>{{ folder.name }}{% if not box and boxes|length > 1 %} · {{ folder.mailbox.address }}{% endif %}</option>{% endfor %}</select></label>
 <label class="mail-search"><span class="visually-hidden">Поиск</span><svg class="mail-symbol" aria-hidden="true"><use href="#mail-icon-search"></use></svg><input class="form-control" name="q" value="{{ query }}" maxlength="160" type="search" placeholder="Поиск по почте"></label><noscript><button class="btn btn-outline-primary">Найти</button></noscript></form>
+<p class="mail-read-feedback" data-read-feedback role="status"></p>
 <div data-mail-results>
 {% if client %}<p>Переписка с клиентом <strong>{{ client.name }}</strong></p>{% endif %}
 <div data-mail-previews>{% csrf_token %}
 <ul class="mail-list" aria-label="Письма">{% for letter in page %}
   {% ifchanged letter.date_group %}<li class="mail-group"><h3>{{ letter.date_group }}</h3></li>{% endifchanged %}
-  <li class="mail-row{% if letter.unread %} is-unread{% endif %}">
+  <li class="mail-row{% if letter.unread %} is-unread{% endif %}" data-letter="{{ letter.pk }}"
+      {% if letter.needs_metadata and letter.preview_folder and letter.mailbox.enabled %}data-preview-url="{% url 'crm_mail_previews' letter.preview_folder %}?org_id={{ org.pk }}"{% endif %}>
+    <div class="mail-read-slot">
+      {% if letter.unread %}<form method="post" action="{% url 'crm_mail_read' letter.pk %}?{{ read_query }}" data-mark-read>{% csrf_token %}
+        <button type="submit" class="mail-read-button" title="Отметить прочитанным" aria-label="Отметить прочитанным: {{ letter.subject|default:'Без темы' }}"><span class="mail-dot"></span></button>
+      </form>{% endif %}
+      <span class="mail-read-done"{% if letter.unread %} hidden{% endif %}><span class="visually-hidden">Прочитано</span></span>
+    </div>
     <a class="mail-open" href="{% url 'crm_mail_detail' letter.pk %}?org_id={{ org.pk }}">
-      <span class="mail-dot" aria-label="{% if letter.unread %}Не прочитано{% else %}Прочитано{% endif %}"></span>
-      <span class="mail-sender" title="{% if letter.outgoing %}Кому: {{ letter.recipients|join:', ' }}{% else %}{{ letter.sender }}{% endif %}{% if not box and boxes|length > 1 %} · {{ letter.mailbox.address }}{% endif %}">{% if letter.outgoing %}Кому: {{ letter.recipients|join:", " }}{% else %}{{ letter.sender_name|default:letter.sender|default:"Без отправителя" }}{% endif %}</span>
-      <span class="mail-summary"><span class="mail-subject">{{ letter.subject|default:"Без темы" }}</span><span class="mail-preview"
-        {% if letter.preview == None and not letter.snippet and letter.preview_folder and letter.mailbox.enabled %}data-preview-url="{% url 'crm_mail_previews' letter.preview_folder %}?org_id={{ org.pk }}" data-letter="{{ letter.pk }}"{% endif %}>{{ letter.snippet }}</span></span>
-      <time datetime="{{ letter.sent_at|date:'c' }}" title="{{ letter.sent_at|date:'d.m.Y H:i' }}">{% if letter.date_group == "Сегодня" or letter.date_group == "Вчера" %}{{ letter.sent_at|date:"H:i" }}{% else %}{{ letter.sent_at|date:"d.m" }}{% endif %}</time>
+      <span class="mail-person"><span class="mail-avatar mail-color-{{ letter.avatar_color }}{% if letter.avito_avatar %} mail-avatar-avito{% endif %}" aria-hidden="true">{% if letter.avito_avatar %}<svg viewBox="0 0 32 32" focusable="false"><use href="#mail-avatar-avito"></use></svg>{% else %}{{ letter.initials }}{% endif %}</span>
+        <span class="mail-sender" title="{% if letter.outgoing %}Кому: {{ letter.recipients|join:', ' }}{% else %}{{ letter.sender }}{% endif %}{% if not box and boxes|length > 1 %} · {{ letter.mailbox.address }}{% endif %}">{% if letter.outgoing %}Кому: {{ letter.recipients|join:", " }}{% else %}{{ letter.sender_name|default:letter.sender|default:"Без отправителя" }}{% endif %}</span>
+      </span>
+      <span class="mail-summary"><span class="mail-subject">{{ letter.subject|default:"Без темы" }}</span><span class="mail-preview">{{ letter.snippet }}</span></span>
+      <span class="mail-stamp"><span class="mail-has-files" role="img" aria-label="Есть вложения" title="Есть вложения"{% if not letter.shows_files %} hidden{% endif %}><svg class="mail-symbol" aria-hidden="true"><use href="#mail-icon-clip"></use></svg></span>
+        <time datetime="{{ letter.sent_at|date:'c' }}" title="{{ letter.sent_at|date:'d.m.Y H:i' }}">{% if letter.show_date %}{{ letter.sent_at|date:"d.m" }} {% endif %}{{ letter.sent_at|date:"H:i" }}</time></span>
     </a>
     {% include "pool_service/mailbox/_link_icon.html" %}
   </li>

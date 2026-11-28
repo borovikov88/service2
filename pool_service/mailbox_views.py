@@ -1,3 +1,4 @@
+import re
 import smtplib
 from urllib.parse import urlencode
 from uuid import UUID, uuid4
@@ -28,7 +29,7 @@ from .models import Employee, Organization
 from .services import mailbox_imap as provider
 from .services.crm_role_runtime import resolve_crm_capabilities
 from .services.mailbox_access import mailbox_role
-from .services.mailbox_mime import CONTENT_VERSION, body_preview, cache_content, parse_content
+from .services.mailbox_mime import CONTENT_VERSION, body_preview, cache_content, digest, parse_content
 from .services.mailbox_routing import bind_mail, contact_letters, visible_link, writable_cards
 from .services.mailbox_sending import deliver
 from .services.mailbox_transport import smtp_session
@@ -69,6 +70,20 @@ def _letter(org, pk):
         pk=pk,
         mailbox__organization=org,
     )
+
+
+def _mail_avatar(letter):
+    address = letter.sender
+    name = letter.sender_name
+    if letter.outgoing:
+        address = next(iter(letter.recipients), "")
+        name = ""
+    local, _, domain = address.casefold().rpartition("@")
+    brand = domain == "avito.ru" or domain.endswith(".avito.ru")
+    words = re.findall(r"[^\W_]+", name if name and "@" not in name else local)
+    initials = "".join(word[0] for word in words[:2]).upper() or "✉"
+    color = int(digest(address.casefold() or name)[:2], 16) % 6
+    return brand, initials[:2], color
 
 
 @login_required
@@ -118,7 +133,7 @@ def inbox(request):
     ).order_by("pk")
     if folder_id not in ("all", "review", "sent"):
         location = location.filter(folder_id=folder.pk)
-    letters = letters.select_related("mailbox").defer("body", "attachments", "mailbox__credential").annotate(
+    letters = letters.select_related("mailbox").defer("body", "mailbox__credential").annotate(
         seen_here=Exists(MailReadReceipt.objects.filter(letter=OuterRef("pk"), user=request.user)),
         cached_start=Substr("body", 1, 1500),
         preview_folder=Subquery(location.values("folder_id")[:1]),
@@ -127,11 +142,15 @@ def inbox(request):
     today = timezone.localdate()
     for letter in page.object_list:
         age = (today - timezone.localdate(letter.sent_at)).days
+        letter.show_date = letter.outgoing or age != 0
+        letter.avito_avatar, letter.initials, letter.avatar_color = _mail_avatar(letter)
+        letter.shows_files = bool(letter.attachments) if letter.body_loaded else letter.has_attachments
         letter.date_group = next(label for days, label in (
             (0, "Сегодня"), (1, "Вчера"), (6, "Неделя"), (29, "Месяц"), (float("inf"), "Ранее")
         ) if age <= days)
         letter.snippet = letter.preview if letter.preview is not None else body_preview(letter.cached_start)
         letter.unread = not (letter.outgoing or letter.seen_here)
+        letter.needs_metadata = (letter.preview is None and not letter.snippet) or letter.shows_files is None
     filters = {"folder": folder_id, "q": query}
     if box:
         filters["box"] = box.pk
@@ -141,7 +160,8 @@ def inbox(request):
                  folders=folders.select_related("mailbox").defer("mailbox__credential").order_by("mailbox__address", "name"),
                  chosen=folder_id, query=query, client=client, page=page, review_count=review_count,
                  status_box=box or (boxes[0] if len(boxes) == 1 else None),
-                 paging=_url("crm_mail", org, **filters))
+                 paging=_url("crm_mail", org, **filters),
+                 read_query=urlencode({"org_id": org.pk, **filters, "page": page.number}))
 
 
 def _number(value):
@@ -164,31 +184,52 @@ def previews(request, folder_id):
     locations = MailLocation.objects.filter(
         folder=folder, generation=folder.generation, letter_id__in=ids, letter__mailbox=folder.mailbox,
     )
-    missing = dict(locations.filter(letter__preview__isnull=True).values_list("uid", "size"))
-    if missing and folder.mailbox.enabled:
+    missing_previews = dict(locations.filter(letter__preview__isnull=True).values_list("uid", "size"))
+    missing_flags = set(locations.filter(letter__body_loaded=False, letter__has_attachments__isnull=True)
+                        .values_list("uid", flat=True))
+    if (missing_previews or missing_flags) and folder.mailbox.enabled:
         try:
             with provider.mailbox_session(folder.mailbox) as client:
                 generation, _ = provider.select(client, folder.wire_name)
                 if generation != folder.generation:
                     raise provider.MailUnavailable()
-                snippets = provider.selected_previews(client, missing)
+                snippets = provider.selected_previews(client, missing_previews)
+                try:
+                    flags = provider.selected_attachment_flags(client, missing_flags)
+                except PROVIDER_ERRORS:
+                    flags = {}  # A provider can decline BODYSTRUCTURE while previews still work.
             with transaction.atomic():
                 box = CrmMailbox.objects.select_for_update().get(pk=folder.mailbox_id)
                 _scope(request)
                 if box.enabled and box.config_version == folder.mailbox.config_version:
-                    current = locations.filter(uid__in=snippets, folder__generation=generation, folder__available=True)
-                    updates = {}
+                    current = locations.filter(uid__in=snippets.keys() | flags.keys(),
+                                               folder__generation=generation, folder__available=True)
+                    updates, indicators = {}, {}
                     for uid, letter_id in current.values_list("uid", "letter_id"):
-                        if not updates.get(letter_id):
+                        if uid in snippets and not updates.get(letter_id):
                             updates[letter_id] = snippets[uid]
+                        if uid in flags:
+                            indicators[letter_id] = indicators.get(letter_id, False) or flags[uid]
                     box.letters.filter(preview__isnull=True).bulk_update(
                         [MailLetter(pk=pk, preview=text) for pk, text in updates.items()], ["preview"]
+                    )
+                    box.letters.filter(body_loaded=False, has_attachments__isnull=True).bulk_update(
+                        [MailLetter(pk=pk, has_attachments=value) for pk, value in indicators.items()],
+                        ["has_attachments"],
                     )
         except (ValueError, LookupError, UnicodeError) + PROVIDER_ERRORS:
             pass  # Keep the list usable if a provider is temporarily unavailable.
     _scope(request)
-    rows = locations.exclude(letter__preview__isnull=True).values_list("letter_id", "letter__preview")
-    return JsonResponse({"previews": dict(rows)})
+    current = locations.filter(folder__available=True, folder__generation=folder.generation,
+                               folder__mailbox__config_version=folder.mailbox.config_version)
+    rows = current.values_list("letter_id", "letter__preview", "letter__has_attachments")
+    snippets, flags = {}, {}
+    for pk, snippet, flag in rows:
+        if snippet is not None:
+            snippets[pk] = snippet
+        if flag is not None:
+            flags[pk] = flag
+    return JsonResponse({"previews": snippets, "attachments": flags})
 
 
 def _signature_text(user, org):
@@ -397,6 +438,20 @@ def attachment(request, pk, index):
     response["X-Content-Type-Options"] = "nosniff"
     response["Content-Security-Policy"] = "sandbox"
     return response
+
+
+@login_required
+@never_cache
+@require_POST
+def mark_read(request, pk):
+    org, _ = _scope(request)
+    letter = get_object_or_404(MailLetter.objects.only("pk", "outgoing"), pk=pk, mailbox__organization=org)
+    if not letter.outgoing:
+        MailReadReceipt.objects.get_or_create(letter=letter, user=request.user)
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return JsonResponse({"read": True})
+    filters = {key: request.GET[key] for key in ("box", "folder", "q", "client", "page") if key in request.GET}
+    return redirect(_url("crm_mail", org, **filters))
 
 
 @login_required
