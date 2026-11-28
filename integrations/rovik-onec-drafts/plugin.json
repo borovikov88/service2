@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "rovik-onec-drafts",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Создание непроведённых документов и согласованной номенклатуры 1С с подтверждением сотрудника для каждого чата.",
   "author": {"name": "Аквалайн"},
   "extensions": {
