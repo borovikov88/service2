@@ -555,7 +555,14 @@ def auto_select(snapshot, catalog, only_variant=None):
                                           availability=deepcopy(current.get('availability', {})))
                     continue
                 issue, _ = candidates.assess(current, result['inputs'], max(required, pump_duty or required) if row['kind'] == 'filter' else required, variant['embedded_profile'])
-                row['catalog_review_note'] = ('Текущая выгрузка ' + catalog['checked_at'] + ': ' + issue)[:1000] if issue else ''
+                if issue:
+                    row['catalog_review_note'] = ('Текущая выгрузка ' + catalog['checked_at'] + ': ' + issue)[:1000]
+                elif row['catalog'].get('heater_type') == 'heatpump' and row['catalog'].get('pool_heat_pump_rating'):
+                    from .estimate_heat_pump_rating import rating_note
+                    # Show the rating actually stored on this row, including protected selections.
+                    row['catalog_review_note'] = rating_note(row['catalog'])
+                else:
+                    row['catalog_review_note'] = ''
     embedded.update_quantities(result, only_variant)
     result = evaluate(result)
     explain_unfilled(result, catalog, only_variant)
