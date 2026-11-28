@@ -1,6 +1,10 @@
 """Read-only IMAP operations for configured organization mailboxes."""
 
+import imaplib
 import re
+from email import policy
+from email.errors import MessageError
+from email.parser import BytesHeaderParser
 from email.utils import parsedate_to_datetime
 
 from django.utils import timezone
@@ -140,10 +144,11 @@ def _named_parameter(parameters, key):
                for name, value in zip(parameters[::2], parameters[1::2]))
 
 
-def _has_file(part):
-    """Match the downloadable parts exposed by mailbox_mime.parse_content."""
+def _has_file(part, sections, path=""):
+    """Match downloadable MIME parts and record headers needed to resolve uncertain text parts."""
     if part.is_multipart:
-        children = [_has_file(child) for child in part[0]]
+        children = [_has_file(child, sections, f"{path}.{i}" if path else str(i))
+                    for i, child in enumerate(part[0], 1)]
         if True in children:
             return True
         return None if None in children else False
@@ -155,38 +160,78 @@ def _has_file(part):
         if subtype == b"RFC822":
             return True
         if subtype == b"DELIVERY-STATUS":
-            return False  # Delivery reports contain status headers, not downloadable files.
-        # Other message containers can hold nested parts not described by this server.
+            return False  # The delivery report contains status headers.
+        sections.add(None)  # Opaque container. A normal full read can resolve its contents.
         return None
     if kind != b"TEXT" or _named_parameter(part[2], b"NAME"):
         return True
     # For text the line count and optional MD5 precede the disposition.
-    disposition = part[9] if len(part) > 9 else None
+    if len(part) <= 9:
+        sections.add(f"{path}.MIME" if path else "HEADER.FIELDS (CONTENT-TYPE CONTENT-DISPOSITION)")
+        return None
+    disposition = part[9]
     return bool(isinstance(disposition, tuple) and len(disposition) == 2
                 and (disposition[0].upper() == b"ATTACHMENT"
                      or _named_parameter(disposition[1], b"FILENAME")))
 
 
-def selected_attachment_flags(client, uids):
-    """Fetch just MIME structure, including later parts of large unopened messages."""
-    if not uids:
-        return {}
-    rows = ok(client.uid("FETCH", ",".join(str(uid) for uid in sorted(uids)), "(UID BODYSTRUCTURE)"))
+def _fetch_fields(client, uids, attributes):
+    rows = ok(client.uid("FETCH", ",".join(str(uid) for uid in sorted(uids)), f"(UID {attributes})"))
     try:
-        # Require an explicit UID, never confuse an unsolicited sequence number with a UID.
-        items = parse_fetch_response(rows or [], uid_is_key=False)
+        # Require explicit UIDs, not sequence numbers from unsolicited FETCH responses.
+        return parse_fetch_response(rows or [], uid_is_key=False).values()
     except (ProtocolError, AttributeError, IndexError, TypeError, ValueError, RecursionError):
-        return {}
-    flags = {}
-    for fields in items.values():
+        return ()
+
+
+def selected_attachment_flags(client, uids):
+    """Check unopened mail using structure and bounded MIME headers, never file bodies."""
+    flags, pending = {}, {}
+    if not uids:
+        return flags
+    for fields in _fetch_fields(client, uids, "BODYSTRUCTURE"):
         uid = fields.get(b"UID")
-        if uid in uids and b"BODYSTRUCTURE" in fields:
-            try:
-                flag = _has_file(fields[b"BODYSTRUCTURE"])
-                if flag is not None:
-                    flags[uid] = flag
-            except (AttributeError, IndexError, TypeError, ValueError, RecursionError):
+        if uid not in uids or b"BODYSTRUCTURE" not in fields:
+            continue
+        sections = set()
+        try:
+            flag = _has_file(fields[b"BODYSTRUCTURE"], sections)
+        except (AttributeError, IndexError, TypeError, ValueError, RecursionError):
+            continue
+        if flag is None:
+            pending[uid] = sections
+        else:
+            flags[uid] = flag
+
+    # Some servers omit optional disposition fields. Batch the same section across letters.
+    by_section = {}
+    for uid, sections in pending.items():
+        for section in sorted(s for s in sections if s is not None):
+            by_section.setdefault(section, set()).add(uid)
+    for section, candidates in list(by_section.items())[:8]:
+        remaining = candidates.difference(flags)
+        if not remaining:
+            continue
+        key = f"BODY[{section}]<0>".encode("ascii")
+        try:
+            fields_list = _fetch_fields(client, remaining, f"BODY.PEEK[{section}]<0.8193>")
+        except (OSError, imaplib.IMAP4.error, MailUnavailable):
+            continue
+        for fields in fields_list:
+            uid, raw = fields.get(b"UID"), fields.get(key)
+            if uid not in remaining or not isinstance(raw, bytes) or not raw or len(raw) > 8192:
                 continue
+            try:
+                headers = BytesHeaderParser(policy=policy.default).parsebytes(raw)
+                attached = headers.get_content_disposition() == "attachment" or bool(headers.get_filename())
+            except (MessageError, UnicodeError, ValueError, IndexError):
+                continue
+            if attached:
+                flags[uid] = True
+            else:
+                pending[uid].discard(section)
+                if not pending[uid]:
+                    flags[uid] = False
     return flags
 
 

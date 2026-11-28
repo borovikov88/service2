@@ -595,13 +595,37 @@ class MailboxTests(LeadFixture, TestCase):
                          {7: False, 8: True, 9: True, 10: True})
         connection.uid.assert_called_once_with("FETCH", "7,8,9,10,11", "(UID BODYSTRUCTURE)")
 
+    def test_abbreviated_text_structure_reads_only_mime_headers(self):
+        plain = b'("TEXT" "PLAIN" NIL NIL NIL "7BIT" 5000000 20)'
+        mixed = b'(' + plain + b' "MIXED")'
+        disposition = b'Content-Disposition: attachment; filename="quote.txt"\r\n\r\n'
+        inline = b'Content-Type: text/plain\r\n\r\n'
+        section = "HEADER.FIELDS (CONTENT-TYPE CONTENT-DISPOSITION)"
+        connection = MagicMock()
+
+        def fetch(command, uids, fields):
+            self.assertEqual(command, "FETCH")
+            if fields == "(UID BODYSTRUCTURE)":
+                return "OK", [b"1 (UID 11 BODYSTRUCTURE " + plain + b")",
+                              b"2 (UID 12 BODYSTRUCTURE " + plain + b")",
+                              b"3 (UID 13 BODYSTRUCTURE " + mixed + b")"]
+            if fields == f"(UID BODY.PEEK[{section}]<0.8193>)":
+                self.assertEqual(uids, "11,12")
+                return "OK", [(f"1 (BODY[{section}]<0> {{{len(disposition)}}}".encode(), disposition), b" UID 11)",
+                              (f"2 (UID 12 BODY[{section}]<0> {{{len(inline)}}}".encode(), inline), b")"]
+            self.assertEqual((uids, fields), ("13", "(UID BODY.PEEK[1.MIME]<0.8193>)"))
+            return "OK", [(b"3 (UID 13 BODY[1.MIME]<0> {8193}", b"x" * 8193), b")"]
+        connection.uid.side_effect = fetch
+        self.assertEqual(imap.selected_attachment_flags(connection, {11, 12, 13}), {11: True, 12: False})
+        self.assertEqual(connection.uid.call_count, 3)
+
     def test_delivery_status_has_a_clip_only_when_the_original_message_is_attached(self):
         raw = (b'MIME-Version: 1.0\r\nContent-Type: multipart/report; boundary="status"\r\n\r\n'
                b'--status\r\nContent-Type: text/plain\r\n\r\nDelivery failed\r\n'
                b'--status\r\nContent-Type: message/delivery-status\r\n\r\n'
                b'Reporting-MTA: dns; example.org\r\n\r\nAction: failed\r\nStatus: 5.1.1\r\n')
         original = b'--status\r\nContent-Type: message/rfc822\r\n\r\nSubject: original\r\n\r\nExample\r\n'
-        text = b'("TEXT" "PLAIN" NIL NIL NIL "7BIT" 15 1)'
+        text = b'("TEXT" "PLAIN" NIL NIL NIL "7BIT" 15 1 NIL NIL)'
         status = b'("MESSAGE" "DELIVERY-STATUS" NIL NIL NIL "7BIT" 70)'
         forwarded = b'("MESSAGE" "RFC822" NIL NIL NIL "7BIT" 50 (NIL NIL NIL NIL NIL NIL NIL NIL NIL NIL) ' + text + b' 3)'
         connection = MagicMock()
