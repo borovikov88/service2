@@ -118,7 +118,11 @@ def annotate(snapshot, variant):
         blocked, missing = assess(product, snapshot['inputs'], max(required, flow or required) if row['kind']=='filter' else required, variant['embedded_profile'])
         if row['kind']=='filter' and pump_note: missing.append('рабочий режим пары насос/фильтр')
         if blocked or missing or row.get('catalog_review_note'):
-            reason = row.get('catalog_review_note') or blocked or 'Не подтверждены: ' + ', '.join(missing) + '.'
+            purpose_warning = None
+            if blocked and product.get('heater_type') == 'heatpump':
+                from .estimate_heater_purpose import reason as purpose_reason
+                purpose_warning = purpose_reason(product)
+            reason = purpose_warning or row.get('catalog_review_note') or blocked or 'Не подтверждены: ' + ', '.join(missing) + '.'
             row['selection_note'] = ('Проверить: ' + reason + ' Совместимость не подтверждена. '
                 'Источник: сохранённые характеристики товара ' + origin['url'] + '; дата цены ' + origin['checked_at'] + '. '
                 'Правило предложения: известные ограничения, полнота данных, ближайшая достаточная мощность/производительность, цена в сегменте. '
