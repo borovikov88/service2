@@ -3,10 +3,13 @@
 from contextlib import nullcontext
 from datetime import timedelta
 from email.message import EmailMessage
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
+
+from PIL import Image
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
@@ -25,6 +28,7 @@ from pool_service.models import Client, Employee, Organization, OrganizationAcce
 from pool_service.services import mailbox_imap as imap
 from pool_service.services.crm_commercial_commands import create_commercial_deal
 from pool_service.services.mailbox_access import mailbox_role
+from pool_service.services.mailbox_html import letter_document
 from pool_service.services.mailbox_mime import CONTENT_VERSION, body_preview, header_data, parse_content, preview_from_prefix
 from pool_service.services.mailbox_routing import bind_mail, contact_letters
 from pool_service.services.mailbox_sending import deliver
@@ -507,7 +511,7 @@ class MailboxTests(LeadFixture, TestCase):
         msg.add_attachment(b"PDF sample", maintype="application", subtype="pdf", filename="Выписка.pdf")
         with patch.object(imap, "raw_message", return_value=msg.as_bytes()) as fetch:
             detail = self.http.get(self.url("_detail", letter.pk))
-            self.assertContains(detail, 'href="https://example.org/tenders"')
+            self.assertIn('href="https://example.org/tenders"', detail.context["rich_document"])
             self.assertNotContains(detail, "data:text/plain,hidden")
             self.assertNotContains(detail, "images.example.org")
             self.assertContains(detail, "Выписка.pdf")
@@ -520,6 +524,90 @@ class MailboxTests(LeadFixture, TestCase):
             self.assertEqual(file.content, b"PDF sample")
         self.assertEqual(MailReadReceipt.objects.filter(letter=letter).count(), 1)
         self.assertTrue(letter.needs_attention)
+
+    def test_reader_rechecks_original_mailbox_after_loading(self):
+        letter = self.letter()
+        second = Organization.objects.create(name="Second workspace")
+        OrganizationAccess.objects.create(organization=second, user=self.user, role="owner")
+
+        def load(_letter):
+            OrganizationAccess.objects.filter(organization=self.org, user=self.user).delete()
+            return message().as_bytes()
+
+        with patch.object(imap, "raw_message", side_effect=load) as fetch:
+            response = self.http.get(reverse("crm_mail_detail", args=[letter.pk]))
+        fetch.assert_called_once()
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(MailReadReceipt.objects.filter(letter=letter, user=self.user).exists())
+
+    def test_rich_letter_styles_cid_files_and_external_image_consent(self):
+        letter = self.letter()
+        source = message()
+        source.add_alternative(
+            '<style>.total { color:#155677; background-image:url(https://images.example.org/style.png) }</style>'
+            '<table><tr><td class="total">Итого</td></tr></table>'
+            '<img alt="Эмблема" src="cid:mark"><img alt="Баннер" src="https://images.example.org/banner.png">',
+            subtype="html",
+        )
+        png = BytesIO()
+        Image.new("RGB", (2, 2)).save(png, format="PNG")
+        source.get_body(preferencelist=("html",)).add_related(png.getvalue(), maintype="image", subtype="png", cid="<mark>")
+        with patch.object(imap, "raw_message", return_value=source.as_bytes()):
+            reader = self.http.get(self.url("_detail", letter.pk)).context["rich_document"]
+            self.assertIn(".total{color:#155677}", reader)
+            self.assertIn('class="total"', reader)
+            self.assertIn('src="data:image/png;base64,', reader)
+            self.assertNotIn("images.example.org", reader)
+            allowed = self.http.get(self.url("_detail", letter.pk) + "&images=1").context["rich_document"]
+            self.assertIn('src="https://images.example.org/banner.png"', allowed)
+            self.assertNotIn("style.png", allowed)
+        letter.refresh_from_db()
+        self.assertNotIn("base64", letter.body_html)
+        self.assertIn("Итого", letter.body)
+
+    def test_plain_form_preserves_unchanged_formatted_signature(self):
+        plain = "Отдел продаж"
+        html = '<p><strong style="font-family:Courier New">Отдел продаж</strong></p>'
+        signature = MailSignature.objects.create(organization=self.org, user=self.user, text=plain, html=html)
+        self.http.post(self.url("_signature"), {"text": plain})
+        signature.refresh_from_db()
+        self.assertEqual(signature.html, html)
+        compose = self.http.get(self.url("_compose")).context["form"]
+        data = {"token": compose.initial["token"], "to": "customer@example.org", "subject": "Расчёт",
+                "body": "Готово.\r\n\r\n" + plain}
+        with patch("pool_service.mailbox_views.deliver") as send:
+            send.return_value.status = "failed"
+            self.http.post(self.url("_compose"), data)
+        self.assertIn("Courier New", send.call_args.args[3]["html"])
+        self.assertIn("Готово.", send.call_args.args[3]["html"])
+        self.http.post(self.url("_signature"), {"text": "Другая подпись"})
+        signature.refresh_from_db()
+        self.assertFalse(signature.html)
+
+    def test_image_only_alternative_and_repeated_inline_budget(self):
+        letter = self.letter()
+        source = message()
+        source.set_content("Срок действия предложения до пятницы")
+        source.add_alternative('<img src="https://images.example.org/offer.png" alt="Предложение">', subtype="html")
+        with patch.object(imap, "raw_message", return_value=source.as_bytes()):
+            detail = self.http.get(self.url("_detail", letter.pk))
+            self.assertContains(detail, "Срок действия предложения до пятницы")
+            self.assertContains(detail, "Показать внешние изображения")
+            self.assertFalse(detail.context["rich_document"])
+            opted = self.http.get(self.url("_detail", letter.pk) + "&images=1")
+            self.assertIn('src="https://images.example.org/offer.png"', opted.context["rich_document"])
+        uri = "data:image/png;base64,AA=="
+        with patch("pool_service.services.mailbox_html.MAX_INLINE_URI_CHARS", len(uri) * 2):
+            document, _ = letter_document('<img src="cid:logo">' * 5, {"logo": uri})
+        self.assertEqual(document.count(uri), 2)
+
+    def test_other_brand_avatars_use_addresses_and_preserve_personal_initials(self):
+        cases = {"team@mail.ru": "mail", "user@mail.ru": "", "desk@awindex.ru": "awindex",
+                 "alerts@alfa-bank.info": "alfa", "events@sberbank-ast.ru": "sber",
+                 "receipt@taxcom.ru": "taxcom", "client@taxcom.ru.example.org": ""}
+        ids = {self.letter("Mail <" + address + ">").pk: brand for address, brand in cases.items()}
+        rows = self.http.get(self.url("")).context["page"]
+        self.assertEqual({r.pk: r.avatar_brand for r in rows}, ids)
 
     def test_mark_read_from_list_is_personal_idempotent_and_does_not_process(self):
         letter = self.letter()
@@ -563,8 +651,8 @@ class MailboxTests(LeadFixture, TestCase):
         self.box.letters.filter(pk=outgoing.pk).update(outgoing=True, sent_at=today)
         result = self.http.get(self.url(""))
         rows = {r.pk: r for r in result.context["page"]}
-        self.assertTrue(rows[branded.pk].avito_avatar)
-        self.assertFalse(rows[other.pk].avito_avatar)
+        self.assertEqual(rows[branded.pk].avatar_brand, "avito")
+        self.assertFalse(rows[other.pk].avatar_brand)
         self.assertEqual(rows[other.pk].initials, "АО")
         self.assertTrue(rows[other.pk].shows_files)
         self.assertIsNone(rows[branded.pk].shows_files)

@@ -1,5 +1,7 @@
 import re
 import smtplib
+from email import policy
+from email.parser import BytesParser
 from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
@@ -29,7 +31,8 @@ from .models import Employee, Organization
 from .services import mailbox_imap as provider
 from .services.crm_role_runtime import resolve_crm_capabilities
 from .services.mailbox_access import mailbox_role
-from .services.mailbox_mime import CONTENT_VERSION, body_preview, cache_content, digest, parse_content
+from .services.mailbox_html import clean_authored, from_plain, letter_document
+from .services.mailbox_mime import CONTENT_VERSION, body_preview, cache_content, digest, inline_images, parse_content
 from .services.mailbox_routing import bind_mail, contact_letters, visible_link, writable_cards
 from .services.mailbox_sending import deliver
 from .services.mailbox_transport import smtp_session
@@ -72,14 +75,25 @@ def _letter(org, pk):
     )
 
 
-def _mail_avatar(letter):
+_BRAND_DOMAINS = {
+    "avito.ru": "avito", "alfa-bank.info": "alfa", "alfabank.ru": "alfa",
+    "taxcom.ru": "taxcom", "awindex.ru": "awindex", "sberbank-ast.ru": "sber",
+}
+_MAIL_SERVICE_USERS = {"team", "security", "support", "noreply", "no-reply", "account", "notify"}
+
+
+def _mail_avatar(letter, *, sender=False):
     address = letter.sender
     name = letter.sender_name
-    if letter.outgoing:
+    if letter.outgoing and not sender:
         address = next(iter(letter.recipients), "")
         name = ""
     local, _, domain = address.casefold().rpartition("@")
-    brand = domain == "avito.ru" or domain.endswith(".avito.ru")
+    brand = next((icon for root, icon in _BRAND_DOMAINS.items()
+                  if domain == root or domain.endswith("." + root)), "")
+    mail_domains = {"mail.ru", "id.mail.ru", "account.mail.ru", "e.mail.ru", "corp.mail.ru", "notify.mail.ru"}
+    if domain in mail_domains and local in _MAIL_SERVICE_USERS:
+        brand = "mail"
     words = re.findall(r"[^\W_]+", name if name and "@" not in name else local)
     initials = "".join(word[0] for word in words[:2]).upper() or "✉"
     color = int(digest(address.casefold() or name)[:2], 16) % 6
@@ -133,7 +147,7 @@ def inbox(request):
     ).order_by("pk")
     if folder_id not in ("all", "review", "sent"):
         location = location.filter(folder_id=folder.pk)
-    letters = letters.select_related("mailbox").defer("body", "mailbox__credential").annotate(
+    letters = letters.select_related("mailbox").defer("body", "body_html", "mailbox__credential").annotate(
         seen_here=Exists(MailReadReceipt.objects.filter(letter=OuterRef("pk"), user=request.user)),
         cached_start=Substr("body", 1, 1500),
         preview_folder=Subquery(location.values("folder_id")[:1]),
@@ -143,7 +157,7 @@ def inbox(request):
     for letter in page.object_list:
         age = (today - timezone.localdate(letter.sent_at)).days
         letter.show_date = letter.outgoing or age != 0
-        letter.avito_avatar, letter.initials, letter.avatar_color = _mail_avatar(letter)
+        letter.avatar_brand, letter.initials, letter.avatar_color = _mail_avatar(letter)
         letter.shows_files = bool(letter.attachments) if letter.body_loaded else letter.has_attachments
         letter.date_group = next(label for days, label in (
             (0, "Сегодня"), (1, "Вчера"), (6, "Неделя"), (29, "Месяц"), (float("inf"), "Ранее")
@@ -235,14 +249,16 @@ def previews(request, folder_id):
     return JsonResponse({"previews": snippets, "attachments": flags})
 
 
-def _signature_text(user, org):
-    stored = MailSignature.objects.filter(organization=org, user=user).values_list("text", flat=True).first()
+def _signature(user, org):
+    stored = MailSignature.objects.filter(organization=org, user=user).values_list("text", "html").first()
     if stored is not None:
-        return stored
+        plain, html = stored
+        return plain, clean_authored(html) or from_plain(plain)
     name = user.get_full_name().strip() or Employee.objects.filter(
         user=user, organization=org, is_active=True
     ).order_by("pk").values_list("display_name", flat=True).first()
-    return "\n".join(filter(None, ("С уважением,", name, org.name)))
+    plain = "\n".join(filter(None, ("С уважением,", name, org.name)))
+    return plain, from_plain(plain)
 
 
 @login_required
@@ -250,15 +266,24 @@ def _signature_text(user, org):
 @require_http_methods(["GET", "POST"])
 def signature(request):
     org, _ = _scope(request)
-    form = MailSignatureForm(request.POST if request.method == "POST" else None,
-                             initial={"text": _signature_text(request.user, org)})
+    plain, html = _signature(request.user, org)
+    form = MailSignatureForm(request.POST if request.method == "POST" else None, initial={"text": plain})
     if request.method == "POST" and form.is_valid():
         content = form.cleaned_data["text"].replace("\r\n", "\n")
-        MailSignature.objects.update_or_create(organization=org, user=request.user, defaults={"text": content})
+        values = {"text": content}
+        if "html" in request.POST or content != plain:
+            values["html"] = clean_authored(form.cleaned_data["html"]) if content else ""
+        MailSignature.objects.update_or_create(organization=org, user=request.user, defaults=values)
         if request.headers.get("X-Mail-Dialog") == "1":
-            return JsonResponse({"signature": content})
+            result = {"signature": content}
+            if "html" in request.POST or ("html" not in values and html != from_plain(plain)):
+                result["signature_html"] = values.get("html", html) or from_plain(content)
+            return JsonResponse(result)
         return redirect(_url("crm_mail", org))
-    return _page(request, org, "signature", form=form)
+    seed = html
+    if form.is_bound:
+        seed = clean_authored(form["html"].value()) or from_plain(form["text"].value() or "")
+    return _page(request, org, "signature", form=form, editor_html=seed)
 
 
 @transaction.atomic
@@ -397,18 +422,46 @@ def detail(request, pk):
     org, _ = _scope(request)
     letter = _letter(org, pk)
     error = ""
-    cached_old = letter.body_loaded and letter.content_version < CONTENT_VERSION
-    if letter.mailbox.enabled and (not letter.body_loaded or (cached_old and letter.locations.exists())):
+    mail = None
+    if letter.mailbox.enabled and (not letter.body_loaded or
+                                  (letter.content_version < CONTENT_VERSION and letter.locations.exists())):
         try:
-            cache_content(letter, provider.raw_message(letter))
+            mail = cache_content(letter, provider.raw_message(letter))
         except (ValueError, LookupError, UnicodeError) + PROVIDER_ERRORS:
-            error = "Текст пока недоступен. Попробуйте обновить письмо позже."
-    _scope(request)
+            error = "Не удалось загрузить исходное письмо. Попробуйте обновить страницу позже."
+    rich_document = ""
+    external_images = False
+    show_images = request.GET.get("images") == "1"
+    if letter.body_html:
+        images = {}
+        if 'src="cid:' in letter.body_html.lower():
+            try:
+                if mail is None:
+                    mail = BytesParser(policy=policy.default).parsebytes(_source(letter))
+                images = inline_images(mail)
+            except (Http404, ValueError) + PROVIDER_ERRORS:
+                error = "Не удалось загрузить встроенные изображения. Попробуйте обновить страницу позже."
+        rich_document, external_images = letter_document(letter.body_html, images, show_external=show_images)
+    letter.avatar_brand, letter.initials, letter.avatar_color = _mail_avatar(letter, sender=True)
+    if not mailbox_role(request.user, org):
+        raise PermissionDenied
     if letter.body_loaded and not letter.outgoing:
         MailReadReceipt.objects.get_or_create(letter=letter, user=request.user)
-    return _page(
-        request, org, "detail", letter=letter, error=error, link=visible_link(letter, request.user, org)
-    )
+    return _page(request, org, "detail", letter=letter, error=error, link=visible_link(letter, request.user, org),
+                 rich_document=rich_document, external_images=external_images, show_images=show_images)
+
+
+def _source(letter):
+    if letter.outgoing:
+        receipt = letter.mailsubmission_set.filter(mailbox=letter.mailbox, status__in=("sent", "partial")).exclude(
+            attachment_source=""
+        ).first()
+        if receipt:
+            with receipt.attachment_source.open("rb") as stored:
+                return stored.read()
+    if letter.mailbox.enabled:
+        return provider.raw_message(letter)
+    raise Http404
 
 
 @login_required
@@ -420,22 +473,11 @@ def attachment(request, pk, index):
     if not any(item["index"] == index for item in letter.attachments):
         raise Http404
     try:
-        receipt = (
-            letter.mailsubmission_set.filter(mailbox=letter.mailbox, status__in=("sent", "partial"))
-            .exclude(attachment_source="")
-            .first()
-        )
-        if receipt:
-            with receipt.attachment_source.open("rb") as stored:
-                raw = stored.read()
-        elif letter.mailbox.enabled:
-            raw = provider.raw_message(letter)
-        else:
-            raise Http404
-        name, data = parse_content(raw, download_index=index)
+        name, data = parse_content(_source(letter), download_index=index)
     except (ValueError,) + PROVIDER_ERRORS:
         raise Http404 from None
-    _scope(request)
+    if not mailbox_role(request.user, org):
+        raise PermissionDenied
     response = HttpResponse(data, content_type="application/octet-stream")
     response["Content-Disposition"] = content_disposition_header(True, name)
     response["X-Content-Type-Options"] = "nosniff"
@@ -556,7 +598,7 @@ def compose(request, pk=None):
         box = choices[0]
     scope = [request.user.pk, box.pk, pk]
     initial = {"token": signing.dumps([*scope, str(uuid4())], salt="mail-send")}
-    personal_signature = _signature_text(request.user, org)
+    personal_signature, signature_html = _signature(request.user, org)
     initial["body"] = "\n\n" + personal_signature if personal_signature else ""
     if parent:
         initial["to"] = ", ".join(parent.recipients) if parent.outgoing else parent.reply_to or parent.sender
@@ -569,8 +611,16 @@ def compose(request, pk=None):
             saved = signing.loads(form.cleaned_data["token"], salt="mail-send", max_age=86400)
             if saved[:3] != scope:
                 raise signing.BadSignature()
+            fields = form.cleaned_data
+            if "html" not in request.POST and personal_signature and signature_html != from_plain(personal_signature):
+                body = fields["body"].replace("\r\n", "\n")
+                if body == personal_signature:
+                    fields["html"] = signature_html
+                elif body.endswith("\n\n" + personal_signature):
+                    prefix = body[:-(len(personal_signature) + 2)]
+                    fields["html"] = from_plain(prefix) + "<p><br></p>" + signature_html
             receipt = deliver(
-                box, request.user, UUID(saved[3]), form.cleaned_data, request.FILES.getlist("files"), parent
+                box, request.user, UUID(saved[3]), fields, request.FILES.getlist("files"), parent
             )
         except signing.BadSignature:
             form.add_error(None, "Срок действия формы истёк. Откройте новое письмо.")
@@ -587,4 +637,8 @@ def compose(request, pk=None):
             form.add_error(
                 None, "Отправку подтвердить не удалось. Проверьте папку «Отправленные» перед новой попыткой."
             )
-    return _page(request, org, "compose", parent=parent, form=form, box=box, signature_text=personal_signature)
+    seed = "<p><br></p>" + signature_html if signature_html else ""
+    if form.is_bound:
+        seed = clean_authored(form["html"].value()) or from_plain(form["body"].value() or "")
+    return _page(request, org, "compose", parent=parent, form=form, box=box,
+                 signature_text=personal_signature, signature_html=signature_html, editor_html=seed)

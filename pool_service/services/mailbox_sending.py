@@ -18,6 +18,7 @@ from pool_service.models import Organization
 from . import mailbox_imap as provider
 from .mailbox_transport import smtp_session
 from .mailbox_access import mailbox_role
+from .mailbox_html import clean_authored
 from .mailbox_mime import cache_content, smtp_address, header_data
 from .mailbox_sync import PROVIDER_ERRORS, store_letter
 
@@ -38,6 +39,9 @@ def deliver(box, actor, key, fields, uploads, parent=None):
         message["In-Reply-To"] = parent.message_id
         message["References"] = " ".join((parent.reference_ids + [parent.message_id])[-12:])
     message.set_content(fields["body"])
+    html = clean_authored(fields.get("html"))
+    if html:
+        message.add_alternative(html, subtype="html")
     if len(uploads) > 10 or sum(f.size for f in uploads) > 20 * 1024 * 1024:
         raise ValidationError("Можно приложить до 10 файлов общим размером до 20 МБ.")
     for upload in uploads:

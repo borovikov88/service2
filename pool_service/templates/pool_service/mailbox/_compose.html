@@ -19,7 +19,10 @@
     <a data-mail-dialog="signature" href="{% url 'crm_mail_signature' %}?org_id={{ org.pk }}"><svg class="mail-symbol" aria-hidden="true"><use href="#mail-icon-pen"></use></svg> Моя подпись</a>
   </div>
   <output class="mail-uploads" aria-live="polite"></output>
-  {{ form.body.errors }}<label class="visually-hidden" for="{{ form.body.id_for_label }}">Сообщение</label>{{ form.body }}
+  {{ form.body.errors }}{{ form.html.errors }}<label class="visually-hidden" for="{{ form.body.id_for_label }}">Сообщение</label>{{ form.body }}
+  <input type="hidden" name="html" data-editor-html value="{{ editor_html }}" disabled>
+  <div data-mail-editor aria-label="Сообщение"></div>
+  <input type="hidden" data-previous-html value="{{ signature_html }}">
   <textarea data-previous-signature hidden>{{ signature_text }}</textarea>
   <footer class="mail-compose-footer"><button class="btn btn-primary" type="submit"><svg class="mail-symbol" aria-hidden="true"><use href="#mail-icon-send"></use></svg> Отправить</button>
     <button class="btn btn-link" type="button" data-dialog-close>Закрыть</button><span data-mail-feedback role="status"></span>

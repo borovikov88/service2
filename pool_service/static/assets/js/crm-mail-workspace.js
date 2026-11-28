@@ -85,16 +85,19 @@
 
   function display(dialog, markup) {
     const fragment = new DOMParser().parseFromString(markup, "text/html").body;
+    window.crmMailEditor?.unmount(dialog);
     dialog.querySelector("[data-dialog-content]").replaceChildren(...Array.from(fragment.childNodes));
     if (!dialog.open) dialog.showModal();
     const first = dialog.querySelector('[name="to"], [name="text"], .mail-account-choices a');
     first?.focus();
+    window.crmMailEditor?.mount(dialog);
   }
 
   async function openDialog(link) {
     const dialog = link.dataset.mailDialog === "signature" ? signature : compose;
     if (dialog === compose && !dialog.open && dialog.dataset.entry === link.href && dialog.querySelector(".mail-compose")) {
       dialog.showModal();
+      window.crmMailEditor?.positionPanels(dialog);
       return;
     }
     loading.get(dialog)?.abort();
@@ -134,6 +137,7 @@
   });
 
   for (const dialog of [compose, signature]) {
+    dialog.addEventListener("close", () => window.crmMailEditor?.positionPanels(compose.open ? compose : workspace));
     dialog.addEventListener("cancel", event => {
       if (dialog.querySelector("[aria-busy=true]")) event.preventDefault();
     });
@@ -147,7 +151,7 @@
     if (event.target.matches('.mail-compose input[type="file"]')) showFiles(event.target.form);
   });
 
-  function applySignature(text) {
+  function applySignature(text, html) {
     const editor = workspace.querySelector(".mail-compose");
     if (!editor) return;
     const previous = editor.querySelector("[data-previous-signature]");
@@ -161,6 +165,7 @@
       body.value = text;
     }
     previous.value = text;
+    window.crmMailEditor?.updateSignature(editor, text, html);
   }
 
   workspace.addEventListener("submit", async event => {
@@ -180,7 +185,7 @@
       if (response.headers.get("Content-Type")?.includes("application/json")) {
         const result = await response.json();
         if (dialog === signature && typeof result.signature === "string") {
-          applySignature(result.signature);
+          applySignature(result.signature, result.signature_html);
           dialog.close();
         } else if (dialog === compose && result.sent) {
           window.location.assign(result.sent);
