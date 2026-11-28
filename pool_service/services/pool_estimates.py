@@ -547,6 +547,11 @@ def normalize_catalog(raw):
     result["price"] = str(number(raw.get("price"), "Цена магазина", minimum=".01", places=2))
     for field in ("nominal_flow", "heating_power"):
         result[field] = _optional(number(raw.get(field), "Характеристика магазина", minimum=".001", maximum="100000", optional=True))
+    if result.get('heater_type') == 'heatpump':
+        from .estimate_heat_pump_rating import normalize_rating
+        rating = normalize_rating(raw.get('pool_heat_pump_rating'), result['sku'])
+        if rating:
+            result['pool_heat_pump_rating'] = rating
     if raw.get('roll_area') is not None or raw.get('roll_price') is not None:
         from .estimate_liner import ROLLS
         fact = ROLLS.get(result['sku'])

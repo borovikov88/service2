@@ -24,7 +24,7 @@ from .pool_estimates import EstimateInputError, VARIANTS, evaluate, heating_requ
 
 SHOP_HOST = "shop.aqualine22.ru"
 FEED_URL = "https://shop.aqualine22.ru/index.php?route=extension/feed/yandex_products"
-CACHE_KEY = "pool-estimate-shop-v30"
+CACHE_KEY = "pool-estimate-shop-v31"
 CACHE_SECONDS = 900
 MAX_BYTES = 20_000_000
 FLOW = r"(\d+(?:[.,]\d+)?)\s*(?:м[³3]\s*/\s*(?:час|ч)|m[³3]\s*/\s*h)"
@@ -101,7 +101,7 @@ def _specifications(name, description):
     if re.search(r"без префильтр|без предварительн|гидромассаж|\bспа\b|\bspa\b|противоток", evidence):
         filtration = False
     capacities = {_decimal(v, '100000') for v in re.findall(FLOW if kind in {'pump','filter'} else r"(\d+(?:[.,]\d+)?)\s*(?:квт|kw)\b", text, re.I)} - {None}
-    conflict = len(capacities) > 1 or kind == 'pump' and len(power_values) > 1
+    conflict = heater_type != 'heatpump' and (len(capacities) > 1 or kind == 'pump' and len(power_values) > 1)
     return {"specification_conflict": bool(conflict), "kind": kind, "nominal_flow": flow,
             "flow": _decimal(point.group(1), "100000") if head else None,
             "head": head, "filter_flow": flow if kind == "filter" else None,
@@ -109,7 +109,7 @@ def _specifications(name, description):
             "heater_type": heater_type,
             "power_options": sorted(power_values) if kind == "heater" else ([power] if power != "unknown" else []),
             "titanium": kind == "heater" and bool(re.search(r"\b(?:titan(?:ium)?|титан\w*)\b", text)),
-            "heating_power": _one_number(r"(\d+(?:[.,]\d+)?)\s*(?:квт|kw)\b", text) if kind == "heater" else None}
+            "heating_power": _one_number(r"(\d+(?:[.,]\d+)?)\s*(?:квт|kw)\b", text) if kind == "heater" and heater_type != "heatpump" else None}
 
 
 def parse_catalog(payload, checked_at=None):
@@ -189,6 +189,11 @@ def parse_catalog(payload, checked_at=None):
         classify_plaster(specs,name,brand,description,offer)
         classify_geotextile(specs, name, description, category_path(offer.findtext("categoryId")), offer)
         uv.classify(specs, name, category_path(offer.findtext('categoryId')))
+        from .estimate_heat_pump_rating import parse_rating
+        if specs['heater_type'] == 'heatpump':
+            rating = parse_rating(offer)
+            specs['pool_heat_pump_rating'] = rating
+            specs['heating_power'] = rating['kw'] if rating else None
         from .estimate_heater_purpose import purpose_note
         specs['heater_purpose_note'] = purpose_note(name, category_path(offer.findtext('categoryId')), url, description) if specs['heater_type'] == 'heatpump' else ''
         circulation_section = (bool(re.search(r"циркуляцион\w* насос", category, re.I))
@@ -319,6 +324,10 @@ def candidate_reason(product, inputs, required_flow, *, for_auto=False):
         required_power = heating_requirement(inputs)["power"]
         if not required_power:
             return "Задайте мощность либо температуры, время прогрева и запас мощности."
+        if for_auto and product["heater_type"] == "heatpump":
+            from .estimate_heat_pump_rating import auto_block
+            if (blocked := auto_block(product, heating_requirement(inputs))):
+                return blocked
         if not product["heating_power"] or Decimal(product["heating_power"]) < Decimal(required_power):
             return "Мощность ниже заданной либо не определена."
         if product["heater_type"] != "exchanger" and inputs["power"] != "unknown" and inputs["power"] not in product["power_options"]:
@@ -361,6 +370,11 @@ def apply_product(row, product, catalog, selection="manual"):
     row['catalog']['filter_valve'] = deepcopy(product.get('filter_valve', {}))
     row['catalog']['availability'] = deepcopy(product.get('availability', {}))
     row["catalog"]["heater_purpose_note"] = product.get("heater_purpose_note", "")
+    if product.get("heater_type") == "heatpump":
+        from .estimate_heat_pump_rating import rating_note
+        row["catalog"]["pool_heat_pump_rating"] = deepcopy(product.get("pool_heat_pump_rating"))
+        note = rating_note(product)
+        row["catalog_review_note"] = (row.get("catalog_review_note", "") + " " + note).strip()
     row["catalog"]["lighting"] = deepcopy(product.get("lighting", {}))
     row["catalog"]["auxiliary"] = deepcopy(product.get("auxiliary", {}))
     row['catalog']['temperature'] = deepcopy(product.get('temperature',{}))

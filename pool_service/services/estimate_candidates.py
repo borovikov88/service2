@@ -62,7 +62,13 @@ def assess(product, inputs, required_flow, profile=None):
             return blocked, []
         if product.get('heater_type') not in heating_types(inputs):
             return 'Другой тип нагрева.', []
-        required = heating_requirement(inputs)['power']
+        requirement = heating_requirement(inputs)
+        if product.get('heater_type') == 'heatpump':
+            from .estimate_heat_pump_rating import auto_block
+            # Legacy frozen estimates are annotated, not silently rewritten.
+            if (blocked := auto_block(product, requirement)):
+                return blocked, []
+        required = requirement['power']
         if required and product.get('heating_power') and Decimal(product['heating_power']) < Decimal(required):
             return 'Известная мощность ниже требуемой.', []
         if not required: missing.append('требуемая мощность нагрева')
