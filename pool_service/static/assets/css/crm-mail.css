@@ -55,6 +55,7 @@
   font-size: .875rem;
   overflow-wrap: anywhere;
 }
+html[data-theme="dark"] .mail-workspace { --mail-muted: #9daec0; }
 .mail-workspace h2 { font-size: 1.25rem; margin: .6rem 0; }
 .mail-workspace h3 { font-size: 1rem; }
 .mail-toolbar, .mail-heading, .mail-actions, .mail-tabs, .mail-filters, .mail-link-forms {
