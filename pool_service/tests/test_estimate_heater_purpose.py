@@ -21,8 +21,13 @@ HOME_NAME = 'Тепловой насос для дома Aquaviva AVH18S (18.3 �
 POOL_NAME = 'Тепловой насос для бассейна Pool Test 20 кВт 220В'
 
 
-def pool_offer(pid=2, price='300'):
-    return offer(pid, POOL_NAME, price=price, description='Для бассейна рядом с домом.')
+def pool_offer(pid=2, price='300', description='Для бассейна рядом с домом.', url=None):
+    sku=str(pid)
+    xml=offer(pid, POOL_NAME, price=price, description=description, url=url)
+    facts=json.dumps({'sku':sku,'kw':'20','air_c':26,'water_c':26,
+                      'source':'catalog:heating_output_at_a26_w26'})
+    from xml.sax.saxutils import escape
+    return xml.replace('</offer>', f'<vendorCode>{sku}</vendorCode><param name="pool_heat_pump_rating_v1">{escape(facts)}</param></offer>')
 
 
 def domestic_feed(signal, include_pool=False):
@@ -69,7 +74,7 @@ class HeatPumpPurposeTests(SimpleTestCase):
                        'Не предназначен для отопления частного дома.',
                        'Для частного бассейна у загородного дома.'):
             with self.subTest(allowed=phrase):
-                c = catalog.parse_catalog(feed(offer(1,POOL_NAME,description=phrase)))
+                c = catalog.parse_catalog(feed(pool_offer(1,description=phrase)))
                 result,_ = catalog.auto_select(generate(HEAT_INPUTS),c)
                 self.assertEqual(target(result,'heater')['catalog']['id'],'1')
         from pool_service.services.estimate_heater_purpose import purpose_note
@@ -82,7 +87,7 @@ class HeatPumpPurposeTests(SimpleTestCase):
                             'Для отопления частного дома не предназначен.',
                             'Для отопления загородного дома — не применяется.'):
             with self.subTest(description=description):
-                c = catalog.parse_catalog(feed(offer(1,POOL_NAME,description=description)))
+                c = catalog.parse_catalog(feed(pool_offer(1,description=description)))
                 result,_ = catalog.auto_select(generate(HEAT_INPUTS),c)
                 self.assertFalse(c['products']['1']['heater_purpose_note'])
                 for tier in result['variants']:
@@ -205,9 +210,9 @@ class HeatPumpPurposeTests(SimpleTestCase):
                       '<category id="7" parentId="6">Тепловые насосы</category></categories>')
         category_xml = pool_offer(pid=1).replace('</offer>','<categoryId>7</categoryId></offer>')
         allowed = [
-            feed(offer(1,POOL_NAME,price='300',description='',url=pool_url)),
+            feed(pool_offer(1,description='',url=pool_url)),
             feed(category_xml).replace(b'<offers>',categories.encode()+b'<offers>'),
-            feed(offer(1,POOL_NAME,price='300',description='Для бассейна, не предназначен для отопления дома.')),
+            feed(pool_offer(1,description='Для бассейна, не предназначен для отопления дома.')),
         ]
         for payload in allowed:
             with self.subTest(payload=payload.decode()[:160]):
@@ -225,3 +230,4 @@ class HeatPumpPurposeTests(SimpleTestCase):
         result,_=catalog.auto_select(s,blocked)
         for tier in result['variants']:
             self.assertIsNone(target(result,'heater',tier)['catalog'])
+

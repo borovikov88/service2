@@ -1,6 +1,8 @@
 """Synthetic contracts: sources, exact bowl geometry, frozen legacy totals and scope."""
 from copy import deepcopy
 from decimal import Decimal
+import json
+from xml.sax.saxutils import escape
 from django.test import SimpleTestCase, TestCase
 from django.contrib.auth.models import User
 from django.urls import reverse
@@ -20,13 +22,22 @@ def active_heaters(s, variant='economy'):
     return [r for r in block(s, variant=variant)['rows'] if r['kind'] == 'heater' and not r['excluded']]
 
 
+def rated_heat_pump(pid, name, kw, *, price, air=26, water=26, available='true'):
+    sku = str(pid)
+    source = 'catalog:heating_output_at_a26_w26' if air == 26 else 'https://example.com/heat-pump-manual'
+    rating = json.dumps(dict(sku=sku, kw=kw, air_c=air, water_c=water, source=source))
+    return offer(pid, name, price=price, available=available).replace(
+        '</offer>', f'<vendorCode>{sku}</vendorCode><param name="pool_heat_pump_rating_v1">{escape(rating)}</param></offer>',
+    )
+
+
 class MultiGeometryTests(SimpleTestCase):
     def test_full_power_per_source_and_no_duplicate_shared_labor(self):
         inputs = {**INPUTS, 'heating_types': ['electric', 'exchanger', 'heatpump'], 'heating_power': '6', 'power': '230'}
         products = catalog.parse_catalog(feed(
             offer(81, 'Электронагреватель Test 6 кВт 220В', price='100'),
             offer(82, 'Теплообменник Test 6 кВт', price='200'),
-            offer(83, 'Тепловой насос Test 6 кВт 220В', price='300'),
+            rated_heat_pump(83, 'Тепловой насос Test 6 кВт 220В', '6', price='300'),
             offer(84, 'Электронагреватель Test 2 кВт 220В', price='1'),
         ))
         baseline = generate(inputs)
@@ -41,6 +52,41 @@ class MultiGeometryTests(SimpleTestCase):
             self.assertEqual(sum(r['kind'] == 'pump' for r in rows), 1)
         again, _ = catalog.auto_select(recalculate(selected, inputs), products)
         self.assertEqual([v['total'] for v in selected['variants'].values()], [v['total'] for v in again['variants'].values()])
+
+    def test_auto_selection_shows_the_rating_conditions_without_renaming_or_repricing(self):
+        for pid, label, kw, temperature in (
+            (3439, '16.2', '14.3', 26),
+            (3316, '16', '15.25', 27),
+        ):
+            with self.subTest(pid=pid):
+                name = f'Тепловой насос Test {label} кВт 220В'
+                inputs = {**INPUTS, 'heating_types': ['heatpump'], 'heating_power': kw, 'power': '230'}
+                original = catalog.parse_catalog(feed(rated_heat_pump(
+                    pid, name, kw, price='300', air=temperature, water=temperature,
+                )))
+                updated = catalog.parse_catalog(feed(rated_heat_pump(
+                    pid, name, '16', price='450', air=temperature, water=temperature,
+                )))
+                selected, _ = catalog.auto_select(generate(inputs), original)
+                again, _ = catalog.auto_select(selected, original)
+                refreshed, _ = catalog.auto_select(again, updated)
+                for estimate, expected_kw in ((selected, kw), (again, kw), (refreshed, '16')):
+                    row = active_heaters(estimate)[0]
+                    self.assertEqual(row['name'], name)
+                    self.assertEqual(row['price'], '300.00')
+                    self.assertEqual(row['catalog']['pool_heat_pump_rating']['kw'], expected_kw)
+                    self.assertIn(f"{expected_kw.replace('.', ',')} кВт при воздухе +{temperature} °C, вода +{temperature} °C", row['selection_note'])
+                    self.assertIn('Проверьте мощность при условиях объекта.', row['selection_note'])
+                unavailable = catalog.parse_catalog(feed(rated_heat_pump(
+                    pid, name, kw, price='450', air=temperature, water=temperature, available='false',
+                )))
+                for tier in again['variants']:
+                    active_heaters(again, tier)[0]['selection_locked'] = True
+                flagged, _ = catalog.auto_select(again, unavailable)
+                row = active_heaters(flagged)[0]
+                self.assertIn('Текущая выгрузка', row['selection_note'])
+                self.assertNotIn('Паспортный ориентир', row['selection_note'])
+                self.assertEqual(row['price'], '300.00')
 
     def test_legacy_row_infers_type_and_manual_exclusion_survives(self):
         s = generate({**INPUTS, 'heating': 'electric', 'heating_power': '6'})

@@ -62,7 +62,13 @@ def assess(product, inputs, required_flow, profile=None):
             return blocked, []
         if product.get('heater_type') not in heating_types(inputs):
             return 'Другой тип нагрева.', []
-        required = heating_requirement(inputs)['power']
+        requirement = heating_requirement(inputs)
+        if product.get('heater_type') == 'heatpump':
+            from .estimate_heat_pump_rating import auto_block
+            # Legacy frozen estimates are annotated, not silently rewritten.
+            if (blocked := auto_block(product, requirement)):
+                return blocked, []
+        required = requirement['power']
         if required and product.get('heating_power') and Decimal(product['heating_power']) < Decimal(required):
             return 'Известная мощность ниже требуемой.', []
         if not required: missing.append('требуемая мощность нагрева')
@@ -112,7 +118,11 @@ def annotate(snapshot, variant):
         blocked, missing = assess(product, snapshot['inputs'], max(required, flow or required) if row['kind']=='filter' else required, variant['embedded_profile'])
         if row['kind']=='filter' and pump_note: missing.append('рабочий режим пары насос/фильтр')
         if blocked or missing or row.get('catalog_review_note'):
-            reason = row.get('catalog_review_note') or blocked or 'Не подтверждены: ' + ', '.join(missing) + '.'
+            purpose_warning = None
+            if blocked and product.get('heater_type') == 'heatpump':
+                from .estimate_heater_purpose import reason as purpose_reason
+                purpose_warning = purpose_reason(product)
+            reason = purpose_warning or row.get('catalog_review_note') or blocked or 'Не подтверждены: ' + ', '.join(missing) + '.'
             row['selection_note'] = ('Проверить: ' + reason + ' Совместимость не подтверждена. '
                 'Источник: сохранённые характеристики товара ' + origin['url'] + '; дата цены ' + origin['checked_at'] + '. '
                 'Правило предложения: известные ограничения, полнота данных, ближайшая достаточная мощность/производительность, цена в сегменте. '

@@ -59,7 +59,10 @@ class PreliminaryCoreTests(SimpleTestCase):
             offer(1,'Электронагреватель Unknown 220В','100'),
             offer(2,'Электронагреватель Small 10 кВт 220В','1'),
             offer(3,'Теплообменник Good 20 кВт','200'),
-            offer(4,'Тепловой насос Good 20 кВт 220В','300')))
+            offer(4,'Тепловой насос Good 20 кВт 220В','300').replace('</offer>',
+                '<vendorCode>4</vendorCode><param name="pool_heat_pump_rating_v1">'
+                '{"sku":"4","kw":"20","air_c":26,"water_c":26,"source":"catalog:heating_output_at_a26_w26"}'
+                '</param></offer>')))
         result,_=catalog.auto_select(s,c)
         rows=[r for r in block(result)['rows'] if r['kind']=='heater']
         self.assertEqual([r['catalog']['id'] for r in rows],['1','3','4'])
