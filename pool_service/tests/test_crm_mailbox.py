@@ -11,6 +11,7 @@ from uuid import uuid4
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import DataError
 from django.test import Client as Browser, SimpleTestCase, TestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -367,6 +368,47 @@ class MailboxTests(LeadFixture, TestCase):
         uid, size, at, parsed = next(iter(imap.headers(client, 9, 9)))
         self.assertEqual((uid, size, at.year, parsed), (9, 600, 2025, raw))
         self.assertIn("BODY.PEEK", client.uid.call_args.args[2])
+
+    def test_first_sync_retries_failed_batch_and_preserves_unicode_subjects(self):
+        subjects = ["Вопрос по заказу", "Заявка на обслуживание 🏊"]
+        rows = []
+        for uid, subject in enumerate(subjects, start=1):
+            raw = message(msgid=f"<mail-{uid}@example.org>", subject=subject).as_bytes()
+            rows.append((uid, len(raw), self.at, raw))
+
+        def fail_on_second_letter(box, data, fallback, **kwargs):
+            if data["subject"] == subjects[1]:
+                raise DataError("synthetic storage error")
+            return store_letter(box, data, fallback, **kwargs)
+
+        with (
+            patch.object(imap, "mailbox_session", return_value=nullcontext(MagicMock())),
+            patch.object(imap, "folders", return_value=[("INBOX", "Inbox", "inbox")]),
+            patch.object(imap, "select", return_value=(1, 3)),
+            patch.object(imap, "headers", return_value=rows),
+        ):
+            with patch("pool_service.services.mailbox_sync.store_letter", side_effect=fail_on_second_letter):
+                self.assertFalse(sync_mailbox(self.box.pk))
+            self.box.refresh_from_db()
+            self.assertIsNone(self.box.last_sync_at)
+            self.assertIn("Не удалось сохранить", self.box.sync_error)
+            self.assertNotIn("synthetic", self.box.sync_error)
+            self.assertFalse(self.box.letters.exists())
+            folder = self.box.folders.get()
+            self.assertEqual((folder.generation, folder.latest_uid, folder.backfill_uid), (0, 0, 0))
+            self.assertIsNone(folder.scanned_at)
+
+            error = self.box.sync_error
+            self.assertFalse(sync_mailbox(self.box.pk, seconds=0))
+            self.box.refresh_from_db()
+            self.assertIsNone(self.box.last_sync_at)
+            self.assertEqual(self.box.sync_error, error)
+            self.assertTrue(sync_mailbox(self.box.pk))
+
+        self.box.refresh_from_db()
+        self.assertIsNotNone(self.box.last_sync_at)
+        self.assertEqual(self.box.sync_error, "")
+        self.assertCountEqual(self.box.letters.values_list("subject", flat=True), subjects)
 
     def test_duplicate_move_expunge_and_uid_rollover_are_idempotent(self):
         raw = message().as_bytes()
