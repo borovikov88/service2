@@ -18,7 +18,7 @@ from pool_service.models import Organization
 from . import mailbox_imap as provider
 from .mailbox_transport import smtp_session
 from .mailbox_access import mailbox_role
-from .mailbox_mime import smtp_address, header_data, parse_content
+from .mailbox_mime import cache_content, smtp_address, header_data
 from .mailbox_sync import PROVIDER_ERRORS, store_letter
 
 
@@ -87,9 +87,7 @@ def deliver(box, actor, key, fields, uploads, parent=None):
             historical=False,
             sent_folder=True,
         )
-        letter.body, letter.attachments = parse_content(raw)
-        letter.body_loaded = True
-        letter.save(update_fields=["body", "attachments", "body_loaded"])
+        cache_content(letter, raw)
         receipt.letter = letter
         receipt.save(update_fields=["letter", "status"])
         if parent:

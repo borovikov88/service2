@@ -3,6 +3,7 @@
 import base64
 import binascii
 import hashlib
+import quopri
 import re
 from datetime import timezone as utc
 from email import policy
@@ -11,10 +12,12 @@ from email.parser import BytesParser
 from email.utils import getaddresses, parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import PurePath
+from urllib.parse import urlsplit
 
 from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
 
+CONTENT_VERSION = 1
 MAX_BODY = 512_000
 MAX_RAW = 64 * 1024 * 1024
 ID_PATTERN = re.compile(r"<[^\s<>\x00-\x1f]{1,996}>")
@@ -125,47 +128,143 @@ def fingerprint(data, fallback):
     )
 
 
+def _web_url(value):
+    if not value or len(value) > 4096 or any(c.isspace() or ord(c) < 32 for c in value):
+        return ""
+    try:
+        url = urlsplit(value)
+        return value if url.scheme.lower() in ("http", "https") and url.hostname and not url.username else ""
+    except ValueError:
+        return ""
+
+
+class _TextLimitReached(Exception):
+    pass
+
+
 class PlainHTML(HTMLParser):
-    def __init__(self):
+    def __init__(self, limit):
         super().__init__(convert_charrefs=True)
         self.text = []
+        self.remaining = limit
         self.hidden = 0
+        self.link = ""
+
+    def _append(self, value):
+        if not value.strip():
+            if not self.text or self.text[-1].endswith(("\n", " ")):
+                return
+        value = value[:self.remaining]
+        self.text.append(value)
+        self.remaining -= len(value)
+        if not self.remaining:
+            raise _TextLimitReached
 
     def handle_starttag(self, tag, attrs):
-        if tag in ("head", "script", "style"):
+        if tag in ("head", "script", "style", "template"):
             self.hidden += 1
-        elif not self.hidden and tag in ("br", "p", "div", "li", "tr", "blockquote"):
-            self.text.append("\n")
+        elif not self.hidden:
+            attrs = dict(attrs)
+            if tag in ("br", "p", "div", "li", "tr", "blockquote"):
+                self._append("\n")
+            elif tag == "a":
+                self.link = _web_url(attrs.get("href"))
+            elif tag == "img" and attrs.get("alt"):
+                self._append(attrs["alt"])
 
     def handle_endtag(self, tag):
-        if tag in ("head", "script", "style") and self.hidden:
+        if tag in ("head", "script", "style", "template") and self.hidden:
             self.hidden -= 1
+        elif not self.hidden and tag == "a" and self.link:
+            if not self.text or self.text[-1].strip() != self.link:
+                self._append(" " + self.link + " ")
+            self.link = ""
+        elif not self.hidden and tag in ("p", "div", "li", "tr", "blockquote"):
+            self._append("\n")
 
     def handle_data(self, data):
         if not self.hidden:
-            self.text.append(data)
+            self._append(re.sub(r"\s+", " ", data))
+
+
+def _part_text(part, partial):
+    if partial:
+        encoding = (part.get("Content-Transfer-Encoding") or "").strip().lower()
+        if encoding in ("base64", "quoted-printable"):
+            payload = part.get_payload().encode("ascii", "replace")
+            if encoding == "base64":
+                encoded = b"".join(payload.split())
+                # Python's tolerant email decoder can return raw base64 for a cut quartet.
+                try:
+                    data = base64.b64decode(encoded[:len(encoded) // 4 * 4])
+                except binascii.Error:
+                    return ""
+            else:
+                data = quopri.decodestring(re.sub(rb"=[0-9a-fA-F]?$", b"", payload))
+            try:
+                return data.decode(part.get_content_charset() or "utf-8", "replace")
+            except LookupError:
+                return data.decode("utf-8", "replace")
+    try:
+        return part.get_content()
+    except (LookupError, UnicodeError, KeyError):
+        return (part.get_payload(decode=True) or b"").decode("utf-8", "replace")
+
+
+def _body_text(mail, *, partial=False, limit=MAX_BODY):
+    for subtype in ("html", "plain"):
+        part = mail.get_body(preferencelist=(subtype,))
+        if part is None:
+            continue
+        text = _part_text(part, partial)
+        if subtype == "html":
+            html = PlainHTML(limit)
+            try:
+                # A stylesheet or quoted markup can be much larger than the visible message.
+                html.feed(text)
+                html.close()
+            except (_TextLimitReached, ValueError, AssertionError):
+                pass
+            text = "\n".join(line for row in "".join(html.text).splitlines() if (line := " ".join(row.split())))
+        if text.strip(" \r\n\t\xa0\u200b\ufeff"):
+            return text[:limit]
+    return ""
+
+
+_GREETING = re.compile(
+    r"^(?:здравствуй(?:те)?|добр(?:ый (?:день|вечер)|ое утро|ого (?:дня|времени суток))|"
+    r"привет(?:ствую)?|уважаемые коллеги|hello|hi|good (?:morning|afternoon|evening))\b",
+    re.IGNORECASE,
+)
+_SALUTATION = re.compile(r"^(?:коллеги|друзья|партн[её]ры|[А-ЯЁA-Z][а-яёa-z-]+(?: [А-ЯЁA-Z][а-яёa-z-]+)?)[!.:,\n]")
+
+
+def body_preview(text):
+    text = (text or "")[:4096].replace("\r\n", "\n").replace("\u200b", "").strip()
+    addressee = re.match(r"^[А-ЯЁA-Z][а-яёa-z-]+(?: [А-ЯЁA-Z][а-яёa-z-]+)?,\s*", text)
+    if addressee and _GREETING.match(text[addressee.end():]):
+        text = text[addressee.end():]
+    greeting = _GREETING.match(text)
+    if greeting:
+        tail = text[greeting.end():].lstrip(" \t")
+        if tail.startswith(","):
+            tail = tail[1:].lstrip(" \t")
+            tail = _SALUTATION.sub("", tail, count=1)
+        text = tail.lstrip(" ,.:!—–-\n\t")
+    return " ".join(text.split())[:220]
+
+
+def preview_from_prefix(raw, *, partial=False):
+    mail = BytesParser(policy=policy.default).parsebytes(raw)
+    return body_preview(_body_text(mail, partial=partial, limit=4096))
 
 
 def parse_content(raw, download_index=None):
     mail = BytesParser(policy=policy.default).parsebytes(raw)
-    body_part = mail.get_body(preferencelist=("plain", "html"))
-    text = ""
-    if body_part:
-        try:
-            text = body_part.get_content()
-        except (LookupError, UnicodeError, KeyError):
-            text = (body_part.get_payload(decode=True) or b"").decode("utf-8", "replace")
-        if body_part.get_content_type() == "text/html":
-            html = PlainHTML()
-            try:
-                html.feed(text[: MAX_BODY * 2])
-                html.close()
-            except (ValueError, AssertionError):
-                pass  # Preserve the text already parsed from a malformed HTML message.
-            text = "".join(html.text)
+    text = _body_text(mail) if download_index is None else ""
     files = []
     for index, part in enumerate(mail.walk()):
-        if part is body_part or (part.is_multipart() and part.get_content_type() != "message/rfc822"):
+        if part.is_multipart() and part.get_content_type() != "message/rfc822":
             continue
         filename = part.get_filename()
         if (
@@ -185,3 +284,11 @@ def parse_content(raw, download_index=None):
     if download_index is not None:
         raise ValueError("attachment missing")
     return text[:MAX_BODY], files
+
+
+def cache_content(letter, raw):
+    letter.body, letter.attachments = parse_content(raw)
+    letter.preview = body_preview(letter.body)
+    letter.body_loaded = True
+    letter.content_version = CONTENT_VERSION
+    letter.save(update_fields=["body", "attachments", "body_loaded", "preview", "content_version"])

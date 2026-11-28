@@ -6,7 +6,7 @@ from email.utils import parsedate_to_datetime
 from django.utils import timezone
 
 from pool_service.communication_secrets import decrypt_secret
-from .mailbox_mime import MAX_RAW, folder_label
+from .mailbox_mime import MAX_RAW, folder_label, preview_from_prefix
 from .mailbox_transport import imap_session as connect
 
 HEADER_FIELDS = "MESSAGE-ID FROM TO CC SUBJECT DATE REFERENCES IN-REPLY-TO REPLY-TO"
@@ -129,6 +129,43 @@ def headers(client, start, end):
         if not at or not at.tzinfo:
             at = timezone.now()
         yield int(uid[1]), int(size[1]), at, header
+
+
+def selected_previews(client, sizes):
+    # One partial, read-only FETCH for the visible rows, even with large attachments.
+    result = {}
+    pending = list(sizes)
+    extra_budget = 8 * 1024 * 1024
+    for limit in (64 * 1024, 256 * 1024, 1024 * 1024, 4 * 1024 * 1024):
+        if not pending:
+            break
+        retry = []
+        batch_size = max(1, (3 * 1024 * 1024) // limit)
+        for start in range(0, len(pending), batch_size):
+            uids = pending[start:start + batch_size]
+            if limit > 64 * 1024:
+                budgeted = []
+                for uid in uids:
+                    cost = min(sizes[uid], limit)
+                    if cost <= extra_budget:
+                        budgeted.append(uid)
+                        extra_budget -= cost
+                uids = budgeted
+            if not uids:
+                break
+            rows = ok(client.uid("FETCH", ",".join(map(str, uids)), f"(UID BODY.PEEK[]<0.{limit}>)"))
+            for meta, raw in fetched_literals(rows):
+                match = re.search(rb"\bUID (\d+)\b", meta)
+                if not match or (uid := int(match[1])) not in uids:
+                    continue
+                partial = sizes[uid] > len(raw)
+                preview = preview_from_prefix(raw[:limit], partial=partial)
+                if preview or not partial:
+                    result[uid] = preview
+                else:
+                    retry.append(uid)
+        pending = retry
+    return result
 
 
 def selected_message(client, uid):

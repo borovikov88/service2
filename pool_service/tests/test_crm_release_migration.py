@@ -8,7 +8,7 @@ from django.utils import timezone
 
 
 class CrmReleaseMigrationTests(TransactionTestCase):
-    release = [('pool_service', '0211_mailbox_accounts')]
+    release = [('pool_service', '0212_mail_reader_workspace')]
     production = [('pool_service', '0182_merge_onec_review_crm_contact')]
     prepared = [('pool_service', '0185_crm_failure_stage')]
 
@@ -66,7 +66,8 @@ class CrmReleaseMigrationTests(TransactionTestCase):
                 '0201_max_communication_channel', '0202_max_text_replies', '0203_max_media_and_contact',
                 '0204_customer_reminders', '0205_reminder_recipient_roles',
                 '0206_onec_personal_draft_requests', '0207_onec_write_approvals',
-                '0208_onec_ticketless_drafts', '0209_crm_mailbox', '0210_onec_chat_identity', '0211_mailbox_accounts'])
+                '0208_onec_ticketless_drafts', '0209_crm_mailbox', '0210_onec_chat_identity', '0211_mailbox_accounts',
+                '0212_mail_reader_workspace'])
         else:
             self.assertEqual(plan, ['0172_clientimportcandidate_review_state_and_more',
                 '0182_merge_onec_review_crm_contact', '0186_merge_crm_release', '0187_enable_aqualine_crm_close', '0188_crm_card_comments', '0189_contact_management',
@@ -77,7 +78,8 @@ class CrmReleaseMigrationTests(TransactionTestCase):
                 '0201_max_communication_channel', '0202_max_text_replies', '0203_max_media_and_contact',
                 '0204_customer_reminders', '0205_reminder_recipient_roles',
                 '0206_onec_personal_draft_requests', '0207_onec_write_approvals',
-                '0208_onec_ticketless_drafts', '0209_crm_mailbox', '0210_onec_chat_identity', '0211_mailbox_accounts'])
+                '0208_onec_ticketless_drafts', '0209_crm_mailbox', '0210_onec_chat_identity', '0211_mailbox_accounts',
+                '0212_mail_reader_workspace'])
         executor.migrate(self.release)
         new = executor.loader.project_state(self.release).apps
         self.assertFalse(new.get_model("pool_service", "CrmMailbox").objects.exists())
@@ -120,7 +122,7 @@ class CrmReleaseMigrationTests(TransactionTestCase):
                 organization_id=org.pk, address="old@example.org", credential="synthetic-ciphertext",
                 last_sync_at=timezone.now())
             letter = apps.get_model("pool_service", "MailLetter").objects.create(
-                mailbox_id=box.pk, fingerprint="1"*64, subject="Saved", sent_at=timezone.now())
+                mailbox_id=box.pk, fingerprint="1"*64, subject="Saved", body="Previously cached", body_loaded=True, sent_at=timezone.now())
             folder = apps.get_model("pool_service", "MailFolder").objects.create(
                 mailbox_id=box.pk, key="f", name="Inbox", wire_name="INBOX", generation=7, latest_uid=12)
             receipt = apps.get_model("pool_service", "MailSubmission").objects.create(
@@ -134,7 +136,11 @@ class CrmReleaseMigrationTests(TransactionTestCase):
             self.assertEqual((current.provider, current.imap_host, current.smtp_host, current.login),
                              ("mailru", "imap.mail.ru", "smtp.mail.ru", ""))
             self.assertEqual(current.folders.get(pk=folder.pk).latest_uid, 12)
-            self.assertEqual(current.letters.get(pk=letter.pk).subject, "Saved")
+            saved = current.letters.get(pk=letter.pk)
+            self.assertEqual((saved.subject, saved.body, saved.body_loaded, saved.preview, saved.content_version),
+                             ("Saved", "Previously cached", True, None, 0))
+            self.assertFalse(apps.get_model("pool_service", "MailReadReceipt").objects.exists())
+            self.assertFalse(apps.get_model("pool_service", "MailSignature").objects.exists())
             self.assertEqual(apps.get_model("pool_service", "MailSubmission").objects.get(pk=receipt.pk).letter_id, letter.pk)
             model.objects.create(organization_id=org.pk, address="second@example.org")
             self.assertEqual(model.objects.filter(organization_id=org.pk).count(), 2)

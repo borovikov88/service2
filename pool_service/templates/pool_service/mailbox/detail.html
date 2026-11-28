@@ -1,12 +1,12 @@
 {% extends "pool_service/mailbox/base.html" %}
 {% block mail %}<a href="{% url 'crm_mail' %}?org_id={{ org.pk }}">← Почта</a>
 <header class="mail-toolbar"><h2>{{ letter.subject|default:"Без темы" }}</h2></header>
-<div class="mail-actions">{% if letter.mailbox.enabled %}<a class="btn btn-primary" href="{% url 'crm_mail_reply' letter.pk %}?org_id={{ org.pk }}">Ответить</a>{% endif %}
-<a class="btn btn-outline-primary" href="{% url 'crm_mail_link' letter.pk %}?org_id={{ org.pk }}">Добавить в лид / сделку</a>
+<div class="mail-actions">{% if letter.mailbox.enabled %}<a class="btn btn-primary" data-mail-dialog="compose" href="{% url 'crm_mail_reply' letter.pk %}?org_id={{ org.pk }}">Ответить</a>{% endif %}
+{% include "pool_service/mailbox/_link_icon.html" %}
 {% if letter.needs_attention %}<form method="post" action="{% url 'crm_mail_processed' letter.pk %}?org_id={{ org.pk }}">{% csrf_token %}<button class="btn btn-outline-secondary">Обработано</button></form>{% endif %}</div>
 <dl class="mail-headers"><dt>Ящик</dt><dd><a href="{% url 'crm_mail' %}?org_id={{ org.pk }}&amp;box={{ letter.mailbox_id }}">{{ letter.mailbox.address }}</a></dd><dt>От кого</dt><dd>{{ letter.sender_name }} {{ letter.sender }}</dd><dt>Кому</dt><dd>{{ letter.recipients|join:", "|default:"—" }}</dd>
 {% if letter.copies %}<dt>Копия</dt><dd>{{ letter.copies|join:", " }}</dd>{% endif %}
 <dt>Дата</dt><dd>{{ letter.sent_at|date:"d.m.Y H:i" }}</dd>{% if link %}<dt>{{ link.kind }}</dt><dd><a href="{{ link.url }}">{{ link.title }}</a></dd>{% endif %}</dl>
-{% if error %}<p role="status">{{ error }}</p>{% elif letter.body_loaded %}<div class="mail-body">{{ letter.body|default:"В письме нет текста." }}</div>{% else %}<p>Для загрузки текста подключите ящик в настройках.</p>{% endif %}
-{% if letter.attachments %}<h3>Вложения</h3><ul>{% for file in letter.attachments %}<li><a href="{% url 'crm_mail_attachment' letter.pk file.index %}?org_id={{ org.pk }}">{{ file.name }}</a></li>{% endfor %}</ul>{% endif %}
+{% if error %}<p role="status">{{ error }}</p>{% endif %}{% if letter.body_loaded %}{% if letter.body %}<div class="mail-body">{{ letter.body|urlize }}</div>{% elif not letter.attachments %}<p class="text-muted">В письме нет текста или файлов для скачивания.</p>{% endif %}{% elif not error %}<p>Для загрузки текста подключите ящик в настройках.</p>{% endif %}
+{% if letter.attachments %}<h3><svg class="mail-symbol" aria-hidden="true"><use href="#mail-icon-clip"></use></svg> Вложения</h3><ul class="mail-files">{% for file in letter.attachments %}<li><a href="{% url 'crm_mail_attachment' letter.pk file.index %}?org_id={{ org.pk }}">{{ file.name }}</a></li>{% endfor %}</ul>{% endif %}
 {% endblock %}
