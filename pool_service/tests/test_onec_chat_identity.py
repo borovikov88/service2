@@ -7,7 +7,7 @@ from datetime import timedelta
 from pathlib import Path
 from threading import Event, Thread
 from unittest.mock import patch
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 from uuid import uuid4
 from xml.etree import ElementTree as ET
 
@@ -266,13 +266,59 @@ class ChatIdentityTests(TestCase):
         self.assertTrue(self.call("create_1c_nomenclature", args)["isError"])
         self.assertFalse(self.fresh.posts)
 
+    def test_oauth_connection_resumes_consent_after_password_login(self):
+        self.actor.set_password("synthetic-login-password")
+        self.actor.save(update_fields=["password"])
+        params = {"client_id": self.app.client_id, "redirect_uri": first_author.REDIRECT,
+            "resource": "https://rovik.example/mcp/1c-drafts", "response_type": "code",
+            "state": "synthetic + / &=state", "code_challenge_method": "S256",
+            "code_challenge": "A" * 43, "scope": "service2.onec.drafts offline_access"}
+        authorize = reverse("finance_mcp_authorize") + "?" + urlencode(params)
+        token_count = FinanceMcpAccessToken.objects.count()
+        with override_settings(SITE_URL="https://rovik.example"):
+            login = self.client.get(authorize)
+            self.assertEqual(login.status_code, 302)
+            self.assertTrue(login.url.startswith(reverse("login") + "?next="))
+            response = self.client.post(login.url, {"username": self.actor.username,
+                "password": "synthetic-login-password"})
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(response.url, authorize)
+            consent = self.client.get(response.url)
+            self.assertEqual(consent.status_code, 200)
+            self.assertTemplateUsed(consent, "pool_service/operations_mcp/authorize.html")
+            self.assertEqual(consent.context["oauth_params"], params)
+            self.assertTrue(consent.context["onec_chat_identity"])
+        self.assertEqual(FinanceMcpAccessToken.objects.count(), token_count)
+        self.assertFalse(OneCChatIdentity.objects.exists())
+        self.assertFalse(self.fresh.posts)
+
+    def test_password_login_rejects_external_and_lookalike_oauth_returns(self):
+        self.actor.set_password("synthetic-login-password")
+        self.actor.save(update_fields=["password"])
+        for next_url in ("https://outside.example/oauth/finance/authorize?state=x",
+                "//outside.example/oauth/finance/authorize?state=x",
+                "/oauth/finance/authorize-elsewhere?state=x", "/oauth/finance/authorize/extra?state=x"):
+            with self.subTest(next_url=next_url):
+                self.client.logout()
+                response = self.client.post(reverse("login") + "?" + urlencode({"next": next_url}),
+                    {"username": self.actor.username, "password": "synthetic-login-password"})
+                self.assertEqual(response.status_code, 302)
+                self.assertNotEqual(response.url, next_url)
+                self.assertNotIn("outside.example", response.url)
+                self.assertNotIn("/oauth/", response.url)
+
     def test_chatgpt_return_survives_login_and_only_allows_exact_https_host(self):
         path = self.start()
         callback = "https://chatgpt.com/c/synthetic-chat?resume=identity"
         response = self.client.get(path, {"redirectUrl": callback})
         self.assertEqual(response.status_code, 302)
         self.assertNotIn("redirectUrl", response.url)
-        self.client.force_login(self.actor)
+        self.actor.set_password("synthetic-login-password")
+        self.actor.save(update_fields=["password"])
+        logged_in = self.client.post(response.url, {"username": self.actor.username,
+            "password": "synthetic-login-password"})
+        self.assertEqual(logged_in.status_code, 302)
+        self.assertEqual(logged_in.url, path)
         page = self.client.get(path)
         response = self.client.post(path, {"account_binding": page.context["account_binding"]})
         self.assertEqual(response.url, callback)

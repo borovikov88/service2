@@ -3,7 +3,7 @@
   "mcpServers": {
     "rovik-onec-drafts": {
       "type": "streamable-http",
-      "url": "https://service2.aqualine22.ru/mcp/1c-drafts",
+      "url": "https://rovikpool.ru/mcp/1c-drafts",
       "extensions": {
         "com.openai": {
           "auth": {

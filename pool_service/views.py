@@ -10063,6 +10063,10 @@ class CustomLoginView(LoginView):
 
     def get_success_url(self):
         next_url = self.get_redirect_url()
+        oauth_path = reverse("finance_mcp_authorize")
+        if next_url == oauth_path or next_url.startswith(oauth_path + "?"):
+            # Keep the validated local OAuth request, including state and PKCE.
+            return next_url
         if next_url.startswith("/onec/drafts/"):
             try:
                 match = resolve(next_url)
