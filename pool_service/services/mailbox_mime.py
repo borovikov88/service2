@@ -1,4 +1,4 @@
-"""Parse email as untrusted content. Only plain text and explicit file downloads reach CRM."""
+"""Parse email as untrusted content. Keep search text, presentation and downloadable files separate."""
 
 import base64
 import binascii
@@ -8,16 +8,21 @@ import re
 from datetime import timezone as utc
 from email import policy
 from email.errors import MessageError
+from email.message import Message
 from email.parser import BytesParser
 from email.utils import getaddresses, parsedate_to_datetime
 from html.parser import HTMLParser
+from io import BytesIO
 from pathlib import PurePath
 from urllib.parse import urlsplit
 
 from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
+from PIL import Image
 
-CONTENT_VERSION = 1
+from .mailbox_html import clean_letter, has_text
+
+CONTENT_VERSION = 2
 MAX_BODY = 512_000
 MAX_RAW = 64 * 1024 * 1024
 ID_PATTERN = re.compile(r"<[^\s<>\x00-\x1f]{1,996}>")
@@ -260,7 +265,7 @@ def preview_from_prefix(raw, *, partial=False):
 
 
 def parse_content(raw, download_index=None):
-    mail = BytesParser(policy=policy.default).parsebytes(raw)
+    mail = raw if isinstance(raw, Message) else BytesParser(policy=policy.default).parsebytes(raw)
     text = _body_text(mail) if download_index is None else ""
     files = []
     for index, part in enumerate(mail.walk()):
@@ -286,10 +291,53 @@ def parse_content(raw, download_index=None):
     return text[:MAX_BODY], files
 
 
+def inline_images(mail):
+    """Resolve inline raster images from this message only, with a bounded response size."""
+    images = {}
+    seen = set()
+    budget = 6 * 1024 * 1024
+    for part in mail.walk():
+        cid = str(part.get("Content-ID") or "").strip().strip("<>")
+        if not cid or part.get_content_maintype() != "image":
+            continue
+        if cid in seen:
+            images.pop(cid, None)
+            continue
+        seen.add(cid)
+        if len(images) >= 32 or budget <= 0:
+            continue
+        data = part.get_payload(decode=True) or b""
+        if not data or len(data) > min(budget, 2 * 1024 * 1024):
+            continue
+        try:
+            with Image.open(BytesIO(data), formats=("PNG", "JPEG", "GIF", "WEBP")) as image:
+                if image.width * image.height > 20_000_000:
+                    continue
+                mime = Image.MIME[image.format]
+                image.verify()
+        except (OSError, SyntaxError, ValueError, Image.DecompressionBombError):
+            continue
+        images[cid] = f"data:{mime};base64," + base64.b64encode(data).decode("ascii")
+        budget -= len(data)
+    return images
+
+
 def cache_content(letter, raw):
-    letter.body, letter.attachments = parse_content(raw)
+    mail = BytesParser(policy=policy.default).parsebytes(raw)
+    letter.body, letter.attachments = parse_content(mail)
+    part = mail.get_body(preferencelist=("html",))
+    letter.body_html = clean_letter(_part_text(part, False)) if part else ""
+    if letter.body_html and not has_text(letter.body_html):
+        alternate = mail.get_body(preferencelist=("plain",))
+        if alternate:
+            plain = _part_text(alternate, False)
+            if plain.strip():
+                letter.body = plain[:MAX_BODY]
+        if "<img " not in letter.body_html:
+            letter.body_html = ""
     letter.preview = body_preview(letter.body)
     letter.has_attachments = bool(letter.attachments)
     letter.body_loaded = True
     letter.content_version = CONTENT_VERSION
-    letter.save(update_fields=["body", "attachments", "has_attachments", "body_loaded", "preview", "content_version"])
+    letter.save(update_fields=["body", "body_html", "attachments", "has_attachments", "body_loaded", "preview", "content_version"])
+    return mail

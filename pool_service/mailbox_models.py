@@ -77,6 +77,7 @@ class MailLetter(models.Model):
     content_version = models.PositiveSmallIntegerField(default=0)
     preview = models.CharField(max_length=220, null=True, blank=True)
     body = models.TextField(blank=True)
+    body_html = models.TextField(blank=True, null=True)
     attachments = models.JSONField(default=list)
     has_attachments = models.BooleanField(null=True)
     lead = models.ForeignKey(
@@ -113,6 +114,7 @@ class MailSignature(models.Model):
     organization = models.ForeignKey("pool_service.Organization", on_delete=models.CASCADE)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     text = models.TextField(blank=True)
+    html = models.TextField(blank=True, null=True)
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["organization", "user"], name="mail_user_signature")]

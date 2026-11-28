@@ -27,3 +27,5 @@ pyasn1_modules==0.4.2
 pyOpenSSL==26.3.0
 typing_extensions==4.16.0
 webauthn==3.0.0
+nh3==0.3.8
+tinycss2==1.5.1

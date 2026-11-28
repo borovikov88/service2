@@ -99,10 +99,12 @@ class ComposeForm(forms.Form):
     cc = AddressList(label="Копия", required=False)
     subject = forms.CharField(label="Тема", max_length=250)
     body = forms.CharField(label="Сообщение", max_length=150000, widget=forms.Textarea(attrs={"rows": 6}))
+    html = forms.CharField(required=False, max_length=600000, widget=forms.HiddenInput)
     token = forms.CharField(widget=forms.HiddenInput)
 
 
 class MailSignatureForm(forms.Form):
+    html = forms.CharField(required=False, max_length=32000, widget=forms.HiddenInput)
     text = forms.CharField(label="Моя подпись", required=False, max_length=4000, widget=forms.Textarea(attrs={"rows": 5}))
 
 

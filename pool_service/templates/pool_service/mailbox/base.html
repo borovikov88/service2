@@ -1,7 +1,7 @@
 {% extends "pool_service/base.html" %}{% load static %}
 {% block title %}Почта{% endblock %}
-{% block extra_head %}{{ block.super }}<link rel="stylesheet" href="{% static 'assets/css/crm-mail.css' %}?v=3"><script defer src="{% static 'assets/js/communication-filters.js' %}?v=2"></script><script defer src="{% static 'assets/js/crm-mail-workspace.js' %}?v=2"></script>{% endblock %}
-{% block content %}<div class="mail-workspace">
+{% block extra_head %}{{ block.super }}<link rel="stylesheet" href="{% static 'assets/css/crm-mail.css' %}?v=4"><script defer src="{% static 'assets/js/communication-filters.js' %}?v=2"></script><script defer src="{% static 'assets/js/crm-mail-editor.js' %}?v=1"></script><script defer src="{% static 'assets/js/crm-mail-workspace.js' %}?v=3"></script>{% endblock %}
+{% block content %}<div class="mail-workspace" data-editor-script="{% static 'django_ckeditor_5/dist/bundle.js' %}" data-editor-style="{% static 'django_ckeditor_5/dist/styles.css' %}" data-editor-locale="{% static 'django_ckeditor_5/dist/translations/ru.js' %}">
 {% include "pool_service/mailbox/_icons.html" %}
 {% include "pool_service/communications/_section_nav.html" %}
 {% block mail %}{% endblock %}

@@ -4,7 +4,9 @@
     <button type="button" class="mail-icon" data-dialog-close aria-label="Закрыть окно"><svg class="mail-symbol" aria-hidden="true"><use href="#mail-icon-close"></use></svg></button>
   </header>
   <div class="mail-signature-fields"><label for="{{ form.text.id_for_label }}">Подпись для новых писем и ответов</label>
-    {{ form.text }}{{ form.text.errors }}<small>Оставьте поле пустым, чтобы писать без подписи.</small>
+    {{ form.text }}{{ form.text.errors }}{{ form.html.errors }}
+    <input type="hidden" name="html" data-editor-html value="{{ editor_html }}" disabled>
+    <div data-mail-editor aria-label="Подпись для новых писем и ответов"></div><small>Оставьте поле пустым, чтобы писать без подписи.</small>
   </div>
   <footer class="mail-compose-footer"><button class="btn btn-primary">Сохранить</button><button type="button" class="btn btn-link" data-dialog-close>Закрыть</button><span data-mail-feedback role="status"></span></footer>
 </form>

@@ -40,7 +40,7 @@
       <span class="mail-read-done"{% if letter.unread %} hidden{% endif %}><span class="visually-hidden">Прочитано</span></span>
     </div>
     <a class="mail-open" href="{% url 'crm_mail_detail' letter.pk %}?org_id={{ org.pk }}">
-      <span class="mail-person"><span class="mail-avatar mail-color-{{ letter.avatar_color }}{% if letter.avito_avatar %} mail-avatar-avito{% endif %}" aria-hidden="true">{% if letter.avito_avatar %}<svg viewBox="0 0 32 32" focusable="false"><use href="#mail-avatar-avito"></use></svg>{% else %}{{ letter.initials }}{% endif %}</span>
+      <span class="mail-person">{% include "pool_service/mailbox/_avatar.html" %}
         <span class="mail-sender" title="{% if letter.outgoing %}Кому: {{ letter.recipients|join:', ' }}{% else %}{{ letter.sender }}{% endif %}{% if not box and boxes|length > 1 %} · {{ letter.mailbox.address }}{% endif %}">{% if letter.outgoing %}Кому: {{ letter.recipients|join:", " }}{% else %}{{ letter.sender_name|default:letter.sender|default:"Без отправителя" }}{% endif %}</span>
       </span>
       <span class="mail-summary"><span class="mail-subject">{{ letter.subject|default:"Без темы" }}</span><span class="mail-preview">{{ letter.snippet }}</span></span>
