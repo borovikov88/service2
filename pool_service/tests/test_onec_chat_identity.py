@@ -8,6 +8,7 @@ from pathlib import Path
 from threading import Event, Thread
 from unittest.mock import patch
 from urllib.parse import urlencode, urlsplit
+from urllib.request import parse_http_list, parse_keqv_list
 from uuid import uuid4
 from xml.etree import ElementTree as ET
 
@@ -102,6 +103,53 @@ class ChatIdentityTests(TestCase):
         self.assertTrue(result["isError"])
         self.assertFalse(OneCChatIdentity.objects.exists())
         self.assertFalse(OneCDraftRequest.objects.exists())
+        self.assertFalse(self.fresh.posts)
+
+    def test_anonymous_tools_signal_oauth_linking_without_starting_business_actions(self):
+        tools = self.client.post(reverse("onec_drafts_mcp"), data=json.dumps({"jsonrpc": "2.0", "id": 1,
+            "method": "tools/list", "params": {}}), content_type="application/json",
+            HTTP_ACCEPT="application/json").json()["result"]["tools"]
+        self.assertEqual({tool["name"] for tool in tools}, {
+            "get_chat_identity", "create_1c_document", "request_nomenclature", "create_1c_nomenclature"})
+        with patch.object(identity, "begin") as begin, patch("pool_service.onec_drafts_views.writes") as writes:
+            for tool in tools:
+                with self.subTest(tool=tool["name"]):
+                    self.assertEqual(tool["securitySchemes"], [{"type": "oauth2", "scopes": ["service2.onec.drafts"]}])
+                    self.assertEqual(tool["_meta"]["securitySchemes"], tool["securitySchemes"])
+                    response = self.client.post(reverse("onec_drafts_mcp"), data=json.dumps({"jsonrpc": "2.0", "id": 2,
+                        "method": "tools/call", "params": {"name": tool["name"], "arguments": {}}}),
+                        content_type="application/json", HTTP_ACCEPT="application/json")
+                    self.assertEqual(response.status_code, 200)
+                    result = response.json()["result"]
+                    self.assertTrue(result["isError"])
+                    challenges = result["_meta"]["mcp/www_authenticate"]
+                    self.assertEqual(len(challenges), 1)
+                    self.assertTrue(challenges[0].startswith("Bearer "))
+                    params = parse_keqv_list(parse_http_list(challenges[0][7:]))
+                    self.assertEqual(params["error"], "insufficient_scope")
+                    self.assertTrue(params["error_description"])
+                    self.assertEqual(params["scope"], "service2.onec.drafts")
+                    self.assertEqual(params["resource_metadata"], SITE + "/.well-known/oauth-protected-resource/mcp/1c-drafts")
+            begin.assert_not_called()
+            self.assertEqual(writes.mock_calls, [])
+        self.assertFalse(OneCChatIdentity.objects.exists())
+        self.assertFalse(OneCDraftRequest.objects.exists())
+        self.assertFalse(self.fresh.posts)
+
+    def test_expired_oauth_token_returns_complete_reconnection_challenge(self):
+        FinanceMcpAccessToken.objects.update(expires_at=timezone.now()-timedelta(seconds=1))
+        with patch.object(identity, "begin") as begin:
+            response = self.rpc("tools/call", {"name": "get_chat_identity", "arguments": {}})
+            begin.assert_not_called()
+        self.assertEqual(response.status_code, 401)
+        challenge = response["WWW-Authenticate"]
+        self.assertTrue(challenge.startswith("Bearer "))
+        params = parse_keqv_list(parse_http_list(challenge[7:]))
+        self.assertEqual(params["error"], "invalid_token")
+        self.assertTrue(params["error_description"])
+        self.assertEqual(params["scope"], "service2.onec.drafts")
+        self.assertEqual(params["resource_metadata"], SITE + "/.well-known/oauth-protected-resource/mcp/1c-drafts")
+        self.assertFalse(OneCChatIdentity.objects.exists())
         self.assertFalse(self.fresh.posts)
 
     def test_confirmation_get_and_csrf_protected_post_never_create_documents(self):

@@ -88,14 +88,21 @@ def _connected_tools():
             "inputSchema": _obj({}, []), "securitySchemes": [{"type": "oauth2", "scopes": [ONEC_DRAFTS.scope]}],
             "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
             "_meta": {"openai/outputTemplate": WIDGET_URI, "openai/widgetAccessible": True}})
+    for tool in tools:
+        tool.setdefault("_meta", {})["securitySchemes"] = tool["securitySchemes"]
     return tools
+
+
+def _auth_challenge(*, error):
+    return (f'Bearer resource_metadata="{protected_resource_metadata_url(ONEC_DRAFTS)}", '
+            f'scope="{ONEC_DRAFTS.scope}", error="{error}", '
+            'error_description="Connect Rovik to access 1C drafts"')
 
 
 def _connected_call(request, tool, arguments, authenticated, metadata=None):
     if not authenticated:
-        challenge = f'Bearer resource_metadata="{protected_resource_metadata_url(ONEC_DRAFTS)}", scope="{ONEC_DRAFTS.scope}"'
         return {**_result("Подключите Ровик для работы с черновиками 1С.", error=True),
-                "_meta": {"mcp/www_authenticate": [challenge]}}
+                "_meta": {"mcp/www_authenticate": [_auth_challenge(error="insufficient_scope")]}}
     try:
         if chat_identity.enabled():
             identity, actor = chat_identity.begin(authenticated, metadata)
@@ -174,7 +181,7 @@ def onec_drafts_mcp(request):
             authenticated = authenticate_bearer_header(request.headers["Authorization"], ONEC_DRAFTS)
         except OperationsMcpOAuthError:
             response = transport._mcp_empty(status=401, protocol_version=version)
-            response["WWW-Authenticate"] = f'Bearer resource_metadata="{protected_resource_metadata_url(ONEC_DRAFTS)}", scope="{ONEC_DRAFTS.scope}"'
+            response["WWW-Authenticate"] = _auth_challenge(error="invalid_token")
             return response
     body, invalid = transport._require_json_mcp_request(request, protocol_version=version)
     if invalid:
