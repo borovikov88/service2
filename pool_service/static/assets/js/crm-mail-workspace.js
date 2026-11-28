@@ -8,9 +8,48 @@
     if (event.persisted && workspace.querySelector(".mail-list")) window.location.reload();
   });
 
+  const confirmedReads = new Set();
+
+  function showRead(row) {
+    if (!row || !row.classList.contains("is-unread")) return;
+    const form = row.querySelector("[data-mark-read]");
+    if (form.contains(document.activeElement)) row.querySelector(".mail-open").focus({preventScroll: true});
+    form.hidden = true;
+    row.querySelector(".mail-read-done").hidden = false;
+    row.classList.remove("is-unread");
+  }
+
+  workspace.addEventListener("submit", async event => {
+    const form = event.target.closest("[data-mark-read]");
+    if (!form) return;
+    event.preventDefault();
+    const button = form.querySelector("button");
+    if (button.hasAttribute("aria-busy")) return;
+    button.setAttribute("aria-busy", "true");
+    const row = form.closest("[data-letter]");
+    const feedback = workspace.querySelector("[data-read-feedback]");
+    feedback.textContent = "";
+    try {
+      const response = await fetch(form.action, {
+        method: "POST", body: new FormData(form), headers: {"X-Requested-With": "XMLHttpRequest"}
+      });
+      if (!response.ok || (await response.json()).read !== true) throw new Error();
+      const id = row.dataset.letter;
+      confirmedReads.add(id);
+      showRead(workspace.querySelector(`[data-letter="${id}"]`));
+    } catch {
+      feedback.textContent = "Не удалось отметить письмо прочитанным. Нажмите на точку ещё раз.";
+    } finally {
+      button.removeAttribute("aria-busy");
+    }
+  });
+
   async function loadPreviews() {
     const container = workspace.querySelector("[data-mail-previews]");
     if (!container) return;
+    for (const row of container.querySelectorAll(".is-unread[data-letter]")) {
+      if (confirmedReads.has(row.dataset.letter)) showRead(row);
+    }
     const batches = new Map();
     for (const slot of container.querySelectorAll("[data-preview-url]")) {
       const url = slot.dataset.previewUrl;
@@ -25,9 +64,10 @@
       try {
         const response = await fetch(url, {method: "POST", body: data, headers: {"X-CSRFToken": csrf}});
         if (!response.ok || !response.headers.get("Content-Type")?.includes("application/json")) continue;
-        const {previews} = await response.json();
-        for (const [id, snippet] of Object.entries(previews)) {
-          if (slots.has(id)) slots.get(id).textContent = snippet;
+        const {previews, attachments = {}} = await response.json();
+        for (const [id, row] of slots) {
+          if (typeof previews[id] === "string") row.querySelector(".mail-preview").textContent = previews[id];
+          if (typeof attachments[id] === "boolean") row.querySelector(".mail-has-files").hidden = !attachments[id];
         }
       } catch {
         // Dates, subjects and navigation remain available while the provider is offline.

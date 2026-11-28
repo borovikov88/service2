@@ -325,6 +325,7 @@ urlpatterns = [
     path("communications/mail/<int:pk>/", mailbox_views.detail, name="crm_mail_detail"),
     path("communications/mail/<int:pk>/link/", mailbox_views.link, name="crm_mail_link"),
     path("communications/mail/<int:pk>/reply/", mailbox_views.compose, name="crm_mail_reply"),
+    path("communications/mail/<int:pk>/read/", mailbox_views.mark_read, name="crm_mail_read"),
     path("communications/mail/<int:pk>/processed/", mailbox_views.processed, name="crm_mail_processed"),
     path("communications/mail/<int:pk>/files/<int:index>/", mailbox_views.attachment, name="crm_mail_attachment"),
     path("communications/updates/", dialog_updates, name="communication_dialog_updates"),

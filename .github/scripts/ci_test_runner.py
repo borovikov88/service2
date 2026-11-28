@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BROWSERS = {
     "shared": (
         "test_avito_owner_dashboard_browser", "test_sqlite_live_server_safety",
-        "test_crm_column_browser", "test_contacts_browser", "test_owner_call_privacy_browser", "test_crm_role_browser"),
+        "test_crm_column_browser", "test_crm_mail_rows_browser", "test_contacts_browser", "test_owner_call_privacy_browser", "test_crm_role_browser"),
     "commercial": (
         "test_crm_commercial_card_browser", "test_crm_failure_browser", "test_crm_object_need_browser",
         "test_crm_lead_kanban_browser", "test_crm_service_binding_browser", "test_crm_quote_browser",
