@@ -7,7 +7,7 @@ import time
 from datetime import timedelta
 from uuid import uuid4
 
-from django.db import transaction
+from django.db import DataError, transaction
 from django.db.models import Exists, F, OuterRef, Q
 from django.utils import timezone
 
@@ -210,14 +210,23 @@ def sync_mailbox(box_id, *, seconds=35):
                     _reconcile_letters(box, archived.values("letter_id"))
             # Equal rotation prevents a large archive from starving the smaller folders.
             ordered = box.folders.filter(available=True).order_by(F("scanned_at").asc(nulls_first=True), "pk")
+            scanned_folder = False
             for folder in ordered:
                 if time.monotonic() >= deadline:
                     break
                 _scan(box, token, client, folder)
+                scanned_folder = True
+        if not scanned_folder:
+            return False
         CrmMailbox.objects.filter(pk=box.pk, sync_token=token).update(
             last_sync_at=timezone.now(), sync_error=""
         )
         return True
+    except DataError:
+        CrmMailbox.objects.filter(pk=box.pk, sync_token=token).update(
+            sync_error="Не удалось сохранить почтовые данные в CRM. Загрузка повторится автоматически."
+        )
+        return False
     except PROVIDER_ERRORS:
         # Exceptions from remote servers can include sensitive headers and credentials.
         CrmMailbox.objects.filter(pk=box.pk, sync_token=token).update(

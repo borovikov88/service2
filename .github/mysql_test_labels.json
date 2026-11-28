@@ -36,6 +36,7 @@
   "pool_service.tests.test_crm_service_bindings",
   "pool_service.tests.test_crm_service_binding_migration",
   "pool_service.tests.test_crm_inbox",
+  "pool_service.tests.test_crm_mailbox.MailboxTests.test_first_sync_retries_failed_batch_and_preserves_unicode_subjects",
   "pool_service.tests.test_crm_inbox_migrations",
   "pool_service.tests.test_crm_commercial_foundation",
   "pool_service.tests.test_crm_commercial_commands",
