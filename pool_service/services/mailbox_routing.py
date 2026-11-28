@@ -89,8 +89,8 @@ def card_letters(org, subject, lead_ids):
     )
 
 
-def contact_letters(box, client):
-    if client.organization_id != box.organization_id or excluded([client]):
+def contact_letters(org, client, *, letters=None):
+    if client.organization_id != org.pk or excluded([client]):
         return MailLetter.objects.none()
     # A shared address in two unrelated cards should not expose either customer's mail in the other card.
     unique = [
@@ -99,7 +99,9 @@ def contact_letters(box, client):
         if client.pk in {item.pk for item in (matched_parties(client.organization_id, addr) or [])}
         and not excluded(address_clients(client.organization_id, addr))
     ]
-    return box.letters.filter(commercial=True, peers__address__in=unique).distinct()
+    if letters is None:
+        letters = MailLetter.objects.all()
+    return letters.filter(mailbox__organization=org, commercial=True, peers__address__in=unique).distinct()
 
 
 def _valid_leads(org):

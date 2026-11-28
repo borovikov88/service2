@@ -1635,7 +1635,28 @@ def _communication_provider_channel(organization, kind):
 
 @login_required
 def channels(request):
-    organization = _context(request, "can_manage_channels")
+    from .mailbox_models import CrmMailbox
+    from .services.mailbox_access import mailbox_role
+
+    access = _selected_access(request)
+    if not access:
+        raise PermissionDenied
+    organization = access.organization
+    mail_owner = mailbox_role(request.user, organization) == "owner"
+    can_manage = conversation_capability(request.user, "can_manage_channels", organization)
+    if not (can_manage or mail_owner):
+        raise PermissionDenied
+    settings_context = {
+        "active_tab": "communications",
+        "communication_org_id": organization.pk,
+        "can_edit_channels": can_manage,
+        "mail_owner": mail_owner,
+        "mailboxes": CrmMailbox.objects.filter(organization=organization).only(
+            "address", "provider", "enabled", "last_sync_at", "sync_error"
+        ).order_by("address") if mail_owner else (),
+    }
+    if not can_manage:
+        return render(request, "pool_service/communications/channels.html", settings_context)
     communication_channels = list(
         CommunicationChannel.objects.filter(organization=organization)
         .prefetch_related("connections")
@@ -1785,7 +1806,7 @@ def channels(request):
         request,
         "pool_service/communications/channels.html",
         {
-            "active_tab": "communications",
+            **settings_context,
             "providers": providers,
             "telephony_connections": telephony_connections,
         },

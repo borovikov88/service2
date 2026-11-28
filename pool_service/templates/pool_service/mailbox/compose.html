@@ -1,4 +1,4 @@
 {% extends "pool_service/mailbox/base.html" %}
 {% block mail %}<a href="{% url 'crm_mail' %}?org_id={{ org.pk }}">← Почта</a><h2>{% if parent %}Ответить на письмо{% else %}Написать письмо{% endif %}</h2>
-<p>Отправитель · {{ box.address }}</p><form class="mail-form" method="post" enctype="multipart/form-data">{% csrf_token %}{{ form.as_p }}
+<p>Отправитель · {{ box.address }}</p><form class="mail-form" method="post" enctype="multipart/form-data">{% csrf_token %}<input type="hidden" name="box" value="{{ box.pk }}">{{ form.as_p }}
 <label>Вложения<input type="file" name="files" multiple></label><p><button class="btn btn-primary">Отправить</button></p></form>{% endblock %}

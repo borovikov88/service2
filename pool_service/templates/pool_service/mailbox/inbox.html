@@ -1,26 +1,29 @@
 {% extends "pool_service/mailbox/base.html" %}
 {% block mail %}
-<header class="mail-toolbar"><div><h2>Почта</h2>{% if box %}<span class="text-muted">{{ box.address }}</span>{% endif %}</div>
+<header class="mail-toolbar"><div><h2>Почта</h2>{% if box %}<span class="text-muted">{{ box.address }}</span>{% elif boxes|length == 1 %}<span class="text-muted">{{ boxes.0.address }}</span>{% endif %}</div>
 <div class="mail-actions">
-{% if box.enabled %}<a class="btn btn-primary" href="{% url 'crm_mail_compose' %}?org_id={{ org.pk }}">Написать письмо</a>
-<form method="post" action="{% url 'crm_mail_refresh' %}?org_id={{ org.pk }}">{% csrf_token %}<button class="btn btn-outline-secondary">Обновить</button></form>{% endif %}
-{% if owner %}<a class="btn btn-outline-secondary" href="{% url 'crm_mail_setup' %}?org_id={{ org.pk }}">{% if box %}Настройки ящика{% else %}Подключить ящик{% endif %}</a>{% endif %}
+{% if active_boxes and not box or box.enabled %}<a class="btn btn-primary" href="{% url 'crm_mail_compose' %}?org_id={{ org.pk }}{% if box %}&amp;box={{ box.pk }}{% endif %}">Написать письмо</a>{% endif %}
+{% if box.enabled or not box and active_boxes|length == 1 %}<form method="post" action="{% url 'crm_mail_refresh' %}?org_id={{ org.pk }}">{% csrf_token %}<input type="hidden" name="box" value="{% firstof box.pk active_boxes.0.pk %}"><button class="btn btn-outline-secondary">Обновить</button></form>{% endif %}
 </div></header>
-{% if box %}
-{% if not box.enabled %}<p role="status">Синхронизация приостановлена.</p>{% elif box.sync_error %}<p role="status">{{ box.sync_error }}</p>{% elif box.last_sync_at %}<p class="text-muted small">Последняя синхронизация {{ box.last_sync_at|date:"d.m.Y H:i" }}.</p>{% else %}<p role="status">Ожидаем первую синхронизацию.</p>{% endif %}
-<nav class="mail-tabs" aria-label="Почтовые папки"><a {% if chosen == "all" and not client %}aria-current="page"{% endif %} href="?org_id={{ org.pk }}">Вся почта</a>
-<a {% if chosen == "review" %}aria-current="page"{% endif %} href="?org_id={{ org.pk }}&amp;folder=review">Требует разбора{% if review_count %} ({{ review_count }}){% endif %}</a>
-<a {% if chosen == "sent" %}aria-current="page"{% endif %} href="?org_id={{ org.pk }}&amp;folder=sent">Отправленные</a></nav>
-<form class="mail-filters" method="get" role="search"><input type="hidden" name="org_id" value="{{ org.pk }}">{% if client %}<input type="hidden" name="client" value="{{ client.pk }}">{% endif %}
+{% if boxes %}
+{% if boxes|length > 1 %}<nav class="mail-tabs" aria-label="Почтовые ящики">
+<a {% if not box %}aria-current="page"{% endif %} href="?org_id={{ org.pk }}{% if client %}&amp;client={{ client.pk }}{% endif %}{% if chosen == 'sent' or chosen == 'review' %}&amp;folder={{ chosen }}{% endif %}{% if query %}&amp;q={{ query|urlencode }}{% endif %}">Все ящики</a>
+{% for account in boxes %}<a {% if account.pk == box.pk %}aria-current="page"{% endif %} href="?org_id={{ org.pk }}&amp;box={{ account.pk }}{% if client %}&amp;client={{ client.pk }}{% endif %}{% if chosen == 'sent' or chosen == 'review' %}&amp;folder={{ chosen }}{% endif %}{% if query %}&amp;q={{ query|urlencode }}{% endif %}">{{ account.address }}</a>{% endfor %}</nav>{% endif %}
+{% if box or boxes|length == 1 %}{% with status=box|default:boxes.0 %}
+{% if not status.enabled %}<p role="status">Синхронизация приостановлена.</p>{% elif status.sync_error %}<p role="status">{{ status.sync_error }}</p>{% elif status.last_sync_at %}<p class="text-muted small">Последняя синхронизация {{ status.last_sync_at|date:"d.m.Y H:i" }}.</p>{% else %}<p role="status">Ожидаем первую синхронизацию.</p>{% endif %}{% endwith %}{% endif %}
+<nav class="mail-tabs" aria-label="Почтовые папки"><a {% if chosen == "all" and not client %}aria-current="page"{% endif %} href="?org_id={{ org.pk }}{% if box %}&amp;box={{ box.pk }}{% endif %}">Вся почта</a>
+<a {% if chosen == "review" %}aria-current="page"{% endif %} href="?org_id={{ org.pk }}{% if box %}&amp;box={{ box.pk }}{% endif %}&amp;folder=review">Требует разбора{% if review_count %} ({{ review_count }}){% endif %}</a>
+<a {% if chosen == "sent" %}aria-current="page"{% endif %} href="?org_id={{ org.pk }}{% if box %}&amp;box={{ box.pk }}{% endif %}&amp;folder=sent">Отправленные</a></nav>
+<form class="mail-filters" method="get" role="search"><input type="hidden" name="org_id" value="{{ org.pk }}">{% if box %}<input type="hidden" name="box" value="{{ box.pk }}">{% endif %}{% if client %}<input type="hidden" name="client" value="{{ client.pk }}">{% endif %}
 <label>Папка<select name="folder" class="form-select"><option value="all">Вся почта</option><option value="review"{% if chosen == "review" %} selected{% endif %}>Требует разбора</option><option value="sent"{% if chosen == "sent" %} selected{% endif %}>Отправленные</option>
-{% for folder in folders %}<option value="{{ folder.pk }}"{% if chosen == folder.pk|stringformat:"s" %} selected{% endif %}>{{ folder.name }}</option>{% endfor %}</select></label>
+{% for folder in folders %}<option value="{{ folder.pk }}"{% if chosen == folder.pk|stringformat:"s" %} selected{% endif %}>{{ folder.name }}{% if not box and boxes|length > 1 %} · {{ folder.mailbox.address }}{% endif %}</option>{% endfor %}</select></label>
 <label>Поиск<input class="form-control" name="q" value="{{ query }}" maxlength="160" type="search" placeholder="Тема или адрес"></label><button class="btn btn-outline-primary">Найти</button></form>
 {% if client %}<p>Переписка с клиентом <strong>{{ client.name }}</strong></p>{% endif %}
 <ul class="mail-list">{% for letter in page %}<li>
 <a class="mail-open" href="{% url 'crm_mail_detail' letter.pk %}?org_id={{ org.pk }}"><strong>{{ letter.subject|default:"Без темы" }}</strong>
-<span class="text-muted">{% if letter.outgoing %}Кому · {{ letter.recipients|join:", " }}{% else %}От · {{ letter.sender_name|default:letter.sender }}{% endif %}</span></a>
+<span class="text-muted">{% if letter.outgoing %}Кому · {{ letter.recipients|join:", " }}{% else %}От · {{ letter.sender_name|default:letter.sender }}{% endif %}</span>{% if boxes|length > 1 and not box %}<small class="text-muted">{{ letter.mailbox.address }}</small>{% endif %}</a>
 <time>{{ letter.sent_at|date:"d.m.Y H:i" }}</time>
 <a class="mail-link-action" href="{% url 'crm_mail_link' letter.pk %}?org_id={{ org.pk }}">Добавить в лид / сделку</a>
 </li>{% empty %}<li class="text-muted">Писем по этому запросу пока нет.</li>{% endfor %}</ul>
 {% if page.has_other_pages %}<nav class="mail-actions" aria-label="Страницы писем">{% if page.has_previous %}<a href="{{ paging }}&amp;page={{ page.previous_page_number }}">Назад</a>{% endif %}<span>{{ page.number }} из {{ page.paginator.num_pages }}</span>{% if page.has_next %}<a href="{{ paging }}&amp;page={{ page.next_page_number }}">Далее</a>{% endif %}</nav>{% endif %}
-{% else %}<p>Почтовый ящик ещё не подключён.{% if not owner %} Подключение настраивает владелец организации.{% endif %}</p>{% endif %}{% endblock %}
+{% else %}<p>Почтовый ящик ещё не подключён. {% if owner %}<a href="{% url 'communications_channels' %}?org_id={{ org.pk }}#mailboxes">Открыть настройки связи</a>{% else %}Подключение настраивает владелец организации.{% endif %}</p>{% endif %}{% endblock %}

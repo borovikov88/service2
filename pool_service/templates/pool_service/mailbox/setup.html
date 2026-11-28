@@ -1,7 +1,16 @@
-{% extends "pool_service/mailbox/base.html" %}
-{% block mail %}<a href="{% url 'crm_mail' %}?org_id={{ org.pk }}">← Почта</a><h2>Подключение почты VK WorkSpace</h2>
-<p>Весь ящик будет доступен владельцу, руководителю отдела продаж и менеджерам этой организации. Архив загрузится постепенно. Новые лиды сотрудники создают вручную.</p>
-<form class="mail-form" method="post">{% csrf_token %}{{ form.as_p }}
-<p><a href="https://account.mail.ru/user/2-step-auth/passwords/" target="_blank" rel="noopener noreferrer">Создать пароль приложения в Mail</a>. Для получения и отправки писем выберите «Полный доступ к Почте».</p>
-<button class="btn btn-primary">Проверить и подключить</button></form>
-{% if box.enabled %}<form class="mt-4" method="post">{% csrf_token %}<button class="btn btn-outline-secondary" name="action" value="pause">Отключить синхронизацию</button></form>{% endif %}{% endblock %}
+{% extends "pool_service/mailbox/base.html" %}{% load static %}
+{% block mail %}
+<a href="{% url 'communications_channels' %}?org_id={{ org.pk }}#mailboxes">← Почтовые ящики</a>
+<h2>{% if box %}Настроить {{ box.address }}{% else %}Добавить почтовый ящик{% endif %}</h2>
+<p>Письма будут доступны владельцу, РОПу и менеджерам организации.</p>
+<form class="mail-form" method="post" data-mail-setup>{% csrf_token %}{{ form.non_field_errors }}{{ form.version }}{{ form.version.errors }}
+{% for field in form.visible_fields %}
+  <div class="mb-3" {% if field.name == "imap_host" or field.name == "imap_port" or field.name == "smtp_host" or field.name == "smtp_port" %}data-mail-server{% endif %}>
+    {{ field.label_tag }}{{ field }}{{ field.errors }}
+    {% if field.help_text %}<div class="small text-muted" id="{{ field.auto_id }}_helptext">{{ field.help_text }}</div>{% endif %}
+  </div>
+{% endfor %}
+<button class="btn btn-primary">{% if box.enabled %}Сохранить настройки{% else %}Проверить и подключить{% endif %}</button></form>
+{% if box.enabled %}<form class="mt-4" method="post">{% csrf_token %}<input type="hidden" name="version" value="{{ box.config_version }}"><button class="btn btn-outline-secondary" name="action" value="pause">Отключить ящик</button><p class="text-muted small">Приём и отправка остановятся. Письма останутся в CRM. Для повторного подключения понадобится пароль.</p></form>{% endif %}
+<script defer src="{% static 'assets/js/crm-mail-settings.js' %}"></script>
+{% endblock %}

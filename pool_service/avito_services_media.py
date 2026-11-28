@@ -137,7 +137,7 @@ def _public_ip(value):
         return False
 
 
-def _resolve(host, port, deadline, *, diagnostics=None):
+def _resolve(host, port, deadline, *, diagnostics=None, all_addresses=False):
     try:
         literal = ipaddress.ip_address(host)
     except ValueError:
@@ -147,7 +147,7 @@ def _resolve(host, port, deadline, *, diagnostics=None):
             raise _PhotoTransportError('Локальные и служебные адреса фотографий запрещены.', reason='private_address', phase='dns')
         if diagnostics is not None:
             diagnostics.update(dns_family='ipv6' if ':' in host else 'ipv4', dns_answer_count=1)
-        return host
+        return [host] if all_addresses else host
     if host.rstrip('.').endswith(('.localhost', '.local', '.internal')) or host.rstrip('.') == 'localhost':
         raise _PhotoTransportError('Локальные и служебные адреса фотографий запрещены.', reason='private_address', phase='dns')
     if not _DNS_SLOTS.acquire(blocking=False):
@@ -178,7 +178,7 @@ def _resolve(host, port, deadline, *, diagnostics=None):
         families = {'ipv6' if ':' in address else 'ipv4' for address in addresses}
         diagnostics.update(dns_family=next(iter(families)) if len(families) == 1 else 'mixed',
                            dns_answer_count=len(answers))
-    return addresses[0]
+    return list(dict.fromkeys(addresses)) if all_addresses else addresses[0]
 
 
 def _numeric_socket(address, port, timeout):

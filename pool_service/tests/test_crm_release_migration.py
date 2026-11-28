@@ -8,7 +8,7 @@ from django.utils import timezone
 
 
 class CrmReleaseMigrationTests(TransactionTestCase):
-    release = [('pool_service', '0210_onec_chat_identity')]
+    release = [('pool_service', '0211_mailbox_accounts')]
     production = [('pool_service', '0182_merge_onec_review_crm_contact')]
     prepared = [('pool_service', '0185_crm_failure_stage')]
 
@@ -66,7 +66,7 @@ class CrmReleaseMigrationTests(TransactionTestCase):
                 '0201_max_communication_channel', '0202_max_text_replies', '0203_max_media_and_contact',
                 '0204_customer_reminders', '0205_reminder_recipient_roles',
                 '0206_onec_personal_draft_requests', '0207_onec_write_approvals',
-                '0208_onec_ticketless_drafts', '0209_crm_mailbox', '0210_onec_chat_identity'])
+                '0208_onec_ticketless_drafts', '0209_crm_mailbox', '0210_onec_chat_identity', '0211_mailbox_accounts'])
         else:
             self.assertEqual(plan, ['0172_clientimportcandidate_review_state_and_more',
                 '0182_merge_onec_review_crm_contact', '0186_merge_crm_release', '0187_enable_aqualine_crm_close', '0188_crm_card_comments', '0189_contact_management',
@@ -77,7 +77,7 @@ class CrmReleaseMigrationTests(TransactionTestCase):
                 '0201_max_communication_channel', '0202_max_text_replies', '0203_max_media_and_contact',
                 '0204_customer_reminders', '0205_reminder_recipient_roles',
                 '0206_onec_personal_draft_requests', '0207_onec_write_approvals',
-                '0208_onec_ticketless_drafts', '0209_crm_mailbox', '0210_onec_chat_identity'])
+                '0208_onec_ticketless_drafts', '0209_crm_mailbox', '0210_onec_chat_identity', '0211_mailbox_accounts'])
         executor.migrate(self.release)
         new = executor.loader.project_state(self.release).apps
         self.assertFalse(new.get_model("pool_service", "CrmMailbox").objects.exists())
@@ -106,6 +106,40 @@ class CrmReleaseMigrationTests(TransactionTestCase):
         self.assertEqual(new.get_model('pool_service', 'CrmCardComment').objects.count(), 0)
         # Schema-only policy migration must not enroll or grant existing members.
         self.assertEqual(new.get_model('pool_service', 'CrmRolePolicy').objects.count(), 0)
+
+    def test_existing_mailbox_keeps_credential_folders_letter_and_receipt(self):
+        from uuid import uuid4
+        source = [("pool_service", "0210_onec_chat_identity")]
+        executor = MigrationExecutor(connection)
+        executor.migrate(source)
+        try:
+            apps = executor.loader.project_state(source).apps
+            org = apps.get_model("pool_service", "Organization").objects.create(name="Original organization")
+            actor = apps.get_model("auth", "User").objects.create(username="archive-owner")
+            box = apps.get_model("pool_service", "CrmMailbox").objects.create(
+                organization_id=org.pk, address="old@example.org", credential="synthetic-ciphertext",
+                last_sync_at=timezone.now())
+            letter = apps.get_model("pool_service", "MailLetter").objects.create(
+                mailbox_id=box.pk, fingerprint="1"*64, subject="Saved", sent_at=timezone.now())
+            folder = apps.get_model("pool_service", "MailFolder").objects.create(
+                mailbox_id=box.pk, key="f", name="Inbox", wire_name="INBOX", generation=7, latest_uid=12)
+            receipt = apps.get_model("pool_service", "MailSubmission").objects.create(
+                token=uuid4(), mailbox_id=box.pk, actor_id=actor.pk, letter_id=letter.pk, status="sent")
+            self.restore_release()
+            apps = MigrationExecutor(connection).loader.project_state(self.release).apps
+            model = apps.get_model("pool_service", "CrmMailbox")
+            current = model.objects.get(pk=box.pk)
+            self.assertEqual((current.credential, current.connected_at, current.last_sync_at, current.enabled),
+                             (box.credential, box.connected_at, box.last_sync_at, True))
+            self.assertEqual((current.provider, current.imap_host, current.smtp_host, current.login),
+                             ("mailru", "imap.mail.ru", "smtp.mail.ru", ""))
+            self.assertEqual(current.folders.get(pk=folder.pk).latest_uid, 12)
+            self.assertEqual(current.letters.get(pk=letter.pk).subject, "Saved")
+            self.assertEqual(apps.get_model("pool_service", "MailSubmission").objects.get(pk=receipt.pk).letter_id, letter.pk)
+            model.objects.create(organization_id=org.pk, address="second@example.org")
+            self.assertEqual(model.objects.filter(organization_id=org.pk).count(), 2)
+        finally:
+            self.restore_release()
 
     def restore_release(self):
         executor = MigrationExecutor(connection)
