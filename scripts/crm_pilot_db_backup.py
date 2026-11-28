@@ -26,6 +26,7 @@ MAX_RAW_BYTES = 2 * 1024 * 1024 * 1024
 MAX_GZIP_BYTES = 512 * 1024 * 1024
 MAX_LINE_BYTES = 8 * 1024 * 1024
 MAX_SCHEMA_BYTES = 16 * 1024 * 1024
+NATIVE_CHARSET = "utf8mb4"
 IDENTIFIER = re.compile(r"[A-Za-z0-9_$]+\Z")
 APP_PATHS = (".github", "pool_service", "service_site", "manage.py", "scripts", "update.sh", "requirements.txt")
 
@@ -173,10 +174,12 @@ def client_options(config):
     require(config.get("ENGINE") == "django.db.backends.mysql", "client_engine")
     require(config.get("NAME") and IDENTIFIER.fullmatch(str(config["NAME"])), "client_database")
     require(config.get("USER") and config.get("PASSWORD"), "client_credentials")
-    require(set(config.get("OPTIONS", {})) <= {"init_command"}, "client_options")
+    options = config.get("OPTIONS", {})
+    require(set(options) <= {"init_command", "charset"}
+            and options.get("charset", NATIVE_CHARSET) == NATIVE_CHARSET, "client_options")
     require(not config.get("TEST", {}).get("MIRROR"), "client_mirror")
     lines = ["[client]", "user=" + option_value(config["USER"]),
-             "password=" + option_value(config["PASSWORD"]), "default-character-set=utf8mb4"]
+             "password=" + option_value(config["PASSWORD"]), f"default-character-set={NATIVE_CHARSET}"]
     host = str(config.get("HOST") or "localhost")
     # PyMySQL uses TCP for empty/localhost HOST; native clients otherwise use a
     # local Unix socket. Pin transport so dump and Django reach the same server.
@@ -503,7 +506,7 @@ def backup(app, expected):
             command = [executable, "--defaults-file=" + str(options_path), *tool_options, "--single-transaction",
                        "--quick", "--skip-lock-tables", "--skip-add-locks", "--hex-blob",
                        "--comments", "--dump-date", "--create-options", "--skip-triggers",
-                       "--skip-routines", "--skip-events", "--default-character-set=utf8mb4",
+                       "--skip-routines", "--skip-events", f"--default-character-set={NATIVE_CHARSET}",
                        "--", str(config["NAME"])]
             phase("dump_stream")
             raw_bytes = dump_to_gzip(command, partial, before, time.monotonic() + MAX_SECONDS - 30,
